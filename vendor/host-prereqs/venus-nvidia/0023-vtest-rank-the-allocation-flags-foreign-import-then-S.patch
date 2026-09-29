@@ -1,0 +1,190 @@
+From 0000000000000000000000000000000000000023 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Tue, 4 Aug 2026 20:40:00 -0400
+Subject: [PATCH] vtest: rank the allocation flags — foreign import, then SCANOUT
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+bd remora-e5x.25, narrowed by bd remora-cq3. MAPPABLE|SCANOUT is unsatisfiable
+on NVIDIA and we were resolving it the wrong way round; the fix for that then
+overreached, and this makes the rule say what it actually means.
+
+0001 routes MAPPABLE allocations to a Vulkan image with an explicit LINEAR
+modifier so the guest can mmap, and that fixed real SurfaceFlinger crashes.
+But a SCANOUT buffer is composited, so the guest later imports it as a
+colour attachment — and NVIDIA refuses to create a RENDERABLE image on a
+linear modifier:
+
+  vkCreateImage FAILED ret=-11 format=37 extent=1055x1992 tiling=1000158000
+                usage=0x97 modifier=explicit: 0x0 planes=1
+
+(-11 FORMAT_NOT_SUPPORTED, format 37 R8G8B8A8_UNORM, usage 0x97 =
+TRANSFER_SRC|TRANSFER_DST|SAMPLED|COLOR_ATTACHMENT|INPUT_ATTACHMENT.)
+Every frame of such a surface is dropped, so the app runs perfectly and
+displays PURE BLACK. Measured on an RTX 3070 Ti with Super Mario Run, whose
+entire swapchain is this case: 1055x1992 AB24 arrives flags=0x3, served
+LINEAR 18511 times in one launch; after, block-linear
+(mod=0x300000000606014), 8 allocations, zero refusals, title screen renders.
+
+SO SCANOUT MUST BEAT MAPPABLE — but it must not beat everything. Letting it
+decide for every composited buffer broke HW video, because on bare/NVIDIA the
+video path spans BOTH GPUs: c2-va decodes on the Intel xe VF (iHD,
+renderD129) while SurfaceFlinger composites on NVIDIA. A surface-bound decode
+session's RGBX output buffer is allocated here, on NVIDIA, and then
+VPP-blitted into by Intel, which imports it by modifier:
+
+  Output buffer info: drmFormat=XB24 modifier=0x300000000606014 fromHandle=1
+  vaCreateSurfaces(DRM_PRIME_2, modifier=0x300000000606014) failed:
+      resource allocation failed
+  Failed to copy VA surface into output frame.
+  DecodeComponent: reportError(error=14)
+
+NVIDIA's block-linear layout is meaningless to iHD, so the import is refused,
+the app gets ERROR_CODE_DECODING_FAILED and restarts the player once per
+segment — audio rebuilding every ~10s, picture frozen, forever. Pluto TV
+never plays a frame. The previously working layout was modifier=0x0.
+
+So the flags rank rather than fight: LINEAR_REQUIRED (a second GPU imports
+it) > SCANOUT (this GPU composites it) > MAPPABLE (the guest mmaps it). Only
+the guest knows which buffers cross the device boundary, and the wire carried
+no way to say so, so this adds the bit; minigbm's gbm_mesa already declares
+the same contract locally by advertising BO_USE_HW_VIDEO_DECODER on the 32bpp
+RGB formats with linear_metadata.
+
+Mario Run's swapchain keeps block-linear: it is rendered INTO by NVIDIA and
+read by nobody else, so it never sets the new flag.
+
+One documented cost remains. SurfaceFlinger's screenshot path CPU-maps the
+composited buffer, so with SCANOUT winning, `screencap` and the Recents
+thumbnails return tiled bytes read as linear — horizontal striped noise over
+the whole screen, home screen included. That path is unrelated to the video
+fix and is left as-is here; VTEST_SCANOUT_LINEAR=1 still restores the old
+precedence wholesale if it is needed.
+
+Also logs every GPU allocation with its fourcc, flags and chosen routing —
+that log is what made the pattern visible, and it is how you tell whether
+a black app is hitting this.
+---
+diff --git a/vtest/vtest_protocol.h b/vtest/vtest_protocol.h
+--- a/vtest/vtest_protocol.h
++++ b/vtest/vtest_protocol.h
+@@ -296,6 +296,10 @@
+ 
+ #define VCMD_ALLOC_GPU_FLAG_MAPPABLE (1u << 0) /* guest needs CPU mmap */
+ #define VCMD_ALLOC_GPU_FLAG_SCANOUT (1u << 1)
++/* A SECOND GPU imports this buffer, so linear is the only layout both understand.
++ * MAPPABLE and SCANOUT both describe what the compositing GPU wants; this one says
++ * the buffer also crosses a device boundary, which outranks either (bd remora-cq3). */
++#define VCMD_ALLOC_GPU_FLAG_LINEAR_REQUIRED (1u << 2)
+ 
+ #define VCMD_RESOURCE_ALLOC_GPU_RESP_SIZE 7
+ #define VCMD_RESOURCE_ALLOC_GPU_RESP_STATUS 0 /* 0 = OK */
+diff --git a/vtest/vtest_renderer.c b/vtest/vtest_renderer.c
+--- a/vtest/vtest_renderer.c
++++ b/vtest/vtest_renderer.c
+@@ -2544,12 +2544,58 @@
+    const uint32_t drm_format = req[VCMD_RESOURCE_ALLOC_GPU_FORMAT];
+    const uint32_t flags = req[VCMD_RESOURCE_ALLOC_GPU_FLAGS];
+ 
++   /* remora-e5x.25/cq3: the wire flags are the whole decision, and they rank —
++    * LINEAR_REQUIRED (a second GPU imports it) outranks SCANOUT (this GPU composites
++    * it) outranks MAPPABLE (the guest mmaps it). The gralloc usage bits that produced
++    * them live in the guest (minigbm gbm_mesa); these three flags are as much as the
++    * wire carries. Print the fourcc readably: these are the buffers under suspicion. */
++   fprintf(stderr, "[remora-alloc] %ux%u fourcc=%c%c%c%c flags=0x%x -> %s\n", width, height,
++           (char)(drm_format & 0xff), (char)((drm_format >> 8) & 0xff),
++           (char)((drm_format >> 16) & 0xff), (char)((drm_format >> 24) & 0xff), flags,
++           (flags & VCMD_ALLOC_GPU_FLAG_LINEAR_REQUIRED) ? "LINEAR (foreign importer)"
++           : (flags & VCMD_ALLOC_GPU_FLAG_SCANOUT)        ? "block-linear (scanout wins)"
++           : (flags & VCMD_ALLOC_GPU_FLAG_MAPPABLE)       ? "LINEAR (mappable)"
++                                                          : "block-linear");
++
+    uint32_t stride = 0;
+    uint64_t modifier = 0;
+    uint64_t size = 0;
+ 
+    if (!width || !height || width > 32768 || height > 32768) {
+       ret = -EINVAL;
++   } else if (flags & VCMD_ALLOC_GPU_FLAG_LINEAR_REQUIRED) {
++      /*
++       * A second GPU imports this buffer, and linear is the only layout the two
++       * agree on — so this outranks both of the flags below (bd remora-cq3).
++       *
++       * On bare/NVIDIA the video path is split: c2-va decodes on the Intel xe VF
++       * (iHD, renderD129) and SurfaceFlinger composites on NVIDIA. A surface-bound
++       * decode session's RGBX output buffer is therefore allocated here, on NVIDIA,
++       * and then VPP-blitted into by Intel — which imports it with
++       * vaCreateSurfaces(DRM_PRIME_2, modifier). NVIDIA's block-linear modifier is
++       * meaningless to iHD and the import is refused outright:
++       *
++       *   Output buffer info: drmFormat=XB24 modifier=0x300000000606014 fromHandle=1
++       *   vaCreateSurfaces(DRM_PRIME_2, modifier=0x300000000606014) failed:
++       *       resource allocation failed
++       *   Failed to copy VA surface into output frame.
++       *   DecodeComponent: reportError(error=14)
++       *
++       * The app sees ERROR_CODE_DECODING_FAILED and restarts the player once per
++       * segment: audio rebuilds every ~10s and the picture never moves.
++       *
++       * These buffers are also SCANOUT (they are composited), so without this flag
++       * they fall into the branch below and get block-linear. That is the regression
++       * this rule closes: SCANOUT is the right default for a buffer only NVIDIA
++       * touches, but it must not decide for one Intel has to read.
++       *
++       * Note the guest already declares the contract on its side — minigbm's
++       * gbm_mesa combos advertise BO_USE_HW_VIDEO_DECODER on the 32bpp RGB formats
++       * with linear_metadata. Until this flag it had no way to say so on the wire,
++       * where only MAPPABLE and SCANOUT existed.
++       */
++      ret = vtest_gpu_alloc_gpu_linear(width, height, drm_format, &stride, &modifier,
++                                       &size, &fd);
+    } else if (flags & VCMD_ALLOC_GPU_FLAG_MAPPABLE) {
+       /*
+        * Serve CPU-mappable gralloc buffers as a GPU image, not as memfd+udmabuf.
+@@ -2572,8 +2618,45 @@
+        * Set VTEST_MAPPABLE_UDMABUF=1 to restore upstream's behaviour.
+        */
+       const char *want_udmabuf = getenv("VTEST_MAPPABLE_UDMABUF");
++      const char *keep_linear = getenv("VTEST_SCANOUT_LINEAR");
+       if (want_udmabuf && *want_udmabuf == '1') {
+          ret = vtest_gpu_alloc_cpu(width, height, drm_format, &stride, &size, &fd);
++      } else if ((flags & VCMD_ALLOC_GPU_FLAG_SCANOUT) &&
++                 !(keep_linear && *keep_linear == '1')) {
++         /*
++          * MAPPABLE|SCANOUT is unsatisfiable on NVIDIA, and SCANOUT is the half that
++          * must win (bd remora-e5x.25).
++          *
++          * MAPPABLE forces an explicit LINEAR modifier so the guest can mmap. But a
++          * SCANOUT buffer is composited, so the guest later imports it as a colour
++          * attachment — and NVIDIA refuses to create a RENDERABLE image on a linear
++          * modifier: "vkCreateImage FAILED ret=-11 (FORMAT_NOT_SUPPORTED) format=37
++          * usage=0x97 modifier=explicit: 0x0". Every frame of such a surface is
++          * dropped, so the app runs perfectly and displays PURE BLACK.
++          *
++          * vtest_gpu_alloc_image()'s own non-linear branch already encodes the rule
++          * this restores: it enumerates the driver's modifiers, demands
++          * COLOR_ATTACHMENT|SAMPLED and explicitly excludes modifier 0. The MAPPABLE
++          * test simply ran first and took precedence over it.
++          *
++          * Measured on an RTX 3070 Ti with Super Mario Run, whose whole swapchain is
++          * this case: 1055x1992 AB24 arrived flags=0x3 and was served LINEAR 18511
++          * times in one launch, every one refused; the full-screen 3760x1992 AB24
++          * SCANOUT-only buffer (flags=0x2) took the block-linear path and composited
++          * fine throughout. That contrast is the whole bug.
++          *
++          * The cost is the CPU map for these buffers. This rule originally claimed
++          * nothing should need it, because a composited surface is produced and
++          * consumed by the GPU. Two things do, and both broke (bd remora-cq3):
++          * SurfaceFlinger's screenshot path CPU-maps the composited buffer, so
++          * `screencap` and the Recents thumbnails came back as tiled bytes read as
++          * linear — horizontal striped noise over the whole screen; and a decode
++          * output buffer is read by the OTHER GPU. The second is what
++          * LINEAR_REQUIRED above now carves out; the screenshot path still pays the
++          * cost. VTEST_SCANOUT_LINEAR=1 restores the old precedence wholesale.
++          */
++         ret = vtest_gpu_alloc_gpu(width, height, drm_format, &stride, &modifier,
++                                   &size, &fd);
+       } else {
+          ret = vtest_gpu_alloc_gpu_linear(width, height, drm_format, &stride, &modifier,
+                                           &size, &fd);

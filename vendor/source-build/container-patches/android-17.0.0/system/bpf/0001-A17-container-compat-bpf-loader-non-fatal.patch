@@ -1,0 +1,30 @@
+From 9dc8d6b6226466db4619262d07ed0a8f2ba32863 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 12:11:15 -0400
+Subject: [PATCH] A17 container-compat: bpf loader non-fatal
+
+Change-Id: I6d4e4236c2e701a32e6e2e11544d220ccaaf38b8
+---
+ loader/Loader.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/loader/Loader.cpp b/loader/Loader.cpp
+index 08c6b6d..1eb8b8b 100644
+--- a/loader/Loader.cpp
++++ b/loader/Loader.cpp
+@@ -602,8 +602,12 @@ void vendorBpfLoader() {
+         ALOGE("If this triggers randomly, you might be hitting some memory allocation "
+               "problems or startup script race.");
+         ALOGE("--- DO NOT EXPECT SYSTEM TO BOOT SUCCESSFULLY ---");
++        // The container kernel may lack some BPF features; don't hard-exit the loader
++        // (which would stall the whole boot) — log and continue.
++#if 0
+         sleep(20);
+         exit(121);
++#endif
+     }
+ 
+     const char* args[] = {"/apex/com.android.tethering/bin/netbpfload", "done", NULL};
+-- 
+2.54.0
+

@@ -1,0 +1,39 @@
+<!--
+    VINTF device-manifest fragment for AOSP's external (UVC/V4L2) camera provider.
+
+    WHY THIS FILE HAS TO EXIST HERE. The AOSP module
+    hardware/interfaces/camera/provider/default:android.hardware.camera.provider-V1-external-service
+    declares only `init_rc` — it ships NO vintf_fragments. So PRODUCT_PACKAGES installs the binary
+    and its init .rc and nothing else, the service starts at boot, and servicemanager refuses the
+    registration because the interface is not declared in the device manifest. Observed exactly
+    that (bd remora-4ei.9):
+
+        F android.hardware.camera.provider-V1-external-service:
+              Error while registering ext camera provider service: -3
+        F DEBUG : Abort message: 'Error while registering ext camera provider service: -3'
+        ... main+769, immediately after class-hal start
+
+    while `dumpsys media.camera` still said "Number of camera devices: 0". The provider was present,
+    running-and-dying, and invisible — a failure that looks identical to "no HAL installed" unless
+    you read the crash buffer.
+
+    THE INSTANCE NAME IS `external/0`, TRAILING NUMBER INCLUDED. I first wrote `external` on the
+    assumption that the /0 in the rc was an interface minor rather than part of the name, and
+    checkvintf rejected it:
+
+        ERROR: files are incompatible: The following instances are in the device manifest but not
+        specified in framework compatibility matrix:
+            android.hardware.camera.provider.ICameraProvider/external (@1)
+
+    The framework matrix settles it — compatibility_matrix.202604.xml declares
+    <regex-instance>[^/]+/[0-9]+</regex-instance> for ICameraProvider, so a bare `external` cannot
+    match by construction. Version 1 is from the -V1- in the module name and is inside the
+    matrix's declared 1-4 range.
+-->
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.camera.provider</name>
+        <version>1</version>
+        <fqname>ICameraProvider/external/0</fqname>
+    </hal>
+</manifest>

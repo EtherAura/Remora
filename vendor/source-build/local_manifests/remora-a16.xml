@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Android 16 overlay on the LineageOS 23.0 manifest.
+
+  NO PROJECTS LEFT, and empty rather than deleted — for the same two reasons as the A17 overlay
+  beside it, which this file now mirrors exactly.
+
+  Empty, because A16 no longer syncs anything from an upstream container project (bd remora-28ix.4). This file
+  used to add five projects: the upstream device tree, its prebuilts, its vendor project and
+  its OMX and c2 components. Every one is replaced the way A17 replaced it —
+  device/remora and vendor/remora are STAGED into the tree by stage-device-tree.sh rather than
+  synced, because no manifest can provide Remora-authored source and pointing a remote at one
+  machine's disk made the build unreproducible everywhere else; mesa_source supplies the GL and
+  Vulkan stack those prebuilts packaged; the OMX plugin gated on a boot arg
+  Remora has never emitted; and the c2 service wiring lives in Remora's own hardware/remora/c2-va.
+
+  Not deleted, because the engine requires it to exist. SourceBuild.cpp's unpinned path copies
+  `<source-build>/local_manifests/remora-a<ver>*.xml` and Chain.cpp preflights that glob, so
+  removing the file breaks unpinned A16 builds with a missing-manifest error rather than doing
+  nothing. An overlay with no projects IS the correct overlay now: repo reads it, adds nothing, and
+  the tree is stock LineageOS plus the staged Remora trees. Keep it in step with
+  pinned-manifest-a16.xml — that one is the reproducible pin, this is the tip-tracking overlay, and
+  a project present in only one of them makes the build depend on which manifest was used.
+
+  Base tree:  repo init -u https://github.com/LineageOS/android.git -b lineage-23.0
+  Lunch:      remora_x86_64-bp2a-userdebug
+-->
+<manifest>
+</manifest>

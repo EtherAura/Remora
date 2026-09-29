@@ -1,0 +1,87 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+# Anchored: unanchored, this also matched vendor/source-patches/build-make/ and build-soong/,
+# which stayed tracked here only because they predate the rule — and a fresh repository built from
+# this tree silently left them out, failing every test that checks registered patches exist.
+/build*/
+dist/
+
+# tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+# androguard writes this into the CWD on every run, so any APK inspection from the repo root
+# leaves one behind (bd remora-9lj's Reddit RE work is where they come from).
+androguard.log
+
+# built native artifacts — resolution 0a: build from source, never commit blobs
+/vendor/native/fwd
+/vendor/native/remora-frame-encoder
+/vendor/native/remora-frame-decoder
+# the mirror agent's dex, same rule: agent/build.sh compiles agent/src against the lineage tree's
+# framework.jar. agent/out/ is scratch; vendor/agent/agent.dex is the deployable copy the engine
+# mounts (bd remora-28ix.3).
+/agent/out/
+/vendor/agent/agent.dex
+/vendor/native/uinput-kbd
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+/build/
+# a second CMake tree configured with REMORA_INSTALLED_VENDOR=OFF, so `remora build --source`
+# stages the REPO vendor rather than /usr/share/remora/vendor. The default build/ here is
+# configured ON, which silently staged a stale do-build.sh through two builds (bd remora-4ei.30).
+/build-dev/
+# a third tree with the same OFF config as build-dev. 476 files / 27 MB of build output were
+# showing up as untracked noise — 476 of the 482 entries in `git status` — which is enough to bury
+# the handful of real untracked source files under it.
+/build-repovendor/
+# a fourth, same OFF config again (host-encoder work). Same 456-file / 23 MB noise problem as the
+# one above — which is exactly how it hid: `git status` showed it as a single untracked DIRECTORY,
+# so the size never announced itself.
+/build-hostenc/
+
+# Deliberately-removed vendored files that keep reappearing untracked. This tree lives under
+# ~/.sync (Syncthing), which restores files git has deleted, so without these entries every
+# `git status` carries the same stale noise and can bury a real untracked source file.
+# Each was removed on purpose — re-adding any of them is a decision, not a cleanup:
+#   play_cert/         superseded by the play_spoof build feature
+#   vm-rez-install.sh  superseded by the same feature; nothing references it
+# uinput-kbd.c came BACK on purpose (bd remora-gf7): persist-kbd.py, the thing that superseded
+# it, was itself deleted with the vm backend, and a container has no other way to show Android a
+# physical keyboard. It is a committed source with a build rule again; only the built binary is
+# ignored, up in the "built native artifacts" block with fwd.
+/vendor/source-build/features/play_cert/
+/vendor/guest-scripts/vm-rez-install.sh
+
+# Mesa cross-build output staged for the mesa_source feature (bd remora-ykhz / bd remora-bm7.4).
+# Build OUTPUT, not vendored prebuilts: ~19 MB per driver, produced by
+# vendor/host-prereqs/mesa-android/build-mesa.sh, and stage-features.sh already REFUSES to build
+# the feature when this directory is absent — so its absence fails loudly rather than shipping a
+# stale driver.
+vendor/source-build/features/mesa_source/lib64/
+
+# Third-party binary payloads — never committed here (vendor/PAYLOADS.md, docs/adr/0001).
+# vendor/fetch-payloads.sh stages them; a build refuses if an enabled feature's payload is absent.
+vendor/**/*.apk
+vendor/**/*.so
+vendor/**/*.jar
+vendor/**/*.dex
+vendor/**/*.zip
+vendor/**/*.img
+vendor/**/*.bin
+# ...and the third-party text that travels with them (see EXCLUDE_TEXT in make-public-tree.sh).
+vendor/source-build/features/widevine/vendor/
+vendor/source-build/features/ndk_translation/etc/
+vendor/source-build/features/ndk_translation/guest/
+vendor/source-build/features/ndk_translation/lib64/
+vendor/source-build/features/gapps/product/
+vendor/source-build/features/zygisk_pif/shamiko/*
+!vendor/source-build/features/zygisk_pif/shamiko/REMORA.md

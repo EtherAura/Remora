@@ -1,0 +1,4 @@
+name: "RELEASE_WEBAPP_MODULE"
+value: {
+  bool_value: true
+}

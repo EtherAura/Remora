@@ -1,0 +1,13 @@
+diff --git a/overlay/packages/apps/Settings/res/values/config.xml b/overlay/packages/apps/Settings/res/values/config.xml
+new file mode 100644
+index 0000000..5a58ef6
+--- /dev/null
++++ b/overlay/packages/apps/Settings/res/values/config.xml
+@@ -0,0 +1,7 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Remora: hide the stock "System update" preference (Settings > System). It resolves to
++     GMS's OTA client, which knows nothing about Remora images and re-enables itself after
++     every pm disable — the RemoraUpdater tile is the only real updater on this device. -->
++<resources>
++    <bool name="config_show_system_update_settings">false</bool>
++</resources>

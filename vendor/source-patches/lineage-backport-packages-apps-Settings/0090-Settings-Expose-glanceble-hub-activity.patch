@@ -1,0 +1,27 @@
+From 8c036bd28248166a419d635f30c65a97c28c5a8d Mon Sep 17 00:00:00 2001
+From: AdarshGrewal <adarshgrewal@gmail.com>
+Date: Fri, 17 Apr 2026 21:35:02 +0530
+Subject: [PATCH 90/98] Settings: Expose glanceble hub activity
+
+Change-Id: Ic0102ff35aa7d618314bcda64921461f6de0a6e7
+---
+ res/xml/security_lockscreen_settings.xml | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/res/xml/security_lockscreen_settings.xml b/res/xml/security_lockscreen_settings.xml
+index 35fcb6c2d20..2df745e115c 100644
+--- a/res/xml/security_lockscreen_settings.xml
++++ b/res/xml/security_lockscreen_settings.xml
+@@ -42,6 +42,12 @@
+             settings:searchable="false"
+             settings:controller="com.android.settings.biometrics.face.FaceSettingsLockscreenBypassPreferenceController" />
+ 
++        <com.android.settingslib.PrimarySwitchPreference
++            android:key="widgets_on_lockscreen"
++            android:title="@string/widgets_on_lockscreen_title"
++            android:fragment="com.android.settings.communal.WidgetsOnLockscreenFragment"
++            settings:controller="com.android.settings.display.WidgetsOnLockscreenPreferenceController"/>
++
+         <com.android.settingslib.RestrictedSwitchPreference
+             android:key="security_lockscreen_add_users_when_locked"
+             android:title="@string/user_add_on_lockscreen_menu"

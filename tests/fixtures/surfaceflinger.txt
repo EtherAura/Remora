@@ -1,0 +1,2 @@
+ ------------RE GLES (Ganesh)------------
+GLES: Intel, Mesa Intel(R) UHD Graphics 770 (ADL-S GT1), OpenGL ES 3.2 Mesa 24.0.8 (git-441f064c1c)

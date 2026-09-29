@@ -1,0 +1,50 @@
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index 37cd956..179fad7 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -654,21 +654,38 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 
+ 		bo_layout_ready = true;
+ 		bo->meta.total_size = ALIGN(bo->meta.total_size, size_align);
+-		alloc_args.drm_format = DRM_FORMAT_R8;
+-		alloc_args.width = bo->meta.total_size;
++		/*
++		 * SPOOF AS 32-BIT RGB, NOT R8 (bd remora-e5x.36). The spoofed format is
++		 * arbitrary — it exists only to carry total_size bytes, and the real
++		 * planar layout is already in bo->meta — but WHICH format is asked of
++		 * the external allocator decides whether the result can be imported
++		 * afterwards. Measured on this host: a buffer this allocator produced
++		 * as XB24 imports into iHD cleanly (the surface-bound RGBX decode path
++		 * works), while the R8 buffer it produced for an NV12 output was
++		 * refused with "resource allocation failed" on every geometry, offset
++		 * and descriptor shape tried. Driver version was ruled out separately —
++		 * the same iHD 24.3.4 imports the same shape happily when the buffer
++		 * comes from local gbm instead.
++		 *
++		 * XBGR8888 is the format the working path demonstrably gets, so ask for
++		 * that and cover the same bytes at 4 per pixel.
++		 */
++		alloc_args.drm_format = DRM_FORMAT_XBGR8888;
++		alloc_args.width = DIV_ROUND_UP(bo->meta.total_size, 4);
+ 		alloc_args.height = 1;
+ 		alloc_args.force_linear = true;
+ 
+ 		drv_logv("Unable to allocate 0x%08x format, allocate as 1D buffer", format);
+ 	}
+ 
+-	if (alloc_args.drm_format == DRM_FORMAT_R8 && alloc_args.height == 1) {
++	if (alloc_args.drm_format == DRM_FORMAT_XBGR8888 && alloc_args.height == 1) {
+ 		/* Some mesa drivers may not support 1D allocations.
+-		 * Use 2D texture with 4096 width instead.
++		 * Use a 2D texture with a 4096-BYTE row (1024 px at 4 bytes) instead,
++		 * matching the row width the R8 spoof used before.
+ 		 */
+-		alloc_args.height = DIV_ROUND_UP(alloc_args.width, 4096);
+-		alloc_args.width = 4096;
+-		drv_logv("Allocate 1D buffer as %dx%d R8 2D texture", alloc_args.width,
++		alloc_args.height = DIV_ROUND_UP(alloc_args.width, 1024);
++		alloc_args.width = 1024;
++		drv_logv("Allocate 1D buffer as %dx%d XBGR8888 2D texture", alloc_args.width,
+ 			 alloc_args.height);
+ 	}
+ 

@@ -1,0 +1,23 @@
+From adf61c13902a2789c965e6d74de5c466f5603b55 Mon Sep 17 00:00:00 2001
+From: LineageOS Infra <infra@lineageos.org>
+Date: Sat, 15 Aug 2026 23:47:54 +0000
+Subject: [PATCH 98/98] Automatic translation import
+
+Change-Id: Ibc96ddbb5dee410f8454b545b7ca617a00ac6bf4
+---
+ res/values-az/cm_strings.xml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/res/values-az/cm_strings.xml b/res/values-az/cm_strings.xml
+index a8e9dc56c06..c6ff4570c68 100644
+--- a/res/values-az/cm_strings.xml
++++ b/res/values-az/cm_strings.xml
+@@ -74,7 +74,7 @@
+     <string name="data_usage_app_restrict_vpn">VPN</string>
+     <string name="data_usage_app_restrict_vpn_summary">VPN istifadəsini fəallaşdır</string>
+     <string name="data_usage_app_restrict_wifi">Wi\u2011Fi</string>
+-    <string name="data_usage_app_restrict_wifi_summary">Wi\u2011Fi istifadəsini fəallaşdır</string>
++    <string name="data_usage_app_restrict_wifi_summary">Wi\u2011Fi veri istifadəsini fəallaşdır</string>
+     <string name="unlock_scramble_pin_layout_title">Düzümü qarışdır</string>
+     <string name="unlock_scramble_pin_layout_summary">Cihaz kilidini açarkən PIN düzümünü qarışdır</string>
+     <string name="proximity_wake_title">Təsadüfi oyanmaların qarşısını al</string>

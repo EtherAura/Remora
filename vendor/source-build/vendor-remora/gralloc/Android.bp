@@ -1,0 +1,28 @@
+// The software-path gralloc. A Remora module AND library name, so it cannot collide with another
+// project's gralloc module; gpu_config.sh sets ro.hardware.gralloc=remora in guest mode, and
+// hw_get_module turns that into gralloc.remora.so.
+cc_library_shared {
+    name: "gralloc.remora",
+    vendor: true,
+
+    srcs: [
+        "alloc.cpp",
+        "mapper.cpp",
+    ],
+
+    shared_libs: [
+        "liblog",
+        "libcutils",
+    ],
+
+    header_libs: [
+        "libhardware_headers",
+    ],
+
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+
+    relative_install_path: "hw",
+}

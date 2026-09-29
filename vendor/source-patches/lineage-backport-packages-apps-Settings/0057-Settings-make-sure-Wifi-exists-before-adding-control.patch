@@ -1,0 +1,40 @@
+From eb7983dbd2d8d6429047b30c8be01eb84391aece Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Timi=20Rautam=C3=A4ki?= <timi.rautamaki@gmail.com>
+Date: Sat, 30 Sep 2023 10:02:00 +0000
+Subject: [PATCH 57/98] Settings: make sure Wifi exists before adding
+ controllers
+
+Change-Id: I6c1fd5222aa9fd33cbec67b8f572d031bfe86466
+---
+ .../DevelopmentSettingsDashboardFragment.java         | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/src/com/android/settings/development/DevelopmentSettingsDashboardFragment.java b/src/com/android/settings/development/DevelopmentSettingsDashboardFragment.java
+index 66f4b6c2ead..0495ee9e5e0 100644
+--- a/src/com/android/settings/development/DevelopmentSettingsDashboardFragment.java
++++ b/src/com/android/settings/development/DevelopmentSettingsDashboardFragment.java
+@@ -33,6 +33,7 @@ import android.content.ContentResolver;
+ import android.content.Context;
+ import android.content.Intent;
+ import android.content.IntentFilter;
++import android.content.pm.PackageManager;
+ import android.database.ContentObserver;
+ import android.hardware.biometrics.Flags;
+ import android.net.Uri;
+@@ -753,10 +754,12 @@ public class DevelopmentSettingsDashboardFragment extends RestrictedDashboardFra
+         controllers.add(new LogdSizePreferenceController(context));
+         controllers.add(new LogPersistPreferenceController(context, fragment, lifecycle));
+         controllers.add(new CameraLaserSensorPreferenceController(context));
+-        controllers.add(new WifiDisplayCertificationPreferenceController(context));
+-        controllers.add(new WifiVerboseLoggingPreferenceController(context));
+-        controllers.add(new WifiScanThrottlingPreferenceController(context));
+-        controllers.add(new WifiNonPersistentMacRandomizationPreferenceController(context));
++        if (context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_WIFI)) {
++            controllers.add(new WifiDisplayCertificationPreferenceController(context));
++            controllers.add(new WifiVerboseLoggingPreferenceController(context));
++            controllers.add(new WifiScanThrottlingPreferenceController(context));
++            controllers.add(new WifiNonPersistentMacRandomizationPreferenceController(context));
++        }
+         controllers.add(new MobileDataAlwaysOnPreferenceController(context));
+         controllers.add(new TetheringHardwareAccelPreferenceController(context));
+         controllers.add(new BluetoothDeviceNoNamePreferenceController(context));

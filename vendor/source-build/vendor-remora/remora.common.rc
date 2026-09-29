@@ -1,0 +1,105 @@
+# Remora vendor init (bd remora-28ix.4 R2) — what a privileged Android container needs from init
+# that a phone does not. Every stanza here is load-bearing, and nothing translates legacy
+# ro.kernel.* boot args: Remora has never emitted them.
+
+on early-init
+    mount debugfs debugfs /sys/kernel/debug mode=755
+
+    # ueventd in a container does not create these with usable modes.
+    chmod 0666 /dev/null
+    chmod 0666 /dev/zero
+    chmod 0666 /dev/full
+    chmod 0666 /dev/ptmx
+    chmod 0666 /dev/pts/ptmx
+    chmod 0666 /dev/tty
+    chmod 0666 /dev/random
+    chmod 0666 /dev/urandom
+    chmod 0666 /dev/ashmem
+    chmod 0666 /dev/ion
+
+    chmod 0444 /dev/dma_heap/system
+    chown system system /dev/dma_heap/system
+
+    # domain sockets live here
+    mkdir /ipc 0777
+
+    # NOTE: /dev/input is NOT wiped here. Upstream removed it at early-init, which destroyed the
+    # evdev nodes docker passes through (--device) before EventHub's boot scan could see them —
+    # the phantom keyboard and any real input device simply did not exist. inputflinger still
+    # needs the directory, so create it if absent instead.
+    mkdir /dev/input
+
+    # codec2 stays off until a HAL claims it (needs DMA Heap).
+    setprop debug.stagefright.ccodec 0
+
+    # quieten a log tag that spams a container
+    setprop log.tag.libprocessgroup F
+
+    # GLES 3.2 is what every backend here provides
+    setprop ro.opengles.version 196610
+
+# Overlay /data: a shared read-mostly lower layer plus this instance's private diff, which is what
+# lets several profiles stand on one seeded /data. Remora's own boot namespace.
+on early-init && property:ro.boot.use_remora_overlayfs=1
+    trigger remora_overlayfs
+
+on remora_overlayfs
+    mkdir /data-diff/upper
+    rmdir /data-diff/work
+    mkdir /data-diff/work
+    mount overlay overlay /data lowerdir=/data-base,upperdir=/data-diff/upper,workdir=/data-diff/work
+
+# Display density from the host. Set here as well as by the props adapter because init matches all
+# early-init property actions when the event is dequeued — a setprop in one cannot arm another.
+on early-init && property:ro.boot.remora_dpi=*
+    setprop ro.sf.lcd_density ${ro.boot.remora_dpi}
+
+on property:ro.zygote=zygote64_32
+    write /proc/sys/kernel/pid_max 65535
+
+# memfd instead of ashmem (ashmem was removed in 5.18); init.rc disables it at post-fs-data.
+on post-fs-data && property:ro.boot.use_memfd=*
+    setprop sys.use_memfd ${ro.boot.use_memfd}
+
+on init
+    # lxcfs-style masking: /proc/vmallocinfo and /sys/power/state are host-wide and must not be
+    # readable or writable from inside the container.
+    write /data/.empty 0
+    mount none /data/.empty /proc/vmallocinfo bind
+
+    # a container must never be able to suspend its host
+    mount none /data/.empty /sys/power/state bind
+
+    setprop debug.renderengine.backend gles
+
+    # a floor, so a device that never got a density still renders
+    setprop ro.sf.lcd_density 320
+
+    # Binderfs device nodes. AOSP's init.rc mounts binderfs a few lines earlier in this same
+    # `on init` and then execs /vendor/bin/binder_alloc — a path this image does NOT have, because
+    # our module installs as remora_binder_alloc (a `stem` back to binder_alloc is a hard kati
+    # error in any tree that also defines one; see that Android.bp). Remora's container-compat
+    # patch retargets that line, but a patch is a thing that can fail to re-apply and did exactly
+    # that (bd remora-28ix.4), leaving an init.rc naming a binary that is not there.
+    #
+    # So the call also lives HERE, in a file Remora installs itself and nothing has to patch.
+    # Ordering is correct by construction: /system/etc/init/hw/init.rc is parsed before
+    # /vendor/etc/init/*.rc, so this action runs after binderfs is mounted. Running twice is safe
+    # and deliberate — remora_binder_alloc treats EEXIST as success precisely so a second pass
+    # (the patched init.rc line, once it lands) is a no-op rather than a failure.
+    exec -- /vendor/bin/remora_binder_alloc /dev/binderfs/binder-control binder hwbinder vndbinder
+
+on post-fs-data
+    # Static IP/DNS/proxy for eth0. Must run after post-fs-data and before netd. The apex config
+    # path is removed first so the legacy one is authoritative.
+    rm /data/misc/apexdata/com.android.tethering/misc/ethernet/ipconfig.txt
+    exec - system system -- /vendor/bin/remora_ipconfigstore
+
+    # no encryption in a container — /data is a bind mount from the host
+    trigger nonencrypted
+
+    exec -- /vendor/bin/post-fs-data.remora.sh
+
+on early-boot
+    # BEFORE the HALs and SurfaceFlinger: this decides the render node, gralloc and drivers.
+    exec -- /vendor/bin/gpu_config.sh

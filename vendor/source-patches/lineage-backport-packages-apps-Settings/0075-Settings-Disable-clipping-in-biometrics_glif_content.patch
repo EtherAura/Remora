@@ -1,0 +1,27 @@
+From 5c80ff78094e906b773ee56483781bdd1c498d0b Mon Sep 17 00:00:00 2001
+From: LuK1337 <priv.luk@gmail.com>
+Date: Sat, 4 Oct 2025 23:40:26 +0200
+Subject: [PATCH 75/98] Settings: Disable clipping in biometrics_glif_content
+
+This is required for devices with UDFPS sensors that are very low.
+
+Change-Id: Iec0c4f27cab6999b617a26b4d76bfaa39a90d922
+---
+ res/layout/biometrics_glif_content.xml | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/res/layout/biometrics_glif_content.xml b/res/layout/biometrics_glif_content.xml
+index 6cddccb4da1..25fbcb5b2e2 100644
+--- a/res/layout/biometrics_glif_content.xml
++++ b/res/layout/biometrics_glif_content.xml
+@@ -21,8 +21,8 @@
+     android:id="@+id/sud_layout_template_content"
+     android:layout_width="match_parent"
+     android:layout_height="match_parent"
+-    android:clipChildren="true"
+-    android:clipToPadding="true"
++    android:clipChildren="false"
++    android:clipToPadding="false"
+     android:orientation="vertical">
+ 
+     <ViewStub

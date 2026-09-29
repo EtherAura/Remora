@@ -1,0 +1,32 @@
+From 71e3587ba414b35d829c3f2c074794493a2f27b8 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 12:11:16 -0400
+Subject: [PATCH] A17 container-compat: SurfaceFlinger skip invalid HWC color
+ mode
+
+Change-Id: I6de22246c12eb6721323906b4ef62e32fcb7b7e5
+---
+ services/surfaceflinger/SurfaceFlinger.cpp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 7565080..28331b3 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -4391,6 +4391,13 @@ sp<DisplayDevice> SurfaceFlinger::setupNewDisplayDeviceInternal(
+                 .transform(&PhysicalDisplay::snapshotRef)
+                 .transform(ftl::unit_fn([&](const display::DisplaySnapshot& snapshot) {
+                     for (const auto mode : snapshot.colorModes()) {
++                        // The composer@2.1 HWC can report a bogus color mode (e.g. -22 /
++                        // -EINVAL); querying render intents for an invalid mode crashes the HWC.
++                        // Skip modes outside the valid ui::ColorMode range.
++                        if (static_cast<int32_t>(mode) < 0) {
++                            ALOGW("Skipping invalid HWC color mode %d", static_cast<int>(mode));
++                            continue;
++                        }
+                         creationArgs.hasWideColorGamut |= ui::isWideColorMode(mode);
+                         creationArgs.hwcColorModes
+                                 .emplace(mode, getHwComposer().getRenderIntents(physicalId, mode));
+-- 
+2.54.0
+

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- LineageOS default home layout (5x8 grid). Generated per-grid so the
+     Lineage app suite lands on the home screen at whatever resolution/dpi the device
+     resolves to. Category-resolved hotseat + explicit-component workspace. -->
+<favorites xmlns:launcher="http://schemas.android.com/apk/res-auto/com.android.launcher3">
+
+    <!-- Hotseat -->
+    <resolve launcher:container="-101" launcher:screen="0" launcher:x="0" launcher:y="0">
+        <favorite launcher:uri="#Intent;action=android.intent.action.DIAL;end" />
+    </resolve>
+    <resolve launcher:container="-101" launcher:screen="1" launcher:x="1" launcher:y="0">
+        <favorite launcher:uri="#Intent;action=android.intent.action.MAIN;category=android.intent.category.APP_MESSAGING;end" />
+    </resolve>
+    <resolve launcher:container="-101" launcher:screen="2" launcher:x="2" launcher:y="0">
+        <favorite launcher:uri="#Intent;action=android.intent.action.MAIN;category=android.intent.category.APP_BROWSER;end" />
+    </resolve>
+    <resolve launcher:container="-101" launcher:screen="3" launcher:x="3" launcher:y="0">
+        <favorite launcher:uri="#Intent;action=android.media.action.STILL_IMAGE_CAMERA;end" />
+    </resolve>
+    <resolve launcher:container="-101" launcher:screen="4" launcher:x="4" launcher:y="0">
+        <favorite launcher:uri="#Intent;action=android.intent.action.MAIN;category=android.intent.category.APP_MUSIC;end" />
+    </resolve>
+
+    <!-- Workspace: LineageOS apps -->
+    <favorite launcher:screen="0" launcher:x="0" launcher:y="0"
+        launcher:packageName="org.lineageos.jelly" launcher:className="org.lineageos.jelly.MainActivity" />
+    <favorite launcher:screen="0" launcher:x="1" launcher:y="0"
+        launcher:packageName="org.lineageos.etar" launcher:className="com.android.calendar.AllInOneActivity" />
+    <favorite launcher:screen="0" launcher:x="2" launcher:y="0"
+        launcher:packageName="org.lineageos.twelve" launcher:className="org.lineageos.twelve.MainActivity" />
+    <favorite launcher:screen="0" launcher:x="3" launcher:y="0"
+        launcher:packageName="org.lineageos.glimpse" launcher:className="org.lineageos.glimpse.MainActivity" />
+    <favorite launcher:screen="0" launcher:x="4" launcher:y="0"
+        launcher:packageName="org.lineageos.recorder" launcher:className="org.lineageos.recorder.RecorderActivity" />
+    <favorite launcher:screen="0" launcher:x="0" launcher:y="1"
+        launcher:packageName="com.android.deskclock" launcher:className="com.android.deskclock.DeskClock" />
+    <favorite launcher:screen="0" launcher:x="1" launcher:y="1"
+        launcher:packageName="com.android.calculator2" launcher:className="com.android.calculator2.Calculator" />
+    <favorite launcher:screen="0" launcher:x="2" launcher:y="1"
+        launcher:packageName="com.android.gallery3d" launcher:className="com.android.gallery3d.app.GalleryActivity" />
+</favorites>

@@ -1,0 +1,93 @@
+From 6a466c41e0f3fd00e8ec9b1e3580a02e8f4bff54 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Wed, 29 Jul 2026 21:15:53 -0400
+Subject: [PATCH] A17 LineageOS SDK: a missing Part must remove the row, not
+ kill the screen
+
+LineagePartsPreference is a shortcut into a LineageParts screen. Its
+constructor looked the part up and threw RuntimeException when it was
+absent:
+
+  java.lang.RuntimeException: Part not found: live_display_color_profile
+    at lineageos.preference.LineagePartsPreference.<init>:29
+  ... Caused by: InflateException: Binary XML file line #132:
+      Error inflating class lineageos.preference.LineagePartsPreference
+  ... FATAL EXCEPTION in com.android.settings
+
+That exception escapes PreferenceInflater, so one unavailable row takes
+down the entire settings screen that merely CONTAINS it -- Settings >
+Display was unopenable. Our image ships the Lineage Settings backport but
+deliberately NOT LineageParts (device/remora/lineage.mk: it needs the
+LineageSystemServer services that A17's frameworks/base has no
+integration for), so on this build the part is absent by construction and
+all seven LineagePartsPreference sites are affected.
+
+Removing the row is what the base class is for. LineagePartsPreference
+extends RemotePreference extends SelfRemovingPreference, whose whole
+purpose is to disappear when it cannot work; every OTHER unavailability
+in this hierarchy -- missing system feature, unset config resource,
+unresolvable intent -- already degrades that way through
+ConstraintsHelper. A missing part is the same class of condition and now
+takes the same path: setAvailable(false) and return.
+
+Verified this is now the ONLY thing between Settings > Display and
+opening: with the resource APK loadable (see the frameworks/base
+lineage_platform_res patch) ConstraintsHelper already ran to completion
+and logged
+  construct key=live_display_color_profile available=false
+i.e. it had correctly decided to remove the row, and the constructor
+threw anyway a few lines later.
+
+mPart is left null in that case, so its two remaining dereferences are
+guarded: onRemoteUpdated returns early (it can only fire from the
+LineageParts provider, which by definition is not installed here), and
+updatePreference is unreachable with a null part -- its only callers are
+the constructor after the check and onRemoteUpdated.
+
+Change-Id: Idb5fe2a1a1aca6fd2f219b67ca7d14349fe02c6f
+---
+ .../preference/LineagePartsPreference.java         | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/packages/LineagePreferenceLib/java/lineageos/preference/LineagePartsPreference.java b/packages/LineagePreferenceLib/java/lineageos/preference/LineagePartsPreference.java
+index 3897e666..57f0a139 100644
+--- a/packages/LineagePreferenceLib/java/lineageos/preference/LineagePartsPreference.java
++++ b/packages/LineagePreferenceLib/java/lineageos/preference/LineagePartsPreference.java
+@@ -7,6 +7,7 @@ package lineageos.preference;
+ import android.content.Context;
+ import android.os.Bundle;
+ import android.util.AttributeSet;
++import android.util.Log;
+ 
+ /**
+  * A link to a remote preference screen which can be used with a minimum amount
+@@ -26,7 +27,15 @@ public class LineagePartsPreference extends RemotePreference {
+         mContext = context;
+         mPart = PartsList.get(context).getPartInfo(getKey());
+         if (mPart == null) {
+-            throw new RuntimeException("Part not found: " + getKey());
++            // No LineageParts on this build, so this shortcut has no screen to open. Remove
++            // ourselves, which is what the SelfRemovingPreference base class exists for, rather
++            // than throw: the exception escapes PreferenceInflater and takes down the whole
++            // settings screen that merely CONTAINS us, turning one dead row into an unopenable
++            // page. Every other unavailability here (missing feature, unset config) already
++            // degrades this way.
++            Log.w(TAG, "no part for " + getKey() + " — removing preference");
++            setAvailable(false);
++            return;
+         }
+ 
+         updatePreference();
+@@ -43,6 +52,9 @@ public class LineagePartsPreference extends RemotePreference {
+ 
+     @Override
+     public void onRemoteUpdated(Bundle bundle) {
++        if (mPart == null) {
++            return;  // removed at construction; nothing to update
++        }
+         if (bundle.containsKey(PartsList.EXTRA_PART)) {
+             PartInfo update = bundle.getParcelable(PartsList.EXTRA_PART);
+             if (update != null) {
+-- 
+2.54.0
+

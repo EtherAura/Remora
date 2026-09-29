@@ -1,0 +1,30 @@
+From 858826d19c2e0ab5495e6e415065b2cd8a55b282 Mon Sep 17 00:00:00 2001
+From: Nick Reuter <nreuter85@gmail.com>
+Date: Sun, 30 Nov 2025 05:51:31 -0600
+Subject: [PATCH 93/98] Settings: Add a preference for LiveDisplay display
+ profiles
+
+ Mimics and removes the AOSP preference
+
+Change-Id: Ib46bfe374e216a587282d8b138d8962c4622ca5b
+---
+ res/xml/display_settings.xml | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/res/xml/display_settings.xml b/res/xml/display_settings.xml
+index 11fbc08d1ac..05e7c2ab992 100644
+--- a/res/xml/display_settings.xml
++++ b/res/xml/display_settings.xml
+@@ -137,6 +137,12 @@
+             settings:controller="com.android.settings.display.ColorModePreferenceController"
+             settings:keywords="@string/keywords_color_mode"/>
+ 
++        <lineageos.preference.LineagePartsPreference
++            android:key="live_display_color_profile"
++            settings:replacesKey="color_mode"
++            settings:requiresConfig="@*lineageos.platform:bool/config_enableLiveDisplay"
++            settings:requiresFeature="lineagehardware:FEATURE_DISPLAY_MODES" />
++
+         <Preference
+             android:fragment="com.android.settings.display.ColorContrastFragment"
+             android:key="color_contrast"

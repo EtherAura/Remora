@@ -1,0 +1,44 @@
+// Remora's composer HAL (bd remora-emoe / 28ix.4 R4). A Remora module AND installed name, for the
+// same hard reason gralloc.remora and remora_binder_alloc carry Remora names: two modules sharing
+// an install path is a kati error, not a warning.
+//
+// hw_get_module turns ro.hardware.hwcomposer into hwcomposer.<value>.so, so this name and the
+// property gpu_config.sh sets are one contract. The selection is a runtime property — that is what
+// makes swapping composers a container restart instead of a rebuild.
+cc_library_shared {
+    name: "hwcomposer.remora",
+    vendor: true,
+
+    srcs: [
+        "hwcomposer.cpp",
+        "frame_export.cpp",
+    ],
+
+    shared_libs: [
+        // libhardware is phase 2's ONLY new dependency (bd remora-emoe): frame export needs the
+        // buffer's fourcc/modifier/pitch, and gralloc0 perform() is the sole route to them on this
+        // image — there is no gralloc4, so IMapper's metadata getters answer UNAVAILABLE. Note this
+        // HAL's minimal link set was cited as evidence it does no composition; that is still true,
+        // libhardware is a query interface, not a graphics stack.
+        "libhardware",
+        "liblog",
+        "libcutils",
+        "libsync",
+    ],
+
+    header_libs: [
+        "libhardware_headers",
+    ],
+
+    cflags: [
+        "-Wall",
+        "-Werror",
+        // The HWC2 entry points take parameters this HAL deliberately ignores — every layer is
+        // CLIENT, so blend mode, crop and transform are already applied in the client target by
+        // the time it reaches us. Naming them all would be noise; unnaming them all is worse,
+        // because the signatures ARE the contract with the composer service.
+        "-Wno-unused-parameter",
+    ],
+
+    relative_install_path: "hw",
+}

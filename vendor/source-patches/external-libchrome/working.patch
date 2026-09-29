@@ -1,0 +1,12 @@
+diff --git a/Android.bp b/Android.bp
+index 240810e..19240e0 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -892,6 +892,7 @@ cc_library {
+         "//external/puffin",
+         "//external/v4l2_codec2:__subpackages__",
+         "//external/zucchini",
++        "//hardware/remora/c2-va:__subpackages__",
+         "//frameworks/base/services",
+         "//frameworks/base/services/core/jni",
+         "//frameworks/native/libs/vr/libpdx_default_transport",

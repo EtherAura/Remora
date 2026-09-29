@@ -1,0 +1,112 @@
+From 8ca80f8e9a580d7173f272720a1d8f7eae194037 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Thu, 27 Aug 2026 10:35:05 -0400
+Subject: [PATCH] audiopolicy: send stub-speaker output to the remote submix
+
+This container has no speaker. primary_audio_policy_configuration.xml
+attaches one and names it defaultOutputDevice, but the primary HAL behind
+it is AOSP's stub: it accepts every write and plays nothing. The only
+output that leaves the container is AUDIO_DEVICE_OUT_REMOTE_SUBMIX, which
+the Remora mirror captures and plays on the host.
+
+AOSP withholds the submix from the sonification strategies on purpose --
+the "no sonification on remote submix (e.g. WFD)" guard in
+getDevicesForStrategyInt, and the explicit REMOTE_SUBMIX removal for
+STRATEGY_SONIFICATION_RESPECTFUL in filterOutputDevicesForStrategy. On a
+phone that is right: the speaker is real and you want the ringtone in your
+pocket rather than on the TV. Here it routes every ringtone, alarm,
+notification and call sound into the bit bucket, while media and the UI
+sounds that share STRATEGY_MEDIA come through -- which presents as "half
+the sounds are broken" rather than as a routing decision.
+
+Substitute at the single funnel every output routing decision passes
+through: a strategy that resolved to a lone speaker while a submix is
+available goes to the submix instead. Only ever a replacement for the
+speaker, so a strategy that found a real device or one pinned through
+setPreferredDeviceForStrategy is untouched, and self-scoping -- no capture
+means no submix device means nothing to substitute, so an unmirrored
+container behaves exactly as upstream.
+
+Gated on persist.remora.submix_all_output (default true), read once
+because this sits on the routing hot path.
+
+Bug: remora-8g24
+Change-Id: I04fe27491a98c7d376fffe76cefaf6823946f10f
+---
+ .../audiopolicy/enginedefault/src/Engine.cpp  | 46 +++++++++++++++++--
+ 1 file changed, 43 insertions(+), 3 deletions(-)
+
+diff --git a/services/audiopolicy/enginedefault/src/Engine.cpp b/services/audiopolicy/enginedefault/src/Engine.cpp
+index c7a62ae02e..2e30526e51 100644
+--- a/services/audiopolicy/enginedefault/src/Engine.cpp
++++ b/services/audiopolicy/enginedefault/src/Engine.cpp
+@@ -26,6 +26,7 @@
+ 
+ #include "Engine.h"
+ #include <android-base/macros.h>
++#include <android-base/properties.h>
+ #include <AudioPolicyManagerObserver.h>
+ #include <PolicyAudioPort.h>
+ #include <IOProfile.h>
+@@ -772,6 +773,45 @@ audio_devices_t Engine::getPreferredDeviceTypeForLegacyStrategy(
+     return AUDIO_DEVICE_NONE;
+ }
+ 
++// Remora: this container has no speaker.
++//
++// primary_audio_policy_configuration.xml attaches a Speaker and names it defaultOutputDevice,
++// but the primary HAL behind it is AOSP's stub — it accepts every write and plays nothing. The
++// only output that leaves the container is AUDIO_DEVICE_OUT_REMOTE_SUBMIX, which the mirror
++// captures and plays on the host.
++//
++// AOSP withholds the submix from the sonification strategies deliberately: the "no sonification
++// on remote submix (e.g. WFD)" guard in getDevicesForStrategyInt, and the explicit REMOTE_SUBMIX
++// removal for STRATEGY_SONIFICATION_RESPECTFUL in filterOutputDevicesForStrategy. On a phone that
++// is right — the speaker is real and you want the ringtone in your pocket, not on the TV. Here it
++// routes ringtones, alarms, notifications and call audio into the bit bucket while media and the
++// UI sounds that share STRATEGY_MEDIA come through, which presents as "half the sounds are
++// broken" rather than as a routing decision (bd remora-8g24).
++//
++// So substitute: a strategy that has resolved to the stub speaker while a submix IS available
++// goes to the submix instead. Done at the one funnel every output routing decision passes
++// through, rather than case by case, and only ever as a REPLACEMENT for a lone speaker — a
++// strategy that found a real device, or one pinned through setPreferredDeviceForStrategy above,
++// is untouched. It is self-scoping: no capture means no submix device means nothing to
++// substitute, so an unmirrored container behaves exactly as upstream.
++static DeviceVector substituteSubmixForStubSpeaker(const DeviceVector &devices,
++                                                   const DeviceVector &availableOutputDevices) {
++    // Read once: this sits on the routing hot path, and flipping it is a debugging action that
++    // can afford an audioserver restart.
++    static const bool enabled =
++            android::base::GetBoolProperty("persist.remora.submix_all_output", true);
++    if (!enabled || devices.size() != 1
++        || devices[0]->type() != AUDIO_DEVICE_OUT_SPEAKER) {
++        return devices;
++    }
++    // Address "0" is the legacy submix route, the one AudioRecord(REMOTE_SUBMIX) opens. Look it
++    // up in the UNFILTERED device list: filterOutputDevicesForStrategy has already removed it
++    // from the caller's copy for exactly the strategy this exists to rescue.
++    const sp<DeviceDescriptor> submix = availableOutputDevices.getDevice(
++            AUDIO_DEVICE_OUT_REMOTE_SUBMIX, String8("0"), AUDIO_FORMAT_DEFAULT);
++    return submix != nullptr ? DeviceVector(submix) : devices;
++}
++
+ DeviceVector Engine::getDevicesForProductStrategy(product_strategy_t strategy) const {
+     const SwAudioOutputCollection& outputs = getApmObserver()->getOutputs();
+ 
+@@ -798,9 +838,9 @@ DeviceVector Engine::getDevicesForProductStrategy(product_strategy_t strategy) c
+             getDisabledDevicesForProductStrategy(availableOutputDevices, strategy);
+     availableOutputDevices.remove(disabledDevVec);
+ 
+-    return getDevicesForStrategyInt(legacyStrategy,
+-                                    availableOutputDevices,
+-                                    outputs);
++    return substituteSubmixForStubSpeaker(
++            getDevicesForStrategyInt(legacyStrategy, availableOutputDevices, outputs),
++            getApmObserver()->getAvailableOutputDevices());
+ }
+ 
+ DeviceVector Engine::getOutputDevicesForStrategy(product_strategy_t strategy,
+-- 
+2.54.0
+

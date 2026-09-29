@@ -1,0 +1,117 @@
+From: Remora <noreply@localhost>
+Date: Sat, 22 Aug 2026 09:56:00 -0400
+Subject: [PATCH] VideoFramePool: bound the surplus-buffer drop retry
+
+shouldDropBuffer() rejects any block whose buffer id is not already in
+mBuffers once that set has reached mMaxBufferCount, and getVideoFrameTask()
+turns the rejection into C2_TIMED_OUT and reposts itself. mBuffers is
+insert-only -- nothing ever erases from it -- and the repost has no retry
+limit, so the rejection is permanent: no callback is ever delivered, no error
+is raised, and the decoder simply stops.
+
+The bookkeeping assumes a pool that recycles a fixed set of buffer ids for its
+lifetime. A BUFFERQUEUE pool does exactly that, which is why surface-backed
+playback never sees this. A bufferpool-backed one does not: the id is
+BufferPoolData::mId, minted per allocation, so as soon as the whitelist is
+full every freshly allocated buffer is unknown and is dropped forever.
+
+Measured on a no-surface (ByteBuffer) MediaCodec consumer: output stopped dead
+at exactly mMaxBufferCount frames -- 25 for h264 and hevc, 17 for vp9, each
+equal to DecodeInterface::getOutputDelay(codec) + 9 -- with the input pool
+fully held and no diagnostic of any kind. Both c2-va decode paths were
+affected; c2.android.avc.decoder on the identical harness ran to completion,
+which is what localised it here rather than in the component.
+
+Take a surplus buffer after kMaxDropRetries rather than retrying forever, and
+LATCH that discovery. The latch is not an optimisation, it is the difference
+between a fix and a regression: bounding alone left every subsequent frame
+re-paying 16 backoff retries capped at 16ms, which fired 31 times in a
+60-frame decode and made hardware decode 8x SLOWER than the software codec
+(8.4s vs 1.0s for 60 frames). Once the pool has been observed minting an
+unrecognised id the whitelist can never match again, so keeping it costs delay
+and buys nothing. With the latch the penalty is paid once per pool: the same
+clip decodes in ~1.28s, 60/60 frames byte-identical to a software reference,
+and the accept path fires exactly once.
+
+A BUFFERQUEUE pool never reaches the bound, so surface playback keeps the
+original behaviour untouched.
+
+bd remora-e5x.38
+---
+diff --git a/components/VideoFramePool.cpp b/components/VideoFramePool.cpp
+index fe616cb..39bf320 100644
+--- a/components/VideoFramePool.cpp
++++ b/components/VideoFramePool.cpp
+@@ -158,6 +158,12 @@ void VideoFramePool::destroyTask() {
+ }
+ 
+ bool VideoFramePool::shouldDropBuffer(uint32_t bufferId) {
++    // Whitelisting only makes sense against a pool that recycles a fixed set of ids. Once we have
++    // proof this one does not, every further drop is delay that ends in accepting the buffer
++    // anyway.
++    if (mIdsAreNotRecycled) {
++        return false;
++    }
+     if (mBuffers.size() < mMaxBufferCount) {
+         return false;
+     }
+@@ -202,6 +208,9 @@ void VideoFramePool::getVideoFrameTask() {
+     constexpr size_t kFetchRetryDelayInit = 256;   // Initial delay: 256us
+     constexpr size_t kFetchRetryDelayMax = 16384;  // Max delay: 16ms (1 frame at 60fps)
+     constexpr size_t kFenceWaitTimeoutNs = 16000000;  // 16ms (1 frame at 60fps)
++    // How many surplus-buffer drops to tolerate before taking one anyway. Reached only when the
++    // block pool keeps minting unrecognised ids; a BUFFERQUEUE pool never gets here.
++    constexpr size_t kMaxDropRetries = 16;
+     static size_t sNumRetries = 0;
+     static size_t sDelay = kFetchRetryDelayInit;
+ 
+@@ -245,12 +254,32 @@ void VideoFramePool::getVideoFrameTask() {
+         if (bufferId) {
+             ALOGV("%s(): Got buffer with id = %u", __func__, *bufferId);
+ 
+-            if (shouldDropBuffer(*bufferId)) {
++            if (shouldDropBuffer(*bufferId) && sNumRetries < kMaxDropRetries) {
+                 // We drop buffer, since we got more then needed.
+                 ALOGV("%s(): Dropping allocated buffer with id = %u", __func__, *bufferId);
+                 bufferId = std::nullopt;
+                 block.reset();
+                 err = C2_TIMED_OUT;
++            } else if (!mIdsAreNotRecycled && shouldDropBuffer(*bufferId)) {
++                // BOUNDED, and it must be (bd remora-e5x.38). mBuffers is insert-only and capped at
++                // mMaxBufferCount, so it is a LIFETIME whitelist of buffer ids, not a concurrency
++                // limit. That holds for a BUFFERQUEUE pool, which recycles a fixed set of slots
++                // whose ids never change. It does NOT hold for a bufferpool-backed one — the id is
++                // BufferPoolData::mId, minted per allocation — so once the whitelist is full every
++                // newly allocated buffer is unknown, gets dropped here, and the retry below reposts
++                // forever: no callback, no error, no bound. The decoder simply stops, at exactly
++                // mMaxBufferCount frames (measured: 25 for h264/hevc, 17 for vp9, each equal to
++                // getOutputDelay + 9). Accepting a surplus buffer costs one extra allocation and
++                // guarantees forward progress; hanging costs the stream.
++                // Latch, so this is paid ONCE per pool rather than per frame. Measured before
++                // latching: the accept path fired 31 times in a 60-frame decode, each after 16
++                // backoff retries, and hardware decode ran 8x SLOWER than the software codec
++                // (8.4s vs 1.0s for 60 frames). Correct but useless is not a fix.
++                mIdsAreNotRecycled = true;
++                ALOGW("%s(): accepting unlisted buffer id = %u after %zu drops; the block pool is "
++                      "minting new ids rather than recycling a fixed set — disabling the whitelist "
++                      "for this pool",
++                      __func__, *bufferId, sNumRetries);
+             }
+         }
+     }
+diff --git a/components/include/v4l2_codec2/components/VideoFramePool.h b/components/include/v4l2_codec2/components/VideoFramePool.h
+index 6bebc37..e830868 100644
+--- a/components/include/v4l2_codec2/components/VideoFramePool.h
++++ b/components/include/v4l2_codec2/components/VideoFramePool.h
+@@ -73,6 +73,11 @@ private:
+     size_t mMaxBufferCount;
+     // Contains known buffer ids that are valid for the pool.
+     std::set<uint32_t> mBuffers;
++    // Latched once the block pool has been observed minting a buffer id that is not in mBuffers
++    // after the whitelist is full. That means the ids are per-allocation rather than a recycled
++    // fixed set, so the whitelist can never match again and dropping is pure delay — ~200ms of
++    // backoff per frame, measured, on more than half the frames of a 60-frame clip.
++    bool mIdsAreNotRecycled = false;
+ 
+     const ui::Size mSize;
+     const HalPixelFormat mPixelFormat;

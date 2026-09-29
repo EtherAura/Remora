@@ -1,0 +1,13 @@
+v4l2_av1_enum — VideoCodec::AV1 in the shared codec enum (bd remora-e5x.22, bd remora-22n).
+
+One patch, its own entry, deliberately SEPARATE from the external-v4l2_codec2 series it was
+written into: that series is subsumed upstream on A17 (its -a17 dir is a SKIP) while this enum
+member is needed on EVERY release — the unconditionally staged hardware/remora/c2-va references
+VideoCodec::AV1, so a build without it dies at VaapiVideoDecoder.cpp:231. Sharing the series
+meant sharing its version scoping, which broke twice (see external-v4l2_codec2-a17/README).
+
+The file keeps its historical 0005- name; the apply loop's idempotency slug strips the number,
+so the rename would buy nothing and the name preserves where it came from.
+
+Existing profiles that pinned v4l2_encoder keep this capability via canonicalPatchKeys(), which
+expands the old key to include v4l2_av1_enum on every load.

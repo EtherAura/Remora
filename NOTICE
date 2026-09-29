@@ -1,0 +1,98 @@
+Remora
+Copyright (C) the Remora authors
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License, version 3, as published by the Free Software Foundation. See LICENSE
+for the full text and for the warranty disclaimer.
+
+This NOTICE records the third-party work Remora builds on. It is required reading before
+redistributing Remora or anything it builds; the reasoning behind it is in
+docs/adr/0001-own-the-stack.md, and the per-payload detail is in vendor/PAYLOADS.md.
+
+
+== What this distribution contains ==
+
+Remora's own source: the CLI and Qt workspace (src/), the mirror client (src/mirror/), the
+in-image capture/input agent (agent/), the build orchestration and its patch series
+(vendor/source-build/, vendor/source-patches/), and the documentation.
+
+It contains NO third-party binaries. Every prebuilt payload a feature may stage into an Android
+image — Google Apps, the ARM native-bridge libraries, Widevine, Magisk, the Play-integrity stack —
+is deliberately absent, because those are not ours to redistribute. vendor/PAYLOADS.md says what
+each one is and how to obtain it; a build refuses rather than silently omitting a feature whose
+payload is missing. Third-party text that comes with a payload and grants no redistribution (the
+Shamiko module, the Widevine and native-bridge configuration, the GApps permission files) is
+absent for the same reason.
+
+
+== Third-party source included ==
+
+A few openly licensed files travel with the payload wiring, unmodified unless stated:
+
+Magisk — John Wu (topjohnwu) and contributors. GPL v3.
+    https://github.com/topjohnwu/Magisk  ·  vendor/source-build/features/magisk/magisk/
+    util_functions.sh and boot_patch.sh, from the v30.7 release.
+
+Zygisk module API header — John Wu (topjohnwu). ISC-style permissive licence (in its banner).
+    vendor/source-build/features/nb_sigfix/src/zygisk.hpp
+
+ReZygisk — PerformanC. GPL v3.
+    https://github.com/PerformanC/ReZygisk  ·  vendor/source-build/features/zygisk_pif/rez-mod/
+    The module scripts; Remora's one source change is published as a patch under
+    vendor/source-build/features/zygisk_pif/upstream/.
+
+PlayIntegrityFork — osm0sis and contributors. GPL v3.
+    https://github.com/osm0sis/PlayIntegrityFork  ·  vendor/source-build/features/zygisk_pif/pifork/
+    The module scripts of v17.
+
+
+== Linked libraries (runtime dependencies, not distributed here) ==
+
+Qt 6 — The Qt Company and contributors. LGPL v3 / GPL v3.
+    https://www.qt.io/  ·  Remora links Qt dynamically.
+
+FFmpeg (libavcodec, libavformat, libavutil, libswscale, libswresample) — the FFmpeg developers.
+    LGPL v2.1 or later; a build configured with GPL components is GPL v2 or later.
+    https://ffmpeg.org/  ·  Used by the mirror client to decode and record the device stream.
+
+
+== Android platform work ==
+
+Android Open Source Project — Google LLC and contributors. Apache License 2.0.
+    https://source.android.com/
+    Remora builds Android images from AOSP sources. The images are AOSP's work; Remora's patch
+    series (vendor/source-patches/) modifies it and is distributed under this project's licence.
+
+LineageOS — the LineageOS project and contributors. Apache License 2.0.
+    https://lineageos.org/
+    The image family Remora builds by default derives from LineageOS.
+
+Linux kernel — no entry needed. A Remora image carries no kernel: the container runs on the
+    host's, and a built image contains no kernel image and no kernel modules. There is therefore
+    no GPL v2 kernel source to offer with one (docs/adr/0001-own-the-stack.md).
+
+redroid — its authors. Apache License 2.0.  https://github.com/remote-android/redroid-doc
+    Remora's device tree and container-compatibility patches began as this project's work.
+
+scrcpy — Genymobile and Romain Vimont. Apache License 2.0.
+    https://github.com/Genymobile/scrcpy
+    Remora no longer ships any scrcpy code. Its mirror protocol reuses scrcpy 4.0's control
+    message, device message and stream framing BYTE LAYOUTS, which are specified in
+    docs/MIRROR_PROTOCOL.md; that reuse is the reason this entry remains.
+
+
+== Redistribution of built images ==
+
+An Android image built with Remora is not automatically redistributable. Whether it can be shared
+depends entirely on which features were enabled:
+
+  - Google Apps and Widevine are proprietary, and no licence grants their redistribution.
+  - The ARM native-bridge libraries are proprietary, likewise.
+  - Magisk is GPL v3; redistributing an image containing it carries a source-availability
+    obligation, met by offering the matching release (github.com/topjohnwu/Magisk, tag v30.7).
+  - The Play-integrity / root-hiding components are mixed: ReZygisk and PlayIntegrityFork are
+    GPL v3, Shamiko is closed-source with no licence at all. Audit each component before sharing
+    an image that includes them.
+
+docs/IMAGE_MIRROR.md records, tag by tag, which of these a Remora-built image carries and the
+source offers that must accompany it.

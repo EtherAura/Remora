@@ -1,0 +1,182 @@
+From 7aa8f1ce5b88b404e438ca3483a017db1178d5b3 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 17 Jul 2026 16:22:09 -0400
+Subject: [PATCH] EncodeComponent: max-fps frame dropping at the input queue
+ (bd remora-rjh)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Nothing drops frames on this stack: the SDK's KEY_MAX_FPS_TO_ENCODER only
+configures the framework's InputSurface (CCodec mSource->setMaxFps), which
+the c2-va path doesn't service — so any SF render rate above the
+encoder drain rate backs up the mirror BufferQueue and the backpressure
+stalls SurfaceFlinger globally.
+
+The cap arrives two ways: the vendor tuning "vendor.remora-max-fps.value"
+(C2Int32Value-based C2StreamRemoraMaxFpsTuning, set per-session by the
+scrcpy fork alongside the stock key) or the vendor.remora.encoder_max_fps
+property (ops fallback, read at component construction). queueTask drops a
+frame by completing its work immediately with no output — the empty-CSD
+discard contract — when the input-timestamp gap is under 0.95/maxFps (5%
+vsync slack). Never dropped: first frame (CSD/IDR), EOS, non-monotonic
+timestamps, pending sync-frame requests. Flush resets the cadence.
+
+Validated on-device (container on the xe VF): cap 5 -> 59 frames at uniform
+~200ms pts gaps under motion that uncapped shows 16ms bursts for;
+property-only run identical (pure component attribution); cap off ->
+bursts flow untouched.
+
+Change-Id: If7f87650ef02cba710a9af0e07389c98a1fdf579
+---
+ components/EncodeComponent.cpp                | 35 +++++++++++++++++++
+ components/EncodeInterface.cpp                | 10 ++++++
+ .../v4l2_codec2/components/EncodeComponent.h  |  4 +++
+ .../v4l2_codec2/components/EncodeInterface.h  | 14 ++++++++
+ 4 files changed, 63 insertions(+)
+
+diff --git a/components/EncodeComponent.cpp b/components/EncodeComponent.cpp
+index c161a24..e1562c9 100644
+--- a/components/EncodeComponent.cpp
++++ b/components/EncodeComponent.cpp
+@@ -19,6 +19,7 @@
+ #include <android/hardware/graphics/common/1.0/types.h>
+ #include <base/bind.h>
+ #include <base/bind_helpers.h>
++#include <cutils/properties.h>
+ #include <log/log.h>
+ #include <media/stagefright/MediaDefs.h>
+ #include <ui/GraphicBuffer.h>
+@@ -185,6 +186,8 @@ EncodeComponent::EncodeComponent(C2String name, c2_node_id_t id,
+         mInterface(std::move(interface)),
+         mComponentState(ComponentState::LOADED) {
+     ALOGV("%s(%s)", __func__, name.c_str());
++    // Ops-side fallback for the max-fps cap when the client doesn't set the vendor param.
++    mPropMaxFps = property_get_int32("vendor.remora.encoder_max_fps", 0);
+ }
+ 
+ EncodeComponent::~EncodeComponent() {
+@@ -453,6 +456,35 @@ void EncodeComponent::queueTask(std::unique_ptr<C2Work> work) {
+         return;
+     }
+ 
++    // Component-side max-fps frame dropping (bd remora-rjh). Nothing else drops on this stack:
++    // the SDK's KEY_MAX_FPS_TO_ENCODER only configures the framework's InputSurface, so any SF
++    // render rate above the encoder drain rate backs the mirror BufferQueue up and the
++    // backpressure stalls SurfaceFlinger globally. The cap arrives via the vendor tuning
++    // ("vendor.remora-max-fps.value", per session) or the vendor.remora.encoder_max_fps
++    // property (ops fallback). A dropped work completes immediately with no output — the same
++    // contract as the empty-CSD discard above. Never dropped: the first frame (carries
++    // CSD/IDR), EOS, non-monotonic timestamps, and frames with a sync-frame request pending
++    // (the request is only consumed on the encode path).
++    if (!work->input.buffers.empty() && !endOfStream && mDropLastTsUs &&
++        timestamp > *mDropLastTsUs) {
++        int32_t maxFps = mInterface->getRemoraMaxFps();
++        if (maxFps <= 0) maxFps = mPropMaxFps;
++        if (maxFps > 0 && (timestamp - *mDropLastTsUs) <
++                                  static_cast<int64_t>(950000) / maxFps /* 5% vsync slack */) {
++            C2StreamRequestSyncFrameTuning::output requestKeyFrame;
++            const bool syncPending =
++                    (mInterface->query({&requestKeyFrame}, {}, C2_DONT_BLOCK, nullptr) == C2_OK) &&
++                    requestKeyFrame.value == C2_TRUE;
++            if (!syncPending) {
++                ALOGV("Dropping frame ts=%" PRId64 " (max-fps %d, gap %" PRId64 "us)", timestamp,
++                      maxFps, timestamp - *mDropLastTsUs);
++                reportWork(std::move(work));
++                return;
++            }
++        }
++    }
++    mDropLastTsUs = timestamp;
++
+     // By the time we get an input buffer, the output block pool should be configured.
+     if (!mOutputBlockPool && !getBlockPool()) {
+         reportError(C2_CORRUPTED);
+@@ -623,6 +655,9 @@ void EncodeComponent::flushTask(::base::WaitableEvent* done,
+     }
+     done->Signal();
+ 
++    // Post-flush the next frame must always encode (fresh IDR/CSD), so forget the drop cadence.
++    mDropLastTsUs.reset();
++
+     flush();
+ }
+ 
+diff --git a/components/EncodeInterface.cpp b/components/EncodeInterface.cpp
+index 9924150..4626883 100644
+--- a/components/EncodeInterface.cpp
++++ b/components/EncodeInterface.cpp
+@@ -267,6 +267,16 @@ void EncodeInterface::Initialize(const C2String& name, const SupportedCapabiliti
+                          .withSetter(Setter<decltype(*mBitrate)>::StrictValueWithNoDeps)
+                          .build());
+ 
++    // Vendor encode-fps cap (bd remora-rjh): reachable from MediaFormat as
++    // "vendor.remora-max-fps.value". EncodeComponent drops frames at the queue to honor it —
++    // the SDK's KEY_MAX_FPS_TO_ENCODER never reaches a C2 component (CCodec routes it to the
++    // InputSurface, which this stack doesn't service).
++    addParameter(DefineParam(mRemoraMaxFps, C2_PARAMKEY_REMORA_MAX_FPS)
++                         .withDefault(new C2StreamRemoraMaxFpsTuning::input(0u, 0))
++                         .withFields({C2F(mRemoraMaxFps, value).inRange(0, 1000)})
++                         .withSetter(Setter<decltype(*mRemoraMaxFps)>::StrictValueWithNoDeps)
++                         .build());
++
+     addParameter(
+             DefineParam(mBitrateMode, C2_PARAMKEY_BITRATE_MODE)
+                     .withDefault(new C2StreamBitrateModeTuning::output(0u, C2Config::BITRATE_CONST))
+diff --git a/components/include/v4l2_codec2/components/EncodeComponent.h b/components/include/v4l2_codec2/components/EncodeComponent.h
+index 2d40dff..a99e4e4 100644
+--- a/components/include/v4l2_codec2/components/EncodeComponent.h
++++ b/components/include/v4l2_codec2/components/EncodeComponent.h
+@@ -169,6 +169,10 @@ protected:
+     uint32_t mMaxFramerate = std::numeric_limits<uint32_t>::max();
+     // The timestamp of the last frame encoded, used to dynamically adjust the framerate.
+     std::optional<int64_t> mLastFrameTime;
++    // Max-fps frame dropping (bd remora-rjh): timestamp of the last frame actually handed to
++    // the encoder, and the boot-time property fallback for the cap (vendor param wins).
++    std::optional<int64_t> mDropLastTsUs;
++    int32_t mPropMaxFps = 0;
+ 
+     // Whether we need to extract and submit CSD (codec-specific data, e.g. H.264 SPS).
+     bool mExtractCSD = false;
+diff --git a/components/include/v4l2_codec2/components/EncodeInterface.h b/components/include/v4l2_codec2/components/EncodeInterface.h
+index 796bd3c..04637ca 100644
+--- a/components/include/v4l2_codec2/components/EncodeInterface.h
++++ b/components/include/v4l2_codec2/components/EncodeInterface.h
+@@ -21,6 +21,16 @@ namespace media {
+ class V4L2Device;
+ };
+ 
++// Vendor tuning: encoder-side max-fps cap (bd remora-rjh). The SDK's KEY_MAX_FPS_TO_ENCODER
++// only ever configures the framework's InputSurface — no standard C2 param delivers it to a
++// component — so clients (the scrcpy fork) set the SDK-visible "vendor.remora-max-fps.value"
++// instead and EncodeComponent drops frames at its input queue. 0 disables the cap.
++// C2Int32Value (not a custom struct): its templated FieldList() lives in the header, so no
++// __C2_GENERATE_GLOBAL_VARS__ translation unit is needed.
++constexpr uint32_t kParamIndexRemoraMaxFps = C2Param::TYPE_INDEX_VENDOR_START + 0xF5;
++typedef C2StreamParam<C2Tuning, C2Int32Value, kParamIndexRemoraMaxFps> C2StreamRemoraMaxFpsTuning;
++constexpr char C2_PARAMKEY_REMORA_MAX_FPS[] = "remora-max-fps";
++
+ namespace android {
+ 
+ // Codec 2.0 interface describing the V4L2EncodeComponent. This interface is used by the codec 2.0
+@@ -50,6 +60,8 @@ public:
+     uint32_t getBitrate() const { return mBitrate->value; }
+     // Get the requested framerate.
+     float getFramerate() const { return mFrameRate->value; }
++    // Get the vendor max-fps encode cap (0 = uncapped).
++    int32_t getRemoraMaxFps() const { return mRemoraMaxFps->value; }
+ 
+     // Request changing the framerate to the specified value.
+     void setFramerate(uint32_t framerate) { mFrameRate->value = framerate; }
+@@ -119,6 +131,8 @@ protected:
+     std::shared_ptr<C2StreamBitrateModeTuning::output> mBitrateMode;
+     // The requested framerate, in frames per second.
+     std::shared_ptr<C2StreamFrameRateInfo::output> mFrameRate;
++    // Vendor max-fps encode cap; consumed by EncodeComponent's queue-side frame dropping.
++    std::shared_ptr<C2StreamRemoraMaxFpsTuning::input> mRemoraMaxFps;
+     // The switch-type parameter that will be set to true while client requests keyframe. It
+     // will be reset once encoder gets the request.
+     std::shared_ptr<C2StreamRequestSyncFrameTuning::output> mRequestKeyFrame;
+-- 
+2.54.0
+

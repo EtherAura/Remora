@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Copyright 2020 The Chromium Authors. All rights reserved.
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file.
+
+     Conservative measured-frame-rate limits for the VAAPI decode HAL. These are
+     deliberately modest (hardware VLD on the Intel xe VF comfortably clears
+     1080p60) and exist mainly so MediaCodecList advertises the component as
+     capable of real-time 1080p playback. Only the AVC decoder is populated;
+     the others are decode-TODO and shipped enabled="false" in
+     media_codecs_c2_va.xml.
+-->
+<MediaCodecs>
+    <Decoders>
+        <MediaCodec name="c2.remora.vaapi.avc.decoder" type="video/avc" update="true">
+            <Limit name="measured-frame-rate-320x240" range="240-360" />
+            <Limit name="measured-frame-rate-720x480" range="180-240" />
+            <Limit name="measured-frame-rate-1280x720" range="120-180" />
+            <Limit name="measured-frame-rate-1920x1080" range="60-90" />
+        </MediaCodec>
+        <!-- Pre-migration alias (bd remora-28ix.4) — same measurements, same code. -->
+    </Decoders>
+</MediaCodecs>

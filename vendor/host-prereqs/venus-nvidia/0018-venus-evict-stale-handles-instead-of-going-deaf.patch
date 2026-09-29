@@ -1,0 +1,133 @@
+From: Remora <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 11:20:00 -0400
+Subject: [PATCH] venus: evict stale handles instead of going deaf when the maps fill
+
+The res_id resolve chain (cmd -> view -> image -> memory -> res_id) is
+carried by seven fixed 512-entry open-addressed maps that nothing ever
+removes from — there are no destroy hooks. Sizing was reasoned from the
+compositor's LIVE set (~60 buffers), but the tables accumulate CHURN:
+every image, view, framebuffer and allocation the guest has ever made.
+Measured on one 13-hour SurfaceFlinger session: view=3711, img=787,
+mem=786 against 512 slots.
+
+Once full, map_put dropped the write. Newly created objects were never
+recorded, their submits never resolved, and the publisher stopped
+handing frames to the host encoder — which fell back to its keepalive.
+The mirror kept a plausible frame rate and juddered, because handle
+REUSE meant some chains still resolved and others did not. It presented
+as a display-swap bug because a swap is a burst of churn, which is
+merely what pushed the tables over.
+
+Grow them, and evict rather than go deaf. Each entry records when it was
+last used and a full insert takes the least recently used slot in its
+probe window; map_get touches on READ, which is what keeps the live set
+unevictable — the compositor's buffers are looked up every frame, dead
+handles never again. Overwriting an occupied slot cannot break another
+key's probe chain, since the slot stays occupied and no lookup
+terminates early.
+
+Going deaf is permanent for the process and silent; a wrong eviction
+costs at most the frames of one handle until it is re-put.
+---
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -20,18 +20,45 @@
+ 
+ /* Open-addressed handle->value maps. Vulkan handles are pointers or uint64 on
+  * this platform, so the low bits are poor hash input for pointer-like values;
+- * mix before masking. Sizes are powers of two and deliberately generous
+- * relative to what a compositor keeps live (SurfaceFlinger holds ~60 buffers),
+- * because eviction here would silently break the chain rather than merely lose
+- * a frame. */
+-#define MAP_SIZE 512u
++ * mix before masking.
++ *
++ * SIZING IS ABOUT CHURN, NOT ABOUT THE LIVE SET, and that is what the original
++ * 512 got wrong. A compositor keeps ~60 buffers live, but nothing here is ever
++ * REMOVED — there are no destroy hooks — so every image, view, framebuffer and
++ * allocation the guest has ever made accumulates. Measured on a 13-hour
++ * SurfaceFlinger session: view=3711, img=787, mem=786 against 512 slots.
++ *
++ * Once full, the old map_put DROPPED the write. Newly created objects were
++ * therefore never recorded, their submits never resolved, and the publisher
++ * stopped delivering frames to the host encoder — which showed up as a mirror
++ * that kept its frame rate but juddered, because handle REUSE meant some chains
++ * still resolved and others did not. It read as a display-swap bug because a
++ * swap is a big burst of churn, which is simply what pushed the tables over
++ * (bd remora-d3t).
++ *
++ * So: bigger, and evicting rather than deaf. An entry carries when it was last
++ * used, and a full insert takes the least recently used slot in its probe
++ * window. Dead handles are never touched again, so they are exactly what that
++ * picks — while the compositor's live set, touched every frame, is never the
++ * victim. Overwriting an occupied slot cannot break another key's probe chain:
++ * the slot stays occupied, so no lookup terminates early. */
++#define MAP_SIZE 4096u
+ #define MAP_MASK (MAP_SIZE - 1u)
++/* How far along the probe chain to consider for eviction. The whole table would
++ * be a 4096-slot scan on every insert once full; a short window finds a stale
++ * entry with overwhelming probability and stays O(1). */
++#define MAP_EVICT_WINDOW 16u
+ 
+ struct map_entry {
+    uint64_t key;
+    uint64_t val;
++   uint64_t used; /* map_clock at last put or get — the eviction key */
+ };
+ 
++/* Monotonic, and shared by every map: only the ORDER matters, and one counter
++ * cannot disagree with itself the way per-map counters could. */
++static uint64_t map_clock;
++
+ struct handle_map {
+    struct map_entry e[MAP_SIZE];
+ };
+@@ -202,28 +229,45 @@
+    if (!key)
+       return;
+    uint64_t i = mix(key) & MAP_MASK;
++   struct map_entry *victim = NULL;
+    for (unsigned probe = 0; probe < MAP_SIZE; probe++) {
+       struct map_entry *e = &m->e[(i + probe) & MAP_MASK];
+       if (!e->key || e->key == key) {
+          e->key = key;
+          e->val = val;
++         e->used = ++map_clock;
+          return;
+       }
++      if (probe < MAP_EVICT_WINDOW && (!victim || e->used < victim->used))
++         victim = e;
++   }
++   /* Full. Take the stalest slot in the window rather than dropping the write:
++    * going deaf is permanent for this process and silent, whereas a wrong
++    * eviction costs at most the frames of one handle until it is re-put. */
++   if (victim) {
++      victim->key = key;
++      victim->val = val;
++      victim->used = ++map_clock;
+    }
+ }
+ 
+ static uint64_t
+-map_get(const struct handle_map *m, uint64_t key)
++map_get(struct handle_map *m, uint64_t key)
+ {
+    if (!key)
+       return 0;
+    uint64_t i = mix(key) & MAP_MASK;
+    for (unsigned probe = 0; probe < MAP_SIZE; probe++) {
+-      const struct map_entry *e = &m->e[(i + probe) & MAP_MASK];
++      struct map_entry *e = &m->e[(i + probe) & MAP_MASK];
+       if (!e->key)
+          return 0;
+-      if (e->key == key)
++      if (e->key == key) {
++         /* Touch on READ, which is what makes the live set unevictable: the
++          * compositor's buffers are looked up every frame, dead handles never
++          * again. Without this the eviction would be arbitrary. */
++         e->used = ++map_clock;
+          return e->val;
++      }
+    }
+    return 0;
+ }

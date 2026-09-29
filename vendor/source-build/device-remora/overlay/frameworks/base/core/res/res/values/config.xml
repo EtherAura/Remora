@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Framework resource overlay for remora_x86_64 (bd remora-28ix.4 R1): what a
+     containerized, mirrored Android should assume about its "hardware". -->
+<resources>
+
+    <!-- No physical navigation keys exist; the software bar is the only navigation. -->
+    <bool name="config_showNavigationBar">true</bool>
+
+    <!-- A mirrored container has no pocket to lock against; the host session is the
+         security boundary. -->
+    <bool name="config_disableLockscreenByDefault">true</bool>
+
+    <!-- Launchers behind the mirror expect widgets regardless of the feature set the
+         container advertises. -->
+    <bool name="config_enableAppWidgetService">true</bool>
+
+</resources>

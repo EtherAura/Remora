@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A17: LineageOS-24 manifest projects that have no lineage-24.0 branch upstream
+     (leaf apps/tools/device HALs) so they never sync. this product needs none of them.
+     Removed so "repo manifest -r" (build-manifest.xml generation) does not rev-parse a
+     nonexistent checkout and abort. -->
+<manifest>
+  <remove-project name="LineageOS/android_external_bash" />
+  <remove-project name="LineageOS/android_external_exfatprogs" />
+  <remove-project name="LineageOS/android_external_htop" />
+  <remove-project name="LineageOS/android_external_libncurses" />
+  <remove-project name="LineageOS/android_external_nano" />
+  <remove-project name="LineageOS/android_external_ntfs-3g" />
+  <remove-project name="LineageOS/android_external_openssh" />
+  <remove-project name="LineageOS/android_external_rsync" />
+  <remove-project name="LineageOS/android_external_unrar" />
+  <remove-project name="LineageOS/android_external_vim" />
+  <remove-project name="LineageOS/android_hardware_knowles_athletico_sound_trigger_hal" />
+  <remove-project name="LineageOS/android_hardware_qcom_sm7250_display" />
+  <remove-project name="LineageOS/android_hardware_qcom_sm7250_gps" />
+  <remove-project name="LineageOS/android_hardware_qcom_sm8150_gps" />
+  <remove-project name="LineageOS/android_packages_apps_AudioFX" />
+  <remove-project name="LineageOS/android_packages_apps_Camelot" />
+  <remove-project name="LineageOS/android_packages_apps_Catapult" />
+  <remove-project name="LineageOS/android_packages_apps_EuiccPolicy" />
+  <remove-project name="LineageOS/android_packages_apps_FMRadio" />
+  <remove-project name="LineageOS/android_packages_apps_FlipFlap" />
+  <remove-project name="LineageOS/android_packages_apps_LineageCustomizer" />
+  <remove-project name="LineageOS/android_packages_apps_SimpleDeviceConfig" />
+  <remove-project name="LineageOS/android_packages_apps_SimpleSettingsConfig" />
+  <remove-project name="LineageOS/android_packages_apps_Updater" />
+  <remove-project name="LineageOS/android_packages_overlays_Lineage" />
+  <remove-project name="LineageOS/android_packages_resources_devicesettings" />
+  <remove-project name="LineageOS/android_vendor_crowdin" />
+</manifest>

@@ -1,0 +1,123 @@
+#!/bin/sh
+# remora-macvlan-shim — let a docker host reach its own macvlan containers.
+#
+# THE PROBLEM
+#   A macvlan sub-interface and its parent NIC are deliberately isolated from each other by the
+#   kernel: frames from the parent are not delivered to its macvlan children and vice versa. Every
+#   OTHER machine on the LAN reaches the container fine — only the host running it cannot. On
+#   `remote` that is harmless (Remora talks to the docker host's container across the real LAN),
+#   but on `bare` the docker host is also where adb and the mirror run, so the mirror can never
+#   connect.
+#
+# THE FIX
+#   Give the HOST a macvlan child of its own on the same parent, and route the container address
+#   range through it. Two macvlan children of the same parent CAN talk to each other; only the
+#   parent itself is fenced off. This costs one extra interface and no bridging.
+#
+# USAGE
+#   remora-macvlan-shim install <parent-nic> <cidr> [<cidr>...]
+#   remora-macvlan-shim remove  [shim-name]
+#   remora-macvlan-shim status
+#
+#   Each <cidr> is a block of container addresses to route through the shim. Pass the macvlan
+#   network's --ip-range (the auto-IP pool Remora reports, e.g. 192.168.0.240/28) plus a /32 for
+#   every address you have pinned OUTSIDE that pool — a pinned macvlan_ip is validated against the
+#   subnet, not the range, so it does not have to live in it. Remora prints the whole command,
+#   filled in, when a connect fails this way. Passing the entire subnet also works, and routes
+#   every container address, as long as the host has no other reason to reach it via the parent.
+#
+#   The shim's own address defaults to the one BELOW the first <cidr>'s base (192.168.0.239 for a
+#   first block of 192.168.0.240/28); override with REMORA_SHIM_IP. It must be free on the LAN and
+#   outside the DHCP pool: it is a real address on a real segment.
+#
+# DO YOU NEED THIS? ALMOST CERTAINLY NOT.
+#   REMORA OWNS THE SHIM. Every connect to a macvlan profile on `bare` reconciles it: wrong parent
+#   or wrong mode and the interface is rebuilt, the address and wanted routes are re-asserted, and
+#   routes that are no longer wanted are withdrawn. No sudo is involved — the commands run in a
+#   privileged container sharing the host's network namespace, which needs only the docker-group
+#   membership `bare` already requires. Nothing persistent is installed; the shim is simply
+#   re-made whenever it is needed.
+#
+#   This script exists for the case where macvlan_host_route=false has turned that off and you are
+#   managing host routing yourself, and as a way to inspect or tear down what Remora built. It
+#   deliberately installs NO systemd unit: two things owning one interface is how an interface ends
+#   up in a state neither of them expects.
+#
+# MODE BRIDGE IS LOAD-BEARING
+#   `mode bridge` is what lets two macvlan children of one parent talk to each other. In the
+#   default VEPA mode they cannot: frames are expected to come back from an 802.1Qbg-capable
+#   switch, which no ordinary network has. A VEPA shim comes up, takes its address, accepts its
+#   routes, looks entirely correct under `ip link` — and reaches nothing. Only `ip -d link` shows
+#   the difference. Use real iproute2; busybox's `ip` accepts the argument and ignores it.
+#
+# PERSISTENCE
+#   None, by design. Interfaces do not survive a reboot, and neither does this one — Remora rebuilds
+#   it on the next connect. If you genuinely want it at boot independently of Remora, wrap this in
+#   your own unit AND set macvlan_host_route=false, so only one thing is managing the interface.
+#
+# Needs root (ip link / ip route).
+set -eu
+
+SHIM=${REMORA_SHIM_NAME:-remora-shim0}
+
+die() { echo "remora-macvlan-shim: $*" >&2; exit 1; }
+
+# "192.168.0.240/28" -> the address one below the range base ("192.168.0.239"). Deliberately naive:
+# it only has to handle a range that does not start at .0 of its own octet, which every usable
+# container pool does.
+default_shim_ip() {
+    base=${1%%/*}
+    last=${base##*.}
+    [ "$last" -gt 0 ] 2>/dev/null || die "cannot derive a shim address from $1 — pass one explicitly"
+    echo "${base%.*}.$((last - 1))"
+}
+
+cmd_install() {
+    [ $# -ge 2 ] || die "usage: $0 install <parent-nic> <cidr> [<cidr>...]"
+    parent=$1
+    shift
+    ranges=$*
+    shim_ip=${REMORA_SHIM_IP:-$(default_shim_ip "$1")}
+    [ "$(id -u)" = 0 ] || die "must run as root"
+    ip link show "$parent" >/dev/null 2>&1 || die "no such interface: $parent"
+
+    # Idempotent: a re-run after a parameter change must converge, not stack a second address.
+    ip link del "$SHIM" 2>/dev/null || true
+    ip link add "$SHIM" link "$parent" type macvlan mode bridge
+    # /32: the host already has a connected route for the LAN on the parent, and a second one here
+    # would make the whole subnet ambiguous. Only the named blocks go through the shim.
+    ip addr add "$shim_ip/32" dev "$SHIM"
+    ip link set "$SHIM" up
+    for r in $ranges; do
+        ip route replace "$r" dev "$SHIM" src "$shim_ip"
+    done
+    echo "shim $SHIM up: $shim_ip -> $ranges (parent $parent)"
+}
+
+cmd_remove() {
+    [ "$(id -u)" = 0 ] || die "must run as root"
+    name=${1:-$SHIM}
+    ip link del "$name" 2>/dev/null && echo "removed $name" || echo "$name was not present"
+    # Remora rebuilds it on the next connect unless macvlan_host_route=false. That is the point:
+    # removing the interface is a reset, not an opt-out.
+}
+
+# The mode is the FIRST thing to look at when a shim exists and still reaches nothing: only
+# `mode bridge` lets two macvlan children of one parent talk, and nothing else in the output
+# distinguishes a working shim from a useless one.
+cmd_status() {
+    if ip link show "$SHIM" >/dev/null 2>&1; then
+        ip -d link show "$SHIM" | grep -o 'macvlan mode [a-z]*'
+        ip -o addr show dev "$SHIM"
+        ip route show dev "$SHIM"
+    else
+        echo "$SHIM not present"
+    fi
+}
+
+case "${1:-}" in
+    install) shift; cmd_install "$@" ;;
+    remove)  shift; cmd_remove "$@" ;;
+    status)  cmd_status ;;
+    *) die "usage: $0 {install <parent> <cidr> [<cidr>...] | remove [name] | status}" ;;
+esac

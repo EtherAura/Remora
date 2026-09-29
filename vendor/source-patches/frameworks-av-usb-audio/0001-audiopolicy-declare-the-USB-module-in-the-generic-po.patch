@@ -1,0 +1,53 @@
+From d1ad2d1ce0d92f4848e1e20c752811cc479894c8 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Mon, 31 Aug 2026 15:40:10 -0400
+Subject: [PATCH] audiopolicy: declare the USB module in the generic policy
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+AudioPolicyManager opens exactly the modules the top-level
+audio_policy_configuration.xml includes, and AOSP's generic file lists only
+primary and r_submix. Installing audio.usb.default without this line therefore
+changes nothing observable: the HAL is present, never opened, and every capture
+keeps being served by the primary STUB, whose in_read() does memset(buffer, 0,
+bytes) after a usleep() that fakes a real device's pacing. An app recording the
+microphone gets a perfectly timed stream of zeros and no error anywhere.
+
+Patching the generic file rather than installing a replacement is deliberate and
+was arrived at the expensive way (bd remora-4ei.37). remora.mk registers the
+frameworks/av/services/audiopolicy/config soong namespace, and soong emits an
+install rule for every prebuilt_etc in a registered namespace REGARDLESS of
+PRODUCT_PACKAGES — proven on a2dp_audio_policy_configuration.xml, which has a
+rule while being in no PRODUCT_PACKAGES and required by nothing. So a
+PRODUCT_COPY_FILES onto /vendor/etc/audio_policy_configuration.xml is always a
+second rule for one target and kati refuses at parse time. This file is the
+module's own src (via the :audio_policy_configuration_generic filegroup), so
+editing it keeps exactly one rule and changes what it installs.
+
+Change-Id: Ied5b64dfaba81ef35135c6a27b78cacee72212df
+---
+ .../config/audio_policy_configuration_generic.xml          | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/services/audiopolicy/config/audio_policy_configuration_generic.xml b/services/audiopolicy/config/audio_policy_configuration_generic.xml
+index 9ad609df2b..297510b289 100644
+--- a/services/audiopolicy/config/audio_policy_configuration_generic.xml
++++ b/services/audiopolicy/config/audio_policy_configuration_generic.xml
+@@ -27,6 +27,13 @@
+         <!-- Remote Submix Audio HAL -->
+         <xi:include href="r_submix_audio_policy_configuration.xml"/>
+ 
++        <!-- USB Audio HAL. Remora (bd remora-4ei.37): AudioPolicyManager opens exactly the
++             modules this file includes, so without this line audio.usb.default is installed
++             and never opened, and every capture keeps coming from the primary STUB — whose
++             in_read() memsets the buffer to zero on a faked clock, i.e. an app records
++             perfectly timed silence and nothing reports an error. -->
++        <xi:include href="usb_audio_policy_configuration.xml"/>
++
+     </modules>
+     <!-- End of Modules section -->
+ 
+-- 
+2.54.0
+

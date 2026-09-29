@@ -1,0 +1,1185 @@
+From e7232d110398fe66c821f61524ec38612281ff56 Mon Sep 17 00:00:00 2001
+From: LineageOS Infra <infra@lineageos.org>
+Date: Sun, 1 Feb 2026 18:36:37 +0000
+Subject: [PATCH 82/98] Automatic translation import
+
+Change-Id: Ib8ce0dcd99b65c4513e6081fbf3c8ac3214e442e
+---
+ res/values-ar/cm_strings.xml      |  2 --
+ res/values-ast-rES/cm_strings.xml |  3 --
+ res/values-az/cm_strings.xml      |  3 --
+ res/values-be/cm_strings.xml      |  1 -
+ res/values-bg/cm_strings.xml      |  3 --
+ res/values-ca/cm_strings.xml      |  3 --
+ res/values-cs/cm_strings.xml      |  3 --
+ res/values-cy/cm_strings.xml      |  2 --
+ res/values-da/cm_strings.xml      |  2 --
+ res/values-de/cm_strings.xml      |  3 --
+ res/values-el/cm_strings.xml      |  3 --
+ res/values-en-rAU/cm_strings.xml  |  3 --
+ res/values-en-rCA/cm_strings.xml  |  3 --
+ res/values-en-rGB/cm_strings.xml  |  3 --
+ res/values-en-rIN/cm_strings.xml  |  3 --
+ res/values-es-rUS/cm_strings.xml  |  2 --
+ res/values-es/cm_strings.xml      |  3 --
+ res/values-et/cm_strings.xml      |  2 --
+ res/values-eu/cm_strings.xml      |  2 --
+ res/values-fa/cm_strings.xml      |  3 --
+ res/values-fi/cm_strings.xml      |  2 --
+ res/values-fr/cm_strings.xml      |  5 ++-
+ res/values-fur-rIT/cm_strings.xml |  3 --
+ res/values-fy-rNL/cm_strings.xml  |  2 --
+ res/values-ga-rIE/cm_strings.xml  |  3 --
+ res/values-gd/cm_strings.xml      |  2 --
+ res/values-gl/cm_strings.xml      |  2 --
+ res/values-hr/cm_strings.xml      |  2 --
+ res/values-hu/cm_strings.xml      |  3 --
+ res/values-in/cm_strings.xml      |  2 --
+ res/values-is/cm_strings.xml      |  3 --
+ res/values-it/cm_strings.xml      |  3 --
+ res/values-iw/cm_strings.xml      |  3 --
+ res/values-ja/cm_strings.xml      |  3 --
+ res/values-ka/cm_strings.xml      |  5 ++-
+ res/values-kn/cm_strings.xml      |  2 --
+ res/values-ko/cm_strings.xml      |  3 --
+ res/values-nl/cm_strings.xml      |  3 --
+ res/values-pl/cm_strings.xml      |  3 --
+ res/values-pt-rBR/cm_strings.xml  |  3 --
+ res/values-pt-rPT/cm_strings.xml  |  3 --
+ res/values-ro/cm_strings.xml      |  3 --
+ res/values-ru/cm_strings.xml      |  3 --
+ res/values-sc-rIT/cm_strings.xml  | 54 ++++++++++++++++++++++++++++++-
+ res/values-sk/cm_strings.xml      |  2 --
+ res/values-sl/cm_strings.xml      |  3 --
+ res/values-sq/cm_strings.xml      |  3 --
+ res/values-sr/cm_strings.xml      |  2 --
+ res/values-sv/cm_strings.xml      |  1 -
+ res/values-ta/cm_strings.xml      |  3 --
+ res/values-th/cm_strings.xml      |  2 --
+ res/values-tr/cm_strings.xml      |  5 ++-
+ res/values-ug/cm_strings.xml      |  3 --
+ res/values-uk/cm_strings.xml      |  1 -
+ res/values-vi/cm_strings.xml      |  3 --
+ res/values-zh-rCN/cm_strings.xml  |  3 --
+ res/values-zh-rTW/cm_strings.xml  |  3 --
+ 57 files changed, 59 insertions(+), 147 deletions(-)
+
+diff --git a/res/values-ar/cm_strings.xml b/res/values-ar/cm_strings.xml
+index 4397ce54635..f48654061bb 100644
+--- a/res/values-ar/cm_strings.xml
++++ b/res/values-ar/cm_strings.xml
+@@ -51,8 +51,6 @@
+     <string name="unlock_scramble_pin_layout_summary">تخطيط رقم PIN المرمز عند إلغاء تأمين الجهاز</string>
+     <string name="proximity_wake_title">منع الاستيقاظ العشوائي</string>
+     <string name="proximity_wake_summary">التحقق من مستشعر القرب قبل إيقاظ الشاشة</string>
+-    <string name="touchscreen_gesture_settings_title">الإيماءات اللمسية</string>
+-    <string name="touchscreen_gesture_settings_summary">عمل إيماءات لمسية متعددة لأعمال سريعة</string>
+     <string name="touchscreen_hovering_title">المرور فوق الشاشة اللمسية</string>
+     <string name="touchscreen_hovering_summary">يسمح لك بالمرور فوق الشاشة مثل الماوس في مستعرضات الويب، أو سطح المكتب عن بُعد، إلخ</string>
+     <string name="wake_when_plugged_or_unplugged_title">الإيقاظ عند التوصيل</string>
+diff --git a/res/values-ast-rES/cm_strings.xml b/res/values-ast-rES/cm_strings.xml
+index dc054f37a90..a9f90e6a319 100644
+--- a/res/values-ast-rES/cm_strings.xml
++++ b/res/values-ast-rES/cm_strings.xml
+@@ -59,7 +59,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Toca\'l sensor de la parte llateral de la tableta.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Toca\'l sensor de la parte llateral del preséu.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Toca\'l sensor de la parte llateral del teléfonu.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Toca\'l sensor pa desbloquiar, magar que la pantalla tea apagada. El sensor de proximidá impide\'l desbloquéu accidental.</string>
+     <string name="show_navbar_hint_title">Indicador de navegación</string>
+     <string name="show_navbar_hint_summary">Amuesa una barra indicadora de navegación no baxero de la pantalla</string>
+     <string name="auto_brightness_one_shot_title">Brillu automáticu namás una vegada</string>
+@@ -76,8 +75,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Alteria la distribución del tecláu del PIN al desbloquiar el preséu</string>
+     <string name="proximity_wake_title">Evitar l\'esconsueñu accidental</string>
+     <string name="proximity_wake_summary">Revisa\'l sensor de proximidá enantes de prender la pantalla</string>
+-    <string name="touchscreen_gesture_settings_title">Xestos de la pantalla táctil</string>
+-    <string name="touchscreen_gesture_settings_summary">Permítete facer dellos xestos na pantalla táctil pa executar aiciones rápides</string>
+     <string name="wake_when_plugged_or_unplugged_title">Esconsoñar al espatar</string>
+     <string name="wake_when_plugged_or_unplugged_summary">Priende la pantalla al des/espatar el preséu d\'una fonte llétrica</string>
+     <string name="storage_warning_internal">Alvertencia: ¡ye posible qu\'esta opción nun funcione afayadizamente o provoque la perda de datos, y polo tanto, nun s\'aconseya!</string>
+diff --git a/res/values-az/cm_strings.xml b/res/values-az/cm_strings.xml
+index cad5d72c31a..a8e9dc56c06 100644
+--- a/res/values-az/cm_strings.xml
++++ b/res/values-az/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Planşetinizin yan tərəfindəki sensora toxunun.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Cihazınızın yan tərəfindəki sensora toxunun.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Telefonunuzun yan tərəfindəki sensora toxunun.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Ekran sönülü olsa belə kilidi açmaq üçün sensora toxunun. Yaxınlıq sensoru səhvən kilid açmanın qarşısını alır.</string>
+     <string name="show_navbar_hint_title">Hərəkət məsləhəti</string>
+     <string name="show_navbar_hint_summary">Naviqasiya ipucu çubuğunu ekranında alt hissəsində göstər</string>
+     <string name="auto_brightness_one_shot_title">Tək çəkilişdə avto-parlaqlıq</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Cihaz kilidini açarkən PIN düzümünü qarışdır</string>
+     <string name="proximity_wake_title">Təsadüfi oyanmaların qarşısını al</string>
+     <string name="proximity_wake_summary">Ekranı oyandırmamışdan qabaq yaxınlıq sensorunu yoxlayın</string>
+-    <string name="touchscreen_gesture_settings_title">Ekran toxunuş jestləri</string>
+-    <string name="touchscreen_gesture_settings_summary">Cəld hərəkətlər üçün cürbəcür toxunaqlı ekran jestlərini həyata keçirin</string>
+     <string name="touchscreen_hovering_title">Toxunuşlu ekranda toxunmadan hərəkət</string>
+     <string name="touchscreen_hovering_summary">Ekrana toxunmadan barmağınızı yaxınlaşdıraraq siçan (maus) kimi veb brauzerlərdə, uzaq masaüstlərində və s. hərəkətinizi təmin edər</string>
+     <string name="wake_when_plugged_or_unplugged_title">Taxıb çıxaranda oyan</string>
+diff --git a/res/values-be/cm_strings.xml b/res/values-be/cm_strings.xml
+index 7282f399b14..ee5f71f1bb5 100644
+--- a/res/values-be/cm_strings.xml
++++ b/res/values-be/cm_strings.xml
+@@ -29,7 +29,6 @@
+     <string name="lockpattern_settings_enable_error_path_title">Паказваць няправільны ўвод</string>
+     <string name="lockpattern_settings_enable_dots_title">Паказваць кропкі</string>
+     <string name="show_navbar_hint_title">Падказкі навігацыі</string>
+-    <string name="touchscreen_gesture_settings_summary">Выкананне розных сэнсарных жэстаў на экране для хуткіх дзеянняў</string>
+     <string name="touchscreen_hovering_summary">Дазваляе распазнаваць набліжэнне пальца да экрана для падзей навядзення курсора ў браўзеры або іншых праграмах</string>
+     <string name="wake_when_plugged_or_unplugged_title">Уключэнне пры зарадцы</string>
+     <string name="wake_when_plugged_or_unplugged_summary">Уключаць экран пры падключэнні або адключэнні крыніцы сілкавання</string>
+diff --git a/res/values-bg/cm_strings.xml b/res/values-bg/cm_strings.xml
+index 65ad70bfbea..9a6b772696a 100644
+--- a/res/values-bg/cm_strings.xml
++++ b/res/values-bg/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Докоснете сензора отстрани на таблета ви.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Докоснете сензора отсрани на устройството ви.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Докоснета сензора отстрани на телефона ви.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Докоснете сензора, за да отключите, дори когато екранът е изключен. Сензорът за близост предотвратява неволно октлючване.</string>
+     <string name="show_navbar_hint_title">Подсказки за навигация</string>
+     <string name="show_navbar_hint_summary">Показване на подсказки за навигация в долната част на екрана</string>
+     <string name="auto_brightness_one_shot_title">Автоматична яркост на един кадър</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Разбъркано PIN оформление при отключване на устройството</string>
+     <string name="proximity_wake_title">Предотвратяване на случайно събуждане</string>
+     <string name="proximity_wake_summary">Провери сензора за близост преди събуждане на екрана</string>
+-    <string name="touchscreen_gesture_settings_title">Тъчскрийн жестове</string>
+-    <string name="touchscreen_gesture_settings_summary">Изпълнява различни бързи действия чрез жестове върху сензорния екран</string>
+     <string name="touchscreen_hovering_title">Сочейки по сензорния екран</string>
+     <string name="touchscreen_hovering_summary">Позволява ви да сочите по екрана като с мишка в уеб браузъри, отдалечени настолни компютри и др</string>
+     <string name="wake_when_plugged_or_unplugged_title">Събуждане при зареждане</string>
+diff --git a/res/values-ca/cm_strings.xml b/res/values-ca/cm_strings.xml
+index 876aaca4b4f..3115d594564 100644
+--- a/res/values-ca/cm_strings.xml
++++ b/res/values-ca/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Toca el sensor al costat de la tauleta.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Toca el sensor al costat del dispositiu.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Toca el sensor al costat del mòbil.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Toqueu el sensor per desbloquejar, encara que la pantalla estigui apagada. El sensor de proximitat evita el desbloqueig accidental.</string>
+     <string name="show_navbar_hint_title">Suggerència de navegació</string>
+     <string name="show_navbar_hint_summary">Mostra la barra de suggeriments de navegació a la part inferior de la pantalla</string>
+     <string name="auto_brightness_one_shot_title">Ajusta la lluentor una sola vegada</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Disposa aleatòriament les tecles del PIN quan es desbloquegi el dispositiu</string>
+     <string name="proximity_wake_title">Evita l\'encesa accidental</string>
+     <string name="proximity_wake_summary">Comprova el sensor de proximitat abans d\'encendre la pantalla</string>
+-    <string name="touchscreen_gesture_settings_title">Gestos a la pantalla tàctil</string>
+-    <string name="touchscreen_gesture_settings_summary">Fes diversos gestos a la pantalla tàctil per fer accions ràpides</string>
+     <string name="touchscreen_hovering_title">Sura per sobre la pantalla tàctil</string>
+     <string name="touchscreen_hovering_summary">Et permet surar per sobre la pantalla com un ratolí en els navegadors web, escriptoris remots, etc</string>
+     <string name="wake_when_plugged_or_unplugged_title">Encén en endollar</string>
+diff --git a/res/values-cs/cm_strings.xml b/res/values-cs/cm_strings.xml
+index ab48fea5a90..e972cc482e9 100644
+--- a/res/values-cs/cm_strings.xml
++++ b/res/values-cs/cm_strings.xml
+@@ -64,7 +64,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Dotkněte se senzoru na straně tabletu.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Dotkněte se senzoru na straně zařízení.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Dotkněte se senzoru na boční straně telefonu.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Dotkněte se senzoru pro odemknutí, i když je obrazovka vypnutá. Senzor přiblížení zabraňuje náhodnému odemknutí.</string>
+     <string name="show_navbar_hint_title">Navigační nápověda</string>
+     <string name="show_navbar_hint_summary">Zobrazit navigační nápovědu ve spodní části obrazovky (tenký proužek)</string>
+     <string name="auto_brightness_one_shot_title">Rychlé nastavení automatického jasu</string>
+@@ -81,8 +80,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Přeházet rozložení pro zadání PIN při odemykání zařízení</string>
+     <string name="proximity_wake_title">Zabránit nechtěnému probuzení</string>
+     <string name="proximity_wake_summary">Kontrolovat senzor přiblížení pro zabránění nechtěného probuzení</string>
+-    <string name="touchscreen_gesture_settings_title">Gesta na obrazovce</string>
+-    <string name="touchscreen_gesture_settings_summary">Možnost spustit rychlou akci pomocí různých gest na obrazovce</string>
+     <string name="touchscreen_hovering_title">Detekce nad obrazovkou</string>
+     <string name="touchscreen_hovering_summary">Umožňuje pohybovat se jakoby nad obsahem obrazovky podobně, jako když myší najedete na nějaký ovládací prvek</string>
+     <string name="wake_when_plugged_or_unplugged_title">Probudit při nabíjení</string>
+diff --git a/res/values-cy/cm_strings.xml b/res/values-cy/cm_strings.xml
+index 2e56416d1f7..9bc6a68429e 100644
+--- a/res/values-cy/cm_strings.xml
++++ b/res/values-cy/cm_strings.xml
+@@ -73,8 +73,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Cymysgu cynllun y PIN wrth ddatgloi\'r ddyfais</string>
+     <string name="proximity_wake_title">Rhwystro deffro ar gam</string>
+     <string name="proximity_wake_summary">Gwirio\'r synhwyrydd agosrwydd cyn deffro\'r sgrin</string>
+-    <string name="touchscreen_gesture_settings_title">Ystumiau sgrin gyffwrdd</string>
+-    <string name="touchscreen_gesture_settings_summary">Perfformio ystumiau amrywiol ar y sgrin gyffwrdd am weithredoedd cyflym</string>
+     <string name="touchscreen_hovering_title">Hofran sgrin gyffwrdd</string>
+     <string name="touchscreen_hovering_summary">Mae\'n dy ganiatáu i hofran ar y sgrin fel defnyddio llygoden mewn porwyr, byrddau gwaith pell, ayyb</string>
+     <string name="wake_when_plugged_or_unplugged_title">Deffro wrth gysylltu â phŵer</string>
+diff --git a/res/values-da/cm_strings.xml b/res/values-da/cm_strings.xml
+index 008ea85c87b..801a9b8d197 100644
+--- a/res/values-da/cm_strings.xml
++++ b/res/values-da/cm_strings.xml
+@@ -71,8 +71,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Omvælt PIN-opsætning, ved oplåsning af enhed</string>
+     <string name="proximity_wake_title">Forhindr utilsigtet vækning</string>
+     <string name="proximity_wake_summary">Tjek nærheds sensoren før skærmen vækkes</string>
+-    <string name="touchscreen_gesture_settings_title">Bevægelser på berøringsfølsom skærm</string>
+-    <string name="touchscreen_gesture_settings_summary">Udfør forskellige bevægelser på berøringsfølsom skærm, for hurtig-handlinger</string>
+     <string name="touchscreen_hovering_title">Berøringsfølsom skærm-svævning</string>
+     <string name="touchscreen_hovering_summary">Tillader dig at holde fingeren over skærmen, som en mus i netlæsere, på fjernskriveborde, osv.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Vågn ved tilslutning</string>
+diff --git a/res/values-de/cm_strings.xml b/res/values-de/cm_strings.xml
+index bd68ce3f6ff..b2eb658bb56 100644
+--- a/res/values-de/cm_strings.xml
++++ b/res/values-de/cm_strings.xml
+@@ -61,7 +61,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Berühre den Sensor an der Seite deines Tablets.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Berühre den Sensor an der Seite deines Geräts.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Berühre den Sensor an der Seite deines Telefons.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Berühre den Sensor, um das Gerät auch bei ausgeschaltetem Bildschirm zu entsperren. Der Annäherungssensor verhindert versehentliches Entsperren.</string>
+     <string name="show_navbar_hint_title">Angedeutete Navigationsleiste</string>
+     <string name="show_navbar_hint_summary">Deutet Navigationsleiste am unteren Bildschirmrand an</string>
+     <string name="auto_brightness_one_shot_title">Einmalige automatische Helligkeitseinstellung</string>
+@@ -78,8 +77,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Bei jedem Entsperrversuch die Ziffernanordnung zufällig neu wählen</string>
+     <string name="proximity_wake_title">Unbeabsichtigtes Aufwecken verhindern</string>
+     <string name="proximity_wake_summary">Vor dem Aufwecken des Gerätes Näherungssensor überprüfen</string>
+-    <string name="touchscreen_gesture_settings_title">Bildschirmgesten</string>
+-    <string name="touchscreen_gesture_settings_summary">Führe durch verschiedene Bildschirmgesten einige schnelle Aktionen aus</string>
+     <string name="touchscreen_hovering_title">Touchscreen als Maus verwenden</string>
+     <string name="touchscreen_hovering_summary">Erlaubt es, den über dem Touchscreen schwebenden Finger im Browser, Remote Desktop usw. als Mauszeiger zu verwenden.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Beim Einstecken aufwecken</string>
+diff --git a/res/values-el/cm_strings.xml b/res/values-el/cm_strings.xml
+index a8bba319c08..2dc6b43aadf 100644
+--- a/res/values-el/cm_strings.xml
++++ b/res/values-el/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Αγγίξτε τον αισθητήρα στο πλάι του tablet σας.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Αγγίξτε τον αισθητήρα στο πλάι της συσκευής σας.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Αγγίξτε τον αισθητήρα στο πλάι του τηλεφώνου σας.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Αγγίξτε τον αισθητήρα για ξεκλείδωμα, ακόμα και όταν η οθόνη είναι απενεργοποιημένη. Ο αισθητήρας εγγύτητας αποτρέπει το ξεκλείδωμα κατά λάθος.</string>
+     <string name="show_navbar_hint_title">Υπόδειξη πλοήγησης</string>
+     <string name="show_navbar_hint_summary">Εμφάνιση γραμμής υπόδειξης πλοήγησης στο κάτω μέρος της οθόνης</string>
+     <string name="auto_brightness_one_shot_title">Αυτόματη φωτεινότητα με μία λήψη</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Ανακάτεμα της διάταξης PIN κατά το ξεκλείδωμα της συσκευής</string>
+     <string name="proximity_wake_title">Πρόληψη ακούσιας αφύπνισης</string>
+     <string name="proximity_wake_summary">Έλεγχος του αισθητήρα εγγύτητας πριν την αφύπνιση της οθόνης</string>
+-    <string name="touchscreen_gesture_settings_title">Χειρονομίες αφής</string>
+-    <string name="touchscreen_gesture_settings_summary">Εκτελέστε διάφορες χειρονομίες αφής για γρήγορες ενέργειες</string>
+     <string name="touchscreen_hovering_title">Αιώρηση οθόνης αφής</string>
+     <string name="touchscreen_hovering_summary">Σας επιτρέπει να αιωρείτε πάνω από την οθόνη όπως ένα ποντίκι σε προγράμματα περιήγησης στο web, απομακρυσμένες επιφάνειες εργασίας, κλπ</string>
+     <string name="wake_when_plugged_or_unplugged_title">Αφύπνιση κατά τη σύνδεση</string>
+diff --git a/res/values-en-rAU/cm_strings.xml b/res/values-en-rAU/cm_strings.xml
+index 9ba7f111dd5..ae754b63333 100644
+--- a/res/values-en-rAU/cm_strings.xml
++++ b/res/values-en-rAU/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Touch the sensor on the side of your tablet.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Touch the sensor on the side of your device.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Touch the sensor on the side of your phone.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Touch the sensor to unlock, even when the screen is off. Proximity sensor prevents accidental unlocking.</string>
+     <string name="show_navbar_hint_title">Navigation hint</string>
+     <string name="show_navbar_hint_summary">Show navigation hint bar at the bottom of the screen</string>
+     <string name="auto_brightness_one_shot_title">One shot auto-brightness</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Scramble PIN layout when unlocking device</string>
+     <string name="proximity_wake_title">Prevent accidental wake-up</string>
+     <string name="proximity_wake_summary">Check the proximity sensor prior to waking up screen</string>
+-    <string name="touchscreen_gesture_settings_title">Touchscreen gestures</string>
+-    <string name="touchscreen_gesture_settings_summary">Perform various touchscreen gestures for quick actions</string>
+     <string name="touchscreen_hovering_title">Touchscreen hovering</string>
+     <string name="touchscreen_hovering_summary">Allows you to hover the screen like a mouse in web browsers, remote desktops, etc</string>
+     <string name="wake_when_plugged_or_unplugged_title">Wake on plug</string>
+diff --git a/res/values-en-rCA/cm_strings.xml b/res/values-en-rCA/cm_strings.xml
+index 9ba7f111dd5..ae754b63333 100644
+--- a/res/values-en-rCA/cm_strings.xml
++++ b/res/values-en-rCA/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Touch the sensor on the side of your tablet.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Touch the sensor on the side of your device.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Touch the sensor on the side of your phone.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Touch the sensor to unlock, even when the screen is off. Proximity sensor prevents accidental unlocking.</string>
+     <string name="show_navbar_hint_title">Navigation hint</string>
+     <string name="show_navbar_hint_summary">Show navigation hint bar at the bottom of the screen</string>
+     <string name="auto_brightness_one_shot_title">One shot auto-brightness</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Scramble PIN layout when unlocking device</string>
+     <string name="proximity_wake_title">Prevent accidental wake-up</string>
+     <string name="proximity_wake_summary">Check the proximity sensor prior to waking up screen</string>
+-    <string name="touchscreen_gesture_settings_title">Touchscreen gestures</string>
+-    <string name="touchscreen_gesture_settings_summary">Perform various touchscreen gestures for quick actions</string>
+     <string name="touchscreen_hovering_title">Touchscreen hovering</string>
+     <string name="touchscreen_hovering_summary">Allows you to hover the screen like a mouse in web browsers, remote desktops, etc</string>
+     <string name="wake_when_plugged_or_unplugged_title">Wake on plug</string>
+diff --git a/res/values-en-rGB/cm_strings.xml b/res/values-en-rGB/cm_strings.xml
+index a2676b93fcd..1957bb81833 100644
+--- a/res/values-en-rGB/cm_strings.xml
++++ b/res/values-en-rGB/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Touch the sensor on the side of your tablet.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Touch the sensor on the side of your device.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Touch the sensor on the side of your phone.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Touch the sensor to unlock, even when the screen is off. Proximity sensor prevents accidental unlocking.</string>
+     <string name="show_navbar_hint_title">Navigation hint</string>
+     <string name="show_navbar_hint_summary">Show navigation hint bar at the bottom of the screen</string>
+     <string name="auto_brightness_one_shot_title">One shot auto-brightness</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Scramble PIN layout when unlocking device</string>
+     <string name="proximity_wake_title">Prevent accidental wake-up</string>
+     <string name="proximity_wake_summary">Check the proximity sensor prior to waking up screen</string>
+-    <string name="touchscreen_gesture_settings_title">Touchscreen gestures</string>
+-    <string name="touchscreen_gesture_settings_summary">Perform various touchscreen gestures for quick actions</string>
+     <string name="touchscreen_hovering_title">Touchscreen hovering</string>
+     <string name="touchscreen_hovering_summary">Allows you to hover the screen like a mouse in web browsers, remote desktops, etc</string>
+     <string name="wake_when_plugged_or_unplugged_title">Wake on plug</string>
+diff --git a/res/values-en-rIN/cm_strings.xml b/res/values-en-rIN/cm_strings.xml
+index 9ba7f111dd5..ae754b63333 100644
+--- a/res/values-en-rIN/cm_strings.xml
++++ b/res/values-en-rIN/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Touch the sensor on the side of your tablet.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Touch the sensor on the side of your device.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Touch the sensor on the side of your phone.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Touch the sensor to unlock, even when the screen is off. Proximity sensor prevents accidental unlocking.</string>
+     <string name="show_navbar_hint_title">Navigation hint</string>
+     <string name="show_navbar_hint_summary">Show navigation hint bar at the bottom of the screen</string>
+     <string name="auto_brightness_one_shot_title">One shot auto-brightness</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Scramble PIN layout when unlocking device</string>
+     <string name="proximity_wake_title">Prevent accidental wake-up</string>
+     <string name="proximity_wake_summary">Check the proximity sensor prior to waking up screen</string>
+-    <string name="touchscreen_gesture_settings_title">Touchscreen gestures</string>
+-    <string name="touchscreen_gesture_settings_summary">Perform various touchscreen gestures for quick actions</string>
+     <string name="touchscreen_hovering_title">Touchscreen hovering</string>
+     <string name="touchscreen_hovering_summary">Allows you to hover the screen like a mouse in web browsers, remote desktops, etc</string>
+     <string name="wake_when_plugged_or_unplugged_title">Wake on plug</string>
+diff --git a/res/values-es-rUS/cm_strings.xml b/res/values-es-rUS/cm_strings.xml
+index 7f458d2ce60..d81d139bb1f 100644
+--- a/res/values-es-rUS/cm_strings.xml
++++ b/res/values-es-rUS/cm_strings.xml
+@@ -40,8 +40,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Cambiar la disposición de los números del PIN para desbloquear el dispositivo</string>
+     <string name="proximity_wake_title">Prevenir encendido accidental</string>
+     <string name="proximity_wake_summary">Comprobar el sensor de proximidad antes de encender la pantalla</string>
+-    <string name="touchscreen_gesture_settings_title">Gestos de pantalla táctil</string>
+-    <string name="touchscreen_gesture_settings_summary">Realizar varios gestos en la pantalla para acciones rápidas</string>
+     <string name="touchscreen_hovering_title">Pantalla táctil deslizante</string>
+     <string name="touchscreen_hovering_summary">Permite deslizarse por la pantalla como un ratón en navegadores, escritorios remotos, etc</string>
+     <string name="wake_when_plugged_or_unplugged_title">Encender al conectar el cargador</string>
+diff --git a/res/values-es/cm_strings.xml b/res/values-es/cm_strings.xml
+index bb30c4fa985..ea7cd0afb00 100644
+--- a/res/values-es/cm_strings.xml
++++ b/res/values-es/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Toca el sensor en el lateral de la tableta.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Toca el sensor en el lateral del dispositivo.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Toca el sensor en el lateral del teléfono.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Toca el sensor para desbloquear, incluso cuando la pantalla esté apagada. El sensor de proximidad evita el desbloqueo accidental.</string>
+     <string name="show_navbar_hint_title">Sugerencia de navegación</string>
+     <string name="show_navbar_hint_summary">Mostrar barra de sugerencias de navegación en la parte inferior de la pantalla</string>
+     <string name="auto_brightness_one_shot_title">Brillo automático en un toque</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Cambiar aleatoriamente la disposición de los números del PIN para desbloquear el dispositivo</string>
+     <string name="proximity_wake_title">Prevenir encendido accidental</string>
+     <string name="proximity_wake_summary">Comprobar el sensor de proximidad antes de encender la pantalla</string>
+-    <string name="touchscreen_gesture_settings_title">Gestos en pantalla táctil</string>
+-    <string name="touchscreen_gesture_settings_summary">Realizar varios gestos en la pantalla para acciones rápidas</string>
+     <string name="touchscreen_hovering_title">Pantalla táctil deslizante</string>
+     <string name="touchscreen_hovering_summary">Permite desplazarte por la pantalla como un ratón en navegadores web, escritorios remotos, etc.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Encender al conectar el cargador</string>
+diff --git a/res/values-et/cm_strings.xml b/res/values-et/cm_strings.xml
+index 2eafbb76c3f..096e84318c6 100644
+--- a/res/values-et/cm_strings.xml
++++ b/res/values-et/cm_strings.xml
+@@ -47,8 +47,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Sega PIN paigutust seadme lahtilukustamisel</string>
+     <string name="proximity_wake_title">Väldi juhuslikku ärkamist</string>
+     <string name="proximity_wake_summary">Kontrolli lähedussensorit enne ekraani äratamist</string>
+-    <string name="touchscreen_gesture_settings_title">Puuteekraani žestid</string>
+-    <string name="touchscreen_gesture_settings_summary">Soorita mitmeid puuteekraani žeste kiirtoimingute teostamiseks</string>
+     <string name="touchscreen_hovering_title">Puuteekraani hõljumine</string>
+     <string name="touchscreen_hovering_summary">Lubab hõljuda ekraani kohal nagu hiirega veebilehitsejas, kaugtöölaual jne</string>
+     <string name="wake_when_plugged_or_unplugged_title">Ärka laadija ühendamisel</string>
+diff --git a/res/values-eu/cm_strings.xml b/res/values-eu/cm_strings.xml
+index 9e2c179e09e..b782f6d6aad 100644
+--- a/res/values-eu/cm_strings.xml
++++ b/res/values-eu/cm_strings.xml
+@@ -35,8 +35,6 @@
+     <string name="unlock_scramble_pin_layout_summary">PIN zenbakiaren antolaketa nahastu gailua desblokeatzean</string>
+     <string name="proximity_wake_title">Eragotzi ustekabeko esnatzea</string>
+     <string name="proximity_wake_summary">Kontsultatu gertutasun sentsorea pantaila piztu baino lehen</string>
+-    <string name="touchscreen_gesture_settings_title">Ukitze-pantailaren keinuak</string>
+-    <string name="touchscreen_gesture_settings_summary">Egin ukimen-pantailako keinuak ekintza azkarretarako</string>
+     <string name="touchscreen_hovering_title">Pantailaren gainetik pasatu</string>
+     <string name="touchscreen_hovering_summary">Sagua bailitzan pantailaren gainetik pasatzea ahalbidetzen dizu, nabigatzaileetan, urruneko mahaigainetan, eta abar</string>
+     <string name="wake_when_plugged_or_unplugged_title">Esnatu kargadorearekin</string>
+diff --git a/res/values-fa/cm_strings.xml b/res/values-fa/cm_strings.xml
+index a8d8c58b4e3..39fc131b1b5 100644
+--- a/res/values-fa/cm_strings.xml
++++ b/res/values-fa/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">حسگر کنار رایانه‌لوحی خود را لمس کنید.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">حسگر کنار دستگاه خود را لمس کنید.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">حسگر کنار گوشی خود را لمس کنید.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">حتی زمانی که صفحه نمایش خاموش است، حسگر را برای باز کردن قفل لمس کنید. سنسور مجاورت از باز شدن تصادفی قفل جلوگیری می کند.</string>
+     <string name="show_navbar_hint_title">نوار پیمایش</string>
+     <string name="show_navbar_hint_summary">نوار پیمایش را در پایین صفحه نمایش دهید</string>
+     <string name="auto_brightness_one_shot_title">روشنایی خودکار یک ضربه</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">چینش درهم پین هنگام باز کردن قفل دستگاه</string>
+     <string name="proximity_wake_title">جلوگیری از بیدار شدن تصادفی</string>
+     <string name="proximity_wake_summary">بررسی سنسور مجاورت قبل از بیداری صفحه نمایش</string>
+-    <string name="touchscreen_gesture_settings_title">حرکات لمس صفحه</string>
+-    <string name="touchscreen_gesture_settings_summary">اجرا کردن حرکات لمس صفحه متعدد برای عملیات سریع</string>
+     <string name="touchscreen_hovering_title">لمس شناور صفحه</string>
+     <string name="touchscreen_hovering_summary">به شما اجازه می‌دهد مانند عملکرد ماوس در مرورگرهای وب، ریموت دسکتاپ و غیره، صفحه نمایش را به صورت شناور کنترل کنید</string>
+     <string name="wake_when_plugged_or_unplugged_title">بیدار شدن هنگام اتصال به برق</string>
+diff --git a/res/values-fi/cm_strings.xml b/res/values-fi/cm_strings.xml
+index aa7ff09c5de..849ceae3ad7 100644
+--- a/res/values-fi/cm_strings.xml
++++ b/res/values-fi/cm_strings.xml
+@@ -50,8 +50,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Sekoita PIN-numerot poistettaessa lukitusta</string>
+     <string name="proximity_wake_title">Estä herätys vahingossa</string>
+     <string name="proximity_wake_summary">Tarkista lähesyysanturi ennen laitteen herättämistä</string>
+-    <string name="touchscreen_gesture_settings_title">Kosketusnäytön eleet</string>
+-    <string name="touchscreen_gesture_settings_summary">Tee erilaisia kosketusnäytön eleitä käyttääksesi pikatoimintoja</string>
+     <string name="touchscreen_hovering_title">Kosketusnäytön leijunta</string>
+     <string name="touchscreen_hovering_summary">Sallii näytön leijuttamisen kuten hiiri selaimessa, etätyöpöytäyhteyksissä, jne.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Herää laturista</string>
+diff --git a/res/values-fr/cm_strings.xml b/res/values-fr/cm_strings.xml
+index 07c7f889381..90bd3f824a4 100644
+--- a/res/values-fr/cm_strings.xml
++++ b/res/values-fr/cm_strings.xml
+@@ -38,6 +38,8 @@
+     <string name="heads_up_notifications_enabled_summary">Afficher les notifications prioritaires dans une petite fenêtre de notification flottante</string>
+     <string name="high_touch_sensitivity_title">Haute sensibilité tactile</string>
+     <string name="high_touch_sensitivity_summary">Augmenter la sensibilité de l\'écran permettant ainsi le port de gants</string>
++    <string name="tethering_allow_vpn_upstreams_title">Utiliser le VPN pour les appareils connectés</string>
++    <string name="tethering_allow_vpn_upstreams_summary">Lorsque cet appareil utilise un VPN, tous les appareils connectés au point d\'accès utiliseront le même VPN</string>
+     <string name="lock_settings_picker_pattern_size_message">Choisissez une taille de modèle</string>
+     <string name="lockpattern_settings_enable_error_path_title">Afficher l\'erreur de schéma</string>
+     <string name="lockpattern_settings_enable_dots_title">Afficher les points du schéma</string>
+@@ -61,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Touchez le capteur sur le côté de votre tablette.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Touchez le capteur sur le côté de votre appareil.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Touchez le capteur sur le côté de votre téléphone.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Toucher le capteur pour déverrouiller, même lorsque l\'écran est éteint. Le capteur de proximité empêche un déverrouillage accidentel.</string>
+     <string name="show_navbar_hint_title">Indice de navigation</string>
+     <string name="show_navbar_hint_summary">Afficher l\'indice de navigation en bas de l\'écran</string>
+     <string name="auto_brightness_one_shot_title">Luminosité automatique rapide</string>
+@@ -78,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Disposer aléatoirement les touches lors du déverrouillage</string>
+     <string name="proximity_wake_title">Empêcher un réveil accidentel</string>
+     <string name="proximity_wake_summary">Vérifier le capteur de proximité avant d\'allumer l\'écran</string>
+-    <string name="touchscreen_gesture_settings_title">Gestes tactiles</string>
+-    <string name="touchscreen_gesture_settings_summary">Effectuer différents gestes tactiles pour des actions rapides</string>
+     <string name="touchscreen_hovering_title">Survol de l\'écran tactile</string>
+     <string name="touchscreen_hovering_summary">Permet de survoler l\'écran comme avec une souris dans les navigateurs web, les bureaux à distance, etc.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Réveiller au branchement</string>
+diff --git a/res/values-fur-rIT/cm_strings.xml b/res/values-fur-rIT/cm_strings.xml
+index fce9318a570..fe7b067eed4 100644
+--- a/res/values-fur-rIT/cm_strings.xml
++++ b/res/values-fur-rIT/cm_strings.xml
+@@ -61,7 +61,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Tocje il sensôr de bande laterâl dal to tablet.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Tocjeil sensôr de bande laterâl dal to dispositîf.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Tocjeil sensôr de bande laterâl dal to telefon.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Tocje il sensôr par sblocâ, ancje cuant che il schermi al è distudât. Il sensôr di prossimitât al impedìs i sblocs involontaris.</string>
+     <string name="show_navbar_hint_title">Indicadôr navigazion</string>
+     <string name="show_navbar_hint_summary">Mostre l\'indicadôr di navigazion te part basse dal schermi</string>
+     <string name="auto_brightness_one_shot_title">Luminositât automatiche intun colp</string>
+@@ -78,8 +77,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Messede la disposizion de tastiere PIN pal sbloc dal dispositîf</string>
+     <string name="proximity_wake_title">Preven il disveâsi acidentâl</string>
+     <string name="proximity_wake_summary">Controle il sensôr di prossimitât prime di impiâ il schermi</string>
+-    <string name="touchscreen_gesture_settings_title">Mots su schermi tatil</string>
+-    <string name="touchscreen_gesture_settings_summary">Eseguìs varis mots su schermi tatic par fâ azions rapidis</string>
+     <string name="touchscreen_hovering_title">Schermi tatil a pontadôr</string>
+     <string name="touchscreen_hovering_summary">Permet di passâ parsore dal schermi come cuntun mouse intal navigadôr web, tai scritoris lontans e v.i.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Disvee al colegament</string>
+diff --git a/res/values-fy-rNL/cm_strings.xml b/res/values-fy-rNL/cm_strings.xml
+index 965a083e44d..07b618820cf 100644
+--- a/res/values-fy-rNL/cm_strings.xml
++++ b/res/values-fy-rNL/cm_strings.xml
+@@ -37,8 +37,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Pin-lay-out troch inoar hutselje by apparaat ûntskoatteljen</string>
+     <string name="proximity_wake_title">Troch fersin wekker meitsje opkeare</string>
+     <string name="proximity_wake_summary">Tichtebysensor brûke foarôfgeand oan ûntweitsjen fan skerm</string>
+-    <string name="touchscreen_gesture_settings_title">fingergebearen</string>
+-    <string name="touchscreen_gesture_settings_summary">Skermgebearen brûke foar flugge aksjes</string>
+     <string name="touchscreen_hovering_title">Sweve boppe skerm</string>
+     <string name="touchscreen_hovering_summary">Mei jo finger boppe it skerm sweve, lykas in mûs yn browsers, buroblêd op ôfstân, ensfh.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Wekker meitsjen troch lader</string>
+diff --git a/res/values-ga-rIE/cm_strings.xml b/res/values-ga-rIE/cm_strings.xml
+index 16735bd11dd..c4575de5c97 100644
+--- a/res/values-ga-rIE/cm_strings.xml
++++ b/res/values-ga-rIE/cm_strings.xml
+@@ -66,7 +66,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Dteagmháil leis an braiteoir ar thaobh do táibléad.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Déan teagmháil leis an braiteoir ar thaobh do ghléis.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Déan teagmháil leis an braiteoir ar thaobh do ghutháin.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Dteagmháil leis an braiteoir a dhíghlasáil, fiú nuair a bhíonn an scáileán múchta. Cuireann braiteoir cóngarachta cosc ​​ar dhíghlasáil thaisme.</string>
+     <string name="show_navbar_hint_title">Leid Nascleanúint</string>
+     <string name="show_navbar_hint_summary">Taispeáin barra leide nascleanúna ag bun an scáileáin</string>
+     <string name="auto_brightness_one_shot_title">Auto-gile lámhaigh amháin</string>
+@@ -83,8 +82,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Scrobh  leagan amach PIN agus an gléas á dhíghlasáil</string>
+     <string name="proximity_wake_title">Cosc a chur ar dhúiseacht thaisme</string>
+     <string name="proximity_wake_summary">Seiceáil an braiteoir gaireachta roimh an scáileán a dhúiseacht</string>
+-    <string name="touchscreen_gesture_settings_title">Gothaí scáileáin tadhaill</string>
+-    <string name="touchscreen_gesture_settings_summary">Déan gothaí scáileáin tadhaill éagsúla le haghaidh gníomhartha tapa</string>
+     <string name="touchscreen_hovering_title">Scáileán tadhaill ar foluain</string>
+     <string name="touchscreen_hovering_summary">Ligeann sé duit an scáileán a bhogadh mar luch i mbrabhsálaithe gréasáin, deasc iargúlta, etc</string>
+     <string name="wake_when_plugged_or_unplugged_title">Múscail ar an breiseán</string>
+diff --git a/res/values-gd/cm_strings.xml b/res/values-gd/cm_strings.xml
+index 30426ec606b..214629302c6 100644
+--- a/res/values-gd/cm_strings.xml
++++ b/res/values-gd/cm_strings.xml
+@@ -53,8 +53,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Cuir co-dhealbhachd a’ PIN tro chèile nuair a bheirear a’ ghlas far an uidheim</string>
+     <string name="proximity_wake_title">Caisg dùsgadh air mhearachd</string>
+     <string name="proximity_wake_summary">Dearbh le mothaichear na fagasachd mus dèid an sgrìn a dhùsgadh</string>
+-    <string name="touchscreen_gesture_settings_title">Gluasadan na sgrìn-shuathaidh</string>
+-    <string name="touchscreen_gesture_settings_summary">Cleachd gluasadan sgrìn-shuathaidh airson gnìomhan luatha</string>
+     <string name="touchscreen_hovering_title">Fantainn os cionn na sgrìn</string>
+     <string name="touchscreen_hovering_summary">Bheir seo comas dhut fantainn os cionn na sgrìn, mar luchag ann am brabhsairean-lìn, desktops cèin is msaa</string>
+     <string name="wake_when_plugged_or_unplugged_title">Dùisg nuair a cheanglar ri bun-dealain</string>
+diff --git a/res/values-gl/cm_strings.xml b/res/values-gl/cm_strings.xml
+index 65bbd571dc4..af9df1d9e60 100644
+--- a/res/values-gl/cm_strings.xml
++++ b/res/values-gl/cm_strings.xml
+@@ -53,8 +53,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Cambiar a disposición dos números do PIN para desbloquear o dispositivo</string>
+     <string name="proximity_wake_title">Previr acender de forma accidental</string>
+     <string name="proximity_wake_summary">Comprobar o sensor de proximidade antes de acender a pantalla</string>
+-    <string name="touchscreen_gesture_settings_title">Xestos na pantalla táctil</string>
+-    <string name="touchscreen_gesture_settings_summary">Realizar varios xestos na pantalla para accións rápidas</string>
+     <string name="touchscreen_hovering_title">Pantalla táctil deslizante</string>
+     <string name="touchscreen_hovering_summary">Permítelle utilizar o dedo coma un rato ao deslizalo en navegadores web, escritorios remotos, etc.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Acender ao enchufar</string>
+diff --git a/res/values-hr/cm_strings.xml b/res/values-hr/cm_strings.xml
+index cb8c936aa28..e49ff552352 100644
+--- a/res/values-hr/cm_strings.xml
++++ b/res/values-hr/cm_strings.xml
+@@ -36,8 +36,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Nasumičan PIN raspored pri otključavanju uređaja</string>
+     <string name="proximity_wake_title">Sprječavanje slučajnog buđenja</string>
+     <string name="proximity_wake_summary">Provjera senzora blizine prije buđenja zaslona</string>
+-    <string name="touchscreen_gesture_settings_title">Geste zaslona</string>
+-    <string name="touchscreen_gesture_settings_summary">Razne geste zaslona za brze radnje</string>
+     <string name="touchscreen_hovering_title">Lebdenje zaslonom</string>
+     <string name="touchscreen_hovering_summary">Dopušta vam da lebdite zaslonom kao miš u web pretraživaču, udaljenom desktopu, itd</string>
+     <string name="wake_when_plugged_or_unplugged_title">Buđenje pri priključivanju</string>
+diff --git a/res/values-hu/cm_strings.xml b/res/values-hu/cm_strings.xml
+index 9ea86f4f1b4..a6b160b6e8b 100644
+--- a/res/values-hu/cm_strings.xml
++++ b/res/values-hu/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Érintse meg a szenzort készüléke oldalán.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Érintse meg a szenzort készüléke oldalán.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Érintse meg a szenzort telefonja oldalán.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Feloldáshoz érintse meg az érzékelőt, még akkor is, ha a képernyő ki van kapcsolva.  A közelségérzékelő megakadályozza a véletlen feloldást.</string>
+     <string name="show_navbar_hint_title">Navigációs tipp</string>
+     <string name="show_navbar_hint_summary">A navigáció ajánlásait a képernyő alján jeleníti meg</string>
+     <string name="auto_brightness_one_shot_title">Egylövéses automata-fényerő</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">PIN szoros elrendezése az eszköz feloldásakor</string>
+     <string name="proximity_wake_title">Véletlen ébresztés megakadályozása</string>
+     <string name="proximity_wake_summary">Közelségérzékelő ellenőrzése a képernyő felébresztése előtt</string>
+-    <string name="touchscreen_gesture_settings_title">Érintőképernyő-mozdulatvezérlés</string>
+-    <string name="touchscreen_gesture_settings_summary">Különböző képernyő-mozdulatvezérlések végrehajtása a gyorsműveletekhez</string>
+     <string name="touchscreen_hovering_title">Lebegő érintés</string>
+     <string name="touchscreen_hovering_summary">Engedélyezi a lebegéssel való vezérlést, mint egy egérrel a böngészőknél, távoli asztaloknál, stb.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Felébredés töltő csatlakoztatásakor</string>
+diff --git a/res/values-in/cm_strings.xml b/res/values-in/cm_strings.xml
+index 6858538212a..6fe445c85ba 100644
+--- a/res/values-in/cm_strings.xml
++++ b/res/values-in/cm_strings.xml
+@@ -70,8 +70,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Acak tata letak PIN saat membuka perangkat</string>
+     <string name="proximity_wake_title">Mencegah bangun yang tidak disengaja</string>
+     <string name="proximity_wake_summary">Periksa sensor proximity sebelum membangunkan layar</string>
+-    <string name="touchscreen_gesture_settings_title">Gerakan layar sentuh</string>
+-    <string name="touchscreen_gesture_settings_summary">Melakukan berbagai gerakan layar sentuh untuk tindakan cepat</string>
+     <string name="touchscreen_hovering_title">Ambang jari di layar sentuh</string>
+     <string name="touchscreen_hovering_summary">Mengizinkan Anda mengambang jari di atas layar seperti menggunakan tetikus dalam peramban web, destop jarak jauh, dll</string>
+     <string name="wake_when_plugged_or_unplugged_title">Bangun saat pengisi daya di pasang</string>
+diff --git a/res/values-is/cm_strings.xml b/res/values-is/cm_strings.xml
+index 524effcbcbb..325130c16b3 100644
+--- a/res/values-is/cm_strings.xml
++++ b/res/values-is/cm_strings.xml
+@@ -61,7 +61,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Snertu lesarann á hlið spjaldtölvunnar.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Snertu lesarann á hlið tækisins.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Snertu lesarann á hlið símans.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Snertu skynjarann til að aflæsa, jafnvel þegar slökkt er á skjá. Nálægðarskynjari kemur í veg fyrir aflæsingu fyrir slysni.</string>
+     <string name="show_navbar_hint_title">Ábending við flakk</string>
+     <string name="show_navbar_hint_summary">Birta stiku með ábendingum um flakk neðst á skjánum</string>
+     <string name="auto_brightness_one_shot_title">Sjálfvirkt birtustig fyrir eina mynd</string>
+@@ -78,8 +77,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Rugla PIN-framsetningu þegar tæki er aflæst</string>
+     <string name="proximity_wake_title">Koma í veg fyrir slysalega vöknun</string>
+     <string name="proximity_wake_summary">Athuga nálægðarskynjara áður en skjár er vakinn</string>
+-    <string name="touchscreen_gesture_settings_title">Bendingar á snertiskjá</string>
+-    <string name="touchscreen_gesture_settings_summary">Framkvæma ýmsar bendingar á snertiskjá fyrir flýtiaðgerðir</string>
+     <string name="touchscreen_hovering_title">Svif yfir snertiskjá</string>
+     <string name="touchscreen_hovering_summary">Gerir þér kleift að láta bendil svífa eins og með mús yfir skjánum í vöfrum, fjartengdum skjáborðum, o.s.frv.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Vakning við tengingu</string>
+diff --git a/res/values-it/cm_strings.xml b/res/values-it/cm_strings.xml
+index 621097f6150..c421b5a1f4a 100644
+--- a/res/values-it/cm_strings.xml
++++ b/res/values-it/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Tocca il sensore sulla parte laterale del tuo tablet.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Tocca il sensore sulla parte laterale del tuo dispositivo.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Tocca il sensore sulla parte laterale del tuo telefono.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Tocca il sensore d\'impronte per sbloccare, anche quando lo schermo è spento. Il sensore di prossimità impedisce lo sblocco accidentale.</string>
+     <string name="show_navbar_hint_title">Indicatore navigazione</string>
+     <string name="show_navbar_hint_summary">Mostra l\'indicatore di navigazione in fondo allo schermo</string>
+     <string name="auto_brightness_one_shot_title">Luminosità automatica singola </string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Mescola la disposizione del tastierino PIN per lo sblocco del dispositivo</string>
+     <string name="proximity_wake_title">Previeni risvegli accidentali</string>
+     <string name="proximity_wake_summary">Controlla il sensore di prossimità prima di accendere lo schermo</string>
+-    <string name="touchscreen_gesture_settings_title">Gesture sullo schermo</string>
+-    <string name="touchscreen_gesture_settings_summary">Esegui varie gesture sullo schermo per azioni rapide</string>
+     <string name="touchscreen_hovering_title">Touch a puntamento</string>
+     <string name="touchscreen_hovering_summary">Consente di utilizzare il tocco come un mouse nei browser e nei desktop remoti</string>
+     <string name="wake_when_plugged_or_unplugged_title">Risveglia al collegamento</string>
+diff --git a/res/values-iw/cm_strings.xml b/res/values-iw/cm_strings.xml
+index 55099683f7c..3c860f3543b 100644
+--- a/res/values-iw/cm_strings.xml
++++ b/res/values-iw/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">יש לגעת בחיישן בצד הטאבלט שלך.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">יש לגעת בחיישן בצד ההתקן שלך.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">יש לגעת בחיישן בצד הטלפון שלך.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">יש לגעת בחיישן כדי לפתוח את הנעילה, גם כשהמסך כבוי. חיישן קירבה מונע פתיחה מקרית.</string>
+     <string name="show_navbar_hint_title">רמז לניווט</string>
+     <string name="show_navbar_hint_summary">הצגת רמזי ניווט בתחתית המסך</string>
+     <string name="auto_brightness_one_shot_title">בהירות אוטומטית בלחיצה אחת</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">ערבב פריסת PIN בעת פתיחת המכשיר</string>
+     <string name="proximity_wake_title">מנע התעוררות מקרית</string>
+     <string name="proximity_wake_summary">בדוק את חיישן הקירבה לפני הפעלת המסך</string>
+-    <string name="touchscreen_gesture_settings_title">מחוות מגע</string>
+-    <string name="touchscreen_gesture_settings_summary">השתמש במחוות מגע שונות לפעולות מהירות</string>
+     <string name="touchscreen_hovering_title">מגע בריחוף</string>
+     <string name="touchscreen_hovering_summary">מאפשר להעביר את האצבע מעל המסך כמו עכבר של מחשב בדפדפנים, בעמדות שליטה מרחוק וכד\'</string>
+     <string name="wake_when_plugged_or_unplugged_title">יעירו בעת חיבור</string>
+diff --git a/res/values-ja/cm_strings.xml b/res/values-ja/cm_strings.xml
+index 370ee1954d2..77a98f729ea 100644
+--- a/res/values-ja/cm_strings.xml
++++ b/res/values-ja/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">端末側面にある指紋認証センサーをタッチしてください</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">端末側面にある指紋認証センサーをタッチしてください</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">端末側面にある指紋認証センサーをタッチしてください</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">画面がオフの場合でも、センサーをタッチしてロック解除できます。予期しないロック解除は近接センサーで防ぎます。</string>
+     <string name="show_navbar_hint_title">ナビゲーションバーのヒント</string>
+     <string name="show_navbar_hint_summary">画面下部にナビゲーションバーのヒントを表示します</string>
+     <string name="auto_brightness_one_shot_title">画面点灯時にのみ適用する</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">端末のロック解除時にPINレイアウトをランダムにする</string>
+     <string name="proximity_wake_title">誤作動を防止</string>
+     <string name="proximity_wake_summary">スリープ解除する前に接近センサーで確認する</string>
+-    <string name="touchscreen_gesture_settings_title">タッチスクリーンジェスチャー</string>
+-    <string name="touchscreen_gesture_settings_summary">様々なタッチスクリーンジェスチャーですばやくアクションを実行します</string>
+     <string name="touchscreen_hovering_title">タッチ画面のホバリング</string>
+     <string name="touchscreen_hovering_summary">ウェブブラウザやリモードデスクトップなどでマウスのようにホバリングできるようにする</string>
+     <string name="wake_when_plugged_or_unplugged_title">接続時にスリープ解除</string>
+diff --git a/res/values-ka/cm_strings.xml b/res/values-ka/cm_strings.xml
+index 1a6e6431cd2..2be3e7f79e6 100644
+--- a/res/values-ka/cm_strings.xml
++++ b/res/values-ka/cm_strings.xml
+@@ -38,6 +38,8 @@
+     <string name="heads_up_notifications_enabled_summary">მნიშვნელოვანი შეტყობინებების ჩვენება პატარა ამომხტომ ფანჯარაში</string>
+     <string name="high_touch_sensitivity_title">შეხების მაღალი მგრძნობელობა</string>
+     <string name="high_touch_sensitivity_summary">ეკრანის მგრძნობელობის გაზრდა, ხელთათმანით გამოსაყენებლად</string>
++    <string name="tethering_allow_vpn_upstreams_title">გამოიყენოს VPN შეერთებულ მოწყობილობებზეც</string>
++    <string name="tethering_allow_vpn_upstreams_summary">როცა ამ მოწყობილობაზე გამოიყენება VPN, მასზე დაერთებული ყველა მოწყობილობისთვის ასევე გამოყენებული იქნება იგივე VPN</string>
+     <string name="lock_settings_picker_pattern_size_message">მოსახაზის ზომის არჩევა</string>
+     <string name="lockpattern_settings_enable_error_path_title">მონახაზის შეცდომის ჩვენება</string>
+     <string name="lockpattern_settings_enable_dots_title">წერტილების ჩვენება მონახაზისთვის</string>
+@@ -61,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">შეეხეთ აღმქმელს პლანშეტის გვერდითა მხარეს.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">შეეხეთ აღმქმელს მოწყობილობის გვერდითა მხარეს.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">შეეხეთ აღმქმელს ტელეფონის გვერდითა მხარეს.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">შეხებით გახსნა გამორთული ეკრანის დროსაც. მიახლოების აღმქმელი აირიდებს შემთხვევით გახსნას.</string>
+     <string name="show_navbar_hint_title">სამოძრაო მანიშნებელი</string>
+     <string name="show_navbar_hint_summary">სამოძრაო მანიშნებლის ზოლის გამოჩენა ეკრანის ქვემოთ</string>
+     <string name="auto_brightness_one_shot_title">სიკაშკაშის ერთჯერადი თვითგასწორება</string>
+@@ -78,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">ღილაკების არეულად გამოჩენა PIN-კოდით გახსნისას</string>
+     <string name="proximity_wake_title">შემთხვევით გამოღვიძების არიდება</string>
+     <string name="proximity_wake_summary">სიახლოვის აღმქმელის შემოწმება, ეკრანის გამოღვიძებამდე</string>
+-    <string name="touchscreen_gesture_settings_title">ეკრანზე შეხების ჟესტები</string>
+-    <string name="touchscreen_gesture_settings_summary">ეკრანზე სხვადასხვაგვარი შეხება, სწრაფი მოქმედებებისთვის</string>
+     <string name="touchscreen_hovering_title">ეკრანზე შეხებით გადაფარვა</string>
+     <string name="touchscreen_hovering_summary">მსგავსად მაუსის მაჩვენებლით გადაფარვისა ბრაუზერებში, დაშორებულ კომპიუტერზე და ა.შ.</string>
+     <string name="wake_when_plugged_or_unplugged_title">გამოღვიძება შეერთებისას</string>
+diff --git a/res/values-kn/cm_strings.xml b/res/values-kn/cm_strings.xml
+index 2eb0cc90430..b944f1fa6dc 100644
+--- a/res/values-kn/cm_strings.xml
++++ b/res/values-kn/cm_strings.xml
+@@ -33,8 +33,6 @@
+     <string name="unlock_scramble_pin_layout_summary">ಸಾಧನವನ್ನು ಅನ್‍ಲಾಕ್ ಮಾಡುವಾಗ ಪಿನ್ ವಿನ್ಯಾಸವನ್ನು ಅಸ್ತವ್ಯಸ್ತಗೊಳಿಸು</string>
+     <string name="proximity_wake_title">ಆಕಸ್ಮಿಕವಾಗಿ ಎಚ್ಚರವಾಗುವಿಕೆಯನ್ನು ತಡೆ</string>
+     <string name="proximity_wake_summary">ಪರದೆಯನ್ನು ಎಚ್ಚರಿಸುವ ಮೊದಲು ಸಾಮೀಪ್ಯ ಸಂವೇದಕವನ್ನು ಪರಿಶೀಲಿಸು</string>
+-    <string name="touchscreen_gesture_settings_title">ಸ್ಪರ್ಷಪರದೆಯ ಸನ್ನೆಗಳು</string>
+-    <string name="touchscreen_gesture_settings_summary">ತ್ವರಿತ ಪ್ರತಿಕ್ರಿಯೆಗಾಗಿ ಸ್ಪರ್ಶಪರದೆ ಮೇಲೆ ವಿವಿಧ ಸನ್ನೆಗಳನ್ನು ಮಾಡು</string>
+     <string name="touchscreen_hovering_title">ಸ್ಪರ್ಶಪರದೆ ಹರಿದಾಡುವಿಕೆ</string>
+     <string name="touchscreen_hovering_summary">ಜಾಲ ಬ್ರೌಸರ್, ದೂರ ಮೇಲ್ತೆರೆ, ಇತರೆಗಳಲ್ಲಿ ಇಲಿಯ ಹಾಗೆ ಪರದೆ ಮೇಲೆ ಹರಿದಾಡಲು ಅನುಮತಿಸುತ್ತದೆ</string>
+     <string name="wake_when_plugged_or_unplugged_title">ಪ್ಲಗ್‍ಮಾಡಿದಾಗ ಎಬ್ಬಿಸು</string>
+diff --git a/res/values-ko/cm_strings.xml b/res/values-ko/cm_strings.xml
+index 8f46170271a..4c53d3ad473 100644
+--- a/res/values-ko/cm_strings.xml
++++ b/res/values-ko/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">태블릿 옆면에 있는 지문 센서를 누르세요.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">기기 옆면에 있는 지문 센서를 누르세요.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">휴대전화 옆면에 있는 지문 센서를 누르세요.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">화면이 꺼져 있을 때도 센서를 터치하여 잠금을 해제합니다. 근접 센서는 실수로 잠금이 해제되는 것을 방지합니다.</string>
+     <string name="show_navbar_hint_title">내비게이션 힌트</string>
+     <string name="show_navbar_hint_summary">화면 아래에 내비게이션 힌트 바를 표시합니다.</string>
+     <string name="auto_brightness_one_shot_title">화면이 켜질 때 한 번만 밝기 조절</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">장치를 잠금 해제할 때 PIN 레이아웃 섞기</string>
+     <string name="proximity_wake_title">실수로 화면 켜기 방지</string>
+     <string name="proximity_wake_summary">화면을 켜기 전에 근접 센서 확인</string>
+-    <string name="touchscreen_gesture_settings_title">터치스크린 제스처</string>
+-    <string name="touchscreen_gesture_settings_summary">다양한 터치스크린 제스처를 사용하여 빠른 작업 실행</string>
+     <string name="touchscreen_hovering_title">터치스크린 호버링</string>
+     <string name="touchscreen_hovering_summary">웹 브라우저나 원격 데스크톱과 같은 앱에서 마우스처럼 화면에 호버링하여 사용할 수 있습니다.</string>
+     <string name="wake_when_plugged_or_unplugged_title">충전 시 켜짐</string>
+diff --git a/res/values-nl/cm_strings.xml b/res/values-nl/cm_strings.xml
+index 6b8d343d9d5..8905dd09b7a 100644
+--- a/res/values-nl/cm_strings.xml
++++ b/res/values-nl/cm_strings.xml
+@@ -61,7 +61,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Raak de sensor aan de zijkant van uw tablet aan.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Raak de sensor aan de zijkant van uw apparaat.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Raak de sensor aan de zijkant van uw telefoon.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Raak de sensor aan om te ontgrendelen, zelfs wanneer het scherm is uitgeschakeld. Nabijheidssensor voorkomt onbedoeld ontgrendelen.</string>
+     <string name="show_navbar_hint_title">Navigatie hint</string>
+     <string name="show_navbar_hint_summary">Toon navigatiehintbalk aan de onderkant van het scherm</string>
+     <string name="auto_brightness_one_shot_title">Eén schot automatische helderheid</string>
+@@ -78,8 +77,6 @@
+     <string name="unlock_scramble_pin_layout_summary">PIN-lay-out door elkaar husselen bij apparaat ontgrendelen</string>
+     <string name="proximity_wake_title">Per ongeluk ontwaken voorkomen</string>
+     <string name="proximity_wake_summary">Nabijheidssensor gebruiken voorafgaand aan ontwaken van scherm</string>
+-    <string name="touchscreen_gesture_settings_title">Schermgebaren</string>
+-    <string name="touchscreen_gesture_settings_summary">Diverse schermgebaren gebruiken voor snelle acties</string>
+     <string name="touchscreen_hovering_title">Zweven boven scherm</string>
+     <string name="touchscreen_hovering_summary">Met uw vinger boven het zwerm zweven, zoals een muis in browsers, bureaublad op afstand, etc.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Ontwaken door lader</string>
+diff --git a/res/values-pl/cm_strings.xml b/res/values-pl/cm_strings.xml
+index 145e2cc3bfd..a2850559f85 100644
+--- a/res/values-pl/cm_strings.xml
++++ b/res/values-pl/cm_strings.xml
+@@ -65,7 +65,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Dotknij czujnika znajdującego się z boku twojego tabletu.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Dotknij czujnika znajdującego się z boku twojego urządzenia.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Dotknij czujnika znajdującego się z boku twojego telefonu.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Dotknij czujnika, aby odblokować, nawet gdy ekran jest wyłączony. Czujnik zbliżeniowy zapobiega przypadkowemu odblokowaniu.</string>
+     <string name="show_navbar_hint_title">Pasek nawigacji</string>
+     <string name="show_navbar_hint_summary">Pokazuj pasek nawigacji w dolnej części ekranu</string>
+     <string name="auto_brightness_one_shot_title">Jednorazowa jasność automatyczna</string>
+@@ -82,8 +81,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Pomieszany układ cyfr przy odblokowywaniu urządzenia kodem PIN</string>
+     <string name="proximity_wake_title">Zapobiega przypadkowemu wybudzeniu</string>
+     <string name="proximity_wake_summary">Sprawdź czujnik zbliżeniowy przed wybudzeniem ekranu</string>
+-    <string name="touchscreen_gesture_settings_title">Gesty ekranu dotykowego</string>
+-    <string name="touchscreen_gesture_settings_summary">Wykonuj różne gesty na ekranie dotykowym, aby wykonać szybkie akcje</string>
+     <string name="touchscreen_hovering_title">Wskazywanie ekranu dotykowego</string>
+     <string name="touchscreen_hovering_summary">Pozwala na wskazywanie na ekranie jak myszką w przeglądarce internetowej, pulpicie zdalnym itd.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Wybudzaj przy podłączaniu</string>
+diff --git a/res/values-pt-rBR/cm_strings.xml b/res/values-pt-rBR/cm_strings.xml
+index 11982f68b72..99137d39fc4 100644
+--- a/res/values-pt-rBR/cm_strings.xml
++++ b/res/values-pt-rBR/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Toque no sensor na lateral do seu tablet.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Toque no sensor na lateral do seu dispositivo.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Toque no sensor na lateral do seu celular.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Toque no sensor para desbloquear, mesmo quando a tela estiver desligada. O sensor de proximidade impede o desbloqueio acidental.</string>
+     <string name="show_navbar_hint_title">Barra de navegação</string>
+     <string name="show_navbar_hint_summary">Mostrar a barra de navegação na parte inferior da tela</string>
+     <string name="auto_brightness_one_shot_title">Brilho automático de captura única</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Embaralhar PIN ao desbloquear o dispositivo</string>
+     <string name="proximity_wake_title">Evitar ativação da tela acidental</string>
+     <string name="proximity_wake_summary">Conferir o sensor de proximidade antes de ligar a tela</string>
+-    <string name="touchscreen_gesture_settings_title">Gestos na tela</string>
+-    <string name="touchscreen_gesture_settings_summary">Faça diversos gestos na tela para ações rápidas</string>
+     <string name="touchscreen_hovering_title">Flutuar o dedo na tela</string>
+     <string name="touchscreen_hovering_summary">Permite que você flutue o dedo na tela como um mouse em navegadores web, desktops remotos, etc</string>
+     <string name="wake_when_plugged_or_unplugged_title">Acordar ao conectar</string>
+diff --git a/res/values-pt-rPT/cm_strings.xml b/res/values-pt-rPT/cm_strings.xml
+index d0f9c0de144..a25dff6b87a 100644
+--- a/res/values-pt-rPT/cm_strings.xml
++++ b/res/values-pt-rPT/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Toque no sensor na lateral do seu tablet.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Toque no sensor na lateral do seu dispositivo.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Toque no sensor na lateral do seu telefone.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Toque no sensor para desbloquear, mesmo com o ecrã desligado. O sensor de proximidade impedirá desbloqueios acidentais.</string>
+     <string name="show_navbar_hint_title">Dica de navegação</string>
+     <string name="show_navbar_hint_summary">Mostrar a barra de dicas de navegação na parte inferior do ecrã</string>
+     <string name="auto_brightness_one_shot_title">Brilho automático ao ligar o ecrã</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Apresentar aleatoriamente a disposição do teclado numérico, quando desbloquear com PIN</string>
+     <string name="proximity_wake_title">Impedir que o ecrã se ligue acidentalmente</string>
+     <string name="proximity_wake_summary">Verificar o sensor de proximidade antes de ligar o ecrã</string>
+-    <string name="touchscreen_gesture_settings_title">Gestos do ecrã</string>
+-    <string name="touchscreen_gesture_settings_summary">Executar vários gestos no ecrã para ações rápidas</string>
+     <string name="touchscreen_hovering_title">Flutuar sobre o ecrã</string>
+     <string name="touchscreen_hovering_summary">Permite que flutue o dedo sobre o ecrã como um rato nos navegadores de internet, áreas de trabalho remotas, etc</string>
+     <string name="wake_when_plugged_or_unplugged_title">Ligar ecrã ao detetar carregador</string>
+diff --git a/res/values-ro/cm_strings.xml b/res/values-ro/cm_strings.xml
+index da1cdd48316..58bbe7c7429 100644
+--- a/res/values-ro/cm_strings.xml
++++ b/res/values-ro/cm_strings.xml
+@@ -64,7 +64,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Atingeţi senzorul de pe partea laterală a tabletei.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Atingeţi senzorul de pe partea laterală a dispozitivului.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Atingeţi senzorul de pe partea laterală a telefonului.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Atingeți senzorul pentru deblocare, chiar și atunci când ecranul este oprit. Senzorul de proximitate previne deblocarea accidentală.</string>
+     <string name="show_navbar_hint_title">Indicii navigare</string>
+     <string name="show_navbar_hint_summary">Arată indiciul bării de navigare în partea de jos a ecranului</string>
+     <string name="auto_brightness_one_shot_title">Luminozitate automată instantă</string>
+@@ -81,8 +80,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Amestecă așezarea în pagină a ecranului de PIN atunci când se deblochează aparatul</string>
+     <string name="proximity_wake_title">Previne trezirea accidentală</string>
+     <string name="proximity_wake_summary">Verificaţi senzorul de proximitate înainte de a trezi ecranul</string>
+-    <string name="touchscreen_gesture_settings_title">Gesturi touchscreen</string>
+-    <string name="touchscreen_gesture_settings_summary">Efectuați diverse gesturi pe touchscreen pentru acţiuni rapide</string>
+     <string name="touchscreen_hovering_title">Plutire peste ecran</string>
+     <string name="touchscreen_hovering_summary">Vă permite să plutiți degetul peste ecran ca un mouse în browserele web, remote desktop-uri, etc</string>
+     <string name="wake_when_plugged_or_unplugged_title">Trezire la alimentare</string>
+diff --git a/res/values-ru/cm_strings.xml b/res/values-ru/cm_strings.xml
+index 47e163c740f..c964c342328 100644
+--- a/res/values-ru/cm_strings.xml
++++ b/res/values-ru/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Коснитесь сенсора на вашем планшете.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Коснитесь сенсора на вашем устройстве.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Коснитесь сенсора на вашем телефоне.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Коснитесь сенсора, чтобы разблокировать устройство, даже если экран выключен. Датчик приближения предотвращает случайную разблокировку.</string>
+     <string name="show_navbar_hint_title">Подсказки по навигации</string>
+     <string name="show_navbar_hint_summary">Показать подсказку по навигации в нижней части экрана</string>
+     <string name="auto_brightness_one_shot_title">Однократная автоматическая яркость</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Переставлять кнопки ввода PIN-кода в случайном порядке</string>
+     <string name="proximity_wake_title">Предотвращать случайное включение</string>
+     <string name="proximity_wake_summary">Проверка датчика приближения перед включением экрана</string>
+-    <string name="touchscreen_gesture_settings_title">Жесты сенсорного экрана</string>
+-    <string name="touchscreen_gesture_settings_summary">Настройка жестов сенсорного экрана для выполнения действий</string>
+     <string name="touchscreen_hovering_title">Наведение пальца</string>
+     <string name="touchscreen_hovering_summary">Распознавать приближение пальца к экрану для событий наведения курсора в браузере или других приложениях</string>
+     <string name="wake_when_plugged_or_unplugged_title">Включение при зарядке</string>
+diff --git a/res/values-sc-rIT/cm_strings.xml b/res/values-sc-rIT/cm_strings.xml
+index 021dc3b92c9..13c28d44530 100644
+--- a/res/values-sc-rIT/cm_strings.xml
++++ b/res/values-sc-rIT/cm_strings.xml
+@@ -15,13 +15,65 @@
+      limitations under the License.
+ -->
+ <resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
++    <string name="keyboard_extras_title">Extras</string>
++    <string name="advanced_keyboard_settings_title">Cunfiguratzione avantzada</string>
++    <string name="adb_enable_root">Curretzione de errores cun atzessu root</string>
++    <string name="adb_enable_summary_root">Permite s\'esecutzione de sa curretzione de Android cun atzessu root</string>
++    <string name="backup_transport_setting_label">Muda su frunidore de còpias de seguresa</string>
++    <string name="backup_transport_title">Seletziona su frunidore de còpias de seguresa</string>
++    <string name="berry_black_theme_title">Nieddu puru</string>
++    <string name="berry_black_theme_summary">Isfundu nieddu puru pro su tema iscuru</string>
++    <string name="lineagelicense_title">Lissèntzia LineageOS</string>
+     <string name="show_dev_countdown_cm">{count, plural,
+       one {}=1      {T\'ammancat # passu a s\'ativatzione de sa cunfiguratzione de isvilupu.}
+       other   {T\'ammancant # passos a s\'ativatzione de sa cunfiguratzione de isvilupu.}
+     }</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Toca su sensore pro isblocare, fintzas cun s\'ischermu istudadu. Su sensore de prossimidade èvitat su blocu atzidentale.</string>
++    <string name="show_dev_on_cm">As ativadu sa cunfiguratzione de isvilupu.</string>
++    <string name="show_dev_already_cm">Non serbit, as giai ativadu sa cunfiguratzione de isvilupu.</string>
++    <string name="status_bar_double_tap_to_sleep_title">Toca pro istudare s\'ischermu</string>
++    <string name="status_bar_double_tap_to_sleep_summary">Toca duas bortas sa barra de istadu o s\'ischermu de blocu pro istudare s\'ischermu</string>
++    <string name="tethering_allow_vpn_upstreams_title">Imprea una VPN pro is dispositivos connètidos</string>
++    <string name="tethering_allow_vpn_upstreams_summary">Cando custu dispositivu impreet una VPN, totu is servìtzios connètidos a su puntu de atzessu ant a impreare sa pròpia VPN</string>
++    <string name="lock_settings_picker_pattern_size_message">Sèbera sa mannària de sa secuèntzia</string>
++    <string name="lockpattern_settings_enable_error_path_title">Mustra secuèntzia isballiada</string>
++    <string name="lockpattern_settings_enable_dots_title">Mustra is puntos de sa secuèntzia</string>
++    <string name="min_refresh_rate_title">Frecuèntzia de atualizatzione mìnima</string>
++    <string name="fingerprint_enroll_find_sensor_message_front" product="tablet">Agata su sensore de imprentas in sa parte frontale de sa tauledda.</string>
++    <string name="fingerprint_enroll_find_sensor_message_front" product="device">Agata su sensore de imprentas in sa parte frontale de su dispositivu.</string>
++    <string name="fingerprint_enroll_find_sensor_message_front" product="default">Agata su sensore de imprentas in sa parte frontale de su telèfonu.</string>
++    <string name="fingerprint_enroll_find_sensor_message_rear" product="tablet">Agata su sensore de imprentas in sa parte de palas de sa tauledda.</string>
++    <string name="fingerprint_enroll_find_sensor_message_rear" product="device">Agata su sensore de imprentas in sa parte de palas de su dispositivu.</string>
++    <string name="fingerprint_enroll_find_sensor_message_rear" product="default">Agata su sensore de imprentas in sa parte de palas de su telèfonu.</string>
++    <string name="fingerprint_enroll_find_sensor_message_side" product="tablet">Agata su sensore de imprentas in sa parte laterale de sa tauledda.</string>
++    <string name="fingerprint_enroll_find_sensor_message_side" product="device">Agata su sensore de imprentas in sa parte laterale de su dispositivu.</string>
++    <string name="fingerprint_enroll_find_sensor_message_side" product="default">Agata su sensore de imprentas in sa parte laterale de su telèfonu.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_front" product="tablet">Toca su sensore in sa parte frontale de sa tauledda.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_front" product="device">Toca su sensore in sa parte frontale de su dispositivu.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_front" product="default">Toca su sensore in sa parte frontale de su telèfonu.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_rear" product="tablet">Toca su sensore in sa parte de palas de sa tauledda.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_rear" product="device">Toca su sensore in sa parte de palas de su dispositivu.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_rear" product="default">Toca su sensore in sa parte de palas de su telèfonu.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Toca su sensore in sa parte laterale de sa tauledda.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Toca su sensore in sa parte laterale de su dispositivu.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Toca su sensore in sa parte laterale de su telèfonu.</string>
++    <string name="show_navbar_hint_title">Cussìgios de navigatzione</string>
++    <string name="show_navbar_hint_summary">Mustra sa barra de cussìgios de navigatzione in sa parte inferiore de s\'ischermu</string>
++    <string name="auto_brightness_one_shot_title">Lugore automàticu sìngulu</string>
++    <string name="auto_brightness_one_shot_summary">Su lugore at a èssere reguladu isceti comente s\'ischermu est allutu</string>
++    <string name="data_usage_app_restrict_all">Permite s\'atzessu a sa rete</string>
++    <string name="data_usage_app_restrict_all_summary">Ativa s\'impreu de sa rete</string>
++    <string name="data_usage_app_restrict_mobile">Datos mòbiles</string>
++    <string name="data_usage_app_restrict_mobile_summary">Ativa s\'impreu de datos mòbiles</string>
++    <string name="data_usage_app_restrict_vpn">Datos VPN</string>
++    <string name="data_usage_app_restrict_vpn_summary">Ativa s\'impreu de datos VPN</string>
+     <string name="data_usage_app_restrict_wifi">Datos Wi\u2011Fi</string>
+     <string name="data_usage_app_restrict_wifi_summary">Abìlita s\'impreu de sos datos Wi\u2011Fi</string>
++    <string name="unlock_scramble_pin_layout_title">Dispositzione aleatòria</string>
++    <string name="unlock_scramble_pin_layout_summary">Dispone is teclas de su PIN in manera aleatòria a s\'isblocu de su dispositivu</string>
++    <string name="proximity_wake_title">Impedi s\'ativatzione atzidentale</string>
++    <string name="proximity_wake_summary">Controlla su sensore de prossimidade in antis de allùghere s\'ischermu</string>
++    <string name="wake_when_plugged_or_unplugged_title">Allughe cando ddu connetes</string>
++    <string name="wake_when_plugged_or_unplugged_summary">Ativa s\'ischermu cando est connètida o disconnètida una fonte de alimentatzione</string>
+     <string name="assisted_gps">Imprea su GPS assistidu</string>
+     <string name="battery_technology">Tecnologia</string>
+     <string name="battery_health">Salude</string>
+diff --git a/res/values-sk/cm_strings.xml b/res/values-sk/cm_strings.xml
+index 697943844d4..c45d68e6976 100644
+--- a/res/values-sk/cm_strings.xml
++++ b/res/values-sk/cm_strings.xml
+@@ -50,8 +50,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Prehádzať rozloženie pre zadanie kódu PIN pri odomykaní zariadenia</string>
+     <string name="proximity_wake_title">Zabrániť nechcenému prebudeniu</string>
+     <string name="proximity_wake_summary">Pred prebudením obrazovky skontrolovať senzor priblíženia</string>
+-    <string name="touchscreen_gesture_settings_title">Gestá na obrazovke</string>
+-    <string name="touchscreen_gesture_settings_summary">Možnosť spustiť rýchlu akciu pomocou rôzných gest na obrazovce</string>
+     <string name="touchscreen_hovering_title">Pohyb nad dotykovou obrazovkou</string>
+     <string name="touchscreen_hovering_summary">Pohybovať sa nad obrazovkou podobne ako myš vo webovom prehliadači, vzdielaneých plochý, atď</string>
+     <string name="wake_when_plugged_or_unplugged_title">Prebudiť po pripojení</string>
+diff --git a/res/values-sl/cm_strings.xml b/res/values-sl/cm_strings.xml
+index ea5f802540e..29addad9073 100644
+--- a/res/values-sl/cm_strings.xml
++++ b/res/values-sl/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Dotaknite se tipala ob strani vašega tabličnega računalnika.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Dotaknite se tipala ob strani vaše naprave.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Dotaknite se tipala ob strani vašega telefona.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Dotaknite se tipala za odklep, tudi, ko je zaslon izklopljen. Tipalo bližine prepreči nenamerno odklepanje.</string>
+     <string name="show_navbar_hint_title">Namig krmarjenja</string>
+     <string name="show_navbar_hint_summary">Pokaži namig krmarjenja na dnu zaslona</string>
+     <string name="auto_brightness_one_shot_title">Enkratna samodejna svetlost</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Premešaj razporeditev PIN ob odklepanju naprave</string>
+     <string name="proximity_wake_title">Prepreči nenamerno bujenje</string>
+     <string name="proximity_wake_summary">Pred bujenjem zaslona preveri tipalo bližine</string>
+-    <string name="touchscreen_gesture_settings_title">Poteze na zaslonu na dotik</string>
+-    <string name="touchscreen_gesture_settings_summary">Za hitra dejanja na zaslonu na dotik izvedite različne poteze</string>
+     <string name="touchscreen_hovering_title">Prehod zaslona na dotik</string>
+     <string name="touchscreen_hovering_summary">Dovoli vam prehod nad zaslonom, kot miška v spletnih brskalnikih, oddaljenih namizjih itd.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Zbudi ob priključitvi napajalnika</string>
+diff --git a/res/values-sq/cm_strings.xml b/res/values-sq/cm_strings.xml
+index abd1d48b1fe..ac434faed24 100644
+--- a/res/values-sq/cm_strings.xml
++++ b/res/values-sq/cm_strings.xml
+@@ -61,7 +61,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Prekni sensorin në anën e tabletit tuaj.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Prekni sensorin në anën e pajisjes tuaj.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Prekni sensorin në anë të telefonit tuaj.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Prekni sensorin për ta shkyçur, edhe kur ekrani është i fikur. Sensori i afërsisë parandalon zhbllokimin aksidental.</string>
+     <string name="show_navbar_hint_title">Udhëzim për navigim</string>
+     <string name="show_navbar_hint_summary">Shfaq shiritin e sugjerimeve të navigimit në fund të ekranit</string>
+     <string name="auto_brightness_one_shot_title">Ndriçimi automatik me një goditje</string>
+@@ -78,8 +77,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Përzieni paraqitjen e kodit PIN kur zhbllokoni pajisjen</string>
+     <string name="proximity_wake_title">Parandalo zgjimin aksidental</string>
+     <string name="proximity_wake_summary">Kontrollo sensorin e afërsisë para se të ndezësh ekranin</string>
+-    <string name="touchscreen_gesture_settings_title">Gjestet me prekje në ekran</string>
+-    <string name="touchscreen_gesture_settings_summary">Kryej gjeste të ndryshme duke prekur ekranin për veprime të shpejta</string>
+     <string name="touchscreen_hovering_title">Ekrani me prekje qëndron pezull</string>
+     <string name="touchscreen_hovering_summary">Ju lejon të rri pezull në ekran si një mi në shfletuesit e internetit, desktopët e largët, etj</string>
+     <string name="wake_when_plugged_or_unplugged_title">Zgjoje kur lidh karikuesin</string>
+diff --git a/res/values-sr/cm_strings.xml b/res/values-sr/cm_strings.xml
+index 09ca371a3bf..71c65974114 100644
+--- a/res/values-sr/cm_strings.xml
++++ b/res/values-sr/cm_strings.xml
+@@ -35,8 +35,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Приказује дугмад за унос PIN кода у насумичном реду.</string>
+     <string name="proximity_wake_title">Спречи случајно буђење</string>
+     <string name="proximity_wake_summary">Провери сензор близине пре буђења екрана</string>
+-    <string name="touchscreen_gesture_settings_title">Гестови по екрану</string>
+-    <string name="touchscreen_gesture_settings_summary">Подеси разне гестове по екрану за брзе акције</string>
+     <string name="touchscreen_hovering_title">Задржавање прста</string>
+     <string name="touchscreen_hovering_summary">Омогућава радње при задржавању прста изнад елемената интерфејса у веб-прегледачима или другим апликацијама.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Буђење при пуњењу</string>
+diff --git a/res/values-sv/cm_strings.xml b/res/values-sv/cm_strings.xml
+index 081476531d9..c9589abffad 100644
+--- a/res/values-sv/cm_strings.xml
++++ b/res/values-sv/cm_strings.xml
+@@ -43,7 +43,6 @@
+     <string name="unlock_scramble_pin_layout_title">Kasta om layout</string>
+     <string name="unlock_scramble_pin_layout_summary">Kasta om PIN-layout vid upplåsning av enheten</string>
+     <string name="proximity_wake_title">Förhindra oavsiktlig väckning</string>
+-    <string name="touchscreen_gesture_settings_title">Skärmgester</string>
+     <string name="touchscreen_hovering_title">Tryckskärm-hovring</string>
+     <string name="touchscreen_hovering_summary">Låter dig hovra över skärmen som en mus i webbläsare, fjärrskrivbord, etc</string>
+     <string name="wake_when_plugged_or_unplugged_title">Vakna vid koppling</string>
+diff --git a/res/values-ta/cm_strings.xml b/res/values-ta/cm_strings.xml
+index d6cf739e74e..dba6a94232e 100644
+--- a/res/values-ta/cm_strings.xml
++++ b/res/values-ta/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">உமது தத்தல் கணினி ஓரத்தில் உணரியைத் தொடுக.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">உமது கருவி ஓரத்தில் உணரியைத் தொடுக.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">உமது செல்பேசி ஓரத்தில் உணரியைத் தொடுக.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">திரை அணைக்கப்பட்டு இருந்தாலும், பூட்டைத்திறக்க உணரியைத் தொடுக. தற்செயலானப் பூட்டுத்திறத்தலை நெருக்க உணரி தடுக்கின்றது.</string>
+     <string name="show_navbar_hint_title">வழிநடத்தும் குறிப்பு</string>
+     <string name="show_navbar_hint_summary">திரையின் அடிப்பகுதியில் வழிநடத்தும் குறிப்புப் பட்டியைக் காட்டுக</string>
+     <string name="auto_brightness_one_shot_title">ஒரே செலுத்தலில் தானியங்கி ஒளிர்வு</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">கருவியைத் திறக்கும்போது PIN தளவமைப்பை ஒழுங்கற்று ஆக்குக</string>
+     <string name="proximity_wake_title">தற்செயலான விழித்தலை தடுக்க</string>
+     <string name="proximity_wake_summary">திரையை எழுப்புவதற்கு முன், நெருங்கமை உணரியைச் சரிபார்க்க</string>
+-    <string name="touchscreen_gesture_settings_title">தொடுதிரை மெய்ப்பாடுகள்</string>
+-    <string name="touchscreen_gesture_settings_summary">விரைவான செயல்களுக்காகப் பல்வேறு தொடுதிரை மெய்ப்பாடுகளை இயற்றுக</string>
+     <string name="touchscreen_hovering_title">தொடுதிரைத் தொலைத் தொடுதல்</string>
+     <string name="touchscreen_hovering_summary">வலை உலாவிகள், தொலைப் பணித்தளங்கள் போன்றவற்றில் சுட்டியைப் போலத் திரையின் மேலாக விரலை நகர்த்த உம்மை அனுமதிக்கிறது</string>
+     <string name="wake_when_plugged_or_unplugged_title">செருகும்போது விழித்தெழுக</string>
+diff --git a/res/values-th/cm_strings.xml b/res/values-th/cm_strings.xml
+index 8e5d1c8ce21..d8dd5624ad6 100644
+--- a/res/values-th/cm_strings.xml
++++ b/res/values-th/cm_strings.xml
+@@ -43,8 +43,6 @@
+     <string name="unlock_scramble_pin_layout_summary">สุ่มสลับรหัสเมื่อปลดล็อคอุปกรณ์</string>
+     <string name="proximity_wake_title">ป้องกันการเปิดหน้าจอโดยไม่เจตนา</string>
+     <string name="proximity_wake_summary">ตรวจสอบด้วยเซ็นเซอร์ก่อนปลุกหน้าจอ</string>
+-    <string name="touchscreen_gesture_settings_title">ท่าทางสัมผัสบนหน้าจอ</string>
+-    <string name="touchscreen_gesture_settings_summary">ใช้ท่าทางสัมผัสรูปแบบต่าง ๆ เพื่อการทำงานที่รวดเร็วขึ้น</string>
+     <string name="touchscreen_hovering_title">วางนิ้วเหนือจอ</string>
+     <string name="touchscreen_hovering_summary">อนุญาตให้คุณสามารถวางนิ้วเหนือจอเหมือนการวางเม้าส์เหนือปุ่มในคอมพิวเตอร์</string>
+     <string name="wake_when_plugged_or_unplugged_title">ตื่นเมื่อเสียบปลั๊ก</string>
+diff --git a/res/values-tr/cm_strings.xml b/res/values-tr/cm_strings.xml
+index 49861b88464..dee16676257 100644
+--- a/res/values-tr/cm_strings.xml
++++ b/res/values-tr/cm_strings.xml
+@@ -38,6 +38,8 @@
+     <string name="heads_up_notifications_enabled_summary">Küçük bir yüzen pencerede öncelikli bildirimleri görüntüle</string>
+     <string name="high_touch_sensitivity_title">Yüksek dokunma hassasiyeti</string>
+     <string name="high_touch_sensitivity_summary">Dokunmatik ekran hassasiyetini arttırarak eldiven ile kullanıma olanak verir</string>
++    <string name="tethering_allow_vpn_upstreams_title">Bağlanan aygıtlar için VPN kullan</string>
++    <string name="tethering_allow_vpn_upstreams_summary">Bu aygıt VPN kullanırken hotspot ile bağlanan tüm aygıtlar da aynı VPN\'yi kullanacaktır.</string>
+     <string name="lock_settings_picker_pattern_size_message">Bir desen boyutu seçin</string>
+     <string name="lockpattern_settings_enable_error_path_title">Desen hatasını göster</string>
+     <string name="lockpattern_settings_enable_dots_title">Desen noktalarını göster</string>
+@@ -61,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Tabletinizin yan tarafındaki sensöre dokunun.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Cihazınızın yan tarafındaki sensöre dokunun.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Telefonunuzun yan tarafındaki sensöre dokunun.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Ekran kapalı olsa bile kilidi açmak için sensöre dokun. Yakınlık sensörü kilidin yanlışlıkla açılmasını önler.</string>
+     <string name="show_navbar_hint_title">Gezinme ipucu</string>
+     <string name="show_navbar_hint_summary">Ekranın altında gezinme ipucu çubuğunu göster</string>
+     <string name="auto_brightness_one_shot_title">Tek seferlik otomatik parlaklık</string>
+@@ -78,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Cihaz kilidini açarken PIN düzenini karıştırır</string>
+     <string name="proximity_wake_title">Yanlış uyandırmaları önle</string>
+     <string name="proximity_wake_summary">Ekranı uyandırmadan önce yakınlık sensörünü kontrol et</string>
+-    <string name="touchscreen_gesture_settings_title">Ekran hareketleri</string>
+-    <string name="touchscreen_gesture_settings_summary">Hızlı işlemler için çeşitli dokunmatik ekran hareketleri gerçekleştirin</string>
+     <string name="touchscreen_hovering_title">Dokunmatik ekrana dokunmadan gezinme</string>
+     <string name="touchscreen_hovering_summary">Ekrana dokunmadan parmağınızı yakınlaştırarak bir fare kullanıyormuş gibi web tarayıcılarında, uzak masaüstlerinde, vb. dolaşmanızı sağlar</string>
+     <string name="wake_when_plugged_or_unplugged_title">Takıp çıkarmada uyan</string>
+diff --git a/res/values-ug/cm_strings.xml b/res/values-ug/cm_strings.xml
+index ec1e68fd820..5023ce22b05 100644
+--- a/res/values-ug/cm_strings.xml
++++ b/res/values-ug/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">تاختا كومپيۇتېرىڭىزنىڭ يان تەرىپىدىكى سەزگۈچكە تەگكۈزۈڭ.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">ئۈسكۈنىڭىزنىڭ يان تەرىپىدىكى سەزگۈچكە تەگكۈزۈڭ.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">تېلېفونىڭىزنىڭ يان تەرىپىدىكى سەزگۈچكە تەگكۈزۈڭ.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">ئېكران تاقالغان تەقدىردىمۇ، تېگىش سەزگۈچى ئارقىلىق قۇلۇپنى ئاچقىلى بولىدۇ. سەزگۈچكە يېقىنلاشقاندا تاسادىپىي قۇلۇپ ئېچىلىپ كېتىشنىڭ ئالدىنى ئالىدۇ.</string>
+     <string name="show_navbar_hint_title">يولباشچى ئەسكەرتىشى</string>
+     <string name="show_navbar_hint_summary">ئېكراننىڭ ئاستىدا يولباشچى ئەسكەرتىش بالداقنى كۆرسىتىدۇ</string>
+     <string name="auto_brightness_one_shot_title">بىر كۇنۇپكىدا يورۇقلۇقنى ئۆزلۈكىدىن تەڭشەش</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">ئۈسكۈنە قۇلۇپىنى ئاچقاندا قالايمىقان تەرتىپتىكى PIN جايلاشتۇرۇشنى ئىشلىتىدۇ</string>
+     <string name="proximity_wake_title">تاسادىپىي ئويغىتىشنىڭ ئالدىنى ئېلىش</string>
+     <string name="proximity_wake_summary">ئېكراننىڭ ئويغىتىشتىن ئىلگىرى ئارىلىق سەزگۈچنى تەكشۈرىدۇ</string>
+-    <string name="touchscreen_gesture_settings_title">سەزگۈر ئېكران قول ئىشارىتى</string>
+-    <string name="touchscreen_gesture_settings_summary">تېز مەشغۇلاتنىڭ نۇرغۇن سەزگۈر ئېكران قول ئىشارىتىنى ئىجرا قىلىدۇ</string>
+     <string name="touchscreen_hovering_title">لەيلىتىش مەشغۇلاتى</string>
+     <string name="touchscreen_hovering_summary">بارمىقىڭىزنى ئېكراننىڭ ئۈستىگە لەيلىتىپ توركۆرگۈ، يىراقتىكى ئۈستەلئۈستى قاتارلىقلارنىڭ چاشقىنەك ئىستىرىلكىسى سۈپىتىدە ئىشلىتىشىگە يول قويىدۇ</string>
+     <string name="wake_when_plugged_or_unplugged_title">چېتىلغاندا ئويغات</string>
+diff --git a/res/values-uk/cm_strings.xml b/res/values-uk/cm_strings.xml
+index 46914526964..fa237438397 100644
+--- a/res/values-uk/cm_strings.xml
++++ b/res/values-uk/cm_strings.xml
+@@ -51,7 +51,6 @@
+     <string name="unlock_scramble_pin_layout_title">Перемішана розкладка</string>
+     <string name="unlock_scramble_pin_layout_summary">Перемішувати розкладку PIN-коду під час розблокування пристрою</string>
+     <string name="proximity_wake_title">Запобігання випадкового пробудження</string>
+-    <string name="touchscreen_gesture_settings_title">Жести сенсорного екрану</string>
+     <string name="touchscreen_hovering_title">Зависання над сенсорним екраном</string>
+     <string name="touchscreen_hovering_summary">Дозволяє виділяти елементи інтерфейсу при зависанні над ними без дотику</string>
+     <string name="wake_when_plugged_or_unplugged_title">Екран прокидається при підключені</string>
+diff --git a/res/values-vi/cm_strings.xml b/res/values-vi/cm_strings.xml
+index 527de750fd5..d3ad36b4f32 100644
+--- a/res/values-vi/cm_strings.xml
++++ b/res/values-vi/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Chạm vào cảm biến ở mặt bên máy tính bảng của bạn.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Chạm vào cảm biến ở bên cạnh thiết bị của bạn.</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Chạm vào cảm biến ở mặt bên điện thoại của bạn.</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">Chạm vào cảm biến để mở khóa, ngay cả khi màn hình tắt. Cảm biến tiệm cận ngăn ngừa việc vô tình mở khóa.</string>
+     <string name="show_navbar_hint_title">Gợi ý điều hướng</string>
+     <string name="show_navbar_hint_summary">Hiển thị thanh gợi ý điều hướng ở cuối màn hình</string>
+     <string name="auto_brightness_one_shot_title">Tự động điều chỉnh độ sáng một lần duy nhất</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">Bố trí PIN linh tinh khi mở khóa thiết bị</string>
+     <string name="proximity_wake_title">Ngăn ngừa tình cờ mở màn hình</string>
+     <string name="proximity_wake_summary">Kiểm tra cảm biến tiệm cận trước khi mở màn hình</string>
+-    <string name="touchscreen_gesture_settings_title">Cử chỉ màn hình cảm ứng</string>
+-    <string name="touchscreen_gesture_settings_summary">Thực hiện các cử chỉ màn hình cảm ứng khác nhau cho các thao tác nhanh</string>
+     <string name="touchscreen_hovering_title">Di trên màn hình cảm ứng</string>
+     <string name="touchscreen_hovering_summary">Cho phép bạn di trên màn hình như chuột trong trình duyệt web, điều khiển máy tính từ xa, v.v.</string>
+     <string name="wake_when_plugged_or_unplugged_title">Sáng màn hình khi cắm sạc</string>
+diff --git a/res/values-zh-rCN/cm_strings.xml b/res/values-zh-rCN/cm_strings.xml
+index 900ea98b3fe..c1103b1e6d9 100644
+--- a/res/values-zh-rCN/cm_strings.xml
++++ b/res/values-zh-rCN/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">触摸位于平板电脑侧面的指纹传感器。</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">触摸位于设备侧面的指纹传感器。</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">触摸位于手机侧面的指纹传感器。</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">即使在屏幕关闭时，也可以通过触摸传感器来解锁。接近传感器可以防止意外解锁。</string>
+     <string name="show_navbar_hint_title">导航提示</string>
+     <string name="show_navbar_hint_summary">在屏幕底部显示导航提示栏</string>
+     <string name="auto_brightness_one_shot_title">一键自动调整亮度</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">当解锁设备时使用乱序 PIN 布局</string>
+     <string name="proximity_wake_title">防止意外唤醒</string>
+     <string name="proximity_wake_summary">唤醒屏幕前检查距离传感器</string>
+-    <string name="touchscreen_gesture_settings_title">触摸屏手势</string>
+-    <string name="touchscreen_gesture_settings_summary">为快捷操作采用各种触摸屏手势</string>
+     <string name="touchscreen_hovering_title">悬空操作</string>
+     <string name="touchscreen_hovering_summary">允许您将手指悬停在屏幕上作为浏览器、远程桌面等处的鼠标指针</string>
+     <string name="wake_when_plugged_or_unplugged_title">连接或移除电源时唤醒</string>
+diff --git a/res/values-zh-rTW/cm_strings.xml b/res/values-zh-rTW/cm_strings.xml
+index 75fcb799a6c..eb0fdb36e69 100644
+--- a/res/values-zh-rTW/cm_strings.xml
++++ b/res/values-zh-rTW/cm_strings.xml
+@@ -63,7 +63,6 @@
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">輕觸位於平板側面的感應器。</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="device">輕觸位於裝置側面的感應器。</string>
+     <string name="fingerprint_enroll_touch_dialog_message_side" product="default">輕觸位於手機側面的感應器。</string>
+-    <string name="security_settings_require_screen_on_to_auth_with_proximity_description">即使螢幕關閉，觸控感應器即可解鎖。接近感應器可防止意外解鎖。</string>
+     <string name="show_navbar_hint_title">導覽列提示</string>
+     <string name="show_navbar_hint_summary">在螢幕底部顯示導航列提示欄</string>
+     <string name="auto_brightness_one_shot_title">使用自動調整亮度一次</string>
+@@ -80,8 +79,6 @@
+     <string name="unlock_scramble_pin_layout_summary">解鎖裝置時使用亂序 PIN 碼佈局</string>
+     <string name="proximity_wake_title">防止意外喚醒</string>
+     <string name="proximity_wake_summary">喚醒螢幕前檢查接近感應器</string>
+-    <string name="touchscreen_gesture_settings_title">觸控螢幕手勢</string>
+-    <string name="touchscreen_gesture_settings_summary">執行各種觸控螢幕手勢以進行快速動作</string>
+     <string name="touchscreen_hovering_title">懸浮操作</string>
+     <string name="touchscreen_hovering_summary">允許您把手指懸停在螢幕上作為瀏覽器、遠程桌面等的滑鼠</string>
+     <string name="wake_when_plugged_or_unplugged_title">接上或拔除電源時喚醒</string>

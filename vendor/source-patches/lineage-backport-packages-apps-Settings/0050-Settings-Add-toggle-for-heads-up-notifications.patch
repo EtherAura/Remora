@@ -1,0 +1,44 @@
+From 910d851cb520948405ac9d7b2205abcf28152274 Mon Sep 17 00:00:00 2001
+From: Michael Bestas <mikeioannina@gmail.com>
+Date: Wed, 22 Apr 2015 00:37:26 +0300
+Subject: [PATCH 50/98] Settings: Add toggle for heads up notifications
+
+Change-Id: Ie2f50e3fac70268d1cf0c0cab6cd23d9aec7cdc7
+---
+ res/values/cm_strings.xml                   | 4 ++++
+ res/xml/configure_notification_settings.xml | 7 +++++++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index 656b1ef5463..10d3d521302 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -48,6 +48,10 @@
+     <string name="high_touch_polling_rate_title">High touch polling rate</string>
+     <string name="high_touch_polling_rate_summary">Increase touchscreen polling rate</string>
+ 
++    <!-- Heads-up -->
++    <string name="heads_up_notifications_enabled_title">Heads-up</string>
++    <string name="heads_up_notifications_enabled_summary">Display priority notifications in a small floating window</string>
++
+     <!-- High touch sensitivity -->
+     <string name="high_touch_sensitivity_title">High touch sensitivity</string>
+     <string name="high_touch_sensitivity_summary">Increase touchscreen sensitivity so it can be used while wearing gloves</string>
+diff --git a/res/xml/configure_notification_settings.xml b/res/xml/configure_notification_settings.xml
+index e77ab9a5eac..a9bc5419bdf 100644
+--- a/res/xml/configure_notification_settings.xml
++++ b/res/xml/configure_notification_settings.xml
+@@ -226,6 +226,13 @@
+             android:summary="@string/notification_assistant_summary"
+             settings:controller="com.android.settings.notification.NotificationAssistantPreferenceController"/>
+ 
++        <!-- Heads up -->
++        <lineageos.preference.GlobalSettingSwitchPreference
++            android:key="heads_up_notifications_enabled"
++            android:order="30"
++            android:title="@string/heads_up_notifications_enabled_title"
++            android:summary="@string/heads_up_notifications_enabled_summary" />
++
+         <!-- Notification lights -->
+         <lineageos.preference.LineagePartsPreference
+             android:key="notification_lights"

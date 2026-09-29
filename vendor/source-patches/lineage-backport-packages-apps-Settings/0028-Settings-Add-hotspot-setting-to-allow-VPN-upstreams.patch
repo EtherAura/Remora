@@ -1,0 +1,44 @@
+From ed9d8f54410e3fd504493e60cdc1d0c77b757fdd Mon Sep 17 00:00:00 2001
+From: Sam Mortimer <sam@mortimer.me.uk>
+Date: Thu, 15 Aug 2019 15:10:29 -0700
+Subject: [PATCH 28/98] Settings: Add hotspot setting to allow VPN upstreams
+
+Co-Authored-By: Sage Cheng <sagecheng@calyxinstitute.org>
+Change-Id: I34924fe8e60e3d492f219aa6d0ffa54f0bd46e38
+---
+ res/values/cm_strings.xml | 4 ++++
+ res/xml/tether_prefs.xml  | 6 ++++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index 3322ad76c63..2a920860dc0 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -40,6 +40,10 @@
+     <string name="status_bar_double_tap_to_sleep_title">Tap to sleep</string>
+     <string name="status_bar_double_tap_to_sleep_summary">Double-tap on the status bar or lockscreen to turn off the display</string>
+ 
++    <!-- Hotspot extras -->
++    <string name="tethering_allow_vpn_upstreams_title">Use VPN for connected devices</string>
++    <string name="tethering_allow_vpn_upstreams_summary">When this device is using a VPN, all devices connected to the hotspot will use the same VPN</string>
++
+     <!-- Navigation bar hint -->
+     <string name="show_navbar_hint_title">Navigation hint</string>
+     <string name="show_navbar_hint_summary">Show navigation hint bar at the bottom of the screen</string>
+diff --git a/res/xml/tether_prefs.xml b/res/xml/tether_prefs.xml
+index 977fccbb902..2cbcbed65dd 100644
+--- a/res/xml/tether_prefs.xml
++++ b/res/xml/tether_prefs.xml
+@@ -48,6 +48,12 @@
+         android:summary="@string/ethernet_tethering_subtext"
+         settings:keywords="@string/keywords_hotspot_tethering" />
+ 
++    <lineageos.preference.SecureSettingSwitchPreference
++        android:key="tethering_allow_vpn_upstreams"
++        android:title="@string/tethering_allow_vpn_upstreams_title"
++        android:summary="@string/tethering_allow_vpn_upstreams_summary"
++        android:defaultValue="false" />
++
+     <com.android.settingslib.widget.FooterPreference
+         android:key="disabled_on_data_saver"
+         android:title="@string/tether_settings_disabled_on_data_saver"

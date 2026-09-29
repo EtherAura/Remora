@@ -1,0 +1,3 @@
+# build intermediates
+*.o
+*.so

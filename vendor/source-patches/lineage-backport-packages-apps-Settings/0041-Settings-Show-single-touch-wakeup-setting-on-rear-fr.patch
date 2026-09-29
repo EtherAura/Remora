@@ -1,0 +1,136 @@
+From 43e30396c7ca4bf5dbdeb9bfe3af19fa76379256 Mon Sep 17 00:00:00 2001
+From: Terminator-J <terminator_j@hotbutteredmonkey.com>
+Date: Thu, 29 Jun 2023 18:23:45 -0700
+Subject: [PATCH 41/98] Settings: Show single-touch wakeup setting on rear &
+ front fps devices
+
+Not sure why Google assumed that showing this setting is only useful
+for devices with FP sensor built into a side-mounted power button.
+
+Change logic to preserve check for side mounted (really, power-button
+mounted) FP sensors, but allow any device which has a a rear or front
+mounted sensor to show the relevant setting; so users can toggle it.
+
+Bug: Enchilada (Oneplus 6, capacitive FP sensor on the back) no longer
+wakes & unlocks from screen-off with FP sensor touch after QPR3 merge.
+
+Test: Apply commit. "Touch to unlock anytime" setting is now visible;
+enabling once again allows one-touch wakeup-and-unlock-on-successful-
+FP-auth, does nothing with failed FP auth, while disabling toggle
+requires pressing power button to wake screen first before FP auth
+will unlock.
+
+Change-Id: I4d8204b5fed7d43baa93d6793e7280260ae404d6
+---
+ .../fingerprint/FingerprintSettings.java      | 34 +++++++++++++------
+ ...ireScreenOnToAuthPreferenceController.java |  3 +-
+ 2 files changed, 25 insertions(+), 12 deletions(-)
+
+diff --git a/src/com/android/settings/biometrics/fingerprint/FingerprintSettings.java b/src/com/android/settings/biometrics/fingerprint/FingerprintSettings.java
+index 4804b6a53d5..f8297ab7427 100644
+--- a/src/com/android/settings/biometrics/fingerprint/FingerprintSettings.java
++++ b/src/com/android/settings/biometrics/fingerprint/FingerprintSettings.java
+@@ -222,7 +222,17 @@ public class FingerprintSettings extends SubSettings {
+             if (manager == null || !manager.isHardwareDetected()) {
+                 return null;
+             }
+-            if (manager.isPowerbuttonFps() && isScreenOffUnlcokSupported()) {
++            List<FingerprintSensorPropertiesInternal> sensorProperties =
++                    manager.getSensorPropertiesInternal();
++            boolean isUdfps = false;
++            for (FingerprintSensorPropertiesInternal prop : sensorProperties) {
++                if (prop.isAnyUdfpsType()) {
++                    isUdfps = true;
++                    break;
++                }
++            }
++            if (!isUdfps && context.getResources().getBoolean(
++                    org.lineageos.platform.internal.R.bool.config_fingerprintWakeAndUnlock)) {
+                 controllers.add(
+                         new FingerprintUnlockCategoryController(
+                                 context,
+@@ -722,7 +732,7 @@ public class FingerprintSettings extends SubSettings {
+                 column2.mTitle = getText(
+                         R.string.security_fingerprint_disclaimer_lockscreen_disabled_2
+                 );
+-                if (isSfps() && isScreenOffUnlcokSupported()) {
++                if (!isUdfps() && isScreenOffUnlcokSupported()) {
+                     column2.mLearnMoreOverrideText = getText(
+                             R.string.security_settings_fingerprint_settings_footer_learn_more);
+                 }
+@@ -745,9 +755,13 @@ public class FingerprintSettings extends SubSettings {
+         }
+ 
+         private boolean isUdfps() {
+-            for (FingerprintSensorPropertiesInternal prop : mSensorProperties) {
+-                if (prop.isAnyUdfpsType()) {
+-                    return true;
++            mFingerprintManager = Utils.getFingerprintManagerOrNull(getActivity());
++            if (mFingerprintManager != null) {
++                mSensorProperties = mFingerprintManager.getSensorPropertiesInternal();
++                for (FingerprintSensorPropertiesInternal prop : mSensorProperties) {
++                    if (prop.isAnyUdfpsType()) {
++                        return true;
++                    }
+                 }
+             }
+             return false;
+@@ -770,7 +784,7 @@ public class FingerprintSettings extends SubSettings {
+             if (isUdfps()) {
+                 return getContext().getResources().getBoolean(
+                         com.android.internal.R.bool.config_screen_off_udfps_enabled);
+-            } else if (isSfps()) {
++            } else if (!isUdfps()) {
+                 return getContext().getResources().getBoolean(
+                         org.lineageos.platform.internal.R.bool.config_fingerprintWakeAndUnlock);
+             }
+@@ -819,7 +833,7 @@ public class FingerprintSettings extends SubSettings {
+             // This needs to be after setting ids, otherwise
+             // |mRequireScreenOnToAuthPreferenceController.isChecked| is always checking the primary
+             // user instead of the user with |mUserId|.
+-            if ((isSfps() && isScreenOffUnlcokSupported())
++            if ((!isUdfps() && isScreenOffUnlcokSupported())
+                     || (screenOffUnlockUdfps() && isScreenOffUnlcokSupported())
+                     || getExtPreferenceProvider(requireContext()).getSize() > 0) {
+                 addFingerprintUnlockCategory();
+@@ -929,7 +943,7 @@ public class FingerprintSettings extends SubSettings {
+                         this::fingerprintUnlockCategoryHasVisibleChild);
+             }
+ 
+-            if (isSfps() && isScreenOffUnlcokSupported()) {
++            if (!isUdfps() && isScreenOffUnlcokSupported()) {
+                 setupFingerprintUnlockCategoryPreferencesForScreenOnToAuth();
+             } else if (screenOffUnlockUdfps() && isScreenOffUnlcokSupported()) {
+                 setupFingerprintUnlockCategoryPreferencesForScreenOffUnlock();
+@@ -1046,7 +1060,7 @@ public class FingerprintSettings extends SubSettings {
+         private void updatePreferencesAfterFingerprintRemoved() {
+             updateAddPreference();
+             updateUseFingerprintToEnableStatus();
+-            if ((isSfps() && isScreenOffUnlcokSupported()) ||
++            if ((!isUdfps() && isScreenOffUnlcokSupported()) ||
+                     (screenOffUnlockUdfps() && isScreenOffUnlcokSupported())) {
+                 updateFingerprintUnlockCategoryVisibility();
+             }
+@@ -1325,7 +1339,7 @@ public class FingerprintSettings extends SubSettings {
+         private List<AbstractPreferenceController> buildPreferenceControllers(Context context) {
+             final List<AbstractPreferenceController> controllers =
+                     createThePreferenceControllers(context);
+-            if (isSfps() && isScreenOffUnlcokSupported()) {
++            if (!isUdfps() && isScreenOffUnlcokSupported()) {
+                 for (AbstractPreferenceController controller : controllers) {
+                     if (controller.getPreferenceKey() == KEY_FINGERPRINT_UNLOCK_CATEGORY) {
+                         mFingerprintUnlockCategoryPreferenceController =
+diff --git a/src/com/android/settings/biometrics/fingerprint/FingerprintSettingsRequireScreenOnToAuthPreferenceController.java b/src/com/android/settings/biometrics/fingerprint/FingerprintSettingsRequireScreenOnToAuthPreferenceController.java
+index 2e9932238fc..f0b5c60ba7a 100644
+--- a/src/com/android/settings/biometrics/fingerprint/FingerprintSettingsRequireScreenOnToAuthPreferenceController.java
++++ b/src/com/android/settings/biometrics/fingerprint/FingerprintSettingsRequireScreenOnToAuthPreferenceController.java
+@@ -96,8 +96,7 @@ public class FingerprintSettingsRequireScreenOnToAuthPreferenceController
+     @Override
+     public int getAvailabilityStatus() {
+         if (mFingerprintManager != null
+-                && mFingerprintManager.isHardwareDetected()
+-                && mFingerprintManager.isPowerbuttonFps()) {
++                && mFingerprintManager.isHardwareDetected()) {
+             return mFingerprintManager.hasEnrolledTemplates(getUserId())
+                     ? AVAILABLE : CONDITIONALLY_UNAVAILABLE;
+         } else {

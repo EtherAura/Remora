@@ -1,0 +1,140 @@
+From a77fd6d3bce76cf1dda837fdc1d0594b816261f4 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sun, 23 Aug 2026 15:38:48 -0400
+Subject: [PATCH] amdgpu: survive a Mesa 26 DRI loader that exports no driver
+ extensions
+
+dri_init() dlsyms __driDriverGetExtensions_radeonsi out of
+DRI_PATH/radeonsi_dri.so. Mesa 26 exports no __driDriverGetExtensions_*
+symbol at all -- 48 of them in the Mesa 24.0.8 prebuilt this image used
+to ship, zero in 26.1. Mesa's "dril" compat target does export the entry
+points, but it is a stub for GLX visual/fbconfig enumeration and carries
+no __DRI_IMAGE, which is the one extension dri.c allocates through, so
+it cannot stand in.
+
+The result was that amdgpu_init() returned -ENODEV on any Mesa-26 image,
+so gralloc.cros had no amdgpu backend at all: not a degraded allocator,
+no allocator.
+
+Degrade instead. amdgpu_create_bo_linear() allocates through plain
+DRM_AMDGPU_GEM_CREATE with no DRI involvement, so what is lost without a
+DRI backend is tiling and DCC -- performance -- rather than the ability
+to allocate.
+
+The mechanism that makes this safe without auditing all fourteen
+priv->dri call sites is the combination table. Every iteration of the
+render_target_formats loop registers TILE_TYPE_DRI or
+TILE_TYPE_DRI_MODIFIER, and both are serviced through priv->dri; with no
+backend we register none, so drv_get_combination() only ever returns the
+LINEAR entries added above it, create_bo falls through to
+amdgpu_create_bo_linear, and no other dri call site is reachable. The
+four sites that are reachable from outside the table -- close, import,
+create_bo_with_modifiers and num_planes_from_modifier -- are guarded
+here; a request for a non-linear modifier is refused with -EINVAL, which
+is the truth, rather than being passed to a NULL dri.
+
+Bug: remora-ykhz.1
+Change-Id: I97450b5040e3be5af842dd58d3ac00ca844a5a56
+---
+ amdgpu.c | 51 ++++++++++++++++++++++++++++++++++++++++++---------
+ 1 file changed, 42 insertions(+), 9 deletions(-)
+
+diff --git a/amdgpu.c b/amdgpu.c
+index be84519..a60535f 100644
+--- a/amdgpu.c
++++ b/amdgpu.c
+@@ -387,12 +387,23 @@ static int amdgpu_init(struct driver *drv)
+ 		return -ENODEV;
+ 	}
+ 
++	/* NON-FATAL SINCE MESA 26 (bd remora-ykhz.1). dri_init dlsyms
++	 * __driDriverGetExtensions_radeonsi out of DRI_PATH/radeonsi_dri.so, and Mesa 26 exports NO
++	 * __driDriverGetExtensions_* at all — 48 of them in the 24.0.8 prebuilt, zero in 26.1. The
++	 * dril compat target does export the entry points but is a stub for GLX config enumeration:
++	 * no __DRI_IMAGE, which is the one extension dri.c actually allocates through, so it cannot
++	 * stand in here.
++	 *
++	 * Returning -ENODEV made gralloc.cros fail init outright on amdgpu, i.e. no gralloc at all on
++	 * an AMD host running a Mesa-26 image. Degrading is strictly better: amdgpu_create_bo_linear
++	 * allocates through plain DRM_AMDGPU_GEM_CREATE with no DRI involvement, so what is lost is
++	 * tiling and DCC modifiers — performance — rather than the ability to allocate. The
++	 * combination table below registers no DRI tilings when this is NULL, so every path that
++	 * would have needed dri is simply never selected. */
+ 	priv->dri = dri_init(drv, DRI_PATH, "radeonsi");
+-	if (!priv->dri) {
+-		free(priv);
+-		drv->priv = NULL;
+-		return -ENODEV;
+-	}
++	if (!priv->dri)
++		drv_loge("amdgpu: no DRI backend (Mesa 26 exports no __driDriverGetExtensions_*) — "
++			 "continuing with LINEAR allocation only; tiling and DCC are unavailable\n");
+ 
+ 	/* Continue on failure, as we can still succesfully map things without SDMA. */
+ 	if (sdma_init(priv, drv_get_fd(drv)))
+@@ -460,6 +471,16 @@ static int amdgpu_init(struct driver *drv)
+ 
+ 	metadata.priority = 2;
+ 
++	/* Every iteration below registers either TILE_TYPE_DRI_MODIFIER or TILE_TYPE_DRI, and both
++	 * are allocated through priv->dri. With no DRI backend they would be combinations that
++	 * amdgpu_create_bo cannot service, so register none: drv_get_combination then only ever
++	 * returns the LINEAR entries added above, create_bo falls through to
++	 * amdgpu_create_bo_linear, and no other dri call site is reachable. Skipping registration is
++	 * what makes this safe WITHOUT guarding all fourteen priv->dri uses individually
++	 * (bd remora-ykhz.1). */
++	if (!priv->dri)
++		return 0;
++
+ 	for (unsigned f = 0; f < ARRAY_SIZE(render_target_formats); ++f) {
+ 		uint32_t format = render_target_formats[f];
+ 		int mod_cnt;
+@@ -514,7 +535,8 @@ static void amdgpu_close(struct driver *drv)
+ 	struct amdgpu_priv *priv = drv->priv;
+ 
+ 	sdma_finish(priv, drv_get_fd(drv));
+-	dri_close(priv->dri);
++	if (priv->dri)
++		dri_close(priv->dri);
+ 	free(priv);
+ 
+ 	drv->priv = NULL;
+@@ -659,8 +681,13 @@ static int amdgpu_create_bo_with_modifiers(struct bo *bo, uint32_t width, uint32
+ 		if (modifiers[i] != DRM_FORMAT_MOD_LINEAR)
+ 			only_use_linear = false;
+ 
+-	if (only_use_linear)
+-		return amdgpu_create_bo_linear(bo, width, height, format, BO_USE_SCANOUT);
++	/* With no DRI backend LINEAR is the only thing we can produce, so honour the request when it
++	 * is satisfiable and refuse clearly when it is not, rather than calling into a NULL dri
++	 * (bd remora-ykhz.1). */
++	if (only_use_linear || !priv->dri)
++		return only_use_linear
++			   ? amdgpu_create_bo_linear(bo, width, height, format, BO_USE_SCANOUT)
++			   : -EINVAL;
+ 
+ 	return dri_bo_create_with_modifiers(priv->dri, bo, width, height, format, 0, modifiers,
+ 					    count);
+@@ -679,8 +706,12 @@ static int amdgpu_import_bo(struct bo *bo, struct drv_import_fd_data *data)
+ 		dri_tiling = combo->metadata.tiling != TILE_TYPE_LINEAR;
+ 	}
+ 
++	/* dri_tiling can only be true here if a DRI combination was registered, which does not happen
++	 * without a backend — so with no dri this is always the plain prime import, and the plane
++	 * count comes from the format rather than from a modifier query (bd remora-ykhz.1). */
+ 	bo->meta.num_planes =
+-	    dri_num_planes_from_modifier(priv->dri, data->format, data->format_modifier);
++	    priv->dri ? dri_num_planes_from_modifier(priv->dri, data->format, data->format_modifier)
++		      : drv_num_planes_from_format(data->format);
+ 
+ 	if (dri_tiling)
+ 		return dri_bo_import(priv->dri, bo, data);
+@@ -848,6 +879,8 @@ static size_t amdgpu_num_planes_from_modifier(struct driver *drv, uint32_t forma
+ 					      uint64_t modifier)
+ {
+ 	struct amdgpu_priv *priv = drv->priv;
++	if (!priv->dri)
++		return drv_num_planes_from_format(format);
+ 	return dri_num_planes_from_modifier(priv->dri, format, modifier);
+ }
+ 

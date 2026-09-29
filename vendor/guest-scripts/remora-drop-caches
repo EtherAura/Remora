@@ -1,0 +1,7 @@
+#!/bin/sh
+# Free the page cache a multi-GB docker save|load leaves behind. On the docker host the load's
+# cache pressure forces the Android container's anon pages into zram and its file working
+# set out of cache — minutes of A/V stutter while everything faults back (bd remora-8xq).
+# sync first so only clean pages are dropped; echo 1 = page cache only (not dentries/inodes).
+sync
+echo 1 > /proc/sys/vm/drop_caches

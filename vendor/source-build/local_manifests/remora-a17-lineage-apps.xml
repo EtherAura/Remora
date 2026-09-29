@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A17: backport LineageOS app suite (23.2, Trebuchet 22.2) — no lineage-24.0 apps yet -->
+<manifest>
+  <project name="LineageOS/android_packages_apps_Trebuchet" path="packages/apps/Trebuchet" remote="github" revision="lineage-22.2" />
+  <remove-project name="LineageOS/android_packages_apps_LineageParts" />
+  <project name="LineageOS/android_packages_apps_LineageParts" path="packages/apps/LineageParts" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Jelly" />
+  <project name="LineageOS/android_packages_apps_Jelly" path="packages/apps/Jelly" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Dialer" />
+  <project name="LineageOS/android_packages_apps_Dialer" path="packages/apps/Dialer" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Messaging" />
+  <project name="LineageOS/android_packages_apps_Messaging" path="packages/apps/Messaging" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_DeskClock" />
+  <project name="LineageOS/android_packages_apps_DeskClock" path="packages/apps/DeskClock" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_ExactCalculator" />
+  <project name="LineageOS/android_packages_apps_ExactCalculator" path="packages/apps/ExactCalculator" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Etar" />
+  <project name="LineageOS/android_packages_apps_Etar" path="packages/apps/Etar" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Gallery2" />
+  <project name="LineageOS/android_packages_apps_Gallery2" path="packages/apps/Gallery2" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Aperture" />
+  <project name="LineageOS/android_packages_apps_Aperture" path="packages/apps/Aperture" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Glimpse" />
+  <project name="LineageOS/android_packages_apps_Glimpse" path="packages/apps/Glimpse" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Twelve" />
+  <project name="LineageOS/android_packages_apps_Twelve" path="packages/apps/Twelve" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Recorder" />
+  <project name="LineageOS/android_packages_apps_Recorder" path="packages/apps/Recorder" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Seedvault" />
+  <project name="LineageOS/android_packages_apps_Seedvault" path="packages/apps/Seedvault" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Profiles" />
+  <project name="LineageOS/android_packages_apps_Profiles" path="packages/apps/Profiles" remote="github" revision="lineage-23.2" />
+  <remove-project name="LineageOS/android_packages_apps_Backgrounds" />
+  <project name="LineageOS/android_packages_apps_Backgrounds" path="packages/apps/Backgrounds" remote="github" revision="lineage-23.2" />
+</manifest>

@@ -1,0 +1,87 @@
+From: Remora <noreply@localhost>
+Date: Tue, 4 Aug 2026 22:05:00 -0400
+Subject: [PATCH 4/4] gbm_mesa: tell the external allocator codec buffers must be linear
+
+bd remora-cq3. On bare/NVIDIA the video path spans BOTH GPUs: c2-va decodes
+and encodes on the Intel xe VF (iHD, renderD129) while SurfaceFlinger
+composites on NVIDIA. The external (vtest) allocator runs on NVIDIA, so it
+hands codec buffers back in NVIDIA's block-linear layout -- which iHD cannot
+import:
+
+  Output buffer info: drmFormat=XB24 modifier=0x300000000606014 fromHandle=1
+  vaCreateSurfaces(DRM_PRIME_2, modifier=0x300000000606014) failed:
+      resource allocation failed
+  Failed to copy VA surface into output frame.
+  DecodeComponent: reportError(error=14)
+
+The decoder fails on its first output frame, the app sees
+ERROR_CODE_DECODING_FAILED and restarts the player once per segment: audio
+rebuilds every ~10s and the picture never moves.
+
+The combination table already states this contract locally -- 0003 advertises
+BO_USE_HW_VIDEO_DECODER on the 32bpp RGB formats with linear_metadata, and the
+encoder combos above it do the same -- but linear_metadata only governs
+minigbm's own bookkeeping. The external allocator never consults it, and the
+wire carried only "mappable" and "scanout", neither of which means "another
+device reads this". So the contract was declared and then dropped at the
+boundary.
+
+Carry it explicitly. force_linear already exists but means "the CPU maps it",
+which is a different question with a different answer: the host ranks a
+foreign import ABOVE scanout and a CPU map BELOW it, so the two cannot share a
+flag. Decode is the RGBX output pool, encode the VDENC direct-RGB source.
+
+Pairs with venus-nvidia patch 0023, which adds
+VCMD_ALLOC_GPU_FLAG_LINEAR_REQUIRED and honours it. struct alloc_args is the
+ABI between gralloc.minigbm_gbm_mesa.so and libgbm_mesa_wrapper.so, so both
+must be rebuilt and shipped together.
+
+---
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index 9381d76898cfcc27ed291fee9c0a15d2787a4b5e..4bbb900a03f5469d247f0dd0deaf00677156fae4 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -376,6 +376,27 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 		.force_linear = (use_flags & BO_USE_SW_MASK) != 0,
+ 		.needs_map_stride = (use_flags & BO_USE_SW_MASK) != 0,
+ 		.use_scanout = (use_flags & BO_USE_SCANOUT) != 0,
++		/*
++		 * The codec buffers cross a device boundary and the allocator has to
++		 * be told, because it cannot see it (bd remora-cq3).
++		 *
++		 * On bare/NVIDIA video is split across BOTH GPUs: c2-va decodes and
++		 * encodes on the Intel xe VF while SurfaceFlinger composites on
++		 * NVIDIA. The external (vtest) allocator runs on NVIDIA, so a codec
++		 * buffer it hands back in NVIDIA's block-linear layout is refused by
++		 * iHD on import -- "vaCreateSurfaces(DRM_PRIME_2, modifier=...)
++		 * failed: resource allocation failed" -- and the decoder reports
++		 * error 14 on its first output frame, which the app sees as
++		 * ERROR_CODE_DECODING_FAILED. Linear is the only layout both agree on.
++		 *
++		 * The combination table above already says exactly this locally, by
++		 * advertising the HW_VIDEO_* usages on the 32bpp RGB formats with
++		 * linear_metadata; this carries the same contract to an allocator
++		 * that does not consult it. Decode is the RGBX output pool, encode is
++		 * the VDENC direct-RGB source.
++		 */
++		.linear_required =
++		    (use_flags & (BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER)) != 0,
+ 	};
+ 
+ 	/* Alignment for RPI4 CSI camera. Since we do not care about other cameras, keep this
+diff --git a/gbm_mesa_driver/gbm_mesa_wrapper.h b/gbm_mesa_driver/gbm_mesa_wrapper.h
+index 653cb8ea35d54d580688f6a679d596636cc686a5..932e442609fedafa5ec8464eb921d4a4e18e359c 100644
+--- a/gbm_mesa_driver/gbm_mesa_wrapper.h
++++ b/gbm_mesa_driver/gbm_mesa_wrapper.h
+@@ -29,6 +29,11 @@ struct alloc_args {
+ 	bool use_scanout;
+ 	bool force_linear;
+ 	bool needs_map_stride;
++	/* A second GPU imports this buffer, so linear is the only layout both
++	 * understand. Distinct from force_linear, which means "the CPU maps it":
++	 * the external allocator ranks this above scanout, and force_linear below
++	 * it (bd remora-cq3). */
++	bool linear_required;
+ 	int out_fd;
+ 	uint32_t out_stride;
+ 	uint64_t out_modifier;

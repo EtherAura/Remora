@@ -1,0 +1,323 @@
+From 2b7f574ac689515e69af56ec7f98238d81efa742 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 12:11:15 -0400
+Subject: [PATCH] A17 container-compat: split-init routing, cgroup ns +
+ tolerance, first-stage-mount skip, direct /dev/ashmem, selinux context
+ short-circuit, init.rc/ueventd
+
+Change-Id: I6844cfa71728d2a05e1ad52cb79f642cad425014
+---
+ init/Android.bp                            |  8 +++++
+ init/first_stage_init.cpp                  | 34 ++++++++++++++++++----
+ init/main.cpp                              |  7 ++++-
+ init/property_service.cpp                  |  2 ++
+ init/service.cpp                           |  2 ++
+ init/service_utils.cpp                     |  5 ++++
+ libcutils/ashmem-dev.cpp                   |  4 ++-
+ libprocessgroup/profiles/cgroups.json      |  9 ++++--
+ libprocessgroup/setup/cgroup_map_write.cpp | 20 +++++++++----
+ rootdir/init.rc                            |  6 ++--
+ rootdir/ueventd.rc                         |  3 --
+ 11 files changed, 80 insertions(+), 20 deletions(-)
+
+diff --git a/init/Android.bp b/init/Android.bp
+index 2783c9b..1e73410 100644
+--- a/init/Android.bp
++++ b/init/Android.bp
+@@ -333,6 +333,14 @@ cc_binary {
+     defaults: ["init_second_stage_defaults"],
+     static_libs: ["libinit"],
+     visibility: ["//visibility:any_system_partition"],
++    // Build first-stage init into the second-stage binary so /system/bin/init can run the
++    // unified container boot flow (see main.cpp REMORA_CONTAINER).
++    cflags: ["-DREMORA_CONTAINER"],
++    srcs: [
++        "first_stage_init.cpp",
++        "first_stage_mount.cpp",
++        "first_stage_mount_android.cpp",
++    ],
+     required: [
+         "init.rc",
+         "ueventd.rc",
+diff --git a/init/first_stage_init.cpp b/init/first_stage_init.cpp
+index 8b94699..5b767fc 100644
+--- a/init/first_stage_init.cpp
++++ b/init/first_stage_init.cpp
+@@ -33,9 +33,13 @@
+ #include <thread>
+ #include <vector>
+ 
++#include <algorithm>
++#include <sched.h>
++
+ #include <android-base/chrono_utils.h>
+ #include <android-base/file.h>
+ #include <android-base/logging.h>
++#include <android-base/strings.h>
+ #include <android-base/stringify.h>
+ #include <android-base/stringprintf.h>
+ #include <android/avf_cc_flags.h>
+@@ -349,10 +353,11 @@ int FirstStageMain(int argc, char** argv) {
+     CHECKCALL(setenv("PATH", _PATH_DEFPATH, 1));
+     // Get the basic filesystem setup we need put together in the initramdisk
+     // on / and then we'll let the rc file figure out the rest.
+-    CHECKCALL(mount("tmpfs", "/dev", "tmpfs", MS_NOSUID, "mode=0755"));
+     CHECKCALL(mkdir("/dev/pts", 0755));
+     CHECKCALL(mkdir("/dev/socket", 0755));
+     CHECKCALL(mkdir("/dev/dm-user", 0755));
++    mount("/system/etc", "/etc", "none", MS_BIND, NULL);  // container cgroup fix
++    unshare(CLONE_NEWCGROUP);                             // own cgroup ns in the container
+     CHECKCALL(mount("devpts", "/dev/pts", "devpts", 0, NULL));
+ #define MAKE_STR(x) __STRING(x)
+     CHECKCALL(mount("proc", "/proc", "proc", 0, "hidepid=2,gid=" MAKE_STR(AID_READPROC)));
+@@ -419,7 +424,8 @@ int FirstStageMain(int argc, char** argv) {
+         for (const auto& [error_string, error_errno] : errors) {
+             LOG(ERROR) << error_string << " " << strerror(error_errno);
+         }
+-        LOG(FATAL) << "Init encountered errors starting first stage, aborting";
++        // Some first-stage setup steps legitimately fail in a container (already-present
++        // /dev, /proc, etc.) — don't abort PID1 over them.
+     }
+ 
+     LOG(INFO) << "init first stage started!";
+@@ -538,6 +544,10 @@ int FirstStageMain(int argc, char** argv) {
+         if (!fsm) {
+             fsm = CreateFirstStageMount(cmdline);
+         }
++        // The container is system-as-root — /system and /vendor are already the container
++        // rootfs, so there is no ramdisk first-stage mount to do. Skip it entirely instead of
++        // FATAL-aborting when CreateFirstStageMount/DoFirstStageMount can't run.
++#if 0
+         if (!fsm) {
+             LOG(FATAL) << "FirstStageMount not available";
+         }
+@@ -549,8 +559,9 @@ int FirstStageMain(int argc, char** argv) {
+         }
+ 
+         if (!fsm->DoFirstStageMount()) {
+-            LOG(FATAL) << "Failed to mount required partitions early ...";
++            LOG(ERROR) << "Failed to mount required partitions early ...";
+         }
++#endif
+     }
+ 
+     struct stat new_root_info{};
+@@ -569,7 +580,20 @@ int FirstStageMain(int argc, char** argv) {
+            1);
+ 
+     const char* path = "/system/bin/init";
+-    const char* args[] = {path, "selinux_setup", nullptr};
++    // Skip the selinux_setup re-exec stage (selinux is ignored in the container) and go
++    // straight to second_stage, forwarding init's own argv (androidboot.* boot args passed by
++    // `docker run ... /init qemu=1 androidboot.hardware=remora ...`, not a kernel cmdline).
++    std::vector<const char*> args = {path, "second_stage"};
++    std::string init_cmdline;
++    android::base::ReadFileToString("/proc/self/cmdline", &init_cmdline);
++    std::replace(init_cmdline.begin(), init_cmdline.end(), '\0', ' ');
++    auto cmd_vector = android::base::Split(android::base::Trim(init_cmdline), " ");
++    int argi = 0;
++    for (const auto& entry : cmd_vector) {
++        if (argi++ == 0) continue;  // skip argv[0] ('/init')
++        args.push_back(entry.c_str());
++    }
++    args.push_back(nullptr);
+     auto fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+     dup2(fd, STDOUT_FILENO);
+     dup2(fd, STDERR_FILENO);
+@@ -586,7 +610,7 @@ int FirstStageMain(int argc, char** argv) {
+     // are inherited beyond exec.
+     setenv("HWASAN_OPTIONS", STRINGIFY(HWASAN_OPTIONS), true);
+ #endif
+-    execv(path, const_cast<char**>(args));
++    execv(path, const_cast<char**>(args.data()));
+ 
+     // execv() only returns if an error happened, in which case we
+     // panic and never fall through this conditional.
+diff --git a/init/main.cpp b/init/main.cpp
+index bb09f30..02f8ec1 100644
+--- a/init/main.cpp
++++ b/init/main.cpp
+@@ -79,7 +79,12 @@ int main(int argc, char** argv) {
+         }
+     }
+ 
+-#if defined(FIRST_STAGE_INIT) || defined(RECOVERY)
++#if defined(FIRST_STAGE_INIT) || defined(RECOVERY) || defined(REMORA_CONTAINER)
++    // A17 split first- and second-stage init into separate binaries and made the
++    // second-stage /system/bin/init FATAL when invoked without a stage arg. In a system-as-root
++    // container there is no ramdisk first-stage — the entrypoint runs /system/bin/init directly
++    // (`/init qemu=1 androidboot.hardware=remora`). Build FirstStageMain into this binary and run
++    // it by default so the unified A16-style boot flow works again.
+     return FirstStageMain(argc, argv);
+ #else
+     LOG(FATAL) << "Second-stage init requires an argument to main()";
+diff --git a/init/property_service.cpp b/init/property_service.cpp
+index e6fffc4..7af0bf0 100644
+--- a/init/property_service.cpp
++++ b/init/property_service.cpp
+@@ -1389,6 +1389,8 @@ static void ProcessKernelCmdline() {
+     android::fs_mgr::ImportKernelCmdline([&](const std::string& key, const std::string& value) {
+         if (StartsWith(key, ANDROIDBOOT_PREFIX)) {
+             InitPropertySet("ro.boot." + key.substr(ANDROIDBOOT_PREFIX.size()), value);
++        } else if (StartsWith(key, "ro.")) {
++            InitPropertySet(key, value);
+         }
+     });
+ }
+diff --git a/init/service.cpp b/init/service.cpp
+index d38b47a..1dd947c 100644
+--- a/init/service.cpp
++++ b/init/service.cpp
+@@ -80,6 +80,8 @@ namespace android {
+ namespace init {
+ 
+ static Result<std::string> ComputeContextFromExecutable(const std::string& service_path) {
++    se_hack1("HACKED");  // selinux is ignored in the container — skip context computation
++
+     std::string computed_context;
+ 
+     char* raw_con = nullptr;
+diff --git a/init/service_utils.cpp b/init/service_utils.cpp
+index 9343962..a63f7fa 100644
+--- a/init/service_utils.cpp
++++ b/init/service_utils.cpp
+@@ -154,6 +154,11 @@ Result<void> SetUpPidNamespace(const char* name) {
+ }
+ 
+ void SetupStdio(bool stdio_to_kmsg) {
++    // A17: services MUST get /dev/null (or kmsg) stdio, not init's inherited docker-log
++    // pipes. The zygote's forkSystemServer FD sanitizer (frameworks/base fd_utils.cpp) aborts on
++    // any inherited FIFO ("Unsupported st_mode for FD N: FIFO"); leaving the zygote's stdio as the
++    // container's stdout/stderr pipes tripped that and killed system_server. /dev/null is a char
++    // device, which the sanitizer permits. (init itself, as PID1, still logs to docker.)
+     auto fd = unique_fd{open("/dev/null", O_RDWR | O_CLOEXEC)};
+     dup2(fd.get(), STDIN_FILENO);
+     if (stdio_to_kmsg) {
+diff --git a/libcutils/ashmem-dev.cpp b/libcutils/ashmem-dev.cpp
+index 63a0cbf..7fdec30 100644
+--- a/libcutils/ashmem-dev.cpp
++++ b/libcutils/ashmem-dev.cpp
+@@ -154,7 +154,9 @@ int __ashmem_open() {
+         return -1;
+     }
+ 
+-    android::base::unique_fd fd(TEMP_FAILURE_RETRY(open(ashmem_device_path.c_str(), O_RDWR | O_CLOEXEC)));
++    // The container provides /dev/ashmem (memfd-backed shim); open it directly rather than
++    // the dynamically-probed device path.
++    android::base::unique_fd fd(TEMP_FAILURE_RETRY(open("/dev/ashmem", O_RDWR | O_CLOEXEC)));
+     if (!fd.ok()) {
+         ALOGE("Unable to open ashmem device: %m");
+         return -1;
+diff --git a/libprocessgroup/profiles/cgroups.json b/libprocessgroup/profiles/cgroups.json
+index e9345a5..643148c 100644
+--- a/libprocessgroup/profiles/cgroups.json
++++ b/libprocessgroup/profiles/cgroups.json
+@@ -5,21 +5,24 @@
+       "Path": "/dev/blkio",
+       "Mode": "0775",
+       "UID": "system",
+-      "GID": "system"
++      "GID": "system",
++      "Optional": true
+     },
+     {
+       "Controller": "cpu",
+       "Path": "/dev/cpuctl",
+       "Mode": "0755",
+       "UID": "system",
+-      "GID": "system"
++      "GID": "system",
++      "Optional": true
+     },
+     {
+       "Controller": "cpuset",
+       "Path": "/dev/cpuset",
+       "Mode": "0755",
+       "UID": "system",
+-      "GID": "system"
++      "GID": "system",
++      "Optional": true
+     }
+   ],
+   "Cgroups2": {
+diff --git a/libprocessgroup/setup/cgroup_map_write.cpp b/libprocessgroup/setup/cgroup_map_write.cpp
+index 0b26e95..ef27387 100644
+--- a/libprocessgroup/setup/cgroup_map_write.cpp
++++ b/libprocessgroup/setup/cgroup_map_write.cpp
+@@ -150,11 +150,21 @@ static bool MountV2CgroupController(const CgroupDescriptor& descriptor) {
+     // retry without that mount option.
+     if (mount("none", controller->path(), "cgroup2", MS_NODEV | MS_NOEXEC | MS_NOSUID,
+               "memory_recursiveprot") < 0) {
+-        LOG(INFO) << "Mounting memcg with memory_recursiveprot failed. Retrying without.";
+-        if (mount("none", controller->path(), "cgroup2", MS_NODEV | MS_NOEXEC | MS_NOSUID,
+-                  nullptr) < 0) {
+-            PLOG(ERROR) << "Failed to mount cgroup v2";
+-            return IsOptionalController(controller);
++        // In a system-as-root container /sys/fs/cgroup is already a cgroup2 mount provided
++        // by the runtime, so mount() returns EBUSY — that's not a failure, the hierarchy is there.
++        if (errno == EBUSY) {
++            LOG(INFO) << "cgroup v2 already mounted (EBUSY) — using the existing mount";
++        } else {
++            LOG(INFO) << "Mounting memcg with memory_recursiveprot failed. Retrying without.";
++            if (mount("none", controller->path(), "cgroup2", MS_NODEV | MS_NOEXEC | MS_NOSUID,
++                      nullptr) < 0) {
++                if (errno == EBUSY) {
++                    LOG(INFO) << "cgroup v2 already mounted (EBUSY) — using the existing mount";
++                } else {
++                    PLOG(ERROR) << "Failed to mount cgroup v2";
++                    return IsOptionalController(controller);
++                }
++            }
+         }
+     }
+ 
+diff --git a/rootdir/init.rc b/rootdir/init.rc
+index 5e26d12..4bd5c62 100644
+--- a/rootdir/init.rc
++++ b/rootdir/init.rc
+@@ -19,6 +19,8 @@ on early-init
+ 
+     # Disable sysrq from keyboard
+     write /proc/sys/kernel/sysrq 0
++    # /sys is mounted read-only in the container; remount rw so early-init writes succeed
++    mount sysfs sysfs /sys remount rw nodev
+ 
+     # Android doesn't need kernel module autoloading, and it causes SELinux
+     # denials.  So disable it by setting modprobe to the empty string.  Note: to
+@@ -232,9 +234,9 @@ on init
+     mkdir /dev/binderfs
+     mount binder binder /dev/binderfs stats=global
+     chmod 0755 /dev/binderfs
++    exec -- /vendor/bin/remora_binder_alloc /dev/binderfs/binder-control binder hwbinder vndbinder
+ 
+     # Mount fusectl
+-    mount fusectl none /sys/fs/fuse/connections
+ 
+     symlink /dev/binderfs/binder /dev/binder
+     symlink /dev/binderfs/hwbinder /dev/hwbinder
+@@ -557,7 +559,7 @@ on post-fs
+ 
+     # Once everything is setup, no need to modify /.
+     # The bind+remount combination allows this to work in containers.
+-    mount rootfs rootfs / remount bind ro nodev
++    # Remounting / ro breaks the container rootfs; leave it writable.
+ 
+     # Mount default storage into root namespace
+     mount none /mnt/user/0 /storage bind rec
+diff --git a/rootdir/ueventd.rc b/rootdir/ueventd.rc
+index 80ef6a1..07498f7 100644
+--- a/rootdir/ueventd.rc
++++ b/rootdir/ueventd.rc
+@@ -12,9 +12,6 @@ subsystem drm
+     devname uevent_devpath
+     dirname /dev/dri
+ 
+-subsystem input
+-    devname uevent_devpath
+-    dirname /dev/input
+ 
+ subsystem sound
+     devname uevent_devpath
+-- 
+2.54.0
+

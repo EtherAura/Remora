@@ -1,0 +1,210 @@
+From f82e6b67f9b4b2e71e4846b351da178b1fdce890 Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sat, 25 Jul 2026 19:32:46 -0400
+Subject: [PATCH] Remora: forward-port black (AMOLED) theme toggle to AOSP 17
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Replaces upstream 0063 (Settings: support black theme for dark mode), which
+cannot apply: AOSP 17 rewrote DarkModeScreen's preference hierarchy to named
+arguments and added a purpose= field to every PreferenceCategory, so the whole
+region the Lineage patch anchors on changed shape.
+
+Almost all of that conflict is context, not content. Lineage's actual
+contribution to this file is ONE line — placing DarkModeBlackThemePreference
+between the dark-theme-version category and the timing category — so only that
+line is carried forward onto AOSP's rewritten hierarchy. Taking "theirs"
+wholesale would have reverted both categories to the AOSP 16 positional form.
+
+The two new classes (DarkModeBlackThemePreference, DarkModeBlackThemeStorage)
+and the cm_strings.xml additions apply cleanly and are unchanged from upstream.
+darkModeStorage is already a member of BaseDarkModeScreen, so the constructor
+call needs nothing new in scope.
+
+NOT COMPILE-VERIFIED — written while a build held the tree, so it has not been
+through kotlinc.
+---
+ res/values/cm_strings.xml                     |  4 +
+ .../darkmode/DarkModeBlackThemePreference.kt  | 58 ++++++++++++++
+ .../darkmode/DarkModeBlackThemeStorage.kt     | 75 +++++++++++++++++++
+ .../display/darkmode/DarkModeScreen.kt        |  4 +
+ 4 files changed, 141 insertions(+)
+ create mode 100644 src/com/android/settings/display/darkmode/DarkModeBlackThemePreference.kt
+ create mode 100644 src/com/android/settings/display/darkmode/DarkModeBlackThemeStorage.kt
+
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index 31a9a02aea8..3376ba5bdaa 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -32,6 +32,10 @@
+     <string name="backup_transport_setting_label">Change backup provider</string>
+     <string name="backup_transport_title">Select backup provider</string>
+ 
++    <!-- Black theme for dark mode -->
++    <string name="berry_black_theme_title">Pure black</string>
++    <string name="berry_black_theme_summary">Pure black background for dark theme</string>
++
+     <!-- Device Info screen. LineageOS legal. -->
+     <string name="lineagelicense_title">LineageOS legal</string>
+ 
+diff --git a/src/com/android/settings/display/darkmode/DarkModeBlackThemePreference.kt b/src/com/android/settings/display/darkmode/DarkModeBlackThemePreference.kt
+new file mode 100644
+index 00000000000..e0a616855fb
+--- /dev/null
++++ b/src/com/android/settings/display/darkmode/DarkModeBlackThemePreference.kt
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (C) The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.settings.display.darkmode
++
++import android.content.Context
++import androidx.preference.SwitchPreferenceCompat
++import com.android.settings.R
++import com.android.settingslib.metadata.BooleanValuePreference
++import com.android.settingslib.metadata.PreferenceMetadata
++import com.android.settingslib.preference.PreferenceBinding
++import lineageos.providers.LineageSettings
++
++class DarkModeBlackThemePreference(context: Context, private val darkModeStorage: DarkModeStorage) :
++    PreferenceMetadata, BooleanValuePreference, PreferenceBinding {
++
++    private val blackThemeStorage = DarkModeBlackThemeStorage(context)
++
++    override val key: String = LineageSettings.Secure.BERRY_BLACK_THEME
++
++    override val title: Int = R.string.berry_black_theme_title
++
++    override val summary: Int = R.string.berry_black_theme_summary
++
++    override fun storage(context: Context) = blackThemeStorage
++
++    override fun isEnabled(context: Context): Boolean {
++        return darkModeStorage.getBoolean(DarkModeMainSwitchPreference.KEY) ?: false
++    }
++
++    override fun createWidget(context: Context) =
++        SwitchPreferenceCompat(context).apply { isPersistent = false }
++
++    fun isAvailable(context: Context): Boolean {
++        return try {
++            context.packageManager.getPackageInfo(
++                "org.lineageos.overlay.customization.blacktheme",
++                0,
++            )
++            true
++        } catch (e: Exception) {
++            false
++        }
++    }
++}
+diff --git a/src/com/android/settings/display/darkmode/DarkModeBlackThemeStorage.kt b/src/com/android/settings/display/darkmode/DarkModeBlackThemeStorage.kt
+new file mode 100644
+index 00000000000..5d8645e0513
+--- /dev/null
++++ b/src/com/android/settings/display/darkmode/DarkModeBlackThemeStorage.kt
+@@ -0,0 +1,75 @@
++/*
++ * Copyright (C) The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.settings.display.darkmode
++
++import android.content.Context
++import android.database.ContentObserver
++import android.os.Handler
++import android.os.Looper
++import com.android.settingslib.datastore.AbstractKeyedDataObservable
++import com.android.settingslib.datastore.KeyValueStore
++import com.android.settingslib.datastore.Permissions
++import com.android.settingslib.metadata.PreferenceChangeReason
++import lineageos.providers.LineageSettings
++
++@Suppress("UNCHECKED_CAST")
++class DarkModeBlackThemeStorage(private val context: Context) :
++    AbstractKeyedDataObservable<String>(), KeyValueStore {
++
++    private val settingsObserver =
++        object : ContentObserver(Handler(Looper.getMainLooper())) {
++            override fun onChange(selfChange: Boolean) {
++                notifyChange(LineageSettings.Secure.BERRY_BLACK_THEME, PreferenceChangeReason.VALUE)
++            }
++        }
++
++    override fun contains(key: String) = key == LineageSettings.Secure.BERRY_BLACK_THEME
++
++    override fun <T : Any> getValue(key: String, valueType: Class<T>): T? {
++        val value = LineageSettings.Secure.getInt(context.contentResolver, key, 0) != 0
++        return value as T
++    }
++
++    override fun <T : Any> setValue(key: String, valueType: Class<T>, value: T?) {
++        val boolValue = value as? Boolean ?: false
++        LineageSettings.Secure.putInt(
++            context.contentResolver,
++            LineageSettings.Secure.BERRY_BLACK_THEME,
++            if (boolValue) 1 else 0,
++        )
++        // Notify immediately for UI responsiveness
++        notifyChange(key, PreferenceChangeReason.VALUE)
++    }
++
++    override fun onFirstObserverAdded() {
++        context.contentResolver.registerContentObserver(
++            LineageSettings.Secure.getUriFor(LineageSettings.Secure.BERRY_BLACK_THEME),
++            false,
++            settingsObserver,
++        )
++    }
++
++    override fun onLastObserverRemoved() {
++        context.contentResolver.unregisterContentObserver(settingsObserver)
++    }
++
++    companion object {
++        fun getReadPermissions() = Permissions.EMPTY
++
++        fun getWritePermissions() = Permissions.allOf("lineageos.permission.WRITE_SECURE_SETTINGS")
++    }
++}
+diff --git a/src/com/android/settings/display/darkmode/DarkModeScreen.kt b/src/com/android/settings/display/darkmode/DarkModeScreen.kt
+index 2468e31a427..d8b935c5948 100644
+--- a/src/com/android/settings/display/darkmode/DarkModeScreen.kt
++++ b/src/com/android/settings/display/darkmode/DarkModeScreen.kt
+@@ -125,6 +125,10 @@ abstract class BaseDarkModeScreen(context: Context, val isUiOnly: Boolean) :
+                         +ExpandedDarkModeSelectorPreference(modeStorage, isUiOnly)
+                     }
+             }
++            // Lineage: black (AMOLED) variant of dark theme. Upstream 0063 placed this between
++            // the dark-theme-version category and the timing category; AOSP 17 rewrote both
++            // categories to named arguments, so only this line is carried forward.
++            +DarkModeBlackThemePreference(context, darkModeStorage)
+             +PreferenceCategory(
+                 key = "display_category",
+                 purpose = R.string.display_category_purpose,

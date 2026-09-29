@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Deliberately empty (bd remora-28ix.4 R1): the hook for revoking a system feature
+     from vendor without touching the frameworks permission files. Nothing is revoked
+     today; the file exists so the mechanism has a place when something needs it. -->
+<permissions>
+</permissions>

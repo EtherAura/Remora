@@ -1,0 +1,71 @@
+From c987327166ae3d834d8fb57a2b250bdfa727ac2c Mon Sep 17 00:00:00 2001
+From: Tommy Webb <tommy@calyxinstitute.org>
+Date: Wed, 22 Mar 2023 15:29:53 -0400
+Subject: [PATCH 33/98] POLICY_REJECT_ALL restricts all network access
+
+Read and write POLICY_REJECT_ALL instead of manipulating the setting
+designated for the restricted mode allowlist.
+
+Requires: I74407c21cd4ed2cdd932d634577ae07d0bad67b1
+Change-Id: I354fae215dcb15e1bf3a67ff4c94803eb60fcac1
+---
+ .../settings/datausage/AppDataUsage.java       | 18 +++++++-----------
+ 1 file changed, 7 insertions(+), 11 deletions(-)
+
+diff --git a/src/com/android/settings/datausage/AppDataUsage.java b/src/com/android/settings/datausage/AppDataUsage.java
+index 562ff63c00e..667b0529fe7 100644
+--- a/src/com/android/settings/datausage/AppDataUsage.java
++++ b/src/com/android/settings/datausage/AppDataUsage.java
+@@ -15,6 +15,7 @@
+ package com.android.settings.datausage;
+ 
+ import static android.net.NetworkPolicyManager.POLICY_REJECT_METERED_BACKGROUND;
++import static android.net.NetworkPolicyManager.POLICY_REJECT_ALL;
+ import static android.net.NetworkPolicyManager.POLICY_REJECT_CELLULAR;
+ import static android.net.NetworkPolicyManager.POLICY_REJECT_VPN;
+ import static android.net.NetworkPolicyManager.POLICY_REJECT_WIFI;
+@@ -30,7 +31,6 @@ import android.content.Context;
+ import android.content.pm.ApplicationInfo;
+ import android.content.pm.PackageManager;
+ import android.graphics.drawable.Drawable;
+-import android.net.ConnectivitySettingsManager;
+ import android.net.NetworkPolicyManager;
+ import android.net.NetworkTemplate;
+ import android.os.Bundle;
+@@ -248,14 +248,7 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+             updatePrefs();
+             return true;
+         } else if (preference == mRestrictAll) {
+-            Set<Integer> uids =
+-                    ConnectivitySettingsManager.getUidsAllowedOnRestrictedNetworks(mContext);
+-            if (!(Boolean) newValue) {
+-                uids.remove(mAppItem.key);
+-            } else {
+-                uids.add(mAppItem.key);
+-            }
+-            ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(mContext, uids);
++            setAppRestrictAll(!(Boolean) newValue);
+             updatePrefs();
+             return true;
+         } else if (preference == mRestrictCellular) {
+@@ -400,8 +393,7 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+     }
+ 
+     private boolean getAppRestrictAll() {
+-        return !ConnectivitySettingsManager.getUidsAllowedOnRestrictedNetworks(mContext)
+-                .contains(mAppItem.key);
++        return getAppRestriction(POLICY_REJECT_ALL);
+     }
+ 
+     private boolean getUnrestrictData() {
+@@ -422,6 +414,10 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+                 == PackageManager.PERMISSION_GRANTED;
+     }
+ 
++    private void setAppRestrictAll(boolean restrict) {
++        setAppRestriction(POLICY_REJECT_ALL, restrict);
++    }
++
+     private void setAppRestrictCellular(boolean restrict) {
+         setAppRestriction(POLICY_REJECT_CELLULAR, restrict);
+     }

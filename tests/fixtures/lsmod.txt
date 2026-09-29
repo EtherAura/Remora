@@ -1,0 +1,257 @@
+Module                  Size  Used by
+uvcvideo              176128  0
+uvc                    12288  1 uvcvideo
+videobuf2_vmalloc      20480  1 uvcvideo
+videobuf2_memops       16384  1 videobuf2_vmalloc
+videobuf2_v4l2         45056  1 uvcvideo
+videobuf2_common       98304  4 videobuf2_vmalloc,videobuf2_v4l2,uvcvideo,videobuf2_memops
+videodev              438272  2 videobuf2_v4l2,uvcvideo
+vhost_net              36864  1
+vhost                  77824  1 vhost_net
+vhost_iotlb            16384  1 vhost
+tap                    36864  1 vhost_net
+vfio_pci               20480  1
+vfio_pci_core         110592  1 vfio_pci
+vfio_iommu_type1       53248  1
+vfio                   81920  8 vfio_pci_core,vfio_iommu_type1,vfio_pci
+iommufd               155648  1 vfio
+tcp_diag               20480  0
+udp_diag               12288  0
+inet_diag              20480  2 tcp_diag,udp_diag
+hid_playstation        49152  0
+ff_memless             20480  1 hid_playstation
+led_class_multicolor    16384  1 hid_playstation
+joydev                 28672  0
+mousedev               28672  0
+uinput                 28672  3
+rpcsec_gss_krb5        36864  0
+nfsv4                1404928  1
+dns_resolver           16384  1 nfsv4
+nfs                   741376  5 nfsv4
+netfs                 647168  1 nfs
+nf_conntrack_netlink    61440  0
+xt_nat                 16384  25
+veth                   45056  0
+xt_MASQUERADE          16384  5
+xfrm_user              69632  1
+xfrm_algo              16384  1 xfrm_user
+xt_set                 24576  0
+ip_set                 69632  1 xt_set
+nft_chain_nat          12288  15
+nf_nat                 65536  3 xt_nat,nft_chain_nat,xt_MASQUERADE
+ccm                    20480  3
+rfcomm                114688  32
+nvidia_uvm           1929216  8
+snd_seq_dummy          12288  0
+snd_hrtimer            12288  1
+snd_seq               139264  7 snd_seq_dummy
+bridge                466944  0
+stp                    12288  1 bridge
+llc                    16384  2 bridge,stp
+overlay               241664  7
+algif_hash             16384  1
+algif_skcipher         12288  1
+af_alg                 36864  6 algif_hash,algif_skcipher
+bnep                   36864  2
+nfsd                 1191936  5
+mlx5_ib               524288  0
+auth_rpcgss           200704  2 nfsd,rpcsec_gss_krb5
+ib_uverbs             200704  1 mlx5_ib
+nfs_acl                12288  1 nfsd
+macsec                 69632  1 mlx5_ib
+lockd                 188416  2 nfsd,nfs
+grace                  16384  2 nfsd,lockd
+ib_core               626688  2 ib_uverbs,mlx5_ib
+mlx5_fwctl             16384  0
+nfs_localio            40960  2 nfsd,nfs
+fwctl                  20480  1 mlx5_fwctl
+vfat                   24576  1
+sunrpc                937984  30 nfs_localio,nfsd,nfsv4,auth_rpcgss,lockd,rpcsec_gss_krb5,nfs_acl,nfs
+fat                   114688  1 vfat
+snd_hda_codec_intelhdmi    28672  1
+snd_sof_pci_intel_tgl    12288  0
+snd_sof_pci_intel_cnl    20480  1 snd_sof_pci_intel_tgl
+snd_sof_intel_hda_generic    45056  2 snd_sof_pci_intel_tgl,snd_sof_pci_intel_cnl
+soundwire_intel        94208  1 snd_sof_intel_hda_generic
+snd_sof_intel_hda_sdw_bpt    20480  1 soundwire_intel
+snd_sof_intel_hda_common   212992  4 snd_sof_intel_hda_sdw_bpt,snd_sof_intel_hda_generic,snd_sof_pci_intel_tgl,snd_sof_pci_intel_cnl
+snd_soc_hdac_hda       24576  1 snd_sof_intel_hda_common
+snd_sof_intel_hda      24576  2 snd_sof_intel_hda_common,snd_sof_intel_hda_generic
+snd_sof_intel_hda_mlink    40960  4 snd_sof_intel_hda_sdw_bpt,soundwire_intel,snd_sof_intel_hda_common,snd_sof_intel_hda_generic
+soundwire_cadence      69632  1 soundwire_intel
+snd_sof_pci            24576  3 snd_sof_intel_hda_generic,snd_sof_pci_intel_tgl,snd_sof_pci_intel_cnl
+snd_sof_xtensa_dsp     16384  1 snd_sof_intel_hda_generic
+snd_sof               512000  6 snd_sof_intel_hda_sdw_bpt,snd_sof_pci,snd_sof_intel_hda_common,snd_sof_intel_hda_generic,snd_sof_intel_hda,snd_sof_pci_intel_cnl
+intel_rapl_msr         24576  0
+snd_sof_utils          16384  1 snd_sof
+intel_rapl_common      53248  1 intel_rapl_msr
+snd_soc_acpi_intel_match   143360  3 snd_sof_intel_hda_generic,snd_sof_pci_intel_tgl,snd_sof_pci_intel_cnl
+intel_uncore_frequency    12288  0
+snd_soc_acpi_intel_sdca_quirks    12288  1 snd_soc_acpi_intel_match
+intel_uncore_frequency_common    20480  1 intel_uncore_frequency
+soundwire_generic_allocation    20480  1 soundwire_intel
+xe                   4554752  8
+intel_tcc_cooling      12288  0
+snd_soc_sdw_utils     139264  1 snd_sof_intel_hda_generic
+snd_soc_acpi           16384  2 snd_soc_acpi_intel_match,snd_sof_intel_hda_generic
+x86_pkg_temp_thermal    16384  0
+soundwire_bus        1216512  4 soundwire_intel,snd_soc_sdw_utils,soundwire_generic_allocation,soundwire_cadence
+snd_soc_sdca          139264  2 snd_soc_acpi_intel_sdca_quirks,soundwire_bus
+intel_powerclamp       20480  0
+crc8                   12288  1 soundwire_cadence
+snd_hda_codec_nvhdmi    16384  1
+coretemp               20480  0
+iwlmvm                729088  0
+snd_hda_codec_hdmi     61440  2 snd_hda_codec_nvhdmi,snd_hda_codec_intelhdmi
+snd_soc_avs           274432  0
+drm_gpusvm_helper      61440  1 xe
+snd_soc_hda_codec      28672  1 snd_soc_avs
+kvm_intel             466944  27
+mac80211             1839104  1 iwlmvm
+snd_hda_ext_core       40960  7 snd_sof_intel_hda_sdw_bpt,snd_soc_avs,snd_soc_hda_codec,snd_sof_intel_hda_common,snd_soc_hdac_hda,snd_sof_intel_hda_mlink,snd_sof_intel_hda
+snd_hda_intel          69632  4
+gpu_sched              73728  1 xe
+mlx5_core            3289088  2 mlx5_fwctl,mlx5_ib
+asus_armoury          114688  0
+libarc4                12288  1 mac80211
+kvm                  1540096  26 kvm_intel
+btusb                  81920  0
+drm_gpuvm              57344  1 xe
+snd_hda_codec         237568  8 snd_soc_avs,snd_hda_codec_hdmi,snd_soc_hda_codec,snd_hda_intel,snd_hda_codec_nvhdmi,snd_soc_hdac_hda,snd_sof_intel_hda,snd_hda_codec_intelhdmi
+snd_usb_audio         634880  5
+snd_soc_core          446464  8 snd_soc_avs,snd_soc_hda_codec,soundwire_intel,snd_sof,snd_soc_sdca,snd_sof_intel_hda_common,snd_soc_sdw_utils,snd_soc_hdac_hda
+drm_suballoc_helper    24576  1 xe
+btmtk                  40960  1 btusb
+drm_exec               16384  2 drm_gpuvm,xe
+mlxfw                  49152  1 mlx5_core
+nvidia_drm            143360  138
+irqbypass              16384  2 vfio_pci_core,kvm
+ip6t_REJECT            12288  1
+iTCO_wdt               16384  0
+snd_hda_core          163840  10 snd_soc_avs,snd_hda_codec_hdmi,snd_soc_hda_codec,snd_hda_intel,snd_hda_ext_core,snd_hda_codec,snd_sof_intel_hda_common,snd_soc_hdac_hda,snd_sof_intel_hda,snd_hda_codec_intelhdmi
+btbcm                  24576  1 btusb
+snd_usbmidi_lib        57344  1 snd_usb_audio
+nvidia_modeset       1679360  39 nvidia_drm
+btintel                77824  1 btusb
+iwlwifi               626688  1 iwlmvm
+spi_nor               180224  1
+psample                16384  1 mlx5_core
+rapl                   20480  0
+spd5118                16384  0
+nf_reject_ipv6         20480  1 ip6t_REJECT
+snd_ump                40960  1 snd_usb_audio
+eeepc_wmi              12288  0
+intel_pmc_bxt          16384  1 iTCO_wdt
+ac97_bus               12288  1 snd_soc_core
+snd_intel_dspcfg       49152  5 snd_soc_avs,snd_hda_intel,snd_sof,snd_sof_intel_hda_common,snd_sof_intel_hda_generic
+firmware_attributes_class    12288  1 asus_armoury
+btrtl                  32768  1 btusb
+i915                 5201920  0
+intel_cstate           20480  0
+mtd                   122880  5 spi_nor
+mei_hdcp               28672  0
+mei_pxp                20480  0
+igc                   237568  0
+asus_wmi              118784  2 asus_armoury,eeepc_wmi
+i2c_i801               36864  0
+tls                   155648  1 mlx5_core
+snd_rawmidi            53248  2 snd_usbmidi_lib,snd_ump
+xt_hl                  12288  22
+snd_intel_sdw_acpi     16384  2 snd_intel_dspcfg,snd_sof_intel_hda_generic
+nvidia              16818176  1061 nvidia_uvm,nvidia_modeset
+snd_pcm_dmaengine      20480  1 snd_soc_core
+cfg80211             1589248  3 iwlmvm,iwlwifi,mac80211
+bluetooth            1167360  75 btrtl,btmtk,btintel,btbcm,bnep,btusb,rfcomm
+ptp                    57344  3 iwlmvm,igc,mlx5_core
+snd_hwdep              24576  2 snd_usb_audio,snd_hda_codec
+snd_seq_device         16384  3 snd_seq,snd_ump,snd_rawmidi
+snd_compress           32768  2 snd_soc_avs,snd_soc_core
+intel_uncore          294912  0
+drm_buddy              12288  2 xe,i915
+i2c_smbus              20480  1 i2c_i801
+asus_rog_ryujin        16384  0
+wmi_bmof               12288  0
+spi_intel_pci          12288  1
+ip6t_rt                16384  3
+pcspkr                 12288  0
+sparse_keymap          12288  1 asus_wmi
+i2c_algo_bit           20480  2 xe,i915
+intel_pmc_core        139264  0
+pci_hyperv_intf        12288  1 mlx5_core
+pps_core               32768  1 ptp
+spi_intel              40960  1 spi_intel_pci
+i2c_mux                20480  1 i2c_i801
+rfkill                 45056  9 iwlmvm,asus_wmi,bluetooth,cfg80211
+snd_pcm               233472  16 snd_soc_avs,snd_hda_codec_hdmi,snd_hda_intel,snd_usb_audio,snd_hda_codec,soundwire_intel,snd_sof,snd_soc_sdca,snd_sof_intel_hda_common,snd_compress,snd_sof_intel_hda_generic,snd_soc_core,snd_sof_utils,snd_hda_core,snd_pcm_dmaengine
+mc                     94208  5 videodev,snd_usb_audio,videobuf2_v4l2,uvcvideo,videobuf2_common
+intel_pmc_ssram_telemetry    16384  1 intel_pmc_core
+drm_display_helper    303104  2 xe,i915
+snd_timer              57344  3 snd_seq,snd_hrtimer,snd_pcm
+pmt_telemetry          16384  1 intel_pmc_core
+snd                   159744  36 snd_seq,snd_seq_device,snd_hda_codec_hdmi,snd_hwdep,snd_hda_intel,snd_usb_audio,snd_usbmidi_lib,snd_hda_codec,snd_sof,snd_soc_sdca,snd_timer,snd_compress,snd_soc_sdw_utils,snd_soc_core,snd_ump,snd_pcm,snd_rawmidi
+drm_ttm_helper         20480  2 nvidia_drm,xe
+cec                   106496  3 drm_display_helper,xe,i915
+mei_me                 61440  2
+pmt_discovery          24576  1 pmt_telemetry
+ipt_REJECT             12288  1
+soundcore              16384  1 snd
+ttm                   155648  3 drm_ttm_helper,xe,i915
+nf_reject_ipv4         12288  1 ipt_REJECT
+intel_gtt              28672  1 i915
+acpi_tad               32768  0
+pmt_class              20480  2 pmt_telemetry,pmt_discovery
+acpi_pad              184320  0
+mei                   212992  5 mei_hdcp,mei_pxp,mei_me
+intel_vsec             28672  3 intel_pmc_ssram_telemetry,pmt_telemetry,xe
+xt_LOG                 16384  10
+nf_log_syslog          28672  10
+mac_hid                12288  0
+xt_comment             12288  1
+xt_multiport           16384  2
+nft_limit              16384  13
+xt_limit               12288  0
+xt_addrtype            12288  8
+xt_tcpudp              20480  60
+xt_conntrack           12288  21
+nf_conntrack          212992  5 xt_conntrack,nf_nat,xt_nat,nf_conntrack_netlink,xt_MASQUERADE
+nf_defrag_ipv6         24576  1 nf_conntrack
+nf_defrag_ipv4         12288  1 nf_conntrack
+nft_compat             20480  159
+x_tables               69632  15 xt_conntrack,nft_compat,xt_LOG,xt_multiport,xt_tcpudp,xt_addrtype,xt_nat,ip6t_rt,xt_comment,xt_set,ipt_REJECT,xt_limit,xt_hl,xt_MASQUERADE,ip6t_REJECT
+nf_tables             401408  1379 nft_compat,nft_chain_nat,nft_limit
+sch_fq_codel           28672  53
+tun                    73728  3 vhost_net
+nfnetlink              20480  6 nft_compat,nf_conntrack_netlink,nf_tables,ip_set
+xfs                  4657152  1
+dm_crypt               65536  6
+encrypted_keys         28672  1 dm_crypt
+trusted                40960  2 encrypted_keys,dm_crypt
+tee                    61440  1 trusted
+asn1_encoder           16384  1 trusted
+ucsi_acpi              12288  0
+typec_ucsi             90112  1 ucsi_acpi
+roles                  16384  1 typec_ucsi
+typec                 135168  1 typec_ucsi
+nvme                   77824  5
+nvme_core             282624  6 nvme
+aesni_intel           106496  10
+gf128mul               12288  1 aesni_intel
+nvme_keyring           20480  1 nvme_core
+aead                   16384  8 dm_crypt,ccm,nvidia,xfrm_algo,macsec,mac80211,tls,aesni_intel
+video                  81920  4 asus_wmi,xe,i915,nvidia_modeset
+thunderbolt           614400  1 typec
+nvme_auth              36864  1 nvme_core
+intel_oc_wdt           12288  0
+intel_lpss_pci         28672  0
+intel_lpss             12288  1 intel_lpss_pci
+pinctrl_alderlake      32768  0
+wmi                    40960  4 video,asus_armoury,asus_wmi,wmi_bmof
+idma64                 20480  0
+virtio_scsi            32768  0
+dm_mirror              32768  0
+dm_region_hash         24576  1 dm_mirror
+dm_log                 28672  2 dm_region_hash,dm_mirror
+dm_mod                229376  15 dm_crypt,dm_log,dm_mirror
+ashmem_linux           24576  0
+i2c_dev                24576  0
+uhid                   24576  2

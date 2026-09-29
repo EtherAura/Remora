@@ -1,0 +1,7 @@
+androidboot.remora_gpu_mode=host
+androidboot.remora_gpu_node=/dev/dri/renderD129
+androidboot.use_memfd=true
+androidboot.remora_width=3760
+androidboot.remora_height=1992
+androidboot.remora_dpi=320
+

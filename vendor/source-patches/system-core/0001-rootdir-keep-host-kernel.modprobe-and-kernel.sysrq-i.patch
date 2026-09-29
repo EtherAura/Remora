@@ -1,0 +1,60 @@
+From 2b38652dd67848ba6776e334e619d8840e1866a6 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sat, 18 Jul 2026 18:19:41 -0400
+Subject: rootdir: keep host kernel.modprobe and kernel.sysrq intact
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+kernel.modprobe and kernel.sysrq are not namespaced: in a privileged Android
+container, init's early-init writes escape to the container host's global
+sysctls on EVERY container start.
+
+Blanking kernel.modprobe kills kernel-initiated module autoload host-wide.
+Kernel-side request_module silently fails, so rtnetlink veth pair creation
+returns EOPNOTSUPP and docker bridge networking on the host breaks ('failed
+to add the host <=> sandbox pair interfaces: operation not supported').
+Only modules userspace loads explicitly (macvlan/bridge via dockerd) keep
+working, which hides the damage until something needs autoload.
+
+Android blanks kernel.modprobe to stop kernel-initiated autoload behind
+init's back — meaningless in a container, where the kernel resolves
+/sbin/modprobe in the HOST filesystem anyway. The sysrq write is the same
+class of escape (it silently disables magic SysRq on the host); drop both.
+
+Remora: bd remora-ofn
+Change-Id: Icaa3ce9ff130a92e3a8705bb2af83741fac864c0
+---
+ rootdir/init.rc | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/rootdir/init.rc b/rootdir/init.rc
+index df2cc7e3b..93394ef22 100644
+--- a/rootdir/init.rc
++++ b/rootdir/init.rc
+@@ -13,15 +13,15 @@ import /system/etc/init/hw/init.${ro.zygote}.rc
+ 
+ # Cgroups are mounted right before early-init using list from /etc/cgroups.json
+ on early-init
+-    # Disable sysrq from keyboard
+-    write /proc/sys/kernel/sysrq 0
++    # Do NOT write kernel.sysrq / kernel.modprobe here. Neither sysctl is
++    # namespaced, so in a privileged container both writes escape to the HOST kernel.
++    # Blanking kernel.modprobe disables kernel module autoload host-wide: rtnetlink
++    # veth creation returns EOPNOTSUPP and docker bridge networking breaks on the
++    # container host. Android's reason for blanking it (stop kernel-initiated
++    # autoload behind init's back) is meaningless in a container, where the kernel
++    # resolves /sbin/modprobe in the host filesystem anyway.
+     mount sysfs sysfs /sys remount rw nodev
+ 
+-    # Android doesn't need kernel module autoloading, and it causes SELinux
+-    # denials.  So disable it by setting modprobe to the empty string.  Note: to
+-    # explicitly set a sysctl to an empty string, a trailing newline is needed.
+-    write /proc/sys/kernel/modprobe \n
+-
+     # Set the security context of /adb_keys if present.
+     restorecon /adb_keys
+ 
+-- 
+2.54.0
+

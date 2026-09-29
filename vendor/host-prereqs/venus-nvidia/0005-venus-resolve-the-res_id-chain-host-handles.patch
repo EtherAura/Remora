@@ -1,0 +1,147 @@
+From c7c2302bd823910c5bf660c5ba3e15da47dd21ca Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 31 Jul 2026 21:40:56 -0400
+Subject: [PATCH 05/16] =?UTF-8?q?venus:=20resolve=20the=20res=5Fid=20chain?=
+ =?UTF-8?q?=20=E2=80=94=20record=20HOST=20handles,=20not=20guest?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The chain now resolves live: 182 frame events over 200 submits, cycling res_id
+14/10/15/12 — a stable four-buffer rotation, which is what a display BufferQueue
+looks like in motion.
+
+THE BUG WAS GUEST vs HOST HANDLES. vkr_context_alloc_object() takes the guest
+handle as the object's ID while the driver handle lives in base.handle, and it
+is the driver handle that vn_replace_*_args_handle substitutes into
+vkCmdBeginRenderPass. The create hooks recorded *args->pFramebuffer and
+*args->pView — guest handles — so every lookup from the Cmd path missed. It
+failed SILENTLY: cmd_target sat at exactly 0 while all four other links worked,
+which reads identically to "wrong entry point" and sent me hunting through
+BeginRendering/BeginRenderPass/BeginRenderPass2 first.
+
+What settled it was instrumenting VKR_CMD_CALL itself to count EVERY Cmd*
+dispatch: CmdBeginRenderPass was right there in the list of 221, proving the
+dispatch layer was fine and the fault was mine. One probe at the layer boundary
+beat three guesses at the entry point.
+
+Also adds that any-cmd probe, since the same question will come up again.
+---
+ src/venus/vkr_command_buffer.c |  1 +
+ src/venus/vkr_image.c          |  9 ++++++---
+ src/venus/vkr_remora_track.c   | 21 +++++++++++++++++++++
+ src/venus/vkr_remora_track.h   |  6 ++++++
+ src/venus/vkr_render_pass.c    | 16 +++++++++++-----
+ 5 files changed, 45 insertions(+), 8 deletions(-)
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index d491d6d6..d3b4f8bf 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -21,6 +21,7 @@
+                                                                                          \
+       vn_replace_vk##cmd_name##_args_handle(args);                                       \
+       _vk->cmd_name(args->commandBuffer, ##__VA_ARGS__);                                 \
++      vkr_remora_note_any_cmd(#cmd_name);                                                \
+    } while (0)
+ 
+ static void
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index 559a2e00..f90f9fd6 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -186,9 +186,12 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+     * args handles in place, so afterwards it is the host handle and the guest
+     * one is gone. The image handle recorded here must match the one
+     * vkBindImageMemory saw, and that hook also runs post-replacement. */
+-   vkr_image_view_create_and_add(dispatch->data, args);
+-   if (args->ret == VK_SUCCESS && args->pView && args->pCreateInfo)
+-      vkr_remora_note_view_image(*args->pView, args->pCreateInfo->image);
++   struct vkr_image_view *_view = vkr_image_view_create_and_add(dispatch->data, args);
++   /* HOST handle, for the same reason as the framebuffer hook: the framebuffer
++    * records host view handles, so this map must be keyed the same way. */
++   if (_view && args->pCreateInfo)
++      vkr_remora_note_view_image(_view->base.handle.image_view,
++                                 args->pCreateInfo->image);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+index a93ff82a..8e38addf 100644
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -172,6 +172,27 @@ vkr_remora_note_cmd_target(VkCommandBuffer cmd, VkImageView view)
+    mtx_unlock(&track_mutex);
+ }
+ 
++void
++vkr_remora_note_any_cmd(const char *name)
++{
++   if (!vkr_remora_enabled())
++      return;
++   /* Names, not just a count: knowing WHICH Cmd* calls arrive tells us whether
++    * rendering is recorded here at all, and by which API. */
++   static uint64_t n;
++   static const char *seen[24];
++   static unsigned n_seen;
++   if (++n == 1)
++      fprintf(stderr, "[remora-hook] first ANY vkCmd dispatch (%s)\n", name);
++   for (unsigned i = 0; i < n_seen; i++)
++      if (seen[i] == name)
++         return;
++   if (n_seen < 24) {
++      seen[n_seen++] = name;
++      fprintf(stderr, "[remora-cmd] %s\n", name);
++   }
++}
++
+ void
+ vkr_remora_note_framebuffer(VkFramebuffer fb, VkImageView view)
+ {
+diff --git a/src/venus/vkr_remora_track.h b/src/venus/vkr_remora_track.h
+index eee6d7d0..30b0ad08 100644
+--- a/src/venus/vkr_remora_track.h
++++ b/src/venus/vkr_remora_track.h
+@@ -37,6 +37,12 @@
+ 
+ bool vkr_remora_enabled(void);
+ 
++/* Called from VKR_CMD_CALL for EVERY Cmd* dispatch. Answers the one question
++ * that separates "we hooked the wrong entry point" from "Cmd* never reaches
++ * this dispatch layer at all" — which is the difference between a small fix and
++ * looking in vkr_ring.c instead. */
++void vkr_remora_note_any_cmd(const char *name);
++
+ void vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id);
+ void vkr_remora_note_image_memory(VkImage image, VkDeviceMemory memory);
+ void vkr_remora_note_view_image(VkImageView view, VkImage image);
+diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
+index bbe348e8..87e6d7e9 100644
+--- a/src/venus/vkr_render_pass.c
++++ b/src/venus/vkr_render_pass.c
+@@ -77,11 +77,17 @@ static void
+ vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCreateFramebuffer *args)
+ {
+-   vkr_framebuffer_create_and_add(dispatch->data, args);
+-   /* Attachment 0 is the colour target for a compositor; that is the frame. */
+-   if (args->ret == VK_SUCCESS && args->pFramebuffer && args->pCreateInfo &&
+-       args->pCreateInfo->attachmentCount && args->pCreateInfo->pAttachments)
+-      vkr_remora_note_framebuffer(*args->pFramebuffer,
++   struct vkr_framebuffer *_fb = vkr_framebuffer_create_and_add(dispatch->data, args);
++   /* Record the HOST handle, not *args->pFramebuffer. The guest handle becomes
++    * the object's ID (vkr_context_alloc_object takes it), while the driver
++    * handle lives in base.handle — and it is the driver handle that
++    * vn_replace_*_args_handle substitutes into vkCmdBeginRenderPass. Keying on
++    * the guest handle made every lookup miss, silently: cmd_target stayed at 0
++    * while every other link worked.
++    * pAttachments is already host-side here, replaced before the driver call. */
++   if (_fb && args->pCreateInfo && args->pCreateInfo->attachmentCount &&
++       args->pCreateInfo->pAttachments)
++      vkr_remora_note_framebuffer(_fb->base.handle.framebuffer,
+                                   args->pCreateInfo->pAttachments[0]);
+ }
+ 
+-- 
+2.54.0
+

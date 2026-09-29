@@ -1,0 +1,32 @@
+From d6e8512bf1a5f66159be0606c3f9f66d1d868243 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 12:11:16 -0400
+Subject: [PATCH] A17: keep framework-telecom on the bootclasspath as a /system
+ jar (else-branch)
+
+Change-Id: Ifaf02a406a54c68e636b11e177128614501f6d34
+---
+ target/product/default_art_config.mk | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/target/product/default_art_config.mk b/target/product/default_art_config.mk
+index 7689dd0..6488ee1 100644
+--- a/target/product/default_art_config.mk
++++ b/target/product/default_art_config.mk
+@@ -146,6 +146,13 @@ ifeq ($(RELEASE_TELECOM_MAINLINE_MODULE),true)
+         com.android.telephonycore:framework-telecom \
+ 
+ else
++    # Remora/A17: framework-telecom is delivered as a PLATFORM /system jar here (not the mainline
++    # apex jar). android.telecom.TelecomManager lives ONLY in framework-telecom.jar, and
++    # frameworks/base SystemServiceRegistry hard-references TelecomManager.class in a static
++    # registration block, so it MUST be on the bootclasspath or zygote fails preloading
++    # SystemServiceRegistry (NoClassDefFoundError). As a /system jar it lands in both the build boot
++    # image and /system/etc/classpaths/bootclasspath.pb, so build == runtime component count stays
++    # consistent (unlike the prebuilt-apex boot jars, which the prebuilt bootclasspath.pb omitted).
+     PRODUCT_BOOT_JARS += \
+         framework-telecom \
+ 
+-- 
+2.54.0
+

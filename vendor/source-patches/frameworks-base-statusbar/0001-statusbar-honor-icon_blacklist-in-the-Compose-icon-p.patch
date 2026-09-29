@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sat, 25 Jul 2026 08:45:00 -0400
+Subject: [PATCH] statusbar: honor icon_blacklist in the Compose icon pipeline
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The new_status_bar_icons aconfig flag is enabled in this build, which
+routes system status icons through the Compose pipeline. That pipeline
+filters icons by slot name in exactly one place — SystemStatusIconsViewModel
+does `filterNot { it.slotName in blockedSlots }` — and the set it filters
+against comes from SystemStatusIconBlocklistInteractor.
+
+The home status bar's implementation only ever populated that set from the
+config_collapsed_statusbar_icon_blocklist resource array plus the vibrate
+icon setting. It never read Settings.Secure icon_blacklist, so the hide
+list that the legacy status bar honored through TunerService silently
+became a no-op for every migrated icon.
+
+Read icon_blacklist here and union it into the blocked set. Slot names
+survived the Compose migration unchanged (each SystemStatusIconViewModel
+takes its slotName from the same com.android.internal.R.string.status_bar_*
+tokens), so the existing hide list values keep working as-is.
+
+The user list is additive: it can hide more slots, but cannot un-hide one
+the device config blocked deliberately. Using the canonical icon_blacklist
+key rather than a private one keeps `settings put secure icon_blacklist`
+and third-party tuner apps working, and matches ConnectivityRepository,
+which already reads the same key for the connectivity slots.
+---
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/domain/interactor/HomeStatusBarIconBlockListInteractor.kt b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/domain/interactor/HomeStatusBarIconBlockListInteractor.kt
+index b1700a4f99b3..3618e16f1309 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/domain/interactor/HomeStatusBarIconBlockListInteractor.kt
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/domain/interactor/HomeStatusBarIconBlockListInteractor.kt
+@@ -22,9 +22,11 @@ import com.android.systemui.dagger.SysUISingleton
+ import com.android.systemui.dagger.qualifiers.Main
+ import com.android.systemui.res.R
+ import com.android.systemui.shared.settings.data.repository.SecureSettingsRepository
++import com.android.systemui.statusbar.phone.ui.StatusBarIconController
+ import com.android.systemui.statusbar.systemstatusicons.domain.interactor.SystemStatusIconBlocklistInteractor
+ import javax.inject.Inject
+ import kotlinx.coroutines.flow.Flow
++import kotlinx.coroutines.flow.combine
+ import kotlinx.coroutines.flow.map
+ 
+ /** A place to define the blocklist/allowlist for home status bar icons */
+@@ -42,18 +44,39 @@ constructor(@Main res: Resources, secureSettingsRepository: SecureSettingsReposi
+     private val shouldShowVibrateIcon: Flow<Boolean> =
+         secureSettingsRepository.boolSetting(Settings.Secure.STATUS_BAR_SHOW_VIBRATE_ICON, false)
+ 
++    /**
++     * Tracks the user's status bar icon hide list.
++     *
++     * This is the same `icon_blacklist` secure setting the legacy (pre-Compose) status bar honored
++     * through TunerService, and which [ConnectivityRepository] still reads for the connectivity
++     * slots. Reading it here re-attaches it to the Compose icon pipeline, whose only per-slot
++     * filter is [SystemStatusIconsViewModel]'s `filterNot { it.slotName in blockedSlots }`.
++     */
++    private val userBlockedIcons: Flow<Set<String>> =
++        secureSettingsRepository.stringSetting(StatusBarIconController.ICON_HIDE_LIST).map {
++            hideList ->
++            hideList
++                ?.split(',')
++                ?.map { slot -> slot.trim() }
++                ?.filter { slot -> slot.isNotEmpty() }
++                ?.toSet()
++                .orEmpty()
++        }
++
+     override val blockedIconSlots: Flow<Set<String>> =
+-        shouldShowVibrateIcon.map {
++        combine(shouldShowVibrateIcon, userBlockedIcons) { showVibrateIcon, userBlocked ->
+             val defaultSet = defaultBlockedIcons.toMutableSet()
+             // It's possible that the vibrate icon was in the default blocklist, so we manually
+             // merge the setting and list
+-            if (it) {
++            if (showVibrateIcon) {
+                 defaultSet.remove(vibrateIconSlot)
+             } else {
+                 defaultSet.add(vibrateIconSlot)
+             }
+ 
+-            defaultSet
++            // The user's hide list is additive: it can only ever hide more, never un-hide a slot
++            // the device config blocked on purpose.
++            defaultSet + userBlocked
+         }
+ 
+     val iconBlockList: Flow<List<String>> = blockedIconSlots.map { it.toList() }

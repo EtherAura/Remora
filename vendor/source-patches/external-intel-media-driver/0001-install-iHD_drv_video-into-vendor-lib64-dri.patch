@@ -1,0 +1,14 @@
+diff --git a/Android.bp b/Android.bp
+index ff8f57cbb..3256a64c5 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -123,6 +123,9 @@ common_cflags = [
+ 
+ cc_library_shared {
+     name: "iHD_drv_video",
++    // Install to /vendor/lib64/dri — the standard VA driver dir where LIBVA_DRIVERS_PATH points and
++    // where the old prebuilt lived. Without this the source module lands directly in /vendor/lib64.
++    relative_install_path: "dri",
+ 
+     srcs: [
+         "media_driver/agnostic/common/os/mos_context.cpp",

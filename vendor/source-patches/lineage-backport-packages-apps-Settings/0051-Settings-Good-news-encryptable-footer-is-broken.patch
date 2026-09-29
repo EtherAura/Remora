@@ -1,0 +1,43 @@
+From 9353b2ebc5312956e9e231aa46eb411871bb4ba3 Mon Sep 17 00:00:00 2001
+From: Michael W <baddaemon87@gmail.com>
+Date: Thu, 8 Dec 2022 14:43:55 +0100
+Subject: [PATCH 51/98] Settings: Good news, `encryptable=footer` is broken
+
+* Add a warning to discourage usage
+
+Change-Id: I1913d6a94ea040d545a7946bc4a21d731c41e612
+---
+ res/layout/storage_wizard_init_internal.xml | 7 +++++++
+ res/values/cm_strings.xml                   | 3 +++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/res/layout/storage_wizard_init_internal.xml b/res/layout/storage_wizard_init_internal.xml
+index 0a180703ed8..9a48283427c 100644
+--- a/res/layout/storage_wizard_init_internal.xml
++++ b/res/layout/storage_wizard_init_internal.xml
+@@ -26,6 +26,13 @@
+         android:textColor="?android:attr/textColorSecondary"
+         android:textSize="18sp"
+         android:text="@string/storage_wizard_init_v2_internal_summary" />
++     <TextView
++         android:layout_width="match_parent"
++         android:layout_height="wrap_content"
++         android:layout_marginBottom="32dp"
++         android:textColor="?android:attr/colorError"
++         android:textSize="18sp"
++         android:text="@string/storage_warning_internal" />
+      <ImageView
+         android:layout_width="match_parent"
+         android:layout_height="wrap_content"
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index 10d3d521302..cb43331c301 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -121,4 +121,7 @@
+     <!-- Wake on plug -->
+     <string name="wake_when_plugged_or_unplugged_title">Wake on plug</string>
+     <string name="wake_when_plugged_or_unplugged_summary">Turn the screen on when connecting or disconnecting a power source</string>
++
++    <!-- Warning message for the sd card setup -->
++    <string name="storage_warning_internal">Warning: This option may not work properly or lead to data loss and is therefore not recommended!</string>
+ </resources>

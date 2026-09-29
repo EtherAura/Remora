@@ -1,0 +1,38 @@
+# The Remora agent as an ANDROID INIT SERVICE (bd remora-28ix.3, docs/MIRROR_AGENT.md).
+#
+# Bind-mounted to /vendor/etc/init/remora-agent.rc by buildDockerRunArgv, exactly like
+# remora-fwd.rc: init parses it on every boot beside the vendor HAL .rc files, so this needs no
+# image change while the agent is still being built out. The endgame is a soong module and a
+# baked rc (bd remora-28ix.3.4); until then the dex is a bind mount too and iterating means
+# rebuilding it on the host and `setprop ctl.restart remora_agent` — seconds, no image rebuild.
+#
+# Why init and not a spawn-per-session like the jar it replaces: the agent is PERSISTENT. It is
+# there from boot, so a client connects to something already listening (no push, no app_process,
+# no per-session bootstrap), and it comes back after a container restart Remora never saw — the
+# same failure mode remora-fwd.rc exists to prevent. Init also restarts it if it dies, which is
+# the whole of the supervision a long-lived listener needs.
+#
+# `user shell` is the capability set the scrcpy-server ran with and everything the agent needs:
+# input injection, SurfaceControl, MediaCodec, and — via com.android.shell's
+# READ_CLIPBOARD_IN_BACKGROUND — the clipboard from the background. Running as root would be a
+# larger blast radius for no new capability. `group shell log` matches, and log lets it write
+# logcat, which is where its output goes: init discards a service's stdout, and stdout under
+# app_process is block-buffered anyway, so a long-lived agent printing there says nothing until
+# it exits (measured in bd remora-28ix.3.5).
+#
+# STARTED AFTER BOOT, for the reason remora-fwd.rc documents at length: `class main` runs before
+# the system services the agent binds to exist, and a service that flaps through early boot buries
+# the one exit worth reading. The agent needs system_server (input, clipboard, display) — that is
+# strictly later than boot_completed, so there is nothing to gain from starting sooner.
+#
+# /remora/agent.dex exists only because Remora mounted it. A container without that bind logs a
+# failed start and carries on booting; nothing else depends on this service, and the client's
+# probe answers its absence by falling back to the v1 jar path.
+service remora_agent /system/bin/app_process -Djava.class.path=/remora/agent.dex /system/bin com.remora.agent.Main
+    class late_start
+    user shell
+    group shell log
+    disabled
+
+on property:sys.boot_completed=1
+    start remora_agent

@@ -1,0 +1,136 @@
+# Patches dropped from the generated lineage-23.2 Settings series before it is applied to our
+# lineage-24.0 / AOSP-17 tree. One shell glob per line, matched against the patch filename.
+#
+# WHY ANY OF THIS IS NEEDED. This series is Settings-only. There is no generated frameworks/base
+# backport series — just one hand-written deps fixup — so the tree carries almost no LineageOS
+# framework. A Settings patch that calls a Lineage framework API therefore has no provider by
+# construction. It still APPLIES cleanly, which is the trap: the failure surfaces 45 minutes later
+# as a javac error in an unrelated-looking module, not as a patch conflict.
+#
+# Before adding an entry, check the alternative: if the framework side can be ported, port it and
+# keep the feature. These exclusions are deferrals, not verdicts — the backports are planned work,
+# tracked on bd remora-4ei.32. Anything listed here is a Lineage feature we are choosing not to
+# ship YET, so keep the reason specific enough to re-evaluate.
+
+# ADB root toggle. Calls android.adb.ADBRootService, which exists in no repo in the tree, in no
+# vendored patch, and in no ref of our frameworks/base (only lineage-24.0 is fetched; the series
+# was cut from lineage-23.2). Restoring it is a multi-repo framework port: client class, AIDL,
+# a registered system service, a new SELinux domain, and adbd support in system/core. Deferred
+# rather than dropped on merit — but note the image already ships Magisk, so root access does not
+# depend on this. Broke the build at 41,623/141,741 targets.
+0009-Add-toggle-to-enable-ADB-root.patch
+
+# ---------------------------------------------------------------------------------------------
+# Added after the build first compiled far enough to reach these. Each entry names the
+# FEATURE LOST, not just the patch, so the cost of the deferral is visible without reading the
+# patch. Tracked collectively on bd remora-4ei.32.
+# ---------------------------------------------------------------------------------------------
+
+# LOSES: nothing directly — this patch is a DELETION, and dropping it RESTORES working code.
+#
+# 0034 removes src/com/android/settings/fuelgauge/datasaver/DynamicDenylistManager.java and strips
+# its call sites from five files. It is a lineage-23.2 commit, and the base here is lineage-24.0,
+# whose f0b67ef0f9a ("Apply dynamic deny list into data usage state", Wesley Wang) added TWO MORE
+# callers in DataSaverBackend.java after 23.2 was cut. The 3-way merge therefore succeeds and is
+# still wrong: it deletes the class and removes the callers it knew about, stranding the two it
+# could not know about. Result is `cannot find symbol` at DataSaverBackend.java:86,116 and
+# AppDataUsage.java:312.
+#
+# This is the FIRST exclusion here that is not a missing provider or a changed contract. It is a
+# patch whose removal is simply already done — and done better — upstream. Excluding it keeps the
+# class AND its callers, which is the self-consistent state.
+#
+# NOTE FOR ANYONE RE-EVALUATING: 0030 and 0064 were excluded here first and were INNOCENT. 0030
+# never touches DataSaverBackend at all (only cm_strings.xml, app_data_usage.xml, AppDataUsage.java)
+# and 0064 has zero references to DynamicDenylistManager. They were picked because 0030's filename
+# is identical to 0031's — format-patch truncates at 52 characters, so the two differ only by
+# number, exactly the collision the apply loop's own comment warns about. Match on the NUMBER, not
+# the visible name.
+0034-DynamicDenylistManager-shall-not-exist.patch
+
+# LOSES: design capacity / maximum capacity / cycle count rows on the battery info page.
+# Calls BatteryManager.EXTRA_DESIGN_CAPACITY, a LineageOS addition to frameworks/base that is
+# absent from this tree — the same missing-provider situation as ADBRootService above, and it
+# needs a framework change rather than a Settings one.
+# TO RESTORE: port the Lineage BatteryManager extras (and the HAL plumbing that populates them).
+0060-Settings-deviceinfo-Extend-Battery-info-page.patch
+0061-Hide-unavailable-battery-info.patch
+
+# 0095 (MAC masking) was excluded here for the vanished setMacSummary() hook, then REWORKED
+# against AOSP 17's contract (the gate now lives in the concrete controllers'
+# displayPreference/updateConnectivity — see the patch's own rework note) and restored to the
+# series (bd remora-4ei.32.3). NOT excluded — do not re-add it or a regen drops the rework.
+
+# =================================================================================================
+# CONFLICT-AT-APPLY exclusions (bd remora-cbd.3). Everything ABOVE this line applies CLEANLY and is
+# dropped because its runtime provider is absent — the dangerous silent case. Everything BELOW
+# CONFLICTS on our AOSP-17 base and would be dropped by the apply loop ANYWAY, printing an identical
+# "WARN backport patch SKIPPED (conflicts)" line whether it is expected churn or a real regression.
+# Listing them here changes nothing in the built tree (a conflicted patch is skipped either way) —
+# it converts ~23 indistinguishable SKIPPED warnings into announced EXCLUDED drops, so a NEW
+# SKIPPED line is once again a signal worth reading. Enumerated by replaying the series onto a
+# pristine refs/remotes/m/lineage-24.0 worktree, not guessed.
+#
+# --- SUPERSEDED by a Remora AOSP-17 forward-port (9001-9007) -------------------------------------
+# The lineage-23.2 original no longer applies because the forward-port already rewrote those files
+# for AOSP 17; the FEATURE ships via the 90xx commit. These are the "96 upstream + 7 forward-port"
+# split of bd remora-cbd.1 — verified: the deployed image carries all of them.
+
+# -> 9001 (Remora: wire the Lineage platform deps into AOSP-17 Android.bp)
+0003-Settings-Depend-on-lineage-platform-library.patch
+0006-Settings-Depend-on-LineagePreferenceLib.patch
+# -> 9003 + 9006 (Remora: forward-port LineageOS legal info to AOSP 17)
+0011-Settings-Add-LineageOS-legal-info.patch
+# -> 9005 + 9006 (Remora: forward-port black (AMOLED) theme toggle to AOSP 17)
+0063-Settings-support-black-theme-for-dark-mode.patch
+# -> 9004 (Remora: forward-port "protect sensitive data on about page" to AOSP 17)
+0079-Reapply-Settings-Protect-sensitive-data-on-the-about.patch
+# -> 9002 (Remora: forward-port TopLevelSettings large-screen home icons to AOSP 17)
+0081-TopLevelSettings-Fix-homepage-icons-hiding-on-tablet.patch
+
+# --- UN-PORTED lineage features: conflict on AOSP-17, NOT forward-ported (deferrals) -------------
+# These are the same class as the ADB-root / battery entries above — Lineage features whose base
+# code AOSP 17 changed, so the lineage-23.2 patch no longer applies and no forward-port exists yet.
+# The issue that filed these (bd remora-cbd.3) assumed every conflict mapped onto a forward-port;
+# it does not — only the six above do. Excluded as deferred, re-evaluable, tracked on bd
+# remora-4ei.32. TO RESTORE any of them: forward-port the patch against AOSP 17's current code.
+
+# LOSES: USB / setup-wizard preference-screen changes (hide unsupported USB modes, SUW network and
+# mobile-data setup panes, USB screen titles/headers).
+0019-Settings-Hide-unsupported-USB-modes-automatically.patch
+0022-Settings-Network-setup-UI-changes-for-SUW.patch
+0023-Handle-mobile-data-on-internet-page-during-setup.patch
+0024-Fix-inconsistent-USB-preference-screen-title.patch
+0027-Remove-useless-USB-page-header.patch
+0067-Add-a-mobile-data-toggle-for-setup.patch
+# LOSES: Lineage display/touch tunables (high-touch sensitivity + polling rate, proximity-on-wake,
+# wake-on-plug, promoted external doze settings).
+0035-Settings-Add-high-touch-sensitivity-and-touchscreen-.patch
+0036-Settings-Add-proximity-check-on-wake-preference.patch
+0037-Settings-display-Add-wake-on-plug-switch.patch
+0043-Settings-Display-Add-High-Touch-Polling-Rate-Support.patch
+0073-Settings-Promote-external-doze-settings-to-first-cla.patch
+# LOSES: SIM toggle/visibility behaviour (unchangeable SIM toggle when unsupported + its fixup,
+# tap-to-show in SIM settings).
+0066-Settings-Make-SIM-toggle-unchangable-when-not-suppor.patch
+0088-fixup-Settings-Make-SIM-toggle-unchangable-when-not-.patch
+0096-Require-tap-to-show-in-SIM-settings.patch
+# LOSES: assorted (baseband-string trim on About, background-data policy fix, 2x2 lock-pattern grid).
+0008-BasebandVersionPreference-Trim-baseband-if-needed.patch
+0064-Fix-background-data-clobbering-other-policies.patch
+0077-Settings-Forward-port-lock-pattern-grid-size-2-2.patch
+
+# DOES NOT COMPILE ON AOSP 17, and applies cleanly enough to hide that. The patch overrides
+# setMacSummary(Preference, String) and calls super.setMacSummary(...), which existed on A16's
+# AbstractConnectivityPreferenceController and does not on A17:
+#   WifiMacAddressPreferenceController.java:44: error: method does not override or implement a
+#                                               method from a supertype
+#   WifiMacAddressPreferenceController.java:49: error: cannot find symbol
+#                                               symbol: method setMacSummary(Preference,String)
+# It survives `git apply --3way` because the surrounding text still matches, so the series looked
+# healthy (0 skipped) and failed 20 minutes later in javac — the only two errors in the whole build.
+# LOSES: MAC addresses stay visible in About Phone. In a container there is no real Wi-Fi or
+# Bluetooth adapter behind them, so the privacy value this adds on a phone is not value here.
+# Forward-porting it would mean reimplementing the override against A17's supertype as a 9xxx fixup;
+# excluding is the honest trade until someone wants that row hidden.
+0095-Hide-Wi-Fi-and-Bluetooth-MAC-addresses-in-About-Phon.patch

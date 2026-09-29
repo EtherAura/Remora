@@ -1,0 +1,63 @@
+From 7895830aace4b4ccf93b466ddcf72518335d3c10 Mon Sep 17 00:00:00 2001
+From: R <r@l>
+Date: Sun, 30 Aug 2026 17:37:57 -0400
+Subject: [PATCH] 
+ 0004-gbm_mesa-tell-the-external-allocator-codec-buffers-must-be-linear.patch
+
+Change-Id: I95f884160247d911590ad44cee836bda5e911376
+---
+ gbm_mesa_driver/gbm_mesa_internals.cpp | 21 +++++++++++++++++++++
+ gbm_mesa_driver/gbm_mesa_wrapper.h     |  5 +++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index 9381d76..4bbb900 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -376,6 +376,27 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 		.force_linear = (use_flags & BO_USE_SW_MASK) != 0,
+ 		.needs_map_stride = (use_flags & BO_USE_SW_MASK) != 0,
+ 		.use_scanout = (use_flags & BO_USE_SCANOUT) != 0,
++		/*
++		 * The codec buffers cross a device boundary and the allocator has to
++		 * be told, because it cannot see it (bd remora-cq3).
++		 *
++		 * On bare/NVIDIA video is split across BOTH GPUs: c2-va decodes and
++		 * encodes on the Intel xe VF while SurfaceFlinger composites on
++		 * NVIDIA. The external (vtest) allocator runs on NVIDIA, so a codec
++		 * buffer it hands back in NVIDIA's block-linear layout is refused by
++		 * iHD on import -- "vaCreateSurfaces(DRM_PRIME_2, modifier=...)
++		 * failed: resource allocation failed" -- and the decoder reports
++		 * error 14 on its first output frame, which the app sees as
++		 * ERROR_CODE_DECODING_FAILED. Linear is the only layout both agree on.
++		 *
++		 * The combination table above already says exactly this locally, by
++		 * advertising the HW_VIDEO_* usages on the 32bpp RGB formats with
++		 * linear_metadata; this carries the same contract to an allocator
++		 * that does not consult it. Decode is the RGBX output pool, encode is
++		 * the VDENC direct-RGB source.
++		 */
++		.linear_required =
++		    (use_flags & (BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER)) != 0,
+ 	};
+ 
+ 	/* Alignment for RPI4 CSI camera. Since we do not care about other cameras, keep this
+diff --git a/gbm_mesa_driver/gbm_mesa_wrapper.h b/gbm_mesa_driver/gbm_mesa_wrapper.h
+index 653cb8e..932e442 100644
+--- a/gbm_mesa_driver/gbm_mesa_wrapper.h
++++ b/gbm_mesa_driver/gbm_mesa_wrapper.h
+@@ -29,6 +29,11 @@ struct alloc_args {
+ 	bool use_scanout;
+ 	bool force_linear;
+ 	bool needs_map_stride;
++	/* A second GPU imports this buffer, so linear is the only layout both
++	 * understand. Distinct from force_linear, which means "the CPU maps it":
++	 * the external allocator ranks this above scanout, and force_linear below
++	 * it (bd remora-cq3). */
++	bool linear_required;
+ 	int out_fd;
+ 	uint32_t out_stride;
+ 	uint64_t out_modifier;
+-- 
+2.54.0
+

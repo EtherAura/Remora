@@ -1,0 +1,69 @@
+// Remora device tree — soong side (bd remora-ykhz, 28ix.4 R3).
+//
+// VERSIONED SONAME SHIMS for libdrm and its per-driver backends.
+//
+// AOSP builds all five of these itself (external/libdrm plus its amdgpu/, intel/, nouveau/ and
+// radeon/ subdirectory Android.bp files, all already `vendor: true`) — it simply never installs the
+// four backends. remora.mk installs them.
+//
+// The catch is the FILENAME. Mesa's prebuilts carry DT_NEEDED libdrm_amdgpu.so.1 and libdrm.so.2,
+// and bionic resolves a DT_NEEDED by searching the library path for a file of exactly that name.
+// Soong emits libdrm_amdgpu.so with an unversioned soname and has no property that would change
+// that — `stem: "libdrm_amdgpu.so.1"` yields libdrm_amdgpu.so.1.so, because the .so is appended.
+// So the searched-for name is supplied here as a symlink beside the real library, which is exactly
+// the shape upstream libdrm installs (libdrm_amdgpu.so.1 -> libdrm_amdgpu.so.1.0.0) and the shape
+// the prebuilts project was already shipping (its module names ARE the versioned names).
+//
+// 64-BIT ONLY, and the 32-bit half was REMOVED rather than left harmlessly behind (bd remora-ykhz).
+// install_symlink's installed_location is a literal partition-relative path, not an arch-derived
+// one, so a lib/... module keeps installing even after the board drops TARGET_2ND_ARCH — it just
+// points at a library that no longer exists. That shipped five dangling symlinks in
+// /vendor/lib before this was caught. One module per file because install_symlink takes a single
+// installed_location and cannot express multilib.
+//
+// The symlink target is a bare filename, i.e. a sibling in the same directory, so it stays correct
+// regardless of where the partition is mounted.
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+install_symlink {
+    name: "libdrm_so_2_symlink64",
+    vendor: true,
+    installed_location: "lib64/libdrm.so.2",
+    symlink_target: "libdrm.so",
+}
+
+
+install_symlink {
+    name: "libdrm_amdgpu_so_1_symlink64",
+    vendor: true,
+    installed_location: "lib64/libdrm_amdgpu.so.1",
+    symlink_target: "libdrm_amdgpu.so",
+}
+
+
+install_symlink {
+    name: "libdrm_intel_so_1_symlink64",
+    vendor: true,
+    installed_location: "lib64/libdrm_intel.so.1",
+    symlink_target: "libdrm_intel.so",
+}
+
+
+install_symlink {
+    name: "libdrm_nouveau_so_2_symlink64",
+    vendor: true,
+    installed_location: "lib64/libdrm_nouveau.so.2",
+    symlink_target: "libdrm_nouveau.so",
+}
+
+
+install_symlink {
+    name: "libdrm_radeon_so_1_symlink64",
+    vendor: true,
+    installed_location: "lib64/libdrm_radeon.so.1",
+    symlink_target: "libdrm_radeon.so",
+}
+

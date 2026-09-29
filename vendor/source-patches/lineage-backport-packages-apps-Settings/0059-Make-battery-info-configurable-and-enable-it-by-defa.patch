@@ -1,0 +1,46 @@
+From e4cb36dc95f7010f9577feca45ed13bcc2c9541c Mon Sep 17 00:00:00 2001
+From: Michael Bestas <mkbestas@gmail.com>
+Date: Fri, 15 Mar 2024 16:10:49 +0200
+Subject: [PATCH 59/98] Make battery info configurable and enable it by default
+
+Change-Id: If38db229e420e9f7c0ac26abb42a2a309b2f87c2
+---
+ res/values/lineage_config.xml                                  | 3 +++
+ .../settings/fuelgauge/BatterySettingsFeatureProviderImpl.java | 3 ++-
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/res/values/lineage_config.xml b/res/values/lineage_config.xml
+index 418af0d3b38..8d599ee99b8 100644
+--- a/res/values/lineage_config.xml
++++ b/res/values/lineage_config.xml
+@@ -26,6 +26,9 @@
+         <item>com.android.localtransport/.LocalTransport</item>
+     </string-array>
+ 
++    <!-- Show battery information -->
++    <bool name="config_show_battery_info" translatable="false">true</bool>
++
+     <!-- Whether to show peak refresh rate in display settings -->
+     <bool name="config_show_peak_refresh_rate_switch">false</bool>
+ 
+diff --git a/src/com/android/settings/fuelgauge/BatterySettingsFeatureProviderImpl.java b/src/com/android/settings/fuelgauge/BatterySettingsFeatureProviderImpl.java
+index 19c10d78306..a6d89dc2f06 100644
+--- a/src/com/android/settings/fuelgauge/BatterySettingsFeatureProviderImpl.java
++++ b/src/com/android/settings/fuelgauge/BatterySettingsFeatureProviderImpl.java
+@@ -21,6 +21,7 @@ import android.content.Context;
+ import androidx.annotation.NonNull;
+ import androidx.annotation.Nullable;
+ 
++import com.android.settings.R;
+ import com.android.settings.fuelgauge.batterytip.BatteryTipPolicy;
+ import com.android.settings.fuelgauge.batterytip.detectors.LowBatteryDetector;
+ import com.android.settings.fuelgauge.batterytip.tips.BatteryTip;
+@@ -42,7 +43,7 @@ public class BatterySettingsFeatureProviderImpl implements BatterySettingsFeatur
+ 
+     @Override
+     public boolean isBatteryInfoEnabled(Context context) {
+-        return false;
++        return context.getResources().getBoolean(R.bool.config_show_battery_info);
+     }
+ 
+     @Override

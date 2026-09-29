@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000022 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Tue, 4 Aug 2026 20:10:00 -0400
+Subject: [PATCH] venus: name the modifier a refused vkCreateImage asked for
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+bd remora-e5x.25 asked for exactly this and it is what finally identified
+the bug. The e5x.21 failure log prints tiling, but tiling only ever says
+DRM_FORMAT_MODIFIER_EXT — the modifier itself lives in the pNext chain,
+and the modifier is the thing the allocator has to stop handing out.
+
+Both spellings appear and both matter: a LIST when the guest lets the
+driver choose, an EXPLICIT one when it is importing a buffer that already
+exists. Super Mario Run's swapchain turned out to be the explicit case:
+
+  vkCreateImage FAILED ret=-11 format=37 extent=1055x1992
+                tiling=1000158000 usage=0x97 modifier=explicit: 0x0 planes=1
+
+ret=-11 is FORMAT_NOT_SUPPORTED, format 37 is R8G8B8A8_UNORM, usage 0x97
+is TRANSFER_SRC|TRANSFER_DST|SAMPLED|COLOR_ATTACHMENT|INPUT_ATTACHMENT
+and modifier 0x0 is DRM_FORMAT_MOD_LINEAR. NVIDIA will not create a
+RENDERABLE linear-modifier image, so every frame of that app's swapchain
+is refused and the app renders black while staying alive.
+
+Diagnostic only — no behaviour change.
+---
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index f4b2212e..86013a0d 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -47,10 +47,33 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+    if (!_img && args->pCreateInfo) {
+       /* remora-e5x.21: a pipelined create failure surfaces later as a fatal
+        * missing-object CS error — record what the driver refused. */
+-      vkr_log("vkCreateImage FAILED ret=%d format=%d extent=%ux%u tiling=%d usage=0x%x",
++      /* remora-e5x.25: the refusal is useless without the MODIFIER. tiling alone
++       * only says DRM_FORMAT_MODIFIER_EXT; which modifier the guest asked for is
++       * in the pNext chain, and that is the thing the allocator has to stop
++       * advertising. Both spellings appear: a LIST when the guest lets the driver
++       * choose, an EXPLICIT one when it is importing a buffer that already exists. */
++      char mods[192];
++      int n = snprintf(mods, sizeof mods, "none");
++      for (const VkBaseInStructure *p = args->pCreateInfo->pNext; p; p = p->pNext) {
++         if (p->sType == VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT) {
++            const VkImageDrmFormatModifierListCreateInfoEXT *l = (const void *)p;
++            n = snprintf(mods, sizeof mods, "list[%u]:", l->drmFormatModifierCount);
++            for (uint32_t i = 0; i < l->drmFormatModifierCount && n > 0 && n < (int)sizeof mods; i++)
++               n += snprintf(mods + n, sizeof mods - n, " 0x%llx",
++                             (unsigned long long)l->pDrmFormatModifiers[i]);
++            break;
++         }
++         if (p->sType == VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT) {
++            const VkImageDrmFormatModifierExplicitCreateInfoEXT *e = (const void *)p;
++            snprintf(mods, sizeof mods, "explicit: 0x%llx planes=%u",
++                     (unsigned long long)e->drmFormatModifier, e->drmFormatModifierPlaneCount);
++            break;
++         }
++      }
++      vkr_log("vkCreateImage FAILED ret=%d format=%d extent=%ux%u tiling=%d usage=0x%x modifier=%s",
+               args->ret, args->pCreateInfo->format, args->pCreateInfo->extent.width,
+               args->pCreateInfo->extent.height, args->pCreateInfo->tiling,
+-              args->pCreateInfo->usage);
++              args->pCreateInfo->usage, mods);
+    }
+ }
+ 

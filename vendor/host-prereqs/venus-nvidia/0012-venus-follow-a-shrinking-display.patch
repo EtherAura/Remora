@@ -1,0 +1,101 @@
+From 6b6b1bb77b768084b8725ddd2ccff1feac82609e Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sat, 1 Aug 2026 05:53:41 -0400
+Subject: [PATCH 12/16] venus: let the display label follow a display that
+ shrinks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The label only ever grew. It is chosen as the largest render target seen, which
+is what distinguishes the display from the nav and status bar layers, but
+nothing ever lowered it — so after the display resized smaller, the label kept
+pointing at buffers nobody writes any more and an encoder following it would
+encode a frozen frame forever.
+
+Growth stays immediate: nothing composites larger than the display. Shrinking
+cannot be symmetric, because a smaller target is the normal case for every bar
+and app surface, and relabelling on one would let the label wander onto whatever
+rendered last — the exact heuristic the res_id chain exists to avoid.
+
+So the evidence for a shrink is NEGATIVE: nothing renders at the labelled size
+any more. Submissions since the label was last seen are counted, and only once
+that runs out (240, about 4s at 60fps — long enough that a still screen going
+idle is not mistaken for a resize) is the largest extent that IS being rendered
+adopted.
+
+Verified not to disturb the steady state: 630 frames imported at a constant
+3760x1992 with zero relabels.
+---
+ src/venus/vkr_remora_track.c | 47 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 47 insertions(+)
+
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+index 78f60fa4..644badc1 100644
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -48,6 +48,21 @@ static struct handle_map map_img_lay;    /* VkImage        -> (offset<<32)|rowPi
+ 
+ /* The labelled display, and the newest frame seen for it. */
+ static uint32_t disp_w, disp_h, disp_res_id;
++
++/* Staleness tracking, so the label can follow a display that SHRINKS.
++ *
++ * Growth is unambiguous and applied immediately: nothing composites larger than
++ * the display. Shrinking is not — a smaller target is the normal case for the
++ * nav bar, the status bar, and every app surface, so it cannot relabel on its
++ * own or the label would wander onto whatever rendered last. The evidence that
++ * a shrink really happened is NEGATIVE: nothing renders at the labelled size any
++ * more. So count submissions since the label was last seen, and only when that
++ * runs out adopt the largest extent that IS being rendered. */
++static uint64_t disp_unseen;             /* resolved submits since the label was seen */
++static uint32_t cand_w, cand_h;          /* largest extent seen while unseen */
++/* ~4s at 60fps. Long enough that a display which merely goes idle — a still
++ * screen composites nothing — is not mistaken for one that resized. */
++#define DISP_STALE_SUBMITS 240
+ /* Its pixel layout, which an importing encoder needs and cannot derive. */
+ static uint32_t disp_format, disp_tiling, disp_offset, disp_pitch;
+ static uint64_t disp_modifier = ~0ull;
+@@ -729,7 +744,39 @@ vkr_remora_note_submit(struct vkr_queue *queue, const VkCommandBuffer *cmds,
+       if (_w && _h && (uint64_t)_w * _h > (uint64_t)disp_w * disp_h) {
+          disp_w = _w;
+          disp_h = _h;
++         disp_unseen = 0;
++         cand_w = cand_h = 0;
+          fprintf(stderr, "[remora-display] labelled %ux%u\n", _w, _h);
++      } else if (_w && _h) {
++         if (_w == disp_w && _h == disp_h) {
++            /* The display is still being rendered: the label is current. */
++            disp_unseen = 0;
++            cand_w = cand_h = 0;
++         } else if (disp_w) {
++            if ((uint64_t)_w * _h > (uint64_t)cand_w * cand_h) {
++               cand_w = _w;
++               cand_h = _h;
++            }
++            if (++disp_unseen > DISP_STALE_SUBMITS && cand_w && cand_h) {
++               /* Nothing has rendered at the labelled size for a long time while
++                * other targets kept coming. The display resized; the old label
++                * points at buffers nobody writes any more, and an encoder
++                * following it would happily encode a frozen frame. */
++               fprintf(stderr,
++                       "[remora-display] relabelled %ux%u -> %ux%u (nothing rendered at "
++                       "the old size for %" PRIu64 " submits)\n",
++                       disp_w, disp_h, cand_w, cand_h, disp_unseen);
++               disp_w = cand_w;
++               disp_h = cand_h;
++               disp_unseen = 0;
++               cand_w = cand_h = 0;
++               /* The layout belongs to the old buffers; let the new display
++                * republish its own, and drop anything staged against the old. */
++               disp_layout_logged = false;
++               staged_res_id = 0;
++               memset(&map_res_sent, 0, sizeof(map_res_sent));
++            }
++         }
+       }
+       if (_w == disp_w && _h == disp_h && disp_w) {
+          const int fd = (int)map_get(&map_res_fd, res_id);
+-- 
+2.54.0
+

@@ -1,0 +1,48 @@
+From 56074aa3f71e5f737c391412204e76f7272027f5 Mon Sep 17 00:00:00 2001
+From: penglezos <panagiotisegl@gmail.com>
+Date: Sun, 1 Oct 2023 16:02:58 +0300
+Subject: [PATCH 56/98] Settings: Add private dns icon
+
+- Taken from Google's material symbols and icons
+
+Change-Id: I0f000193c3590a0c751713d1947778787a90ca47
+Signed-off-by: penglezos <panagiotisegl@gmail.com>
+---
+ res/drawable/ic_settings_private_dns.xml | 15 +++++++++++++++
+ res/xml/network_provider_internet.xml    |  1 +
+ 2 files changed, 16 insertions(+)
+ create mode 100644 res/drawable/ic_settings_private_dns.xml
+
+diff --git a/res/drawable/ic_settings_private_dns.xml b/res/drawable/ic_settings_private_dns.xml
+new file mode 100644
+index 00000000000..06b7f116f9f
+--- /dev/null
++++ b/res/drawable/ic_settings_private_dns.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++     SPDX-FileCopyrightText: Material Design Authors / Google LLC
++     SPDX-License-Identifier: Apache-2.0
++-->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24"
++    android:viewportHeight="24"
++    android:tint="?android:attr/colorControlNormal">
++    <path
++        android:fillColor="#000000"
++        android:pathData="M19,15v4H5v-4h14m1,-2H4c-0.55,0 -1,0.45 -1,1v6c0,0.55 0.45,1 1,1h16c0.55,0 1,-0.45 1,-1v-6c0,-0.55 -0.45,-1 -1,-1zM7,18.5c-0.82,0 -1.5,-0.67 -1.5,-1.5s0.68,-1.5 1.5,-1.5 1.5,0.67 1.5,1.5 -0.67,1.5 -1.5,1.5zM19,5v4H5V5h14m1,-2H4c-0.55,0 -1,0.45 -1,1v6c0,0.55 0.45,1 1,1h16c0.55,0 1,-0.45 1,-1V4c0,-0.55 -0.45,-1 -1,-1zM7,8.5c-0.82,0 -1.5,-0.67 -1.5,-1.5S6.18,5.5 7,5.5s1.5,0.68 1.5,1.5S7.83,8.5 7,8.5z"/>
++</vector>
+diff --git a/res/xml/network_provider_internet.xml b/res/xml/network_provider_internet.xml
+index 7a333672317..07f72849673 100644
+--- a/res/xml/network_provider_internet.xml
++++ b/res/xml/network_provider_internet.xml
+@@ -98,6 +98,7 @@
+     <com.android.settings.network.PrivateDnsModeDialogPreference
+         android:key="private_dns_settings"
+         android:title="@string/select_private_dns_configuration_title"
++        android:icon="@drawable/ic_settings_private_dns"
+         android:order="20"
+         android:dialogTitle="@string/select_private_dns_configuration_dialog_title"
+         android:dialogLayout="@layout/private_dns_mode_dialog"

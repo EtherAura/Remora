@@ -1,0 +1,11 @@
+diff --git a/remora_x86_64.mk b/remora_x86_64.mk
+index 70fd96e..c0b9c0e 100644
+--- a/remora_x86_64.mk
++++ b/remora_x86_64.mk
+@@ -20,3 +20,6 @@ PRODUCT_BRAND := remora
+ PRODUCT_MODEL := remora17_x86_64
+ 
+ DEVICE_PACKAGE_OVERLAYS := $(LOCAL_PATH)/overlay
++
++# --- Remora feature: Sensors (host-injectable example HAL, vendor APEX) ---
++PRODUCT_PACKAGES += com.android.hardware.sensors

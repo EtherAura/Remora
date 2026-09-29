@@ -1,0 +1,10 @@
+// Remora-specific module AND install name: soong rejects duplicate module names even when nothing
+// builds one of them, so a generic ipconfigstore collides with any other project defining it. The
+// only caller is remora.common.rc, which names this path.
+cc_binary {
+    name: "remora_ipconfigstore",
+    srcs: ["main.cc"],
+    cflags: ["-Wall", "-Werror"],
+    shared_libs: ["libbase"],
+    vendor: true,
+}

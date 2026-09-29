@@ -1,0 +1,36 @@
+# Remora boot-property setup (bd remora-28ix.4).
+#
+# The host contract is androidboot.remora_*; init turns every androidboot.<key> on its own argv
+# into ro.boot.<key>. Two of those need a second property set from them, and that is all this
+# file does now.
+#
+# THIS WAS AN ADAPTER AND IS NOT ONE ANY MORE (bd remora-28ix.4 step 4). It used to
+# map fourteen ro.boot.remora_* keys onto the inherited pre-migration names, for consumers that
+# read that older namespace: the init triggers in the upstream vendor rc, and above all the
+# closed composer prebuilt, which had no source in the tree and so could never be renamed. Every
+# one of those consumers is gone — the upstream vendor and device projects left both manifests,
+# Remora's own composer HAL replaced the prebuilt, gpu_config.sh and the three native modules
+# read ro.boot.remora_* directly, and remora.common.rc fires its own remora_overlayfs trigger.
+# A mapping onto names nothing reads is not compatibility, it is two properties for every one.
+#
+# WHAT REMAINS IS NOT MAPPING. Both stanzas below set a DIFFERENT property from the one they
+# match on, which is why they were never part of the adapter's job and do not leave with it:
+#   - lcd_density, because init matches all early-init actions against property state when the
+#     event is dequeued, BEFORE any of their commands run. A setprop in one early-init action
+#     therefore cannot arm another early-init property action, so this cannot be deferred to a
+#     stanza keyed on ro.boot.remora_dpi elsewhere — it has to happen here, in the same action.
+#   - ro.hardware.vulkan, which is a per-deploy fact rather than a per-image one: a build-time
+#     pin is write-once and beat every runtime decision (bd remora-xqt1), so the ICD is a boot
+#     arg and this is where it lands.
+#
+# ONE FILE, TWO DELIVERY ROADS, and it must stay byte-identical on both (test-enforced):
+#   - bind-mounted to /vendor/etc/init/remora.props.rc by buildDockerRunArgv on every deploy,
+#     the same road as remora-fwd.rc;
+#   - installed at the same path by vendor/remora's own vendor.mk, so the image stands alone.
+# Init parses the path once; when both roads deliver, the mount shadows the identical install.
+
+on early-init && property:ro.boot.remora_dpi=*
+    setprop ro.sf.lcd_density ${ro.boot.remora_dpi}
+
+on early-init && property:ro.boot.remora_vulkan=*
+    setprop ro.hardware.vulkan ${ro.boot.remora_vulkan}

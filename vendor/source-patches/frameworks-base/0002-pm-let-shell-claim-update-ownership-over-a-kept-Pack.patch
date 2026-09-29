@@ -1,0 +1,80 @@
+From bcdfeec43eaa1574705acbd1d604dfde99edb34b Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sat, 18 Jul 2026 15:20:16 -0400
+Subject: [PATCH] pm: let shell claim update ownership over a kept
+ PackageSetting
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+pm uninstall -k preserves the PackageSetting (uid + /data/data), which
+makes any data-preserving reinstall hit the pkgAlreadyExists clearing
+rule — a shell --update-ownership claim is silently dropped, so an app
+can never be migrated to shell ownership without wiping its data.
+
+Exempt com.android.shell from the not-initial-install clearing on
+non-update installs. Shell is this device's admin installer: Remora's
+arm-fetch flow reinstalls manually injected arm64 apps keeping their
+data, and the ownership claim is what blocks Play from silently
+auto-updating them back onto their broken x86_64 splits. Play and every
+other installer keep stock semantics.
+
+Change-Id: If3e4ae83569b301e9585ca4f0efe0d116d6f85b1
+---
+ core/java/android/view/SurfaceView.java              |  9 +++++++++
+ .../com/android/server/pm/InstallPackageHelper.java  | 12 ++++++++++--
+ 2 files changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/core/java/android/view/SurfaceView.java b/core/java/android/view/SurfaceView.java
+index 29008d31990d..b6b158dc7a75 100644
+--- a/core/java/android/view/SurfaceView.java
++++ b/core/java/android/view/SurfaceView.java
+@@ -51,6 +51,7 @@ import android.os.IBinder;
+ import android.os.Looper;
+ import android.os.RemoteException;
+ import android.os.SystemClock;
++import android.os.SystemProperties;
+ import android.text.TextUtils;
+ import android.util.ArraySet;
+ import android.util.AttributeSet;
+@@ -923,6 +924,14 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
+      * @param isSecure True if the surface view is secure.
+      */
+     public void setSecure(boolean isSecure) {
++        // DRM players (ExoPlayer &co) mark their video SurfaceView secure, which blanks it on
++        // the virtual display the mirror captures — "audio but black video". A container has
++        // no physical secure display, so honoring the flag only hides all DRM video with no security
++        // benefit. Ignore it here (L3 Widevine decodes to clear buffers anyway). Set
++        // persist.remora.keep_secure_surfaces=1 to restore stock behavior.
++        if (isSecure && !SystemProperties.getBoolean("persist.remora.keep_secure_surfaces", false)) {
++            isSecure = false;
++        }
+         if (isSecure) {
+             mSurfaceFlags |= SurfaceControl.SECURE;
+         } else {
+diff --git a/services/core/java/com/android/server/pm/InstallPackageHelper.java b/services/core/java/com/android/server/pm/InstallPackageHelper.java
+index d98f3617f587..5fef3fe60808 100644
+--- a/services/core/java/com/android/server/pm/InstallPackageHelper.java
++++ b/services/core/java/com/android/server/pm/InstallPackageHelper.java
+@@ -380,8 +380,16 @@ final class InstallPackageHelper {
+                             || isUpdateOwnershipDenylisted
+                             || isInstallerUpdateOwnerDenylistProvider) {
+                         installSource = installSource.setUpdateOwnerPackageName(null);
+-                    } else if ((!isUpdateOwnershipEnabled && pkgAlreadyExists)
+-                            || (isUpdateOwnershipEnabled && !isSameUpdateOwner)) {
++                    } else if (((!isUpdateOwnershipEnabled && pkgAlreadyExists)
++                            || (isUpdateOwnershipEnabled && !isSameUpdateOwner))
++                            // A shell-requested claim goes through even when the PackageSetting
++                            // survived: "pm uninstall -k" keeps it (for the uid/data), which
++                            // otherwise makes a data-preserving reinstall never "initial" and
++                            // the ownership claim silently impossible. Shell is this device's
++                            // admin installer (the arm-fetch flow reinstalls injected arm64
++                            // apps keeping their data and must deny Play silent updates).
++                            && !"com.android.shell".equals(
++                                    installSource.mInstallerPackageName)) {
+                         installSource = installSource.setUpdateOwnerPackageName(null);
+                     }
+                 } else if (!isSameUpdateOwner
+-- 
+2.54.0
+

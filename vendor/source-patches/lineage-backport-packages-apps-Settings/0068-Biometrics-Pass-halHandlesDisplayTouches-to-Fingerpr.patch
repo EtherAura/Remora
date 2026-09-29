@@ -1,0 +1,155 @@
+From 164e28dac434ed347623b5cf58c7e881708c3f38 Mon Sep 17 00:00:00 2001
+From: Bruno Martins <bgcngm@gmail.com>
+Date: Wed, 19 Feb 2025 22:03:33 +0000
+Subject: [PATCH 68/98] Biometrics: Pass halHandlesDisplayTouches to
+ FingerprintSensorPropertiesInternal
+
+Depends-on: I56166950c6ef7cbb0c4ac2c0b7998e4a909d4af9
+Change-Id: I1b7eef5449f813deee23ebe9ff07d4d3b73ccf4b
+---
+ .../fragment/FingerprintEnrollIntroFragmentTest.kt            | 1 +
+ .../tests/screenshot/biometrics/fingerprint/Injector.kt       | 1 +
+ .../settings/testutils2/FakeFingerprintManagerInteractor.kt   | 1 +
+ .../domain/interactor/FingerprintManagerInteractorTest.kt     | 1 +
+ .../viewmodel/FingerprintEnrollFindSensorViewModelV2Test.kt   | 3 +++
+ .../viewmodel/FingerprintEnrollConfirmationViewModelTest.kt   | 1 +
+ .../viewmodel/FingerprintEnrollEnrollingViewModelTest.kt      | 1 +
+ .../ui/settings/FingerprintSettingsViewModelTest.kt           | 4 ++++
+ 8 files changed, 13 insertions(+)
+
+diff --git a/tests/robotests/src/com/android/settings/biometrics/fingerprint2/fragment/FingerprintEnrollIntroFragmentTest.kt b/tests/robotests/src/com/android/settings/biometrics/fingerprint2/fragment/FingerprintEnrollIntroFragmentTest.kt
+index 92868809494..82786e7681b 100644
+--- a/tests/robotests/src/com/android/settings/biometrics/fingerprint2/fragment/FingerprintEnrollIntroFragmentTest.kt
++++ b/tests/robotests/src/com/android/settings/biometrics/fingerprint2/fragment/FingerprintEnrollIntroFragmentTest.kt
+@@ -79,6 +79,7 @@ class FingerprintEnrollIntroFragmentTest {
+       listOf<ComponentInfoInternal>(),
+       FingerprintSensorProperties.TYPE_POWER_BUTTON,
+       false /* halControlsIllumination */,
++      false /* halHandlesDisplayTouches */,
+       true /* resetLockoutRequiresHardwareAuthToken */,
+       listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+     )
+diff --git a/tests/screenshot/src/com/android/settings/tests/screenshot/biometrics/fingerprint/Injector.kt b/tests/screenshot/src/com/android/settings/tests/screenshot/biometrics/fingerprint/Injector.kt
+index 2f68521f3a1..7dfb048969f 100644
+--- a/tests/screenshot/src/com/android/settings/tests/screenshot/biometrics/fingerprint/Injector.kt
++++ b/tests/screenshot/src/com/android/settings/tests/screenshot/biometrics/fingerprint/Injector.kt
+@@ -68,6 +68,7 @@ class Injector(step: FingerprintNavigationStep.UiStep) {
+         listOf<ComponentInfoInternal>(),
+         FingerprintSensorProperties.TYPE_REAR,
+         false /* halControlsIllumination */,
++        false /* halHandlesDisplayTouches */,
+         true /* resetLockoutRequiresHardwareAuthToken */,
+         listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+       )
+diff --git a/tests/shared/src/com/android/settings/testutils2/FakeFingerprintManagerInteractor.kt b/tests/shared/src/com/android/settings/testutils2/FakeFingerprintManagerInteractor.kt
+index 32ca2cdb59c..5563a602310 100644
+--- a/tests/shared/src/com/android/settings/testutils2/FakeFingerprintManagerInteractor.kt
++++ b/tests/shared/src/com/android/settings/testutils2/FakeFingerprintManagerInteractor.kt
+@@ -70,6 +70,7 @@ class FakeFingerprintManagerInteractor :
+         listOf<ComponentInfoInternal>(),
+         FingerprintSensorProperties.TYPE_POWER_BUTTON,
+         false /* halControlsIllumination */,
++        false /* halHandlesDisplayTouches */,
+         true /* resetLockoutRequiresHardwareAuthToken */,
+         listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+       )
+diff --git a/tests/unit/src/com/android/settings/fingerprint2/domain/interactor/FingerprintManagerInteractorTest.kt b/tests/unit/src/com/android/settings/fingerprint2/domain/interactor/FingerprintManagerInteractorTest.kt
+index f479fa31784..4134aee73d6 100644
+--- a/tests/unit/src/com/android/settings/fingerprint2/domain/interactor/FingerprintManagerInteractorTest.kt
++++ b/tests/unit/src/com/android/settings/fingerprint2/domain/interactor/FingerprintManagerInteractorTest.kt
+@@ -127,6 +127,7 @@ class FingerprintManagerInteractorTest {
+           listOf<ComponentInfoInternal>(),
+           FingerprintSensorProperties.TYPE_POWER_BUTTON,
+           false /* halControlsIllumination */,
++          false /* halHandlesDisplayTouches */,
+           true /* resetLockoutRequiresHardwareAuthToken */,
+           listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+         )
+diff --git a/tests/unit/src/com/android/settings/fingerprint2/enrollment/viewmodel/FingerprintEnrollFindSensorViewModelV2Test.kt b/tests/unit/src/com/android/settings/fingerprint2/enrollment/viewmodel/FingerprintEnrollFindSensorViewModelV2Test.kt
+index 70e6de10a07..f7df62f3158 100644
+--- a/tests/unit/src/com/android/settings/fingerprint2/enrollment/viewmodel/FingerprintEnrollFindSensorViewModelV2Test.kt
++++ b/tests/unit/src/com/android/settings/fingerprint2/enrollment/viewmodel/FingerprintEnrollFindSensorViewModelV2Test.kt
+@@ -165,6 +165,7 @@ class FingerprintEnrollFindSensorViewModelV2Test {
+             listOf<ComponentInfoInternal>(),
+             FingerprintSensorProperties.TYPE_UDFPS_OPTICAL,
+             false /* halControlsIllumination */,
++            false /* halHandlesDisplayTouches */,
+             true /* resetLockoutRequiresHardwareAuthToken */,
+             listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+           )
+@@ -229,6 +230,7 @@ class FingerprintEnrollFindSensorViewModelV2Test {
+             listOf<ComponentInfoInternal>(),
+             FingerprintSensorProperties.TYPE_REAR,
+             false /* halControlsIllumination */,
++            false /* halHandlesDisplayTouches */,
+             true /* resetLockoutRequiresHardwareAuthToken */,
+             listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+           )
+@@ -253,6 +255,7 @@ class FingerprintEnrollFindSensorViewModelV2Test {
+             listOf<ComponentInfoInternal>(),
+             FingerprintSensorProperties.TYPE_UDFPS_OPTICAL,
+             false /* halControlsIllumination */,
++            false /* halHandlesDisplayTouches */,
+             true /* resetLockoutRequiresHardwareAuthToken */,
+             listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+           )
+diff --git a/tests/unit/src/com/android/settings/fingerprint2/ui/enrollment/viewmodel/FingerprintEnrollConfirmationViewModelTest.kt b/tests/unit/src/com/android/settings/fingerprint2/ui/enrollment/viewmodel/FingerprintEnrollConfirmationViewModelTest.kt
+index a9ab5899e75..37faa4597c5 100644
+--- a/tests/unit/src/com/android/settings/fingerprint2/ui/enrollment/viewmodel/FingerprintEnrollConfirmationViewModelTest.kt
++++ b/tests/unit/src/com/android/settings/fingerprint2/ui/enrollment/viewmodel/FingerprintEnrollConfirmationViewModelTest.kt
+@@ -106,6 +106,7 @@ class FingerprintEnrollConfirmationViewModelTest {
+             listOf<ComponentInfoInternal>(),
+             FingerprintSensorProperties.TYPE_POWER_BUTTON,
+             false /* halControlsIllumination */,
++            false /* halHandlesDisplayTouches */,
+             true /* resetLockoutRequiresHardwareAuthToken */,
+             listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+           )
+diff --git a/tests/unit/src/com/android/settings/fingerprint2/ui/enrollment/viewmodel/FingerprintEnrollEnrollingViewModelTest.kt b/tests/unit/src/com/android/settings/fingerprint2/ui/enrollment/viewmodel/FingerprintEnrollEnrollingViewModelTest.kt
+index cf2deec5bac..1a98fefcba3 100644
+--- a/tests/unit/src/com/android/settings/fingerprint2/ui/enrollment/viewmodel/FingerprintEnrollEnrollingViewModelTest.kt
++++ b/tests/unit/src/com/android/settings/fingerprint2/ui/enrollment/viewmodel/FingerprintEnrollEnrollingViewModelTest.kt
+@@ -75,6 +75,7 @@ class FingerprintEnrollEnrollingViewModelTest {
+           listOf<ComponentInfoInternal>(),
+           FingerprintSensorProperties.TYPE_POWER_BUTTON,
+           false /* halControlsIllumination */,
++          false /* halHandlesDisplayTouches */,
+           true /* resetLockoutRequiresHardwareAuthToken */,
+           listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+         )
+diff --git a/tests/unit/src/com/android/settings/fingerprint2/ui/settings/FingerprintSettingsViewModelTest.kt b/tests/unit/src/com/android/settings/fingerprint2/ui/settings/FingerprintSettingsViewModelTest.kt
+index 79163d9a590..97184adad49 100644
+--- a/tests/unit/src/com/android/settings/fingerprint2/ui/settings/FingerprintSettingsViewModelTest.kt
++++ b/tests/unit/src/com/android/settings/fingerprint2/ui/settings/FingerprintSettingsViewModelTest.kt
+@@ -112,6 +112,7 @@ class FingerprintSettingsViewModelTest {
+             listOf<ComponentInfoInternal>(),
+             FingerprintSensorProperties.TYPE_UDFPS_OPTICAL,
+             false /* halControlsIllumination */,
++            false /* halHandlesDisplayTouches */,
+             true /* resetLockoutRequiresHardwareAuthToken */,
+             listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+           )
+@@ -147,6 +148,7 @@ class FingerprintSettingsViewModelTest {
+             listOf<ComponentInfoInternal>(),
+             FingerprintSensorProperties.TYPE_UDFPS_ULTRASONIC,
+             false /* halControlsIllumination */,
++            false /* halHandlesDisplayTouches */,
+             true /* resetLockoutRequiresHardwareAuthToken */,
+             listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+           )
+@@ -180,6 +182,7 @@ class FingerprintSettingsViewModelTest {
+             listOf<ComponentInfoInternal>(),
+             FingerprintSensorProperties.TYPE_POWER_BUTTON,
+             false /* halControlsIllumination */,
++            false /* halHandlesDisplayTouches */,
+             true /* resetLockoutRequiresHardwareAuthToken */,
+             listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+           )
+@@ -379,6 +382,7 @@ class FingerprintSettingsViewModelTest {
+           listOf<ComponentInfoInternal>(),
+           FingerprintSensorProperties.TYPE_POWER_BUTTON,
+           false /* halControlsIllumination */,
++          false /* halHandlesDisplayTouches */,
+           true /* resetLockoutRequiresHardwareAuthToken */,
+           listOf<SensorLocationInternal>(SensorLocationInternal.DEFAULT),
+         )

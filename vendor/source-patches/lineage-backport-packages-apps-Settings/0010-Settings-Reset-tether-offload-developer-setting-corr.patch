@@ -1,0 +1,37 @@
+From fca0a753850e6d9ced28a082f8b80a7aca8d9551 Mon Sep 17 00:00:00 2001
+From: Adithya R <gh0strider.2k18.reborn@gmail.com>
+Date: Fri, 19 Jul 2024 08:36:15 +0530
+Subject: [PATCH 10/98] Settings: Reset tether offload developer setting
+ correctly
+
+Tethering offload is enabled by default, i.e tether_offload_disabled is 0.
+When developer settings is disabled, we want it set back to 0 i.e
+tethering offload enabled.
+
+Change-Id: I71b7fd04cf01b0cfa40b36568169e444f8e32a22
+---
+ .../TetheringHardwareAccelPreferenceController.java           | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/com/android/settings/development/TetheringHardwareAccelPreferenceController.java b/src/com/android/settings/development/TetheringHardwareAccelPreferenceController.java
+index 8fe619833d0..186a42d00f4 100644
+--- a/src/com/android/settings/development/TetheringHardwareAccelPreferenceController.java
++++ b/src/com/android/settings/development/TetheringHardwareAccelPreferenceController.java
+@@ -60,7 +60,7 @@ public class TetheringHardwareAccelPreferenceController extends DeveloperOptions
+     public void updateState(Preference preference) {
+         final int tetheringMode = Settings.Global.getInt(
+                 mContext.getContentResolver(),
+-                Settings.Global.TETHER_OFFLOAD_DISABLED, 0 /* default */);
++                Settings.Global.TETHER_OFFLOAD_DISABLED, SETTING_VALUE_ON);
+         ((TwoStatePreference) mPreference).setChecked(tetheringMode != SETTING_VALUE_OFF);
+     }
+ 
+@@ -68,7 +68,7 @@ public class TetheringHardwareAccelPreferenceController extends DeveloperOptions
+     protected void onDeveloperOptionsSwitchDisabled() {
+         super.onDeveloperOptionsSwitchDisabled();
+         Settings.Global.putInt(mContext.getContentResolver(),
+-                Settings.Global.TETHER_OFFLOAD_DISABLED, SETTING_VALUE_OFF);
++                Settings.Global.TETHER_OFFLOAD_DISABLED, SETTING_VALUE_ON);
+         ((TwoStatePreference) mPreference).setChecked(false);
+     }
+ }

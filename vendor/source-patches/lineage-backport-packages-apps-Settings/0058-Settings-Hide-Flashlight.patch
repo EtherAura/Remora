@@ -1,0 +1,41 @@
+From d8aee118b809a8ec74822ebd125668b807bd326b Mon Sep 17 00:00:00 2001
+From: Michael W <baddaemon87@gmail.com>
+Date: Fri, 8 Dec 2023 17:38:05 +0100
+Subject: [PATCH 58/98] Settings: Hide Flashlight
+
+* Class comment states: "Headless activity that toggles
+  flashlight state when launched."
+* Comment in constructor states:
+  "The sole purpose of this activity is to provide a place
+   to index flashlight into Settings search."
+* Since it does only the second thing successfully and we
+  do neither know why we need a useless search result nor
+  does it serve any purpose, hide it from search results
+* We could remove the whole class, but since it's from AOSP
+  I decided to keep the change footprint minimal
+
+Test: Type "Flashlight" into settings search - result does not
+appear anymore
+Fixes: https://gitlab.com/LineageOS/issues/android/-/issues/6397
+
+Change-Id: I53541c700e24efd33d386c38a4ea38fb1b8b81d6
+---
+ .../settings/flashlight/FlashlightHandleActivity.java        | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/src/com/android/settings/flashlight/FlashlightHandleActivity.java b/src/com/android/settings/flashlight/FlashlightHandleActivity.java
+index 6ae07cdcea4..bb3ff2d0477 100644
+--- a/src/com/android/settings/flashlight/FlashlightHandleActivity.java
++++ b/src/com/android/settings/flashlight/FlashlightHandleActivity.java
+@@ -87,10 +87,7 @@ public class FlashlightHandleActivity extends Activity implements Indexable {
+                 @Override
+                 public List<String> getNonIndexableKeys(Context context) {
+                     List<String> keys = super.getNonIndexableKeys(context);
+-                    if (!FlashlightSlice.isFlashlightAvailable(context)) {
+-                        Log.i(TAG, "Flashlight is unavailable");
+-                        keys.add(DATA_KEY);
+-                    }
++                    keys.add(DATA_KEY);
+                     return keys;
+                 }
+             };

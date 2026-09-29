@@ -1,0 +1,33 @@
+From 974aa7642fe1f00612608459e07b80b0f99bd86e Mon Sep 17 00:00:00 2001
+From: ExtremeXT <extremextdev@gmail.com>
+Date: Fri, 21 Nov 2025 18:58:49 +0200
+Subject: [PATCH 72/98] ImeiInfoPreferenceController: Fix NPE
+
+Initialize mTelephonyManager in the class constructor.
+
+Change-Id: I469403033bcfb55d5884d98786334eedca9a5b8a
+Signed-off-by: ExtremeXT <extremextdev@gmail.com>
+---
+ .../settings/deviceinfo/imei/ImeiInfoPreferenceController.java  | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/com/android/settings/deviceinfo/imei/ImeiInfoPreferenceController.java b/src/com/android/settings/deviceinfo/imei/ImeiInfoPreferenceController.java
+index fc4c97fda07..c3b8b56eb7f 100644
+--- a/src/com/android/settings/deviceinfo/imei/ImeiInfoPreferenceController.java
++++ b/src/com/android/settings/deviceinfo/imei/ImeiInfoPreferenceController.java
+@@ -57,6 +57,7 @@ public class ImeiInfoPreferenceController extends BasePreferenceController {
+ 
+     public ImeiInfoPreferenceController(Context context, String key) {
+         super(context, key);
++        mTelephonyManager = mContext.getSystemService(TelephonyManager.class);
+     }
+ 
+     public void init(Fragment fragment, SlotSimStatus slotSimStatus) {
+@@ -88,7 +89,6 @@ public class ImeiInfoPreferenceController extends BasePreferenceController {
+         if (!isAvailable() || (mSlotSimStatus == null)) {
+             return;
+         }
+-        mTelephonyManager = mContext.getSystemService(TelephonyManager.class);
+         Preference preference = screen.findPreference(DEFAULT_KEY);
+         if (preference == null || !preference.isVisible()) {
+             return;

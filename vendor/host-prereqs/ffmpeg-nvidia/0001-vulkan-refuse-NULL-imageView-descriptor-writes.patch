@@ -1,0 +1,33 @@
+vulkan: refuse to write a VK_NULL_HANDLE imageView into a descriptor set
+
+A VK_NULL_HANDLE imageView reaching vkCmdPushDescriptorSetKHR is a
+process-fatal SIGSEGV on the NVIDIA proprietary driver (measured on
+610.43.03, crash offset 0xf8a1b5, si_addr=0xf0): the driver NULL-checks
+the sampler but dereferences the view unconditionally. Observed three
+times from scale_vulkan's ff_vk_filter_process_simple ->
+ff_vk_shader_update_img_array path under VRAM/resource churn, where a
+view that passed ff_vk_create_imageviews' RET-checked creation
+nevertheless arrived NULL at the descriptor write (bd remora-7ps,
+remora-fi8c).
+
+Skipping the write loses at worst one frame's sampling correctness for
+that binding; pushing it loses the process. Callers of the array helper
+ignore per-plane failures, so a skip degrades instead of aborting the
+filter chain.
+
+--- a/libavutil/vulkan.c
++++ b/libavutil/vulkan.c
+@@ -2706,6 +2706,13 @@ int ff_vk_shader_update_img(FFVulkanContext *s, FFVkExecContext *e,
+ {
+     FFVulkanDescriptorSet *desc_set = &shd->desc_set[set];
+
++    if (view == VK_NULL_HANDLE) {
++        av_log(s, AV_LOG_WARNING, "Refusing descriptor write of a VK_NULL_HANDLE "
++               "imageView (set %i binding %i elem %i) — skipping, output may be "
++               "wrong for this frame\n", set, bind, offs);
++        return AVERROR(EINVAL);
++    }
++
+     VkDescriptorImageInfo desc_pool_write_info_img = {
+         .sampler = sampler,
+         .imageView = view,

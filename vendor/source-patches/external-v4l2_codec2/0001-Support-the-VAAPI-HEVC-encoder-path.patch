@@ -1,0 +1,252 @@
+From 93c98a842bb1941b8d20735c255f88577cdf8b9c Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Thu, 9 Jul 2026 19:58:15 -0400
+Subject: [PATCH] Support the VAAPI HEVC encoder path
+
+Extend the shared V4L2/C2 encoder scaffolding so the out-of-tree VAAPI
+HEVC encoder (hardware/remora/c2-va) can drive it end to end:
+
+- EncodeInterface: add an HEVC branch (was H264/VP8/VP9 only) with
+  HEVCProfileLevelSetter; raise kMaxBitrate from ~50 Mbps (AVC L4.1) so
+  high daily-driver bitrates (150 Mbps) aren't silently rejected back to
+  the 64 kbps default; tag input-stream usage with C2MemoryUsage::CPU_READ
+  so gralloc allocates the encoder input surface linear (minigbm would
+  otherwise pick an X-tiled layout the VAAPI DRM_PRIME import misreads).
+- EncodeComponent: skip the gralloc FormatConverter when the encoder
+  reports handlesInputFormatConversion() (the VAAPI core VPP-converts).
+- VideoEncoder: add the handlesInputFormatConversion() hook.
+- EncodeHelpers: extract HEVC VPS/SPS/PPS in extractCSDInfo so scrcpy
+  gets a proper codec-config packet for H.265 streams.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Change-Id: I39298fa7d446ba34b40a69234b7ab7979c1674d3
+---
+ common/EncodeHelpers.cpp                      | 54 ++++++++++++++---
+ components/EncodeComponent.cpp                |  2 +-
+ components/EncodeInterface.cpp                | 60 +++++++++++++++++--
+ .../v4l2_codec2/components/EncodeInterface.h  |  4 ++
+ .../v4l2_codec2/components/VideoEncoder.h     |  6 ++
+ 5 files changed, 112 insertions(+), 14 deletions(-)
+
+diff --git a/common/EncodeHelpers.cpp b/common/EncodeHelpers.cpp
+index c1a9425..2e64876 100644
+--- a/common/EncodeHelpers.cpp
++++ b/common/EncodeHelpers.cpp
+@@ -15,6 +15,7 @@
+ #include <utils/Log.h>
+ 
+ #include <v4l2_codec2/common/H264NalParser.h>
++#include <v4l2_codec2/common/HEVCNalParser.h>
+ 
+ namespace android {
+ 
+@@ -132,23 +133,58 @@ bool extractSPSPPS(const uint8_t* data, size_t length, std::vector<uint8_t>* sps
+     return foundSPS && foundPPS;
+ }
+ 
++// HEVC codec config = VPS(32) + SPS(33) + PPS(34).
++static bool extractHEVCParamSets(const uint8_t* data, size_t length, std::vector<uint8_t>* vps,
++                                 std::vector<uint8_t>* sps, std::vector<uint8_t>* pps) {
++    bool foundVPS = false, foundSPS = false, foundPPS = false;
++    HEVCNalParser parser(data, length);
++    while (!(foundVPS && foundSPS && foundPPS) && parser.locateNextNal()) {
++        switch (parser.type()) {
++        case 32:  // VPS_NUT
++            vps->assign(parser.data(), parser.data() + parser.length());
++            foundVPS = true;
++            break;
++        case HEVCNalParser::kSPSType:  // 33
++            sps->assign(parser.data(), parser.data() + parser.length());
++            foundSPS = true;
++            break;
++        case 34:  // PPS_NUT
++            pps->assign(parser.data(), parser.data() + parser.length());
++            foundPPS = true;
++            break;
++        }
++    }
++    return foundSPS && foundPPS;  // VPS is normally present too but SPS+PPS are the minimum
++}
++
+ bool extractCSDInfo(std::unique_ptr<C2StreamInitDataInfo::output>* const csd, const uint8_t* data,
+                     size_t length) {
+     csd->reset();
+ 
+     std::vector<uint8_t> sps;
+     std::vector<uint8_t> pps;
+-    if (!extractSPSPPS(data, length, &sps, &pps)) {
+-        return false;
++    if (extractSPSPPS(data, length, &sps, &pps)) {
++        size_t configDataLength = sps.size() + pps.size() + (2u * kH264StartCodeSize);
++        ALOGV("Extracted H264 codec config data: length=%zu", configDataLength);
++        *csd = C2StreamInitDataInfo::output::AllocUnique(configDataLength, 0u);
++        uint8_t* csdBuffer = (*csd)->m.value;
++        return copyNALUPrependingStartCode(sps.data(), sps.size(), &csdBuffer, &configDataLength) &&
++               copyNALUPrependingStartCode(pps.data(), pps.size(), &csdBuffer, &configDataLength);
+     }
+ 
+-    size_t configDataLength = sps.size() + pps.size() + (2u * kH264StartCodeSize);
+-    ALOGV("Extracted codec config data: length=%zu", configDataLength);
+-
+-    *csd = C2StreamInitDataInfo::output::AllocUnique(configDataLength, 0u);
+-    uint8_t* csdBuffer = (*csd)->m.value;
+-    return copyNALUPrependingStartCode(sps.data(), sps.size(), &csdBuffer, &configDataLength) &&
+-           copyNALUPrependingStartCode(pps.data(), pps.size(), &csdBuffer, &configDataLength);
++    // No H264 SPS/PPS → try HEVC (VPS+SPS+PPS).
++    std::vector<uint8_t> vps;
++    if (extractHEVCParamSets(data, length, &vps, &sps, &pps)) {
++        size_t configDataLength =
++                vps.size() + sps.size() + pps.size() + (3u * kH264StartCodeSize);
++        ALOGV("Extracted HEVC codec config data: length=%zu", configDataLength);
++        *csd = C2StreamInitDataInfo::output::AllocUnique(configDataLength, 0u);
++        uint8_t* csdBuffer = (*csd)->m.value;
++        return copyNALUPrependingStartCode(vps.data(), vps.size(), &csdBuffer, &configDataLength) &&
++               copyNALUPrependingStartCode(sps.data(), sps.size(), &csdBuffer, &configDataLength) &&
++               copyNALUPrependingStartCode(pps.data(), pps.size(), &csdBuffer, &configDataLength);
++    }
++    return false;
+ }
+ 
+ size_t prependSPSPPSToIDR(const uint8_t* src, size_t srcSize, uint8_t* dst, size_t dstSize,
+diff --git a/components/EncodeComponent.cpp b/components/EncodeComponent.cpp
+index 65de283..c161a24 100644
+--- a/components/EncodeComponent.cpp
++++ b/components/EncodeComponent.cpp
+@@ -469,7 +469,7 @@ void EncodeComponent::queueTask(std::unique_ptr<C2Work> work) {
+             reportError(C2_CORRUPTED);
+             return;
+         }
+-        if (mEncoder->inputFormat() != format) {
++        if (mEncoder->inputFormat() != format && !mEncoder->handlesInputFormatConversion()) {
+             ALOG_ASSERT(!mInputFormatConverter);
+             ALOGV("Creating input format convertor (%s)",
+                   videoPixelFormatToString(mEncoder->inputFormat()).c_str());
+diff --git a/components/EncodeInterface.cpp b/components/EncodeInterface.cpp
+index 12152e6..9924150 100644
+--- a/components/EncodeInterface.cpp
++++ b/components/EncodeInterface.cpp
+@@ -38,9 +38,12 @@ constexpr float kDefaultFrameRate = 30.0;
+ // The default output bitrate in bits per second. Use the max bitrate of AVC Level1.0 as default.
+ constexpr uint32_t kDefaultBitrate = 64000;
+ 
+-// The maximal output bitrate in bits per second. It's the max bitrate of AVC Level4.1.
+-// TODO: increase this in the future for supporting higher level/resolution encoding.
+-constexpr uint32_t kMaxBitrate = 50000000;
++// The maximal output bitrate in bits per second. Raised well above the old AVC-Level4.1 cap
++// (50 Mbps) so full-res 4K HW HEVC targets (e.g. a 150 Mbps daily-driver bitrate) are accepted:
++// the C2 bitrate param is a StrictValue with .inRange(0, kMaxBitrate), so an over-cap request was
++// silently rejected and the encoder fell back to kDefaultBitrate (64 kbps) → maxed QP → blocky.
++// 500 Mbps covers our High-tier level headroom and stays well inside uint32.
++constexpr uint32_t kMaxBitrate = 500000000;
+ }  // namespace
+ 
+ //static
+@@ -134,6 +137,28 @@ C2R EncodeInterface::H264ProfileLevelSetter(bool /*mayBlock*/,
+     return C2R::Ok();
+ }
+ 
++// static
++C2R EncodeInterface::HEVCProfileLevelSetter(bool /*mayBlock*/,
++                                            C2P<C2StreamProfileLevelInfo::output>& info,
++                                            const C2P<C2StreamPictureSizeInfo::input>& /*videoSize*/,
++                                            const C2P<C2StreamFrameRateInfo::output>& /*frameRate*/,
++                                            const C2P<C2StreamBitrateInfo::output>& /*bitrate*/) {
++    constexpr C2Config::profile_t minProfile = C2Config::PROFILE_HEVC_MAIN;
++    if (!info.F(info.v.profile).supportsAtAll(info.v.profile) || info.v.profile < minProfile) {
++        if (info.F(info.v.profile).supportsAtAll(minProfile)) {
++            info.set().profile = minProfile;
++        } else {
++            return C2R(C2SettingResultBuilder::BadValue(info.F(info.v.profile)));
++        }
++    }
++    // The VF handles up to 4K and the encoder writes its own level_idc into the packed SPS, so a
++    // fixed conservative level here is enough for the framework/scrcpy negotiation.
++    if (!info.F(info.v.level).supportsAtAll(info.v.level)) {
++        info.set().level = C2Config::LEVEL_HEVC_MAIN_5_1;
++    }
++    return C2R::Ok();
++}
++
+ C2R EncodeInterface::VP9ProfileLevelSetter(bool /*mayBlock*/,
+                                            C2P<C2StreamProfileLevelInfo::output>& info,
+                                            const C2P<C2StreamPictureSizeInfo::input>& /*videoSize*/,
+@@ -303,6 +328,25 @@ void EncodeInterface::Initialize(const C2String& name, const SupportedCapabiliti
+                                                  C2Config::LEVEL_VP9_6_2})})
+                         .withSetter(VP9ProfileLevelSetter, mInputVisibleSize, mFrameRate, mBitrate)
+                         .build());
++    } else if (caps.codec == VideoCodec::HEVC) {
++        outputMime = MEDIA_MIMETYPE_VIDEO_HEVC;
++        C2Config::profile_t minProfile = static_cast<C2Config::profile_t>(
++                *std::min_element(profiles.begin(), profiles.end()));
++        addParameter(
++                DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
++                        .withDefault(new C2StreamProfileLevelInfo::output(
++                                0u, minProfile, C2Config::LEVEL_HEVC_MAIN_5_1))
++                        .withFields({C2F(mProfileLevel, profile).oneOf(profiles),
++                                     C2F(mProfileLevel, level)
++                                             .oneOf({C2Config::LEVEL_HEVC_MAIN_3,
++                                                     C2Config::LEVEL_HEVC_MAIN_3_1,
++                                                     C2Config::LEVEL_HEVC_MAIN_4,
++                                                     C2Config::LEVEL_HEVC_MAIN_4_1,
++                                                     C2Config::LEVEL_HEVC_MAIN_5,
++                                                     C2Config::LEVEL_HEVC_MAIN_5_1,
++                                                     C2Config::LEVEL_HEVC_MAIN_5_2})})
++                        .withSetter(HEVCProfileLevelSetter, mInputVisibleSize, mFrameRate, mBitrate)
++                        .build());
+     } else {
+         ALOGE("Unsupported component name: %s", name.c_str());
+         mInitStatus = C2_BAD_VALUE;
+@@ -314,9 +358,17 @@ void EncodeInterface::Initialize(const C2String& name, const SupportedCapabiliti
+                     .withConstValue(new C2StreamBufferTypeSetting::input(0u, C2BufferData::GRAPHIC))
+                     .build());
+ 
++    // C2MemoryUsage::CPU_READ is included so gralloc allocates the encoder's input surface LINEAR:
++    // minigbm (cros_gralloc, androidboot.remora_gralloc=minigbm_intel) would otherwise pick an
++    // X-tiled layout for a no-SW-usage render target, which the VAAPI encoder's DRM_PRIME import
++    // (and the RGBX layout probe's CPU lock) both read as linear → scrambled frames / init failure.
++    // NB: this param is in the C2MemoryUsage bit-space, NOT android BufferUsage —
++    // BufferUsage::CPU_READ_OFTEN (=3) would set C2MemoryUsage::READ_PROTECTED (1<<1) and make
++    // every input buffer protected-content, which aborts SurfaceFlinger's Skia texture creation.
+     addParameter(DefineParam(mInputMemoryUsage, C2_PARAMKEY_INPUT_STREAM_USAGE)
+                          .withConstValue(new C2StreamUsageTuning::input(
+-                                 0u, static_cast<uint64_t>(BufferUsage::VIDEO_ENCODER)))
++                                 0u, static_cast<uint64_t>(BufferUsage::VIDEO_ENCODER) |
++                                             static_cast<uint64_t>(C2MemoryUsage::CPU_READ)))
+                          .build());
+ 
+     addParameter(
+diff --git a/components/include/v4l2_codec2/components/EncodeInterface.h b/components/include/v4l2_codec2/components/EncodeInterface.h
+index e59f58c..796bd3c 100644
+--- a/components/include/v4l2_codec2/components/EncodeInterface.h
++++ b/components/include/v4l2_codec2/components/EncodeInterface.h
+@@ -66,6 +66,10 @@ protected:
+                                      const C2P<C2StreamPictureSizeInfo::input>& videosize,
+                                      const C2P<C2StreamFrameRateInfo::output>& frameRate,
+                                      const C2P<C2StreamBitrateInfo::output>& bitrate);
++    static C2R HEVCProfileLevelSetter(bool mayBlock, C2P<C2StreamProfileLevelInfo::output>& info,
++                                      const C2P<C2StreamPictureSizeInfo::input>& videosize,
++                                      const C2P<C2StreamFrameRateInfo::output>& frameRate,
++                                      const C2P<C2StreamBitrateInfo::output>& bitrate);
+ 
+     static C2R SizeSetter(bool mayBlock, C2P<C2StreamPictureSizeInfo::input>& videoSize);
+ 
+diff --git a/components/include/v4l2_codec2/components/VideoEncoder.h b/components/include/v4l2_codec2/components/VideoEncoder.h
+index eeb63c2..4aa8a0a 100644
+--- a/components/include/v4l2_codec2/components/VideoEncoder.h
++++ b/components/include/v4l2_codec2/components/VideoEncoder.h
+@@ -86,6 +86,12 @@ public:
+     virtual VideoPixelFormat inputFormat() const = 0;
+     virtual const ui::Size& visibleSize() const = 0;
+     virtual const ui::Size& codedSize() const = 0;
++
++    // True if the encoder converts input frames to its required format itself (e.g. via a VAAPI VPP
++    // pass), so EncodeComponent must NOT create a gralloc-backed FormatConverter. Default false
++    // preserves the V4L2 behaviour; the VAAPI encoder overrides it (the image's gbm gralloc also
++    // rejects the converter's throwaway allocations).
++    virtual bool handlesInputFormatConversion() const { return false; }
+ };
+ 
+ }  // namespace android
+-- 
+2.54.0
+

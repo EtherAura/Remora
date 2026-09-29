@@ -1,0 +1,135 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sat, 25 Jul 2026 10:05:00 -0400
+Subject: [PATCH] statusbar: let the icon hide list hide the battery
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The battery is rendered outside SystemStatusIcons, so it never reaches
+that composable's per-slot filter and the icon hide list cannot touch it.
+Gate both of its render sites on the "battery" pseudo-slot instead.
+
+There are two sites because the status bar has two Compose paths:
+addBatteryComposable() appends a ComposeView to the system_icons container
+under NewStatusBarIcons, and the SystemStatusIconsContainer Row hosts an
+inline UnifiedBattery under SystemStatusIconsInCompose. Both already have
+the blocklist interactor in scope via HomeStatusBarViewModel, so no new
+plumbing is needed — each collects blockedIconSlots and skips composing
+the battery when the slot is present. Recomposition makes it live, with
+no framework restart.
+
+The literal matches com.android.internal.R.string.status_bar_battery, the
+token the legacy status bar used, so existing hide lists keep working.
+
+Unlike the icon and clock patches this one removes a view from a laid-out
+container, so it is the only one of the three that can shift status bar
+padding — SystemStatusIconsLayoutHelper.configurePaddingForNewStatusBarIcons
+runs right after addBatteryComposable. Verify padding visually before
+enabling it by default.
+---
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt
+index 013eae5ed025..45ca88e8e8d8 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt
+@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.LayoutDirection
+ import androidx.compose.ui.unit.dp
+ import androidx.compose.ui.viewinterop.AndroidView
+ import androidx.lifecycle.compose.LocalLifecycleOwner
++import androidx.lifecycle.compose.collectAsStateWithLifecycle
+ import com.android.compose.modifiers.thenIf
+ import com.android.compose.theme.PlatformTheme
+ import com.android.compose.theme.colorAttr
+@@ -130,6 +131,14 @@ import kotlin.math.abs
+ import kotlinx.coroutines.DisposableHandle
+ import kotlinx.coroutines.awaitCancellation
+ 
++/**
++ * Pseudo-slot honored in the icon hide list. The battery is rendered outside [SystemStatusIcons],
++ * so it never reaches that composable's per-slot filter and has to opt into the blocklist here.
++ * The literal matches com.android.internal.R.string.status_bar_battery ("battery"), which is the
++ * token the legacy status bar used, so existing hide lists keep working.
++ */
++private const val BATTERY_SLOT = "battery"
++
+ /** Factory to simplify the dependency management for [StatusBarRoot] */
+ @PerDisplaySingleton
+ class StatusBarRootFactory
+@@ -591,19 +600,25 @@ private fun addBatteryComposable(
+     val batteryComposeView =
+         ComposeView(phoneStatusBarView.context).apply {
+             setContent {
+-                val height =
+-                    with(LocalDensity.current) {
+-                        BatteryViewModel.getStatusBarBatteryHeight(LocalContext.current).toDp()
+-                    }
+-                val viewModel =
+-                    rememberViewModel(traceName = "UnifiedBattery") {
+-                        statusBarViewModel.unifiedBatteryViewModel.create()
+-                    }
+-                UnifiedBattery(
+-                    modifier = Modifier.sysUiResTagContainer().height(height).wrapContentWidth(),
+-                    viewModel = viewModel,
+-                    isDarkProvider = { statusBarViewModel.areaDark },
+-                )
++                val blockedSlots by
++                    statusBarViewModel.systemStatusIconBlockListInteractor.blockedIconSlots
++                        .collectAsStateWithLifecycle(initialValue = emptySet())
++                if (BATTERY_SLOT !in blockedSlots) {
++                    val height =
++                        with(LocalDensity.current) {
++                            BatteryViewModel.getStatusBarBatteryHeight(LocalContext.current).toDp()
++                        }
++                    val viewModel =
++                        rememberViewModel(traceName = "UnifiedBattery") {
++                            statusBarViewModel.unifiedBatteryViewModel.create()
++                        }
++                    UnifiedBattery(
++                        modifier =
++                            Modifier.sysUiResTagContainer().height(height).wrapContentWidth(),
++                        viewModel = viewModel,
++                        isDarkProvider = { statusBarViewModel.areaDark },
++                    )
++                }
+             }
+         }
+     phoneStatusBarView.findViewById<ViewGroup>(R.id.system_icons).apply {
+@@ -641,19 +656,25 @@ private fun addEndSideComposable(
+                             statusBarViewModel.systemStatusIconBlockListInteractor,
+                     )
+ 
+-                    val height =
+-                        with(LocalDensity.current) {
+-                            BatteryViewModel.getStatusBarBatteryHeight(LocalContext.current).toDp()
+-                        }
+-                    val viewModel =
+-                        rememberViewModel(traceName = "UnifiedBattery") {
+-                            statusBarViewModel.unifiedBatteryViewModel.create()
+-                        }
+-                    UnifiedBattery(
+-                        viewModel = viewModel,
+-                        isDarkProvider = { statusBarViewModel.areaDark },
+-                        modifier = Modifier.height(height).wrapContentWidth(),
+-                    )
++                    val blockedSlots by
++                        statusBarViewModel.systemStatusIconBlockListInteractor.blockedIconSlots
++                            .collectAsStateWithLifecycle(initialValue = emptySet())
++                    if (BATTERY_SLOT !in blockedSlots) {
++                        val height =
++                            with(LocalDensity.current) {
++                                BatteryViewModel.getStatusBarBatteryHeight(LocalContext.current)
++                                    .toDp()
++                            }
++                        val viewModel =
++                            rememberViewModel(traceName = "UnifiedBattery") {
++                                statusBarViewModel.unifiedBatteryViewModel.create()
++                            }
++                        UnifiedBattery(
++                            viewModel = viewModel,
++                            isDarkProvider = { statusBarViewModel.areaDark },
++                            modifier = Modifier.height(height).wrapContentWidth(),
++                        )
++                    }
+                 }
+             }
+         }

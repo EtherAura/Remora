@@ -1,0 +1,15 @@
+# Codec2 pipeline activation (bd remora-28ix.4 R2c).
+#
+# READS ro.boot.use_remora_c2 DIRECTLY — the host emits androidboot.use_remora_c2=1 whenever
+# useCodec2 resolves true, which is the default.
+#
+# `on init` rather than `on early-init`: the property arrives on the kernel cmdline, so it is
+# set before either, but the script it execs needs /dev populated to test for dma_heap.
+on init && property:ro.boot.use_remora_c2=1
+    exec -- /vendor/bin/remora.c2.sh
+
+# NO `ro.boot.use_dmabufheaps` -> `debug.c2.use_dmabufheaps` passthrough, deliberately.
+# Nothing in Remora has ever emitted that boot arg (checked across the host tree, not
+# assumed), and carrying an arg name nothing emits into Remora's own namespace would make it
+# look supported. If the knob is ever wanted it comes back as remora_dmabufheaps,
+# with a host emitter.

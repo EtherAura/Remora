@@ -1,0 +1,35 @@
+From: Remora <noreply@localhost>
+Date: Sun, 2 Aug 2026 11:40:00 -0400
+Subject: [PATCH 3/3] gbm_mesa: advertise HW_VIDEO_DECODER on linear RGB32 combos
+
+Surface-bound c2-va sessions decode into RGBX so SurfaceFlinger never
+GL-imports an NV12 dma-buf (fatal on Venus/NVIDIA: the host Vulkan
+refuses the import and the ring dies, remora-e5x.21). Without the
+decoder-usage combos on the 32bpp RGB formats, the RGBX output pool's
+every fetch fails and playback stalls frameless.
+
+---
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index aa8e8e1..9381d76 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -119,6 +119,19 @@ int gbm_mesa_driver_init(struct driver *drv)
+ 	drv_modify_combination(drv, DRM_FORMAT_ARGB8888, &linear_metadata, BO_USE_HW_VIDEO_ENCODER);
+ 	drv_modify_combination(drv, DRM_FORMAT_XRGB8888, &linear_metadata, BO_USE_HW_VIDEO_ENCODER);
+ 
++	/*
++	 * Linear 32bpp RGB as a DECODER destination as well: surface-bound
++	 * c2-va sessions decode into RGBX so SurfaceFlinger never has to
++	 * GL-import an NV12 dma-buf (fatal on the Venus/NVIDIA path — the
++	 * host Vulkan refuses the import and the ring dies, remora-e5x.21).
++	 * Without these combos the RGBX output pool's every fetch fails and
++	 * playback stalls frameless.
++	 */
++	drv_modify_combination(drv, DRM_FORMAT_ABGR8888, &linear_metadata, BO_USE_HW_VIDEO_DECODER);
++	drv_modify_combination(drv, DRM_FORMAT_XBGR8888, &linear_metadata, BO_USE_HW_VIDEO_DECODER);
++	drv_modify_combination(drv, DRM_FORMAT_ARGB8888, &linear_metadata, BO_USE_HW_VIDEO_DECODER);
++	drv_modify_combination(drv, DRM_FORMAT_XRGB8888, &linear_metadata, BO_USE_HW_VIDEO_DECODER);
++
+ 	/*
+ 	 * R8 format is used for Android's HAL_PIXEL_FORMAT_BLOB and is used for JPEG snapshots
+ 	 * from camera and input/output from hardware decoder/encoder.

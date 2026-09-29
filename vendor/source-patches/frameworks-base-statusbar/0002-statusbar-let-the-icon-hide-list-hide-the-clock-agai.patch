@@ -1,0 +1,87 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sat, 25 Jul 2026 08:50:00 -0400
+Subject: [PATCH] statusbar: let the icon hide list hide the clock again
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Clock registers itself as a TunerService tunable for both CLOCK_SECONDS
+and StatusBarIconController.ICON_HIDE_LIST, but onTuningChanged only ever
+handled CLOCK_SECONDS — the hide list callback was delivered and dropped
+on the floor. Putting "clock" in the hide list therefore did nothing, and
+had not done anything for some time; the visibility plumbing that used to
+back it (setClockVisibleByUser) is gone from this version of the file.
+
+Handle the ICON_HIDE_LIST branch and hide the view when the "clock"
+pseudo-slot is present. It is a pseudo-slot because the clock is not a
+real status bar icon: it is absent from config_statusBarIcons and so is
+never seen by the icon pipeline's per-slot filter, which is why it has to
+opt in here rather than being handled centrally.
+
+Clock visibility has other drivers (chip animations, the ClockModernization
+Compose swap, disable flags). Those must keep being able to hide the clock
+but must not be able to resurrect it while the user wants it gone, so
+setVisibility is overridden to swallow VISIBLE while hidden by the user,
+and the tunable path goes through super to bypass that guard.
+---
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/policy/Clock.java b/packages/SystemUI/src/com/android/systemui/statusbar/policy/Clock.java
+index 5395d08eef87..c106d5ddcb01 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/policy/Clock.java
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/policy/Clock.java
+@@ -41,6 +41,7 @@ import android.text.style.RelativeSizeSpan;
+ import android.util.AttributeSet;
+ import android.view.ContextThemeWrapper;
+ import android.view.Display;
++import android.view.View;
+ import android.widget.TextView;
+ 
+ import com.android.settingslib.Utils;
+@@ -77,6 +78,16 @@ public class Clock extends TextView implements
+     private static final String SHOW_SECONDS = "show_seconds";
+     private static final String VISIBILITY = "visibility";
+ 
++    /**
++     * Pseudo-slot honored in the {@link StatusBarIconController#ICON_HIDE_LIST} hide list. The
++     * clock is not a real status bar icon — it is absent from config_statusBarIcons and so never
++     * reaches the icon pipeline's per-slot filter — so it has to opt into the hide list itself.
++     */
++    private static final String CLOCK_SLOT = "clock";
++
++    /** Whether the user hid the clock via {@link StatusBarIconController#ICON_HIDE_LIST}. */
++    private boolean mClockHiddenByUser;
++
+     private final UserTracker mUserTracker;
+     private int mCurrentUserId;
+ 
+@@ -278,7 +289,30 @@ public class Clock extends TextView implements
+         if (CLOCK_SECONDS.equals(key)) {
+             mShowSeconds = TunerService.parseIntegerSwitch(newValue, false);
+             updateShowSeconds();
++        } else if (StatusBarIconController.ICON_HIDE_LIST.equals(key)) {
++            boolean hidden = StatusBarIconController.getIconHideList(getContext(), newValue)
++                    .contains(CLOCK_SLOT);
++            if (hidden != mClockHiddenByUser) {
++                mClockHiddenByUser = hidden;
++                // Go through super: our own setVisibility() swallows VISIBLE while hidden.
++                super.setVisibility(hidden ? View.GONE : View.VISIBLE);
++            }
++        }
++    }
++
++    /**
++     * Suppress show requests while the user has hidden the clock through the icon hide list.
++     *
++     * The clock's visibility is also driven by the status bar itself (chip animations, the
++     * ClockModernization Compose swap, disable flags). Those callers must still be able to hide it,
++     * but must not be able to bring it back while the user wants it gone.
++     */
++    @Override
++    public void setVisibility(int visibility) {
++        if (visibility == View.VISIBLE && mClockHiddenByUser) {
++            return;
+         }
++        super.setVisibility(visibility);
+     }
+ 
+     @Override

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Privileged permissions for the microG priv-apps (mirroring the lineage4microg set).
+     FAKE_PACKAGE_SIGNATURE is listed for when signature spoofing lands (harmless while the
+     platform doesn't define it).
+
+     THIS LIST MUST BE COMPLETE — a missing entry is a BOOT LOOP, not a degraded app, and the
+     comment that used to sit here said the opposite. It claimed that because microg.mk does not
+     set ro.control_privapp_permissions=enforce, a gap "degrades quietly". Measured on A17
+     (bd remora-4ei.7): the property is unset in every build.prop and system_server still died
+     with IllegalStateException "Signature|privileged permissions not in privileged permission
+     allowlist" from AppIdPermissionPolicy.onSystemReady, restarting forever. Android 17's
+     permission subsystem enforces this unconditionally; the enforce property no longer gates it.
+     So when microG is bumped, re-check the APK's requested privileged permissions against this
+     file rather than trusting a boot to report the gap gently. -->
+<permissions>
+    <privapp-permissions package="com.google.android.gms">
+        <permission name="android.permission.FAKE_PACKAGE_SIGNATURE"/>
+        <permission name="android.permission.CHANGE_DEVICE_IDLE_TEMP_WHITELIST"/>
+        <permission name="android.permission.INSTALL_LOCATION_PROVIDER"/>
+        <permission name="android.permission.INTERACT_ACROSS_USERS"/>
+        <permission name="android.permission.LOCATION_HARDWARE"/>
+        <permission name="android.permission.MANAGE_USB"/>
+        <permission name="android.permission.MODIFY_PHONE_STATE"/>
+        <permission name="android.permission.NETWORK_SCAN"/>
+        <permission name="android.permission.PROVIDE_DEFAULT_ENABLED_CREDENTIAL_SERVICE"/>
+        <permission name="android.permission.PROVIDE_REMOTE_CREDENTIALS"/>
+        <permission name="android.permission.READ_PRIVILEGED_PHONE_STATE"/>
+        <permission name="android.permission.START_ACTIVITIES_FROM_BACKGROUND"/>
+        <permission name="android.permission.UPDATE_APP_OPS_STATS"/>
+        <permission name="android.permission.UPDATE_DEVICE_STATS"/>
+        <permission name="android.permission.WATCH_APPOPS"/>
+    </privapp-permissions>
+    <privapp-permissions package="com.android.vending">
+        <permission name="android.permission.FAKE_PACKAGE_SIGNATURE"/>
+        <permission name="android.permission.INSTALL_PACKAGES"/>
+        <permission name="android.permission.DELETE_PACKAGES"/>
+        <permission name="android.permission.INTERACT_ACROSS_USERS"/>
+    </privapp-permissions>
+</permissions>

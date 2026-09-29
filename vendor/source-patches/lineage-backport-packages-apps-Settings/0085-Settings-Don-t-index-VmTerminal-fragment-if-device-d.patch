@@ -1,0 +1,25 @@
+From c168479718f0ffd1a55509224c3752313fad492a Mon Sep 17 00:00:00 2001
+From: LuK1337 <priv.luk@gmail.com>
+Date: Tue, 3 Mar 2026 01:04:32 +0100
+Subject: [PATCH 85/98] Settings: Don't index VmTerminal fragment if device
+ doesn't support it
+
+Change-Id: Id7f2fc2111a80859627f5f0dd602d1b5caa22db1
+---
+ .../linuxterminal/LinuxTerminalDashboardFragment.java          | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/com/android/settings/development/linuxterminal/LinuxTerminalDashboardFragment.java b/src/com/android/settings/development/linuxterminal/LinuxTerminalDashboardFragment.java
+index 0eeeeddf790..d9131212fa4 100644
+--- a/src/com/android/settings/development/linuxterminal/LinuxTerminalDashboardFragment.java
++++ b/src/com/android/settings/development/linuxterminal/LinuxTerminalDashboardFragment.java
+@@ -88,7 +88,8 @@ public class LinuxTerminalDashboardFragment extends DashboardFragment {
+ 
+                 @Override
+                 protected boolean isPageSearchEnabled(Context context) {
+-                    return DevelopmentSettingsEnabler.isDevelopmentSettingsEnabled(context);
++                    return DevelopmentSettingsEnabler.isDevelopmentSettingsEnabled(context) &&
++                            new LinuxTerminalPreferenceController(context).isAvailable();
+                 }
+             };
+ }

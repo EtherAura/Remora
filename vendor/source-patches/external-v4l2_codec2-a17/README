@@ -1,0 +1,24 @@
+A17 applies NOTHING from the shared external-v4l2_codec2 series — see SKIP.
+
+This directory OVERRIDES the shared one wholesale (see patchAppliesTo and the apply loop in
+core/SourcePatches.cpp: <dir>-a<N> wins when it exists), so whatever is here is exactly what A17
+gets. Nothing is lost by skipping: 0001-0004 are already present on A17, every hunk of them, in
+the container-patch commit "A17: Remora c2-va enablement for the VAAPI Codec2 path"
+(container-patches/android-17.0.0/external/v4l2_codec2/0001), and 0005 (FLAG_DROP_FRAME on
+kAborted) is carried for A17 by 0003 of that same container-patch series. Details in SKIP.
+
+HISTORY, because this directory has been through both failure modes (bd remora-22n):
+
+ 1. A blanket SKIP silently swallowed a later patch that A17 did need — the one adding
+    VideoCodec::AV1 to the shared codec enum. It landed in this series after the SKIP was
+    verified, so every A17 source build from then on died with "no member named 'AV1' in
+    'android::VideoCodec'" until the enum patch was made to apply on A17.
+ 2. The first fix listed that one patch alone here instead — but the apply loop looks for the
+    REGISTRY's filenames in the resolved dir, so every build emitted four expected "error: can't
+    open patch" lines for 0001-0004. Errors that are routine noise are exactly what hid failure
+    mode 1.
+
+THE RESOLUTION: the AV1 enum patch is its own registry entry now (v4l2_av1_enum,
+external-v4l2_codec2-av1/), scoped to every version, out of reach of this SKIP. A change A17
+needs goes in its own entry or in the A17 container-patch series — never into this shared
+series on the assumption that A17 will pick it up.

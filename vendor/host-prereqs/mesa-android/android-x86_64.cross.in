@@ -1,0 +1,47 @@
+# Mesa cross-file for Android x86_64 (bd remora-ykhz / bm7.4). API 34: the NDK r27c ships up to 35,
+# but the drivers only need the bionic surface, and a lower level keeps the result loadable on
+# anything the image family targets.
+[binaries]
+ar = '@NDK@/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
+c = ['@NDK@/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang']
+cpp = ['@NDK@/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang++']
+c_ld = 'lld'
+cpp_ld = 'lld'
+strip = '@NDK@/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
+llvm-config = '@LLVMCONFIG@'
+pkg-config = '/usr/bin/pkg-config'
+
+[built-in options]
+# STATIC libc++, and this is not a preference — it is what makes the driver loadable at all.
+#
+# The NDK's libc++ emits calls into its own runtime, and r27c's emits __libcpp_verbose_abort, which
+# the old prebuilts project's libc++_shared.so predates. A driver built here and installed in that
+# image therefore dlopen()s with:
+#
+#   cannot locate symbol "_ZNSt6__ndk122__libcpp_verbose_abortEPKcz"
+#     referenced by "/vendor/lib64/hw/vulkan.radeon.so"
+#
+# measured on amd-host-a, after an image that passed every static check. The prebuilt
+# Mesa works because it was compiled against the libc++ that ships beside it; ours was not, and the
+# image carries only the old one. Linking libc++ INTO the driver removes the dependency rather than
+# trying to satisfy it, which is the containable fix: nothing else in the image changes. Replacing
+# the shipped libc++_shared.so would instead swap the runtime under every prebuilt that links it.
+#
+# NO --exclude-libs HERE, and the reason is worth keeping. Hiding the absorbed libc++ symbols looks
+# obviously right, but MESA'S OWN DRIVER CODE LIVES IN STATIC CONVENIENCE ARCHIVES: --exclude-libs
+# ALL hides all of it, so the link produced a 343 KB stub exporting NOTHING — not even HMI — instead
+# of a 17.8 MB driver. It installs, it is the right filename, and the loader finds no module struct.
+# Mesa already restricts its exports with its own linker version script, so this was never needed.
+cpp_link_args = ['-static-libstdc++']
+
+[properties]
+# libdrm for the TARGET comes from the AOSP tree's own source build (bd remora-ykhz), not from a
+# wrap and not from the host's /usr/lib64/pkgconfig — pointing at the latter would silently hand a
+# Linux x86_64 libdrm to an Android cross build.
+pkg_config_libdir = '@PCDIR@'
+
+[host_machine]
+system = 'android'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'

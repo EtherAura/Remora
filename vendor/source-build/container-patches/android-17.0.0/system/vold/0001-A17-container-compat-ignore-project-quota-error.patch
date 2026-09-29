@@ -1,0 +1,26 @@
+From cbfeb3c30a28c359c29812b54c46e698df80a3ae Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 12:11:15 -0400
+Subject: [PATCH] A17 container-compat: ignore project-quota error
+
+Change-Id: Iad4249d7e9c25ced88bccfdc84512f56dac9d75b
+---
+ Utils.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Utils.cpp b/Utils.cpp
+index a55a57e..c2a1538 100644
+--- a/Utils.cpp
++++ b/Utils.cpp
+@@ -262,7 +262,7 @@ int SetQuotaProjectId(const std::string& path, long projectId) {
+             return 0; // swallow
+         }
+         PLOG(ERROR) << "Failed to set project id on " << path;
+-        return ret;
++        // Project quotas aren't supported on the container's backing fs — log, don't fail.
+     }
+     return 0;
+ }
+-- 
+2.54.0
+

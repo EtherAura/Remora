@@ -1,0 +1,45 @@
+From 20d4d8efa105d03b880228b83833d9d67ec9c76a Mon Sep 17 00:00:00 2001
+From: R <r@l>
+Date: Sun, 30 Aug 2026 17:37:57 -0400
+Subject: [PATCH] 
+ 0007-gbm_mesa-64K-align-YUV-plane-offsets-for-NVIDIA-import.patch
+
+Change-Id: I4f7c0a556a70d25adeb1aed4626b4a2f4d28c9e1
+---
+ gbm_mesa_driver/gbm_mesa_internals.cpp | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index c32af49..d1f6b5b 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -631,6 +631,26 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 	if (alloc_args.drm_format == 0) {
+ 		/* Always use linear for spoofed format allocations. */
+ 		drv_bo_from_format(bo, alloc_args.width, 1, alloc_args.height, format);
++
++		/*
++		 * bd remora-e5x.35: NVIDIA's Vulkan maps dedicated YCbCr dmabuf
++		 * imports at 64 KiB granularity, so a plane starting off a 64 KiB
++		 * boundary samples as zeros — chroma at the tight offset above is
++		 * the green camera preview. Re-stack every plane after the first
++		 * onto a 64 KiB boundary; the gap rows are never addressed (all
++		 * consumers walk the per-plane offsets this metadata carries, CPU
++		 * writers included), the buffer just gets slightly longer. The
++		 * host allocator (venus-nvidia patch 0026) accepts these imports
++		 * precisely because the offsets are aligned.
++		 */
++		for (size_t plane = 1; plane < drv_num_planes_from_format(format); plane++) {
++			uint32_t prev_end =
++			    bo->meta.offsets[plane - 1] + bo->meta.sizes[plane - 1];
++			bo->meta.offsets[plane] = ALIGN(prev_end, 64 * 1024);
++			bo->meta.total_size =
++			    bo->meta.offsets[plane] + bo->meta.sizes[plane];
++		}
++
+ 		bo_layout_ready = true;
+ 		bo->meta.total_size = ALIGN(bo->meta.total_size, size_align);
+ 		alloc_args.drm_format = DRM_FORMAT_R8;
+-- 
+2.54.0
+

@@ -1,0 +1,60 @@
+From 162ebf33632035e93166e11067badd148eb1ee4d Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sat, 25 Jul 2026 12:19:13 -0400
+Subject: [PATCH] inputflinger: don't show the mouse cursor on device connect
+
+Every mouse in the Android container is virtual (Sunshine passthrough
+uinput devices, QEMU/VMware/spice console tablets, mirrored scrcpy uhid)
+and several register at boot without ever producing an event. The stock
+connect-time unfade in updatePointerControllersLocked() painted a stray,
+motionless pointer at screen center during boot that lingered until the
+inactivity fade.
+
+Show the cursor only on actual motion: processMouseEventLocked() and
+processTouchpadEventLocked() already unfade on every event, so a mouse
+that is really being used (a Moonlight session, scrcpy --mouse=uhid)
+still draws and moves the cursor exactly as before.
+
+Rebased for A17: PointerChoreographer.cpp drifted around line 735 and the
+A16 hunk context no longer matches, so git am fell through to a 3-way
+merge on every run.
+
+Change-Id: I439f1aa67643a4ff311a5c0fae9f8b04a0a2e9c5
+---
+ services/inputflinger/PointerChoreographer.cpp | 18 ++++++++++--------
+ 1 file changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/services/inputflinger/PointerChoreographer.cpp b/services/inputflinger/PointerChoreographer.cpp
+index fae0993740..a925dee941 100644
+--- a/services/inputflinger/PointerChoreographer.cpp
++++ b/services/inputflinger/PointerChoreographer.cpp
+@@ -738,19 +738,21 @@ PointerChoreographer::PointerDisplayChange PointerChoreographer::updatePointerCo
+             const ui::LogicalDisplayId displayId =
+                     getTargetMouseDisplayLocked(info.getAssociatedDisplayId());
+             mouseDisplaysToKeep.insert(displayId);
+-            // For mice, show the cursor immediately when the device is first connected or
+-            // when it moves to a new display.
+-            auto [mousePointerIt, isNewMousePointer] =
+-                    mMousePointersByDisplay.try_emplace(displayId,
+-                                                        getMouseControllerConstructor(displayId));
++            // Do NOT show the cursor just because a mouse connected. In this container every
++            // mouse is virtual (Sunshine passthrough uinput, console tablets, scrcpy uhid) and
++            // several register at boot without ever moving — the stock connect-time unfade
++            // painted a stray center-screen pointer over boot until the inactivity fade. A mouse
++            // that is actually used still shows the cursor: processMouseEventLocked and
++            // processTouchpadEventLocked unfade on every motion event.
++            const bool isNewMousePointer =
++                    mMousePointersByDisplay
++                            .try_emplace(displayId, getMouseControllerConstructor(displayId))
++                            .second;
+             if (isNewMousePointer) {
+                 onControllerAddedOrRemovedLocked();
+             }
+ 
+             mMouseDevices.emplace(info.getId());
+-            if ((!isKnownMouse || isNewMousePointer) && canUnfadeOnDisplay(displayId)) {
+-                mousePointerIt->second->unfade(PointerControllerInterface::Transition::IMMEDIATE);
+-            }
+         }
+         if (isFromSource(sources, AINPUT_SOURCE_TOUCHSCREEN) &&
+             shouldShowTouchesOnDisplay(info.getAssociatedDisplayId()) &&

@@ -1,0 +1,27 @@
+diff --git a/core/java/android/view/SurfaceView.java b/core/java/android/view/SurfaceView.java
+index 926b18105f28..d574e1ec95c9 100644
+--- a/core/java/android/view/SurfaceView.java
++++ b/core/java/android/view/SurfaceView.java
+@@ -53,6 +53,7 @@ import android.os.IBinder;
+ import android.os.Looper;
+ import android.os.RemoteException;
+ import android.os.SystemClock;
++import android.os.SystemProperties;
+ import android.text.TextUtils;
+ import android.util.ArraySet;
+ import android.util.AttributeSet;
+@@ -1077,6 +1078,14 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
+      * @param isSecure True if the surface view is secure.
+      */
+     public void setSecure(boolean isSecure) {
++        // DRM players (ExoPlayer &co) mark their video SurfaceView secure, which blanks it on
++        // the virtual display the mirror captures — "audio but black video". A container has
++        // no physical secure display, so honoring the flag only hides all DRM video with no security
++        // benefit. Ignore it here (L3 Widevine decodes to clear buffers anyway). Set
++        // persist.remora.keep_secure_surfaces=1 to restore stock behavior.
++        if (isSecure && !SystemProperties.getBoolean("persist.remora.keep_secure_surfaces", false)) {
++            isSecure = false;
++        }
+         if (isSecure) {
+             mSurfaceFlags |= SurfaceControl.SECURE;
+         } else {

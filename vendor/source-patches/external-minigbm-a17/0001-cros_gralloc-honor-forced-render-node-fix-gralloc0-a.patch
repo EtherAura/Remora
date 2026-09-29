@@ -1,0 +1,83 @@
+From 4fed9f744325bc4b422f3f93c7f5c88e40f90dd0 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Thu, 9 Jul 2026 19:58:15 -0400
+Subject: cros_gralloc: honor forced render node + fix gralloc0 alloc path
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+For the xe SR-IOV VF (androidboot.remora_gralloc=minigbm_intel):
+
+- init_try_nodes: bind the node named by ro.boot.remora_gpu_node first.
+  In the privileged container the virtio-gpu console node enumerates
+  before the xe VF and would otherwise win the scan.
+- allocate(): the gralloc0 wrapper allocates with enable_metadata_fd=0
+  (no metadata reserved region), so initialize_metadata() failed on the
+  missing fd; gate it on enable_metadata_fd. Its error path also
+  double-freed the bo (buffer already owns it, then destroy_hnd frees it
+  again) — crash-looped the allocator; release via buffer.reset() instead.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Change-Id: Ia566937855d9643eba20604f85a321304185d030
+---
+ cros_gralloc/cros_gralloc_driver.cc | 37 +++++++++++++++++++++++++++--
+ 1 file changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/cros_gralloc/cros_gralloc_driver.cc b/cros_gralloc/cros_gralloc_driver.cc
+index 706dee9..9409cf7 100644
+--- a/cros_gralloc/cros_gralloc_driver.cc
++++ b/cros_gralloc/cros_gralloc_driver.cc
+@@ -126,6 +126,24 @@ static struct driver *init_try_nodes()
+ 	 */
+ 
+ 	struct driver *drv;
++
++	/*
++	 * Remora: honor the forced render node (androidboot.remora_gpu_node) so gralloc binds
++	 * the intended GPU (the Intel xe SR-IOV VF) instead of the first node that initializes —
++	 * in the privileged container the virtio-gpu console node enumerates first and its
++	 * virtgpu backend would win the scan below.
++	 */
++	char forced_node[PROPERTY_VALUE_MAX];
++	if (property_get("ro.boot.remora_gpu_node", forced_node, "") > 0) {
++		int fd = open(forced_node, O_RDWR, 0);
++		if (fd >= 0) {
++			drv = drv_create(fd, NULL); /* A17: backend arg; NULL = probe */
++			if (drv)
++				return drv;
++			close(fd);
++		}
++		ALOGE("Failed to init forced node %s; falling back to scan", forced_node);
++	}
+ 	char const *render_nodes_fmt = "%s/renderD%d";
+ 	char const *card_nodes_fmt = "%s/card%d";
+ 	uint32_t num_nodes = DRM_NUM_NODES;
+@@ -343,11 +361,26 @@ int32_t cros_gralloc_driver::allocate(const struct cros_gralloc_buffer_descripto
+ 		goto destroy_hnd;
+ 	}
+ 
++	/*
++	 * The gralloc0 wrapper allocates without a metadata reserved region
++	 * (enable_metadata_fd == false, no metadata fd in the handle) — initializing metadata
++	 * would fail on the missing fd. The metadata accessors it skips (name/dataspace/blend)
++	 * are gralloc4 mapper APIs the gralloc0 path never invokes.
++	 */
+ 	if (descriptor->enable_metadata_fd) {
+ 		ret = buffer->initialize_metadata(descriptor);
+ 		if (ret) {
+-			ALOGE("Failed to allocate: failed to initialize cros_gralloc_buffer metadata.");
+-			goto destroy_hnd;
++			ALOGE("Failed to allocate: failed to initialize cros_gralloc_buffer "
++			      "metadata.");
++			/*
++			 * |buffer| owns |bo| and its own cloned handle — resetting releases
++			 * both (the destroy_hnd label would drv_bo_destroy(bo) a second time
++			 * after the unique_ptr destructor already did: a double free).
++			 */
++			buffer.reset();
++			native_handle_close(hnd);
++			native_handle_delete(hnd);
++			return ret;
+ 		}
+ 	}
+ 

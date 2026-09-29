@@ -1,0 +1,66 @@
+From acee7a3192538f82697ea9ea4bd957aee869dc92 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Timi=20Rautam=C3=A4ki?= <timi.rautamaki@gmail.com>
+Date: Tue, 24 Aug 2021 09:02:32 +0000
+Subject: [PATCH 21/98] Settings: use Glif themed button bar
+
+Change-Id: I7b7c522730806ee9c8cc83e4f560a344a089cbec
+---
+ res/layout/settings_main_prefs.xml | 30 ++++++++++++++++--------------
+ 1 file changed, 16 insertions(+), 14 deletions(-)
+
+diff --git a/res/layout/settings_main_prefs.xml b/res/layout/settings_main_prefs.xml
+index 48352e2efa0..ceb52eeb84d 100644
+--- a/res/layout/settings_main_prefs.xml
++++ b/res/layout/settings_main_prefs.xml
+@@ -38,35 +38,37 @@
+                     android:layout_height="wrap_content"
+                     android:layout_width="match_parent"
+                     android:layout_weight="0"
+-                    android:visibility="gone">
++                    android:visibility="gone"
++                    style="@style/SudGlifButtonBar">
+ 
+         <Button android:id="@+id/back_button"
+-                android:layout_width="150dip"
++                android:layout_width="wrap_content"
+                 android:layout_height="wrap_content"
+-                android:layout_margin="5dip"
+                 android:layout_alignParentStart="true"
+-                android:text="@*android:string/back_button_label"/>
++                android:text="@*android:string/back_button_label"
++                style="@style/SudGlifButton.Secondary"/>
+ 
+-        <LinearLayout
++        <RelativeLayout
+                 android:orientation="horizontal"
+                 android:layout_width="wrap_content"
+-                android:layout_height="wrap_content"
+-                android:layout_alignParentEnd="true">
++                android:layout_height="wrap_content">
+ 
+             <Button android:id="@+id/skip_button"
+-                    android:layout_width="150dip"
++                    android:layout_width="wrap_content"
+                     android:layout_height="wrap_content"
+-                    android:layout_margin="5dip"
++                    android:layout_alignParentStart="true"
+                     android:text="@*android:string/skip_button_label"
+-                    android:visibility="gone"/>
++                    android:visibility="gone"
++                    style="@style/SudGlifButton.Secondary"/>
+ 
+             <Button android:id="@+id/next_button"
+-                    android:layout_width="150dip"
++                    android:layout_width="wrap_content"
+                     android:layout_height="wrap_content"
+-                    android:layout_margin="5dip"
+-                    android:text="@*android:string/next_button_label"/>
++                    android:layout_alignParentEnd="true"
++                    android:text="@*android:string/next_button_label"
++                    style="@style/SudGlifButton.Primary"/>
+ 
+-        </LinearLayout>
++        </RelativeLayout>
+ 
+     </RelativeLayout>
+ 

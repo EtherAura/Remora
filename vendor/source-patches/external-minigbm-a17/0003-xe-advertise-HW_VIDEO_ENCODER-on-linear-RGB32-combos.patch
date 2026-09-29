@@ -1,0 +1,54 @@
+From 65b97e3e3fc32c3fed92a5b7cab18c9aba344880 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 17 Jul 2026 22:12:17 -0400
+Subject: xe: advertise HW_VIDEO_ENCODER on linear RGB32 combos (direct-RGB
+ VDENC source)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Without these combos an ABGR8888 allocation carrying encoder usage
+fails drv_get_combination, and cros_gralloc's fallback silently strips
+BO_USE_HW_VIDEO_ENCODER on retry (cros_gralloc_driver.cc) — so the
+64-row height alignment for VDENC source reads never applied and the
+c2-va direct-RGB path fell back to VPP on every frame. Advertise
+encoder usage for the four linear 32bpp RGB formats (linear only, like
+the NV12 combo). Verified end-to-end on the xe VF: gralloc0 usage
+0x10303 -> use_flags 0x4224 -> 2048-row BO, direct encode at 3760x1992
+with zero VCS CAT faults and a clean decoded stream.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Change-Id: I2b8e64d17c5a90f3ab46ed82c1d97e0a5b3c4d21
+---
+ xe.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/xe.c b/xe.c
+index a46a843..cbdfca8 100644
+--- a/xe.c
++++ b/xe.c
+@@ -166,6 +166,24 @@ static int xe_add_combinations(struct driver *drv)
+ 	/* P010 linear can be used for scanout too. */
+ 	drv_modify_combination(drv, DRM_FORMAT_P010, &metadata_linear, BO_USE_SCANOUT);
+ 
++	/*
++	 * Linear 32bpp RGB as a VDENC encode source (the c2-va direct-RGB
++	 * path: the encoder imports the composited RGB buffer straight into
++	 * libva, EncSliceLP does the CSC). Without these combos the encoder
++	 * usage request fails drv_get_combination and cros_gralloc silently
++	 * strips BO_USE_HW_VIDEO_ENCODER on retry — the buffer then misses the
++	 * CTB-64 height alignment the engine's reads require. Linear only: the
++	 * tiled combos must not advertise encoder usage.
++	 */
++	drv_modify_combination(drv, DRM_FORMAT_ABGR8888, &metadata_linear,
++			       BO_USE_HW_VIDEO_ENCODER);
++	drv_modify_combination(drv, DRM_FORMAT_XBGR8888, &metadata_linear,
++			       BO_USE_HW_VIDEO_ENCODER);
++	drv_modify_combination(drv, DRM_FORMAT_ARGB8888, &metadata_linear,
++			       BO_USE_HW_VIDEO_ENCODER);
++	drv_modify_combination(drv, DRM_FORMAT_XRGB8888, &metadata_linear,
++			       BO_USE_HW_VIDEO_ENCODER);
++
+ 	/*
+ 	 * Android also frequently requests YV12 formats for some camera implementations
+ 	 * (including the external provider implementation).

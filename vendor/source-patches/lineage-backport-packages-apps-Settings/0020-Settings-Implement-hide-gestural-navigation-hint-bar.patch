@@ -1,0 +1,42 @@
+From 4ea6e6fd22465f4bf89d4e8fb12b87c5fb188d53 Mon Sep 17 00:00:00 2001
+From: Jesse Chan <jc@lineageos.org>
+Date: Sun, 24 May 2020 21:35:34 +0800
+Subject: [PATCH 20/98] Settings: Implement hide gestural navigation hint bar
+
+Change-Id: I14dd73414c9f7ee1b01f315c9eeae0fd3ac4f859
+Signed-off-by: Jesse Chan <jc@lineageos.org>
+---
+ res/values/cm_strings.xml               | 4 ++++
+ res/xml/gesture_navigation_settings.xml | 6 ++++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index 41a7cbb8c4f..aa10bd96645 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -35,4 +35,8 @@
+     <string name="show_dev_on_cm">You have enabled development settings!</string>
+     <!-- [CHAR LIMIT=NONE] Device Info screen. Okay we get it, stop pressing, you already have it on -->
+     <string name="show_dev_already_cm">No need, you have already enabled development settings.</string>
++
++    <!-- Navigation bar hint -->
++    <string name="show_navbar_hint_title">Navigation hint</string>
++    <string name="show_navbar_hint_summary">Show navigation hint bar at the bottom of the screen</string>
+ </resources>
+diff --git a/res/xml/gesture_navigation_settings.xml b/res/xml/gesture_navigation_settings.xml
+index d2719853346..84e18ecc497 100644
+--- a/res/xml/gesture_navigation_settings.xml
++++ b/res/xml/gesture_navigation_settings.xml
+@@ -34,6 +34,12 @@
+             settings:buttonPreferenceType="filled" />
+     </PreferenceCategory>
+ 
++    <lineageos.preference.LineageSystemSettingSwitchPreference
++        android:key="navigation_bar_hint"
++        android:title="@string/show_navbar_hint_title"
++        android:summary="@string/show_navbar_hint_summary"
++        android:defaultValue="true" />
++
+     <PreferenceCategory
+         android:key="assistant_gesture_category"
+         android:persistent="false"

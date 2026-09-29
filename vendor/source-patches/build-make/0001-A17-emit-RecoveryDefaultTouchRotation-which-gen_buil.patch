@@ -1,0 +1,56 @@
+From c8bdd7bc6a5ce6f9677e67b98bde82364b934186 Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sun, 26 Jul 2026 23:53:07 -0400
+Subject: [PATCH] A17: emit RecoveryDefaultTouchRotation, which
+ gen_build_prop.py requires
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+build/soong's scripts/gen_build_prop.py reads config["RecoveryDefaultTouchRotation"]
+with a HARD subscript in append_additional_vendor_props, but this file never
+emitted the key. That is a producer/consumer split between two LineageOS forks,
+not a device-config gap: build/soong gained the consumer and build/make never
+gained the producer.
+
+Every partition's build.prop generation therefore died with
+KeyError: 'RecoveryDefaultTouchRotation' — system, system_ext and product — after
+two hours of compiling, at 78% of the build. The immediately preceding line reads
+config["RecoveryDefaultRotation"] and succeeds, which is what identifies this as a
+missing key rather than a malformed config.
+
+Emitted here rather than guarded on the Python side: the sibling AOSP keys on the
+surrounding lines are emitted unconditionally too, and a device that DOES set
+TARGET_RECOVERY_DEFAULT_TOUCH_ROTATION should get ro.minui.default_touch_rotation
+honoured rather than silently dropped. add_json_str writes an empty string when
+the variable is unset, which is exactly what the consumer's `if config[...]`
+falsiness check expects — the same path RecoveryDefaultRotation already takes on
+this product, which has no recovery partition at all.
+
+Change-Id: I21cfd951900b43e6ee750868c647fbb1aaeb8c39
+---
+ core/soong_extra_config.mk | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/core/soong_extra_config.mk b/core/soong_extra_config.mk
+index 03fcc961dd..bbacafb1e6 100644
+--- a/core/soong_extra_config.mk
++++ b/core/soong_extra_config.mk
+@@ -46,6 +46,17 @@ $(call add_json_str, SystemServerCompilerFilter, $(PRODUCT_SYSTEM_SERVER_COMPILE
+ $(call add_json_bool, Product16KDeveloperOption, $(filter true,$(PRODUCT_16K_DEVELOPER_OPTION)))
+ 
+ $(call add_json_str, RecoveryDefaultRotation, $(TARGET_RECOVERY_DEFAULT_ROTATION))
++# A17: build/soong's gen_build_prop.py reads config["RecoveryDefaultTouchRotation"] with a
++# HARD subscript (append_additional_vendor_props), but this file never emitted the key — a
++# producer/consumer split between two LineageOS forks, not a device-config gap. Every partition's
++# build.prop generation therefore died with KeyError: 'RecoveryDefaultTouchRotation' after 2h of
++# compiling, at 78% (bd remora-4ei.32). Emitted here rather than guarded on the Python side because
++# the sibling AOSP keys above are emitted unconditionally too, and a device that DOES set
++# TARGET_RECOVERY_DEFAULT_TOUCH_ROTATION should get ro.minui.default_touch_rotation honoured.
++# add_json_str writes an empty string when the variable is unset, which is exactly what the
++# consumer's `if config[...]` falsiness check expects — same as RecoveryDefaultRotation on a product
++# with no recovery partition at all.
++$(call add_json_str, RecoveryDefaultTouchRotation, $(TARGET_RECOVERY_DEFAULT_TOUCH_ROTATION))
+ $(call add_json_str, RecoveryOverscanPercent, $(TARGET_RECOVERY_OVERSCAN_PERCENT))
+ $(call add_json_str, RecoveryPixelFormat, $(TARGET_RECOVERY_PIXEL_FORMAT))
+ ifdef TARGET_RECOVERY_NO_INITIAL_MODSET_FLUSH

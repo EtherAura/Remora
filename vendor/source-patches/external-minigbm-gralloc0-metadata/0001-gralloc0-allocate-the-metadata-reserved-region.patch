@@ -1,0 +1,36 @@
+diff --git a/cros_gralloc/gralloc0/gralloc0.cc b/cros_gralloc/gralloc0/gralloc0.cc
+index 8f97b21..ff66eb9 100644
+--- a/cros_gralloc/gralloc0/gralloc0.cc
++++ b/cros_gralloc/gralloc0/gralloc0.cc
+@@ -91,7 +91,30 @@ static int gralloc0_alloc(alloc_device_t *dev, int w, int h, int format, int usa
+ 	descriptor.droid_usage = usage;
+ 	descriptor.drm_format = cros_gralloc_convert_format(format);
+ 	descriptor.use_flags = cros_gralloc_convert_usage(usage);
+-	descriptor.enable_metadata_fd = false;
++	/*
++	 * Allocate the metadata reserved region even on the gralloc0 path. The comment in
++	 * cros_gralloc_driver::allocate() that justifies skipping it says the gralloc4 metadata
++	 * accessors "are gralloc4 mapper APIs the gralloc0 path never invokes" — that is FALSE on
++	 * A17 and was measured, not reasoned about: a ten-second video playback on an AMD host
++	 * produced 433 of
++	 *     E Buffer does not have reserved region.
++	 *     E Failed to get_dataspace: failed to get metadata.
++	 * and the same pair appears from surfaceflinger, system_server and systemui while merely
++	 * idle. Consumers DO ask, because the buffer reaching them is a GraphicBuffer regardless of
++	 * which allocator minted it.
++	 *
++	 * Without the region every metadata call fails, and set_dataspace fails with them — so the
++	 * dataspace can never be RECORDED either, not just never read. With it, gralloc0 buffers
++	 * carry the same metadata struct gralloc4 buffers do, initialised to the descriptor's
++	 * defaults (name empty, dataspace UNKNOWN, client_metadata_size 0), which consumers may then
++	 * set. UNKNOWN is the honest starting value: the gralloc0 API carries no dataspace to seed it
++	 * with.
++	 *
++	 * Costs one memfd and one handle fd per buffer — exactly what the gralloc4 path already
++	 * spends. The handle is sized for it: cros_gralloc_driver::allocate() does
++	 * `num_fds = num_planes; if (enable_metadata_fd) num_fds += 1;` before native_handle_create.
++	 */
++	descriptor.enable_metadata_fd = true;
+ 
+ 	if (!mod->driver->is_supported(&descriptor)) {
+ 		ALOGE("Unsupported combination -- HAL format: %u, HAL usage: %u, "

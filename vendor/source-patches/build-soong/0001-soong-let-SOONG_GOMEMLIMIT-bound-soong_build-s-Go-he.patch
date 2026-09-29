@@ -1,0 +1,45 @@
+From 240de84f9d892884c644c95d41f8ec57be295687 Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sun, 26 Jul 2026 13:17:33 -0400
+Subject: [PATCH] soong: let SOONG_GOMEMLIMIT bound soong_build's Go heap
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+soong_build is launched by the bootstrap ninja via 'env -i', so it starts
+with an empty environment and GOMEMLIMIT cannot be set from the container.
+Without it Go's GC does not collect until the heap hits GOGC=100's default
+2x live set — a ~19.4 GiB live set means no collection before ~38.8 GiB, so
+any container memory limit below that OOM-kills soong_build, and raising the
+limit only moves the kill.
+
+invocationEnv is the sole channel into that empty environment, so inject the
+limit there. Inert unless SOONG_GOMEMLIMIT is set.
+
+Change-Id: I60c0fe35da54cdc7595aae9475b42e191d5de873
+---
+ ui/build/soong.go | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/ui/build/soong.go b/ui/build/soong.go
+index 4521b4abe..b22a58ffe 100644
+--- a/ui/build/soong.go
++++ b/ui/build/soong.go
+@@ -242,6 +242,17 @@ func (pb PrimaryBuilderFactory) primaryBuilderInvocation(config Config) bootstra
+ 	if profileMem := os.Getenv("SOONG_PROFILE_MEM"); profileMem != "" {
+ 		allArgs = append(allArgs, "--memprofile", profileMem+"."+pb.name)
+ 	}
++	// soong_build is launched by the bootstrap ninja through `env -i`, so it starts with an
++	// EMPTY environment and inherits nothing from soong_ui or from the build container. That
++	// makes GOMEMLIMIT unsettable from outside, and without it Go's GC will not collect until
++	// the heap reaches GOGC=100's default of 2x the live set. Measured on a 62 GiB host: a
++	// ~19.4 GiB live set means no collection before ~38.8 GiB, so soong_build is OOM-killed by
++	// any container memory limit below that — and raising the limit only moves the kill.
++	// invocationEnv is the one channel into that empty environment (bootstrap.go renders it
++	// into `env -i $env`), so the bound has to be injected here.
++	if memLimit := os.Getenv("SOONG_GOMEMLIMIT"); memLimit != "" {
++		invocationEnv["GOMEMLIMIT"] = memLimit
++	}
+ 	allArgs = append(allArgs, "Android.bp")
+ 
+ 	return bootstrap.PrimaryBuilderInvocation{

@@ -1,0 +1,23 @@
+# Vendor boot properties for remora_x86_64 (bd remora-28ix.4 R1).
+
+# ro.hardware IS DELIBERATELY NOT SET HERE, because a line for it here CANNOT DO ANYTHING
+# (bd remora-28ix.4 R4). init's PropertyInit runs ExportKernelBootProps(),
+# which copies ro.boot.hardware into ro.hardware, BEFORE PropertyLoadBootDefaults() reads this
+# file — and ro.* is write-once, so /vendor/build.prop always loses that race. The value comes
+# from the image ENTRYPOINT's androidboot.hardware, set in assemble-image.sh, which now says
+# remora. That file carries the reasoning and is the only place to change it.
+#
+# Recorded as an absence rather than deleted silently: a property line that provably cannot
+# apply is worse than no line, because it reads as the control and is not.
+
+# disable ueventd cold-boot for performance
+ro.cold_boot_done=true
+
+persist.sys.fuse=1
+
+ro.radio.noril=yes
+
+# The Android boot animation never has a display to draw on this early in a container;
+# Remora's own boot splash lives host-side (SplashFormats, the mirror's boot-animation
+# window).
+debug.sf.nobootanimation=1

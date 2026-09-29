@@ -1,0 +1,100 @@
+From e2e8fd1da13ad03ce0e64d21f1ec6a5e1337a76f Mon Sep 17 00:00:00 2001
+From: Bruno Martins <bgcngm@gmail.com>
+Date: Fri, 27 Nov 2020 11:54:28 +0000
+Subject: [PATCH 49/98] KeyboardSettings: Add a RemotePreference for
+ device-specific panel
+
+Allow devices to provide advanced keyboard settings.
+
+Unfortunatelly this can't be done with existing IA settings,
+so use the RemotePreference API to allow the external app
+to update the view. The action for this is:
+
+     "org.lineageos.settings.device.ADVANCED_KEYBOARD_SETTINGS"
+
+Change-Id: I1c46d3568c4d5bfc78e1cbae033071c7641fdf29
+---
+ res/values/cm_strings.xml                        |  4 ++++
+ res/xml/physical_keyboard_settings.xml           | 16 ++++++++++++++++
+ .../inputmethod/PhysicalKeyboardFragment.java    |  7 +++++++
+ 3 files changed, 27 insertions(+)
+
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index f3794753268..656b1ef5463 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -15,6 +15,10 @@
+      limitations under the License.
+ -->
+ <resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
++    <!-- Advanced keyboard settings -->
++    <string name="keyboard_extras_title">Extras</string>
++    <string name="advanced_keyboard_settings_title">Advanced settings</string>
++
+     <!-- Android debugging as root -->
+     <string name="adb_enable_root">Rooted debugging</string>
+     <string name="adb_enable_summary_root">Allow running Android debugging as root</string>
+diff --git a/res/xml/physical_keyboard_settings.xml b/res/xml/physical_keyboard_settings.xml
+index b7538c8ea5a..e54dc3332eb 100644
+--- a/res/xml/physical_keyboard_settings.xml
++++ b/res/xml/physical_keyboard_settings.xml
+@@ -74,4 +74,20 @@
+             android:defaultValue="false" />
+ 
+     </PreferenceCategory>
++
++    <!-- Device-specific keyboard settings. -->
++    <PreferenceCategory
++        android:key="keyboard_extras_category"
++        android:title="@string/keyboard_extras_title" >
++
++        <lineageos.preference.RemotePreference
++            android:key="advanced_keyboard_settings"
++            android:title="@string/advanced_keyboard_settings_title"
++            settings:requiresAction="org.lineageos.settings.device.ADVANCED_KEYBOARD_SETTINGS">
++            <intent
++                android:action="org.lineageos.settings.device.ADVANCED_KEYBOARD_SETTINGS" />
++        </lineageos.preference.RemotePreference>
++
++    </PreferenceCategory>
++
+ </PreferenceScreen>
+diff --git a/src/com/android/settings/inputmethod/PhysicalKeyboardFragment.java b/src/com/android/settings/inputmethod/PhysicalKeyboardFragment.java
+index dfdd9ec4494..58d275c6035 100644
+--- a/src/com/android/settings/inputmethod/PhysicalKeyboardFragment.java
++++ b/src/com/android/settings/inputmethod/PhysicalKeyboardFragment.java
+@@ -66,6 +66,7 @@ public final class PhysicalKeyboardFragment extends DashboardFragment
+ 
+     private static final String KEYBOARD_OPTIONS_CATEGORY = "keyboard_options_category";
+     private static final String KEYBOARD_A11Y_CATEGORY = "keyboard_a11y_category";
++    private static final String KEYBOARD_EXTRAS_CATEGORY = "keyboard_extras_category";
+     private static final String ACCESSIBILITY_BOUNCE_KEYS = "accessibility_bounce_keys";
+     private static final String ACCESSIBILITY_SLOW_KEYS = "accessibility_slow_keys";
+     private static final String ACCESSIBILITY_STICKY_KEYS = "accessibility_sticky_keys";
+@@ -100,6 +101,8 @@ public final class PhysicalKeyboardFragment extends DashboardFragment
+     private PreferenceCategory mKeyboardAssistanceCategory;
+     @Nullable
+     private PreferenceCategory mKeyboardA11yCategory = null;
++    @NonNull
++    private PreferenceCategory mKeyboardExtrasCategory = null;
+     @Nullable
+     private TwoStatePreference mAccessibilityBounceKeys = null;
+     @Nullable
+@@ -135,6 +138,8 @@ public final class PhysicalKeyboardFragment extends DashboardFragment
+         mImm = Preconditions.checkNotNull(activity.getSystemService(InputMethodManager.class));
+         mKeyboardAssistanceCategory = Preconditions.checkNotNull(
+                 findPreference(KEYBOARD_OPTIONS_CATEGORY));
++        mKeyboardExtrasCategory = Preconditions.checkNotNull(
++                findPreference(KEYBOARD_EXTRAS_CATEGORY));
+ 
+         mKeyboardA11yCategory = Objects.requireNonNull(findPreference(KEYBOARD_A11Y_CATEGORY));
+         mAccessibilityBounceKeys = Objects.requireNonNull(
+@@ -314,6 +319,8 @@ public final class PhysicalKeyboardFragment extends DashboardFragment
+         }
+         mKeyboardAssistanceCategory.setOrder(1);
+         preferenceScreen.addPreference(mKeyboardAssistanceCategory);
++        mKeyboardExtrasCategory.setOrder(99);
++        preferenceScreen.addPreference(mKeyboardExtrasCategory);
+         if (mSupportsFirmwareUpdate) {
+             mFeatureProvider.registerKeyboardInformationCategory(preferenceScreen);
+         }

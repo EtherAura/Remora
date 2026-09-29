@@ -1,0 +1,54 @@
+From: Remora <noreply@localhost>
+Date: Mon, 17 Aug 2026 08:55:00 -0400
+Subject: [PATCH] VideoFramePool: survive a graphic block with no pool data
+
+getBufferIdFromGraphicBlock()'s GRALLOC/SECURE_LINEAR arm called
+_C2BlockFactory::GetGraphicBlockPoolData(block) and dereferenced the result
+immediately, with no null check -- while the very next statement carefully
+null-checks the BufferPoolData it fetches. On the Remora bare/NVIDIA path the
+decoder's blocks come back with no pool data at all, so that dereference took
+down the whole c2-va HAL: SIGSEGV in VideoFramePool::getBufferIdFromGraphicBlock
++93, thread VideoFramePoolF, every time an app fed it video. NIKKE's startup
+movie killed the service twice inside 35 s, and each death/respawn tore down the
+video surface -- what the user saw as a heavy black flicker (bd remora-3fe6).
+
+Returning nullopt alone would stop the crash but abandon the decode request, so
+hardware video would silently never work. Instead identify the buffer the way
+the BUFFERQUEUE arm directly above already does: by its dma-buf. The id only has
+to be stable and unique per buffer for the mBuffers / shouldDropBuffer
+bookkeeping, and the dma-buf inode is exactly that -- the same identity the
+in-image composer keys on. The handle is null-checked too, so the fallback
+cannot reintroduce the fault it replaces.
+
+Verified on A17 bare/NVIDIA: before, two HAL tombstones per NIKKE launch; after,
+the service holds one pid across the whole run, zero new tombstones, and
+c2.remora.vaapi.avc.decoder stays the decoder in use (no software fallback).
+---
+diff --git a/components/VideoFramePool.cpp b/components/VideoFramePool.cpp
+index 8778118..fe616cb 100644
+--- a/components/VideoFramePool.cpp
++++ b/components/VideoFramePool.cpp
+@@ -48,6 +48,21 @@ std::optional<uint32_t> VideoFramePool::getBufferIdFromGraphicBlock(C2BlockPool&
+     case V4L2AllocatorId::SECURE_LINEAR: {
+         std::shared_ptr<_C2BlockPoolData> blockPoolData =
+                 _C2BlockFactory::GetGraphicBlockPoolData(block);
++        if (!blockPoolData) {
++            // A gralloc-allocated block carries no pool data, so identify it the way the
++            // BUFFERQUEUE arm above does: by its dma-buf. The id only has to be stable and
++            // unique per buffer for mBuffers/shouldDropBuffer bookkeeping, and the dma-buf
++            // inode is exactly that. Without this the null deref killed the whole HAL.
++            if (!block.handle()) {
++                ALOGE("Obtained C2GraphicBlock has neither pool data nor a handle.");
++                return std::nullopt;
++            }
++            auto dmabufId = android::getDmabufId(block.handle()->data[0]);
++            if (!dmabufId) {
++                return std::nullopt;
++            }
++            return dmabufId.value();
++        }
+         if (blockPoolData->getType() != _C2BlockPoolData::TYPE_BUFFERPOOL) {
+             ALOGE("Obtained C2GraphicBlock is not bufferpool-backed.");
+             return std::nullopt;
+-- 
+2.43.0

@@ -1,0 +1,34 @@
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index ddc6e09..c32af49 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -573,9 +573,27 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 		 * linear_metadata; this carries the same contract to an allocator
+ 		 * that does not consult it. Decode is the RGBX output pool, encode is
+ 		 * the VDENC direct-RGB source.
++		 *
++		 * CAMERA_WRITE joins them for a different reason with the same remedy
++		 * (bd remora-4ei.9). AOSP's external camera HAL fills every frame with
++		 * the CPU and says so -- ExternalCameraDeviceSession always ORs
++		 * CPU_WRITE_OFTEN | CAMERA_OUTPUT into the stream's producer usage --
++		 * so force_linear above is already true. But a preview buffer is also
++		 * composited, so use_scanout is true as well, and the allocator ranks
++		 * linear_required > SCANOUT > MAPPABLE: scanout wins, NVIDIA hands
++		 * back block-linear, and the HAL then writes linear rows into a tiled
++		 * bo. The result is not subtle -- the written regions read as noise
++		 * and the untouched ones stay zeroed, and a zeroed YUV buffer converts
++		 * to green, which is exactly what a live preview showed.
++		 *
++		 * Scoped to CAMERA_WRITE and not to BO_USE_SW_MASK on purpose:
++		 * promoting every CPU-mapped composited buffer above scanout would
++		 * undo the ranking that venus-nvidia 0023 exists to establish. A
++		 * camera buffer is the narrow case where the producer is unavoidably
++		 * the CPU.
+ 		 */
+-		.linear_required =
+-		    (use_flags & (BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER)) != 0,
++		.linear_required = (use_flags & (BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER |
++						 BO_USE_CAMERA_WRITE)) != 0,
+ 	};
+ 
+ 	/* Alignment for RPI4 CSI camera. Since we do not care about other cameras, keep this

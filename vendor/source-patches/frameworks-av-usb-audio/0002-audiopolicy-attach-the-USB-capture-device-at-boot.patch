@@ -1,0 +1,77 @@
+From 46d3e732486c4bc8dc366030529ead1d8e7a8566 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Mon, 31 Aug 2026 18:56:46 -0400
+Subject: [PATCH] audiopolicy: attach the USB capture device at boot
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The usb module declares USB Device In but nothing ever marks it connected, so
+AudioPolicyManager leaves it "declared" and AudioSource.MIC keeps resolving to
+the primary STUB — which returns memset(0) on a faked clock, i.e. perfectly
+timed silence with no error.
+
+Upstream is right for a phone: USB audio is hot-plugged, UsbAlsaManager sees a
+USB-host event and calls setDeviceConnectionState. Remora's container has the
+ALSA nodes but no USB host stack at all — `dumpsys usb` reports an empty host
+state — so that event can never arrive. Declaring the input attached is what
+makes the policy open it at boot instead of waiting.
+
+The address is required, not cosmetic: parse_card_device_params() in the legacy
+usbaudio HAL leaves card/device at -1 when the address carries neither, and
+profile_read_device_info() then fails with "cannot read profile". Measured
+exactly that way before the address was added.
+
+Input only. Attaching USB Device Out as well would move Android's playback onto
+the USB card, and Remora's audio leaves through the remote submix the mirror
+captures.
+
+Change-Id: I020327623022c192a3ea10a288fb0596c9aa0de6
+---
+ .../config/usb_audio_policy_configuration.xml | 23 ++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/services/audiopolicy/config/usb_audio_policy_configuration.xml b/services/audiopolicy/config/usb_audio_policy_configuration.xml
+index a487ecb3a7..a50b37868b 100644
+--- a/services/audiopolicy/config/usb_audio_policy_configuration.xml
++++ b/services/audiopolicy/config/usb_audio_policy_configuration.xml
+@@ -16,6 +16,20 @@
+ <!-- USB Audio HAL Audio Policy Configuration file -->
+ 
+ <module name="usb" halVersion="2.0">
++    <!-- Remora (bd remora-4ei.37): the USB capture device is ATTACHED AT BOOT.
++         Upstream declares no attachedDevices here because on a phone USB audio is hot-plugged:
++         UsbAlsaManager sees a USB-host event and calls setDeviceConnectionState. Remora's
++         container has the ALSA nodes but NO USB host stack at all (dumpsys usb reports an empty
++         host state), so that event never comes, the devices stay merely "declared", and
++         AudioSource.MIC keeps resolving to the primary STUB. Declaring the input attached is what
++         makes AudioPolicyManager open it at boot instead of waiting for an event that cannot
++         arrive.
++         INPUT ONLY, deliberately: attaching "USB Device Out" as well would move Android's playback
++         onto the USB card, and Remora's audio leaves through the remote submix that the mirror
++         captures. -->
++    <attachedDevices>
++        <item>USB Device In</item>
++    </attachedDevices>
+     <mixPorts>
+         <mixPort name="usb_accessory output" role="source">
+             <profile name="" format="AUDIO_FORMAT_PCM_16_BIT"
+@@ -31,7 +45,14 @@
+         </devicePort>
+         <devicePort tagName="USB Device Out" type="AUDIO_DEVICE_OUT_USB_DEVICE" role="sink"/>
+         <devicePort tagName="USB Headset Out" type="AUDIO_DEVICE_OUT_USB_HEADSET" role="sink"/>
+-        <devicePort tagName="USB Device In" type="AUDIO_DEVICE_IN_USB_DEVICE" role="source"/>
++        <!-- The address is REQUIRED for an attached device and is not cosmetic: the legacy
++             usbaudio HAL's parse_card_device_params() leaves card/device at -1 when the address
++             carries neither, and profile_read_device_info() then fails with "cannot read profile"
++             — measured. card=0 is the host's USB audio card as it appears inside the container.
++             THIS IS A HARDCODE and the one soft spot here: ALSA card numbering comes from the
++             host, so unplugging the USB audio device makes card 0 something else and this device
++             simply fails to open (a logged warning, no crash — the image still boots and mirrors). -->
++        <devicePort tagName="USB Device In" type="AUDIO_DEVICE_IN_USB_DEVICE" role="source" address="card=0;device=0"/>
+         <devicePort tagName="USB Headset In" type="AUDIO_DEVICE_IN_USB_HEADSET" role="source"/>
+     </devicePorts>
+     <routes>
+-- 
+2.54.0
+

@@ -1,0 +1,148 @@
+From 99ee2546cf73e3b4f890a50924e21676d57d16f5 Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sat, 25 Jul 2026 19:28:42 -0400
+Subject: [PATCH] Remora: forward-port "protect sensitive data on about page"
+ to AOSP 17
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Replaces upstream 0079 (Reapply: Settings: Protect sensitive data on the about
+page), which cannot apply: AOSP 17 restructured ImeiPreference and
+SimEidPreference onto the new preference-metadata API, so the file the Lineage
+patch was written against no longer exists in that shape.
+
+The Lineage change itself is small — mask IMEI and EID behind "Tap to show info"
+and reveal on click. The conflict is entirely structural:
+
+  * AOSP 17 added supportsWrite / valueType / storage() and its own getSummary().
+    Kept, with only getSummary() replaced by the masked string.
+  * The click listener lost Lineage's `imei` and `slotIndex` locals. AOSP 17
+    computes slotId from an ImeiData list instead, so the reveal now reads
+    imeiList[index].imei and keeps AOSP's slotId for the dialog. Guarded by the
+    same index bound AOSP already applies, so a short list cannot throw.
+
+R.string.device_info_protected_single_press is already added earlier in the
+series (res/values/strings.xml), so no new resource is needed.
+
+NOT COMPILE-VERIFIED. Written while a build held the tree, so this has not been
+through kotlinc. Verify before relying on it.
+---
+ .../PhoneNumberPreferenceController.java      | 27 ++++++++++++++++---
+ .../deviceinfo/imei/ImeiPreference.kt         | 10 +++++--
+ .../deviceinfo/simstatus/SimEidPreference.kt  |  7 ++---
+ 3 files changed, 36 insertions(+), 8 deletions(-)
+
+diff --git a/src/com/android/settings/deviceinfo/PhoneNumberPreferenceController.java b/src/com/android/settings/deviceinfo/PhoneNumberPreferenceController.java
+index 9ed489ac6fe..7c342bc542e 100644
+--- a/src/com/android/settings/deviceinfo/PhoneNumberPreferenceController.java
++++ b/src/com/android/settings/deviceinfo/PhoneNumberPreferenceController.java
+@@ -62,6 +62,27 @@ public class PhoneNumberPreferenceController extends BasePreferenceController {
+         return AVAILABLE;
+     }
+ 
++    @Override
++    public CharSequence getSummary() {
++        return mContext.getString(R.string.device_info_protected_single_press);
++    }
++
++    @Override
++    public boolean handlePreferenceTreeClick(Preference preference) {
++        String prefKey = preference.getKey();
++        if (prefKey.startsWith(KEY_PHONE_NUMBER)) {
++            int simSlotNumber = 0;
++            if (!TextUtils.equals(prefKey, KEY_PHONE_NUMBER)) {
++                // Get multisim slot number from preference key.
++                // Multisim preference key is KEY_PHONE_NUMBER + simSlotNumber
++                simSlotNumber = Integer.parseInt(
++                        prefKey.replaceAll("[^0-9]", ""));
++            }
++            setPhoneNumber(simSlotNumber);
++        }
++        return super.handlePreferenceTreeClick(preference);
++    }
++
+     @Override
+     public void displayPreference(PreferenceScreen screen) {
+         super.displayPreference(screen);
+@@ -91,7 +112,7 @@ public class PhoneNumberPreferenceController extends BasePreferenceController {
+         for (int simSlotNumber = 0; simSlotNumber < mPreferenceList.size(); simSlotNumber++) {
+             final Preference simStatusPreference = mPreferenceList.get(simSlotNumber);
+             simStatusPreference.setTitle(getPreferenceTitle(simSlotNumber));
+-            setPhoneNumber(simSlotNumber);
++            simStatusPreference.setSummary(getSummary());
+         }
+     }
+ 
+@@ -132,7 +153,7 @@ public class PhoneNumberPreferenceController extends BasePreferenceController {
+     }
+ 
+     @VisibleForTesting
+-    protected String getFormattedPhoneNumber(SubscriptionInfo subscriptionInfo) {
++    protected CharSequence getFormattedPhoneNumber(SubscriptionInfo subscriptionInfo) {
+         final String phoneNumber = SubscriptionUtil.getBidiFormattedPhoneNumber(mContext,
+                 subscriptionInfo);
+         return TextUtils.isEmpty(phoneNumber) ? mContext.getString(R.string.device_info_default)
+@@ -141,6 +162,6 @@ public class PhoneNumberPreferenceController extends BasePreferenceController {
+ 
+     @VisibleForTesting
+     protected Preference createNewPreference(Context context) {
+-        return new Preference(context);
++        return new PhoneNumberSummaryPreference(context);
+     }
+ }
+diff --git a/src/com/android/settings/deviceinfo/imei/ImeiPreference.kt b/src/com/android/settings/deviceinfo/imei/ImeiPreference.kt
+index d61e957479b..fe9c41d5420 100644
+--- a/src/com/android/settings/deviceinfo/imei/ImeiPreference.kt
++++ b/src/com/android/settings/deviceinfo/imei/ImeiPreference.kt
+@@ -82,7 +82,8 @@ class ImeiPreference(
+ 
+     override fun storage(context: Context): KeyValueStore = createSummaryStorage(context, key)
+ 
+-    override fun getSummary(context: Context): CharSequence? = getFormattedSummary()
++    override fun getSummary(context: Context): CharSequence? =
++        context.getString(R.string.device_info_protected_single_press)
+ 
+     override fun bind(preference: Preference, metadata: PreferenceMetadata) {
+         super.bind(preference, metadata)
+@@ -90,9 +91,14 @@ class ImeiPreference(
+     }
+ 
+     override fun onCreate(context: PreferenceLifecycleContext) {
+-        context.requirePreference<Preference>(key).onPreferenceClickListener =
++        val preference = context.requirePreference<Preference>(key)
++        preference.onPreferenceClickListener =
+             Preference.OnPreferenceClickListener {
+                 val slotId = if (index < imeiList.size) imeiList[index].slotId else index
++                // Lineage: the summary is masked until tapped — reveal it here. Uses the AOSP-17
++                // ImeiData list rather than Lineage's old `imei`/`slotIndex` locals, which this
++                // class no longer has.
++                if (index < imeiList.size) preference.summary = imeiList[index].imei
+                 ImeiInfoDialogFragment.show(context.childFragmentManager, slotId, formattedTitle)
+                 return@OnPreferenceClickListener true
+             }
+diff --git a/src/com/android/settings/deviceinfo/simstatus/SimEidPreference.kt b/src/com/android/settings/deviceinfo/simstatus/SimEidPreference.kt
+index 061f46cb7ef..7dec65e436a 100644
+--- a/src/com/android/settings/deviceinfo/simstatus/SimEidPreference.kt
++++ b/src/com/android/settings/deviceinfo/simstatus/SimEidPreference.kt
+@@ -80,7 +80,7 @@ class SimEidPreference(private val context: Context) :
+     override fun storage(context: Context): KeyValueStore = createSummaryStorage(context, key)
+ 
+     override fun getSummary(context: Context): CharSequence? =
+-        eidMetadata?.let { PhoneNumberUtil.expandByTts(it.eid).toString() }
++        context.getString(R.string.device_info_protected_single_press)
+ 
+     override fun bind(preference: Preference, metadata: PreferenceMetadata) {
+         super.bind(preference, metadata)
+@@ -88,8 +88,9 @@ class SimEidPreference(private val context: Context) :
+     }
+ 
+     override fun onCreate(context: PreferenceLifecycleContext) {
+-        context.requirePreference<Preference>(key).onPreferenceClickListener =
+-            Preference.OnPreferenceClickListener {
++        val preference = context.requirePreference<Preference>(key)
++        preference.onPreferenceClickListener = Preference.OnPreferenceClickListener {
++                preference.summary = eidMetadata?.eid
+                 SimEidDialogFragment.show(
+                     context.childFragmentManager,
+                     it.title.toString(),

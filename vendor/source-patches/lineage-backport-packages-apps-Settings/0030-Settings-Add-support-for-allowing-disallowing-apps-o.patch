@@ -1,0 +1,205 @@
+From dccf2918ae3fd001902ad7e7c335bc6dcbb05cde Mon Sep 17 00:00:00 2001
+From: Sam Mortimer <sam@mortimer.me.uk>
+Date: Tue, 26 May 2020 20:53:59 -0700
+Subject: [PATCH 30/98] Settings: Add support for allowing/disallowing apps on
+ restricted networks
+
+*) Add option to disable all network traffic
+   in app data usage settings.
+
+*) Disable the existing background data and unrestricted
+   data usage options when all network traffic is
+   disabled.
+
+Change-Id: I0aaf5703d6dd5d6e6ec3cda3940f28833fe052ea
+---
+ res/values/cm_strings.xml                     |  4 ++
+ res/xml/app_data_usage.xml                    |  5 ++
+ .../settings/datausage/AppDataUsage.java      | 51 ++++++++++++++-----
+ 3 files changed, 48 insertions(+), 12 deletions(-)
+
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index 33469b374a4..c78bcaccd3f 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -48,6 +48,10 @@
+     <string name="show_navbar_hint_title">Navigation hint</string>
+     <string name="show_navbar_hint_summary">Show navigation hint bar at the bottom of the screen</string>
+ 
++    <!-- Per-app data restrictions -->
++    <string name="data_usage_app_restrict_all">Allow network access</string>
++    <string name="data_usage_app_restrict_all_summary">Enable network usage</string>
++
+     <!-- PIN scramble -->
+     <string name="unlock_scramble_pin_layout_title">Scramble layout</string>
+     <string name="unlock_scramble_pin_layout_summary">Scramble PIN layout when unlocking device</string>
+diff --git a/res/xml/app_data_usage.xml b/res/xml/app_data_usage.xml
+index 182cdd7f263..794b0ab8219 100644
+--- a/res/xml/app_data_usage.xml
++++ b/res/xml/app_data_usage.xml
+@@ -41,6 +41,11 @@
+             android:title="@string/data_usage_app_settings"
+             settings:controller="com.android.settings.datausage.AppDataUsageAppSettingsController" />
+ 
++        <com.android.settingslib.RestrictedSwitchPreference
++            android:key="restrict_all"
++            android:title="@string/data_usage_app_restrict_all"
++            android:summary="@string/data_usage_app_restrict_all_summary" />
++
+         <com.android.settingslib.RestrictedSwitchPreference
+             android:key="restrict_background"
+             android:title="@string/data_usage_app_restrict_background"
+diff --git a/src/com/android/settings/datausage/AppDataUsage.java b/src/com/android/settings/datausage/AppDataUsage.java
+index 91f4f268e86..f51f8fea23f 100644
+--- a/src/com/android/settings/datausage/AppDataUsage.java
++++ b/src/com/android/settings/datausage/AppDataUsage.java
+@@ -26,6 +26,7 @@ import android.content.Context;
+ import android.content.pm.ApplicationInfo;
+ import android.content.pm.PackageManager;
+ import android.graphics.drawable.Drawable;
++import android.net.ConnectivitySettingsManager;
+ import android.net.NetworkTemplate;
+ import android.os.Bundle;
+ import android.os.UserHandle;
+@@ -60,6 +61,7 @@ import kotlin.Unit;
+ import java.util.ArrayList;
+ import java.util.Collections;
+ import java.util.List;
++import java.util.Set;
+ 
+ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceChangeListener,
+         DataSaverBackend.Listener {
+@@ -73,11 +75,13 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+     static final String ARG_NETWORK_CYCLES = "network_cycles";
+     static final String ARG_SELECTED_CYCLE = "selected_cycle";
+ 
++    private static final String KEY_RESTRICT_ALL = "restrict_all";
+     private static final String KEY_RESTRICT_BACKGROUND = "restrict_background";
+     private static final String KEY_UNRESTRICTED_DATA = "unrestricted_data_saver";
+ 
+     private PackageManager mPackageManager;
+     private final ArraySet<String> mPackages = new ArraySet<>();
++    private RestrictedSwitchPreference mRestrictAll;
+     private RestrictedSwitchPreference mRestrictBackground;
+ 
+     private Drawable mIcon;
+@@ -144,6 +148,7 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+                 mIcon = uidDetail.icon;
+                 mLabel = uidDetail.label;
+                 removePreference(KEY_UNRESTRICTED_DATA);
++                removePreference(KEY_RESTRICT_ALL);
+                 removePreference(KEY_RESTRICT_BACKGROUND);
+             } else {
+                 if (mPackages.size() != 0) {
+@@ -158,6 +163,8 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+                     }
+                     use(AppDataUsageAppSettingsController.class).init(mPackages, userId);
+                 }
++                mRestrictAll = findPreference(KEY_RESTRICT_ALL);
++                mRestrictAll.setOnPreferenceChangeListener(this);
+                 mRestrictBackground = findPreference(KEY_RESTRICT_BACKGROUND);
+                 mRestrictBackground.setOnPreferenceChangeListener(this);
+                 mUnrestrictedData = findPreference(KEY_UNRESTRICTED_DATA);
+@@ -174,6 +181,7 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+             mPackageName = context.getPackageName();
+ 
+             removePreference(KEY_UNRESTRICTED_DATA);
++            removePreference(KEY_RESTRICT_ALL);
+             removePreference(KEY_RESTRICT_BACKGROUND);
+         }
+ 
+@@ -216,6 +224,17 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+             mDataSaverBackend.setIsDenylisted(mAppItem.key, mPackageName, !(Boolean) newValue);
+             updatePrefs();
+             return true;
++        } else if (preference == mRestrictAll) {
++            Set<Integer> uids =
++                    ConnectivitySettingsManager.getUidsAllowedOnRestrictedNetworks(mContext);
++            if (!(Boolean) newValue) {
++                uids.remove(mAppItem.key);
++            } else {
++                uids.add(mAppItem.key);
++            }
++            ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(mContext, uids);
++            updatePrefs();
++            return true;
+         } else if (preference == mUnrestrictedData) {
+             mDataSaverBackend.setIsAllowlisted(mAppItem.key, mPackageName, (Boolean) newValue);
+             return true;
+@@ -235,7 +254,7 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+ 
+     @VisibleForTesting
+     void updatePrefs() {
+-        updatePrefs(getAppRestrictBackground(), getUnrestrictData());
++        updatePrefs(getAppRestrictBackground(), getUnrestrictData(), getAppRestrictAll());
+     }
+ 
+     @VisibleForTesting
+@@ -276,7 +295,8 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+         }
+     }
+ 
+-    private void updatePrefs(boolean restrictBackground, boolean unrestrictData) {
++    private void updatePrefs(boolean restrictBackground, boolean unrestrictData,
++                boolean restrictAll) {
+         if (!Utils.isMobileDataCapable(mContext)) {
+             return;
+         }
+@@ -284,18 +304,20 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+         final EnforcedAdmin admin = RestrictedLockUtilsInternal
+                 .checkIfMeteredDataUsageUserControlDisabled(mContext, mPackageName,
+                         UserHandle.getUserId(mAppItem.key));
++        if (mRestrictAll != null) {
++            mRestrictAll.setChecked(!restrictAll);
++        }
+         if (mRestrictBackground != null) {
+-            mRestrictBackground.setChecked(!restrictBackground);
+             mRestrictBackground.setDisabledByAdmin(admin);
++            mRestrictBackground.setEnabled(!mRestrictBackground.isDisabledByAdmin() &&
++                    !restrictAll);
++            mRestrictBackground.setChecked(!restrictBackground && !restrictAll);
+         }
+         if (mUnrestrictedData != null) {
+-            if (restrictBackground) {
+-                mUnrestrictedData.setVisible(false);
+-            } else {
+-                mUnrestrictedData.setVisible(true);
+-                mUnrestrictedData.setChecked(unrestrictData);
+-                mUnrestrictedData.setDisabledByAdmin(admin);
+-            }
++            mUnrestrictedData.setDisabledByAdmin(admin);
++            mUnrestrictedData.setEnabled(!mUnrestrictedData.isDisabledByAdmin() &&
++                    !restrictBackground && !restrictAll);
++            mUnrestrictedData.setChecked(unrestrictData && !restrictBackground && !restrictAll);
+         }
+     }
+ 
+@@ -313,6 +335,11 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+                 && DynamicDenylistManager.getInstance(mContext).isInManualDenylist(uid);
+     }
+ 
++    private boolean getAppRestrictAll() {
++        return !ConnectivitySettingsManager.getUidsAllowedOnRestrictedNetworks(mContext)
++                .contains(mAppItem.key);
++    }
++
+     private boolean getUnrestrictData() {
+         if (mDataSaverBackend != null) {
+             return mDataSaverBackend.isAllowlisted(mAppItem.key);
+@@ -365,14 +392,14 @@ public class AppDataUsage extends DataUsageBaseFragment implements OnPreferenceC
+     @Override
+     public void onAllowlistStatusChanged(int uid, boolean isAllowlisted) {
+         if (mAppItem.uids.get(uid, false)) {
+-            updatePrefs(getAppRestrictBackground(), isAllowlisted);
++            updatePrefs(getAppRestrictBackground(), isAllowlisted, getAppRestrictAll());
+         }
+     }
+ 
+     @Override
+     public void onDenylistStatusChanged(int uid, boolean isDenylisted) {
+         if (mAppItem.uids.get(uid, false)) {
+-            updatePrefs(isDenylisted, getUnrestrictData());
++            updatePrefs(isDenylisted, getUnrestrictData(), getAppRestrictAll());
+         }
+     }
+ }

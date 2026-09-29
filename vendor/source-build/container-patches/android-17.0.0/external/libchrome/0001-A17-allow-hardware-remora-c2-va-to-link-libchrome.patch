@@ -1,0 +1,30 @@
+From 83a3721ddf1d36a6d46ead5a493e3805c98e47fc Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 24 Jul 2026 22:08:50 -0400
+Subject: [PATCH] A17: allow hardware/remora/c2-va to link libchrome
+
+The VAAPI Codec2 component (hardware/remora/c2-va) depends on libchrome, but A17
+dropped c2-va from libchrome's visibility list (A16 carried it). Without this the
+build fails before c2-va emits any module.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Change-Id: I58e2c8a8f12eaeaf0057a51981b4b2a01c024917
+---
+ Android.bp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Android.bp b/Android.bp
+index f92a42e34..a679858db 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -891,6 +891,7 @@ cc_library {
+         "//external/libpalmrejection",
+         "//external/puffin",
+         "//external/v4l2_codec2:__subpackages__",
++        "//hardware/remora/c2-va:__subpackages__",
+         "//external/zucchini",
+         "//frameworks/base/services",
+         "//frameworks/base/services/core/jni",
+-- 
+2.54.0
+

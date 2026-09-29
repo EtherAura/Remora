@@ -1,0 +1,239 @@
+// Copyright 2020 The Chromium Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+//
+// VAAPI Codec2 decode HAL (hardware/remora/c2-va). A lean port of
+// external/v4l2_codec2 that decodes on the Intel xe SR-IOV VF via libva + the
+// in-tree iHD driver (external/intel-media-driver). It REUSES the C2 framework
+// from external/v4l2_codec2 (libv4l2_codec2_components + libv4l2_codec2_common)
+// and only replaces the V4L2-specific backend with a VAAPI one.
+
+// external/v4l2_codec2 is its own (deliberately isolated) soong namespace. To reuse its C2
+// framework libs (libv4l2_codec2_components/_common, libc2plugin_store) we import that namespace.
+// Both this dir and external/v4l2_codec2 are added to PRODUCT_SOONG_NAMESPACES in va.mk.
+soong_namespace {
+    imports: [
+        "external/v4l2_codec2",
+    ],
+}
+
+package {
+    // Local license module — the license kinds match the external/v4l2_codec2 template
+    // this is derived from, but the module lives in THIS namespace (a cross-namespace
+    // license reference is not resolvable by soong).
+    default_applicable_licenses: ["hardware_remora_c2-va_license"],
+}
+
+license {
+    name: "hardware_remora_c2-va_license",
+    visibility: [":__subpackages__"],
+    license_kinds: [
+        "SPDX-license-identifier-BSD",
+        "legacy_unencumbered",
+    ],
+    license_text: [
+        "NOTICE",
+    ],
+}
+
+// The VAAPI backend library: the VideoDecoder implementation
+// (vaapi/VaapiVideoDecoder.cpp), the VideoEncoder implementation
+// (vaapi/VaapiVideoEncoder.cpp), the RAII VADisplay wrapper
+// (vaapi/VaapiDevice.cpp) and the Decode/EncodeComponent subclasses
+// (VaapiDecodeComponent.cpp, VaapiEncodeComponent.cpp). Mirrors
+// libv4l2_codec2_v4l2. The reused EncodeComponent / EncodeInterface /
+// VideoEncoder base classes come from libv4l2_codec2_components (already
+// linked below via shared_libs), so no new lib is needed for the encoder.
+cc_library {
+    name: "libvaapi_codec2_components",
+    vendor: true,
+    // libva (and the iHD driver) are x86_64-only; the C2 HW service is 64-bit.
+    compile_multilib: "64",
+
+    defaults: [
+        "libcodec2-hidl-defaults",
+    ],
+
+    srcs: [
+        // The vaapi/*.cpp glob covers vaapi/VaapiVideoDecoder.cpp,
+        // vaapi/VaapiDevice.cpp and vaapi/VaapiVideoEncoder.cpp.
+        "vaapi/*.cpp",
+        // Host-side decode (bd remora-e5x.3). Its own directory rather than vaapi/ because it
+        // makes no VA calls at all — the decoding happens on the host, over a socket.
+        "remote/*.cpp",
+        // Module-root component subclasses are listed explicitly (not globbed).
+        "VaapiDecodeComponent.cpp",
+        "VaapiEncodeComponent.cpp",
+    ],
+    local_include_dirs: [
+        "include",
+    ],
+    export_include_dirs: [
+        "include",
+    ],
+
+    header_libs: [
+        "libcodec2_internal",
+    ],
+    static_libs: [
+        // AV1 OBU/bitstream parsing (VaapiVideoDecoderAV1.cpp).
+        "libgav1_parser",
+    ],
+    shared_libs: [
+        // Reused C2 framework from external/v4l2_codec2.
+        "libv4l2_codec2_common",
+        "libv4l2_codec2_components",
+        // VAAPI backend on the DRM render node. The DRM backend (vaGetDisplayDRM,
+        // va/drm/va_drm.h) is built into the "libva" module; libdrm is pulled in
+        // transitively but listed explicitly for the DRM ioctls / dmabuf export.
+        "libva",
+        "libdrm",
+        // Same libcodec2* / platform set the v4l2 service depends on.
+        "android.hardware.graphics.common@1.0",
+        "libc2plugin_store",
+        "libchrome",
+        "libcodec2_soft_common",
+        "libsfplugin_ccodec_utils",
+        "libstagefright_bufferqueue_helper",
+        "libstagefright_foundation",
+        "libbase",
+        "libcutils",
+        "liblog",
+        "libui",
+        "libutils",
+    ],
+
+    cflags: [
+        "-Werror",
+        "-Wall",
+        "-Wno-unused-parameter", // needed for libchrome/base codes
+        "-Wthread-safety",
+    ],
+}
+
+// The component store + factory + name mapping. Mirrors the store bits of
+// libv4l2_codec2_v4l2 (V4L2ComponentStore/Factory/Common).
+cc_library {
+    name: "libvaapi_codec2_store",
+    vendor: true,
+    compile_multilib: "64",
+
+    defaults: [
+        "libcodec2-hidl-defaults",
+    ],
+
+    srcs: [
+        "store/*.cpp",
+        "common/VaapiComponentName.cpp",
+    ],
+    local_include_dirs: [
+        // Own headers: common/include/c2_va/common, store/include/c2_va/store.
+        // The components lib re-exports include/ (c2_va/VaapiDecodeComponent.h,
+        // c2_va/vaapi/*) via its export_include_dirs + our shared_libs dep.
+        "common/include",
+        "store/include",
+    ],
+    export_include_dirs: [
+        "common/include",
+        "store/include",
+    ],
+
+    header_libs: [
+        "libcodec2_internal",
+    ],
+    shared_libs: [
+        "libvaapi_codec2_components",
+        "libv4l2_codec2_common",
+        "libv4l2_codec2_components",
+        "libva",
+        "libdrm",
+        "libchrome",
+        "libcodec2_soft_common",
+        "libbase",
+        "libcutils",
+        "liblog",
+        "libui",
+        "libutils",
+    ],
+
+    cflags: [
+        "-Werror",
+        "-Wall",
+        "-Wno-unused-parameter",
+        "-Wthread-safety",
+    ],
+}
+
+// The HIDL android.hardware.media.c2@1.2 service. Mirrors
+// external/v4l2_codec2/service but loads VaapiComponentStore and registers the
+// IComponentStore under the instance name "vaapi".
+cc_binary {
+    name: "android.hardware.media.c2@1.2-service-vaapi",
+
+    defaults: [
+        "hidl_defaults",
+        "libcodec2-hidl-defaults",
+    ],
+    vendor: true,
+    relative_install_path: "hw",
+
+    srcs: [
+        "service/service.cpp",
+    ],
+
+    shared_libs: [
+        "libvaapi_codec2_store",
+        "libvaapi_codec2_components",
+        "libv4l2_codec2_components",
+        "libavservices_minijail",
+        "libchrome",
+        "libcutils",
+        "libhidlbase",
+        "liblog",
+        "libutils",
+    ],
+
+    cflags: [
+        "-DV4L2_CODEC2_SERVICE_VAAPI_STORE",
+    ],
+
+    required: ["android.hardware.media.c2-default-seccomp_policy"],
+
+    // remora_x86_64 is 64-bit only; ship a single 64-bit service.
+    compile_multilib: "64",
+    multilib: {
+        lib64: {
+            suffix: "-64",
+            init_rc: ["service/android.hardware.media.c2@1.2-service-vaapi-64.rc"],
+        },
+    },
+    vintf_fragments: ["service/android.hardware.media.c2@1.2-service-vaapi.xml"],
+}
+
+// Verification fixture for host-side decode (bd remora-e5x.37 item 4). Names a component
+// explicitly and writes decoded frames out, so the guest half can be checked by frame CONTENT
+// against a software reference — the standard the host half was already held to. Exists because
+// AOSP's own stagefright/codec CLIs are both unusable for this on A17; see the file header.
+//
+// DELIBERATELY NOT IN PRODUCT_PACKAGES: build it with `do-build.sh --module remora-decode-test`
+// and push it to /data/local/tmp. A test tool that ships in the image is a test tool nobody
+// notices has rotted.
+cc_binary {
+    name: "remora-decode-test",
+
+    srcs: ["tools/remora-decode-test.cpp"],
+
+    shared_libs: [
+        "libmediandk",
+        "libbinder",
+        "libutils",
+        "liblog",
+    ],
+
+    cflags: [
+        "-Werror",
+        "-Wall",
+    ],
+
+    compile_multilib: "64",
+}

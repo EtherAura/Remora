@@ -1,0 +1,65 @@
+From 3a66dda51846705253c5845484455e14b2f53c9c Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sat, 25 Jul 2026 13:32:56 -0400
+Subject: [PATCH] A17: let lineage-sdk see services.impl and subclass
+ LockPatternUtils
+
+Two prerequisites for the LineageOS platform backport on AOSP 17.
+
+services/Android.bp: AOSP split the services module into services + services.impl,
+and LineageOS's visibility grant did not follow to the new module, so lineage-sdk's
+org.lineageos.platform fails soong analysis with "depends on
+//frameworks/base/services:services.impl which is not visible to this module".
+Grant the lineage-sdk package.
+
+LockPatternUtils: getBoolean/setBoolean were private, so LineageOS's
+LineageLockPatternUtils subclass cannot reach them. Widen to protected.
+
+Both are inert without the backport: a visibility entry naming a package that is
+not built costs nothing, and two protected methods change no behaviour.
+
+Change-Id: I2340f01827aa187b4dee731cabdbb9edf1883ff1
+---
+ core/java/com/android/internal/widget/LockPatternUtils.java | 6 ++++--
+ services/Android.bp                                         | 4 ++++
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/core/java/com/android/internal/widget/LockPatternUtils.java b/core/java/com/android/internal/widget/LockPatternUtils.java
+index d7b9da7ea404..42be2947cb03 100644
+--- a/core/java/com/android/internal/widget/LockPatternUtils.java
++++ b/core/java/com/android/internal/widget/LockPatternUtils.java
+@@ -1197,7 +1197,8 @@ public class LockPatternUtils {
+         return lockoutEndTime;
+     }
+ 
+-    private boolean getBoolean(String secureSettingKey, boolean defaultValue, int userId) {
++    // A17 LineageOS: protected (was private) so LineageLockPatternUtils subclass can reach it.
++    protected boolean getBoolean(String secureSettingKey, boolean defaultValue, int userId) {
+         try {
+             return getLockSettings().getBoolean(secureSettingKey, defaultValue, userId);
+         } catch (RemoteException re) {
+@@ -1205,7 +1206,8 @@ public class LockPatternUtils {
+         }
+     }
+ 
+-    private void setBoolean(String secureSettingKey, boolean enabled, int userId) {
++    // A17 LineageOS: protected (was private) so LineageLockPatternUtils subclass can reach it.
++    protected void setBoolean(String secureSettingKey, boolean enabled, int userId) {
+         try {
+             getLockSettings().setBoolean(secureSettingKey, enabled, userId);
+         } catch (RemoteException re) {
+diff --git a/services/Android.bp b/services/Android.bp
+index 1cf0712a5454..194580bfc8ec 100644
+--- a/services/Android.bp
++++ b/services/Android.bp
+@@ -391,6 +391,10 @@ java_library {
+         ":__subpackages__",
+         "//frameworks/opt:__subpackages__",
+         "//vendor:__subpackages__",
++        // A17 LineageOS: lineage-sdk's org.lineageos.platform depends on services.impl,
++        // but AOSP split services->services+services.impl and LineageOS's visibility grant didn't
++        // follow to the new module. Grant the top-level lineage-sdk package.
++        "//lineage-sdk:__subpackages__",
+     ],
+ 
+     lint: {

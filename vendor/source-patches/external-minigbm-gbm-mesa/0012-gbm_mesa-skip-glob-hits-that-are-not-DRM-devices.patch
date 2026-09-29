@@ -1,0 +1,26 @@
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index f5192ce..26c8789 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -393,6 +393,21 @@ int open_drm_dev(bool card_node, std::function<bool(int, bool, std::string)> fou
+ 
+ 		drmVersionPtr drm_version;
+ 		drm_version = drmGetVersion(fd);
++		if (!drm_version) {
++			/*
++			 * Openable but not a DRM device, so it has no version to report.
++			 * Remora masks the GPU nodes an instance must not use by bind-mounting
++			 * /dev/null over them: that opens successfully and matches the glob
++			 * above, but drmGetVersion answers NULL. Dereferencing it here killed
++			 * the graphics allocator HAL on its first allocation, and with it
++			 * SurfaceFlinger, on every host that has a node to mask
++			 * (bd remora-ykhz). Skip the node instead.
++			 */
++			drv_logi("Skipping %s: not a DRM device\n", glob_buf.gl_pathv[i]);
++			close(fd);
++			fd = 0;
++			continue;
++		}
+ 		std::string drm_name(drm_version->name);
+ 		drmFreeVersion(drm_version);
+ 

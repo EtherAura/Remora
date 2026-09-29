@@ -1,0 +1,62 @@
+From 49e52e92bfb2da8689ba1b047cda7d3281479780 Mon Sep 17 00:00:00 2001
+From: Chirayu Desai <cdesai@cyanogenmod.org>
+Date: Wed, 26 Dec 2012 11:33:38 +0530
+Subject: [PATCH 12/98] One does not simply become a Developer
+
+Co-authored-by: Michael Bestas <mikeioannina@gmail.com>
+Change-Id: I64ab4d7ab9d8334275d2e4d493b716a8fc73ab4e
+---
+ res/values/cm_strings.xml                              | 10 ++++++++++
+ .../deviceinfo/BuildNumberPreferenceController.java    |  6 +++---
+ 2 files changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index 5e106da48e6..41a7cbb8c4f 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -25,4 +25,14 @@
+ 
+     <!-- Device Info screen. LineageOS legal. -->
+     <string name="lineagelicense_title">LineageOS legal</string>
++
++    <!-- [CHAR LIMIT=NONE] Device Info screen. Countdown for user taps to enable development settings -->
++    <string name="show_dev_countdown_cm">{count, plural,
++      =1      {You are now # step away from enabling development settings.}
++      other   {You are now # steps away from enabling development settings.}
++    }</string>
++    <!-- [CHAR LIMIT=NONE] Device Info screen. Confirmation that developer settings are enabled -->
++    <string name="show_dev_on_cm">You have enabled development settings!</string>
++    <!-- [CHAR LIMIT=NONE] Device Info screen. Okay we get it, stop pressing, you already have it on -->
++    <string name="show_dev_already_cm">No need, you have already enabled development settings.</string>
+ </resources>
+diff --git a/src/com/android/settings/deviceinfo/BuildNumberPreferenceController.java b/src/com/android/settings/deviceinfo/BuildNumberPreferenceController.java
+index a451ffc39db..b8038ba448c 100644
+--- a/src/com/android/settings/deviceinfo/BuildNumberPreferenceController.java
++++ b/src/com/android/settings/deviceinfo/BuildNumberPreferenceController.java
+@@ -184,7 +184,7 @@ public class BuildNumberPreferenceController extends BasePreferenceController im
+                 }
+                 mDevHitToast = Toast.makeText(mContext,
+                         StringUtil.getIcuPluralsString(mContext, mDevHitCountdown,
+-                                R.string.show_dev_countdown),
++                                R.string.show_dev_countdown_cm),
+                         Toast.LENGTH_SHORT);
+                 mDevHitToast.show();
+             }
+@@ -199,7 +199,7 @@ public class BuildNumberPreferenceController extends BasePreferenceController im
+             if (mDevHitToast != null) {
+                 mDevHitToast.cancel();
+             }
+-            mDevHitToast = Toast.makeText(mContext, R.string.show_dev_already,
++            mDevHitToast = Toast.makeText(mContext, R.string.show_dev_already_cm,
+                     Toast.LENGTH_LONG);
+             mDevHitToast.show();
+             mMetricsFeatureProvider.action(
+@@ -270,7 +270,7 @@ public class BuildNumberPreferenceController extends BasePreferenceController im
+         if (mDevHitToast != null) {
+             mDevHitToast.cancel();
+         }
+-        mDevHitToast = Toast.makeText(mContext, R.string.show_dev_on,
++        mDevHitToast = Toast.makeText(mContext, R.string.show_dev_on_cm,
+                 Toast.LENGTH_LONG);
+         mDevHitToast.show();
+ 

@@ -1,0 +1,91 @@
+From 9067eeb0666ccdfbe1f830b3d0d6f9a7476e5cd5 Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sun, 26 Jul 2026 21:23:53 -0400
+Subject: [PATCH] A17: add the LineageOS pattern-visibility accessors to
+ LockPatternUtils
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Settings backport 0078 ("Forward-port pattern visibility settings") adds
+PatternDotsVisiblePreferenceController and PatternErrorVisiblePreferenceController,
+which call isVisibleDotsEnabled/setVisibleDotsEnabled and
+isShowErrorPath/setShowErrorPath on LockPatternUtils itself. AOSP has no such
+methods and LineageLockPatternUtils does not help: the controllers receive the
+base type, so they never go through the subclass. Widening getBoolean/setBoolean
+to protected (the sibling deps patch) was necessary but not sufficient.
+
+Without these, Settings-core javac fails with exactly four "cannot find symbol"
+errors and nothing else in the module is wrong. With them it builds clean.
+
+Keys are plain string literals rather than Settings.Secure constants ON PURPOSE:
+getBoolean/setBoolean persist through LockSettingsService's own per-user store,
+not through SettingsProvider, so an arbitrary key needs neither an allowlist
+entry nor a new LineageSettings constant. Naming mirrors the neighbouring
+Settings.Secure.LOCK_PATTERN_VISIBLE.
+
+Both default true, matching AOSP's stock behaviour — the dots and the red error
+path are drawn unless the user turns them off, so these toggles only subtract.
+
+Change-Id: Ib70d46adcbf24716166a9104854c90ae8c1d89f6
+---
+ .../internal/widget/LockPatternUtils.java     | 46 +++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+diff --git a/core/java/com/android/internal/widget/LockPatternUtils.java b/core/java/com/android/internal/widget/LockPatternUtils.java
+index 42be2947cb03..b2aa00ccef3a 100644
+--- a/core/java/com/android/internal/widget/LockPatternUtils.java
++++ b/core/java/com/android/internal/widget/LockPatternUtils.java
+@@ -1115,6 +1115,52 @@ public class LockPatternUtils {
+         setBoolean(Settings.Secure.LOCK_PATTERN_VISIBLE, enabled, userId);
+     }
+ 
++    // A17 LineageOS pattern-visibility toggles (bd remora-4ei.32). Settings backport 0078
++    // ("Forward-port pattern visibility settings") adds PatternDotsVisiblePreferenceController and
++    // PatternErrorVisiblePreferenceController, which call these four on LockPatternUtils itself —
++    // not on the LineageLockPatternUtils subclass. That is why widening getBoolean/setBoolean to
++    // protected was necessary but not sufficient: the subclass can now reach them, but the callers
++    // never go through the subclass. Without these four the Settings-core javac fails with four
++    // "cannot find symbol" errors and nothing else in the module is wrong.
++    //
++    // The keys are plain string literals rather than Settings.Secure constants ON PURPOSE:
++    // getBoolean/setBoolean persist through LockSettingsService's own per-user store, NOT through
++    // SettingsProvider, so an arbitrary key needs no allowlist entry and no LineageSettings
++    // constant. Naming mirrors AOSP's neighbouring Settings.Secure.LOCK_PATTERN_VISIBLE.
++    //
++    // Both default TRUE to match AOSP's stock behaviour — the dots and the red error path are
++    // shown unless the user turns them off, so these toggles only ever subtract.
++    private static final String LOCK_PATTERN_VISIBLE_DOTS = "lock_pattern_visible_dots";
++    private static final String LOCK_PATTERN_SHOW_ERROR_PATH = "lock_pattern_show_error_path";
++
++    /**
++     * @return Whether the pattern dots are drawn while entering a pattern.
++     */
++    public boolean isVisibleDotsEnabled(int userId) {
++        return getBoolean(LOCK_PATTERN_VISIBLE_DOTS, true, userId);
++    }
++
++    /**
++     * Set whether the pattern dots are drawn while entering a pattern.
++     */
++    public void setVisibleDotsEnabled(boolean enabled, int userId) {
++        setBoolean(LOCK_PATTERN_VISIBLE_DOTS, enabled, userId);
++    }
++
++    /**
++     * @return Whether the error path is drawn after an incorrect pattern.
++     */
++    public boolean isShowErrorPath(int userId) {
++        return getBoolean(LOCK_PATTERN_SHOW_ERROR_PATH, true, userId);
++    }
++
++    /**
++     * Set whether the error path is drawn after an incorrect pattern.
++     */
++    public void setShowErrorPath(boolean enabled, int userId) {
++        setBoolean(LOCK_PATTERN_SHOW_ERROR_PATH, enabled, userId);
++    }
++
+     public boolean isVisiblePatternEverChosen(int userId) {
+         return getString(Settings.Secure.LOCK_PATTERN_VISIBLE, userId) != null;
+     }

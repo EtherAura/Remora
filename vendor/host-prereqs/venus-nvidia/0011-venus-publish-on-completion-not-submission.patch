@@ -1,0 +1,477 @@
+From d048356812be8118666271b34d017aba03e252ec Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 31 Jul 2026 23:36:24 -0400
+Subject: [PATCH 11/16] venus: publish display frames on completion, not
+ submission
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+vkQueueSubmit RETURNING means the GPU has been asked to render the frame, not
+that it has. Publishing there hands the encoder a buffer the compositor may
+still be writing into — a real race, and the last correctness gap in the frame
+path.
+
+A display frame is now staged at submit and published only once a fence proves
+the GPU finished. The fence is armed with QueueSubmit(queue, 0, NULL, fence): an
+empty batch whose signal operation, by Vulkan's submission-order rule, completes
+only after everything previously submitted on that queue. That is the same idiom
+vkr_queue_sync_submit() already uses, so the guarantee being relied on is one
+Venus itself depends on.
+
+Venus's OWN queue syncs were tried first and rejected on measurement. They are
+submitted roughly per display frame (247 seen against 240 frames) but they
+accumulate undrained — 0 retires, and the list never empty — because the guest's
+progress does not depend on them here. Waiting on those would have published
+nothing at all.
+
+ONE fence, newest frame wins: if the GPU is still finishing frame A when B is
+submitted, B replaces A as the next thing to publish. That keeps this to a
+single fence and a single wait, and dropping an intermediate frame is the trade
+MSG_DONTWAIT already makes on the publish path.
+
+Measured over a live session: 600 published complete, 600 waits, 0 timeouts and
+0 coalesced — the fence signals faster than frames arrive, so completion-gating
+cost no frames and no throughput. 201 frames imported and 200 encoded in the
+same run, decoding clean.
+
+The fallback is deliberately loud: if a fence can never be armed, staging alone
+would publish nothing and the mirror would look broken for a subtle reason, so
+it reverts to submit-time publishing and says so.
+---
+ src/venus/vkr_queue.c        |  11 +-
+ src/venus/vkr_remora_track.c | 262 ++++++++++++++++++++++++++++++++++-
+ src/venus/vkr_remora_track.h |  34 ++++-
+ 3 files changed, 299 insertions(+), 8 deletions(-)
+
+diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
+index 57f80858..2beb9989 100644
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -7,6 +7,8 @@
+ 
+ #include "vkr_remora_track.h"
+ 
++#include <unistd.h>
++
+ #include "venus-protocol/vn_protocol_renderer_queue.h"
+ 
+ #include "vkr_context.h"
+@@ -73,6 +75,8 @@ static inline void
+ vkr_queue_sync_retire(struct vkr_queue *queue, struct vkr_queue_sync *sync)
+ {
+    TRACE_FUNC();
++   if (vkr_remora_enabled())
++      vkr_remora_note_sync_retire(sync->fence_id);
+    queue->context->retire_fence(queue->context->ctx_id, sync->ring_idx, sync->fence_id);
+    vkr_device_free_queue_sync(queue->device, sync);
+ }
+@@ -126,6 +130,9 @@ vkr_queue_sync_submit(struct vkr_queue *queue,
+       vkr_context_timeline_import(queue->context, fd, timeline_point);
+    }
+ 
++   if (vkr_remora_enabled())
++      vkr_remora_note_sync_submit(sync->fence_id);
++
+    mtx_lock(&queue->sync_thread.mutex);
+    list_addtail(&sync->head, &queue->sync_thread.syncs);
+    cnd_signal(&queue->sync_thread.cond);
+@@ -457,7 +464,7 @@ vkr_dispatch_vkQueueSubmit(UNUSED struct vn_dispatch_context *dispatch,
+     * and must not be reported as a frame (bd remora-e5x.6). */
+    if (args->ret == VK_SUCCESS && vkr_remora_enabled() && args->pSubmits) {
+       for (uint32_t i = 0; i < args->submitCount; i++)
+-         vkr_remora_note_submit(args->pSubmits[i].pCommandBuffers,
++         vkr_remora_note_submit(queue, args->pSubmits[i].pCommandBuffers,
+                                 args->pSubmits[i].commandBufferCount);
+    }
+ }
+@@ -504,7 +511,7 @@ vkr_dispatch_vkQueueSubmit2(UNUSED struct vn_dispatch_context *dispatch,
+ 
+    if (args->ret == VK_SUCCESS && vkr_remora_enabled() && args->pSubmits) {
+       for (uint32_t i = 0; i < args->submitCount; i++)
+-         vkr_remora_note_submit2(args->pSubmits[i].pCommandBufferInfos,
++         vkr_remora_note_submit2(queue, args->pSubmits[i].pCommandBufferInfos,
+                                  args->pSubmits[i].commandBufferInfoCount);
+    }
+ }
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+index f0e68333..78f60fa4 100644
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -2,6 +2,9 @@
+ 
+ #include "vkr_remora_track.h"
+ 
++#include "vkr_queue.h"
++#include "vkr_device.h"
++
+ #include "c11/threads.h"
+ 
+ #include <errno.h>
+@@ -49,6 +52,23 @@ static uint32_t disp_w, disp_h, disp_res_id;
+ static uint32_t disp_format, disp_tiling, disp_offset, disp_pitch;
+ static uint64_t disp_modifier = ~0ull;
+ static bool disp_layout_logged;
++
++/* Frames staged at submit, waiting for a fence to prove they are finished. */
++static uint32_t staged_res_id, staged_w, staged_h;
++static bool sync_path_alive, sync_fallback_warned;
++static uint64_t n_staged, n_sync_submit, n_sync_retire, n_pub_complete, n_superseded;
++
++/* In flight: a display frame handed to a specific sync. Retires arrive in
++ * order, but several can be outstanding, so this is keyed rather than a single
++ * slot. Small — a compositor does not run far ahead of its own fences. */
++#define INFLIGHT_MAX 32
++struct inflight {
++   uint64_t fence_id;
++   uint32_t res_id, w, h;
++   bool valid;
++};
++static struct inflight inflight[INFLIGHT_MAX];
++
+ static int disp_fd = -1;
+ 
+ 
+@@ -273,6 +293,141 @@ publish_connect_locked(void)
+    fprintf(stderr, "[remora-publish] connected to encoder at %s\n", path);
+ }
+ 
++/* Our own completion fence.
++ *
++ * ONE fence, and the newest frame wins. A mirror wants the most recent complete
++ * frame, not every frame: if the GPU is still finishing frame A when frame B is
++ * submitted, B simply replaces A as the next thing to publish. That keeps this
++ * to a single fence and a single wait, and dropping an intermediate frame is the
++ * same trade already made by MSG_DONTWAIT on the publish path. */
++static struct vkr_queue *fence_queue;
++static VkFence fence_obj = VK_NULL_HANDLE;
++static bool fence_busy;          /* a wait is outstanding */
++static bool fence_thread_up;
++static cnd_t fence_cond;
++static struct { uint32_t res_id, w, h; bool valid; } fence_frame, fence_next;
++static uint64_t n_fence_wait, n_fence_publish, n_fence_coalesced, n_fence_timeout;
++
++/* Submit an empty batch carrying our fence. Vulkan orders a signal operation
++ * after everything previously submitted on the same queue, so this fence
++ * signals only once the frame's rendering has actually finished — which is the
++ * whole point, and is exactly why vkr_queue_sync_submit() does the same thing.
++ * Caller holds track_mutex. */
++static bool
++fence_arm_locked(void)
++{
++   if (!fence_queue || fence_obj == VK_NULL_HANDLE || !fence_next.valid)
++      return false;
++
++   struct vkr_device *dev = fence_queue->device;
++   struct vn_device_proc_table *vk = &dev->proc_table;
++
++   fence_frame = fence_next;
++   fence_next.valid = false;
++
++   /* The queue is externally synchronized and the dispatch thread may be
++    * submitting on it right now. */
++   mtx_lock(&fence_queue->vk_mutex);
++   const VkResult r = vk->QueueSubmit(fence_queue->base.handle.queue, 0, NULL, fence_obj);
++   mtx_unlock(&fence_queue->vk_mutex);
++   if (r != VK_SUCCESS) {
++      fence_frame.valid = false;
++      return false;
++   }
++   fence_busy = true;
++   return true;
++}
++
++static int
++fence_thread(void *unused)
++{
++   (void)unused;
++   for (;;) {
++      mtx_lock(&track_mutex);
++      while (!fence_busy)
++         cnd_wait(&fence_cond, &track_mutex);
++
++      struct vkr_queue *q = fence_queue;
++      VkFence f = fence_obj;
++      mtx_unlock(&track_mutex);
++
++      struct vn_device_proc_table *vk = &q->device->proc_table;
++      const VkResult r =
++         vk->WaitForFences(q->device->base.handle.device, 1, &f, VK_TRUE, 1000000000ull);
++
++      mtx_lock(&track_mutex);
++      n_fence_wait++;
++      if (r == VK_TIMEOUT) {
++         /* Keep waiting rather than publishing: an unsignalled fence means the
++          * GPU has not finished, which is precisely what must not be encoded. */
++         n_fence_timeout++;
++         mtx_unlock(&track_mutex);
++         continue;
++      }
++      if (r == VK_SUCCESS) {
++         vk->ResetFences(q->device->base.handle.device, 1, &f);
++         if (fence_frame.valid) {
++            const int fd = (int)map_get(&map_res_fd, fence_frame.res_id);
++            if (pub_client < 0)
++               publish_connect_locked();
++            publish_frame_locked(fence_frame.res_id, fd ? fd : -1, fence_frame.w,
++                                 fence_frame.h);
++            n_fence_publish++;
++            if (n_fence_publish == 1)
++               fprintf(stderr, "[remora-fence] publishing on COMPLETION\n");
++            else if (n_fence_publish % 300 == 0)
++               fprintf(stderr,
++                       "[remora-fence] %" PRIu64 " published complete; waits=%" PRIu64
++                       " coalesced=%" PRIu64 " timeouts=%" PRIu64 "\n",
++                       n_fence_publish, n_fence_wait, n_fence_coalesced, n_fence_timeout);
++         }
++         fence_frame.valid = false;
++      }
++      fence_busy = false;
++      fence_arm_locked(); /* a frame may already be waiting behind this one */
++      mtx_unlock(&track_mutex);
++   }
++   return 0;
++}
++
++/* Caller holds track_mutex. */
++static void
++fence_stage_locked(struct vkr_queue *queue, uint32_t res_id, uint32_t w, uint32_t h)
++{
++   if (!queue)
++      return;
++   struct vkr_device *dev = queue->device;
++   struct vn_device_proc_table *vk = &dev->proc_table;
++
++   if (fence_obj == VK_NULL_HANDLE) {
++      const VkFenceCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
++      if (vk->CreateFence(dev->base.handle.device, &ci, NULL, &fence_obj) != VK_SUCCESS) {
++         fence_obj = VK_NULL_HANDLE;
++         return;
++      }
++      fence_queue = queue;
++   }
++   if (!fence_thread_up) {
++      thrd_t t;
++      if (cnd_init(&fence_cond) != thrd_success)
++         return;
++      if (thrd_create(&t, fence_thread, NULL) != thrd_success)
++         return;
++      thrd_detach(t);
++      fence_thread_up = true;
++   }
++
++   if (fence_next.valid)
++      n_fence_coalesced++;
++   fence_next.res_id = res_id;
++   fence_next.w = w;
++   fence_next.h = h;
++   fence_next.valid = true;
++
++   if (!fence_busy && fence_arm_locked())
++      cnd_signal(&fence_cond);
++}
++
+ void
+ vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id, int dup_fd)
+ {
+@@ -342,6 +497,83 @@ vkr_remora_note_image_extent(VkImage image, uint32_t width, uint32_t height)
+    mtx_unlock(&track_mutex);
+ }
+ 
++void
++vkr_remora_note_sync_submit(uint64_t fence_id)
++{
++   if (!vkr_remora_enabled())
++      return;
++   call_once(&track_once, track_init);
++   mtx_lock(&track_mutex);
++
++   FIRST(sync_submit);
++   n_sync_submit++;
++   sync_path_alive = true;
++
++   /* Everything submitted before this sync is covered by its fence, so the
++    * staged frame rides on it. */
++   if (staged_res_id) {
++      unsigned slot = INFLIGHT_MAX;
++      for (unsigned i = 0; i < INFLIGHT_MAX; i++) {
++         if (!inflight[i].valid) {
++            slot = i;
++            break;
++         }
++      }
++      if (slot < INFLIGHT_MAX) {
++         inflight[slot] = (struct inflight){ .fence_id = fence_id,
++                                             .res_id = staged_res_id,
++                                             .w = staged_w,
++                                             .h = staged_h,
++                                             .valid = true };
++      } else {
++         /* Full means fences are not retiring; dropping the oldest notification
++          * costs one frame, whereas growing without bound would pin memory. */
++         n_superseded++;
++      }
++      staged_res_id = 0;
++   }
++
++   mtx_unlock(&track_mutex);
++}
++
++void
++vkr_remora_note_sync_retire(uint64_t fence_id)
++{
++   if (!vkr_remora_enabled())
++      return;
++   call_once(&track_once, track_init);
++   mtx_lock(&track_mutex);
++
++   FIRST(sync_retire);
++   n_sync_retire++;
++   for (unsigned i = 0; i < INFLIGHT_MAX; i++) {
++      if (!inflight[i].valid || inflight[i].fence_id != fence_id)
++         continue;
++      inflight[i].valid = false;
++
++      /* The fence has signalled: the GPU is done writing this buffer, so it is
++       * finally safe to hand to an encoder. */
++      const int fd = (int)map_get(&map_res_fd, inflight[i].res_id);
++      if (pub_client < 0)
++         publish_connect_locked();
++      publish_frame_locked(inflight[i].res_id, fd ? fd : -1, inflight[i].w, inflight[i].h);
++      n_pub_complete++;
++
++      if (n_pub_complete == 1)
++         fprintf(stderr, "[remora-fence] publishing on COMPLETION "
++                         "(staged=%" PRIu64 " sync_submit=%" PRIu64 ")\n",
++                 n_staged, n_sync_submit);
++      else if (n_pub_complete % 300 == 0)
++         fprintf(stderr, "[remora-fence] %" PRIu64 " published on completion; "
++                         "staged=%" PRIu64 " syncs=%" PRIu64 "/%" PRIu64
++                         " dropped=%" PRIu64 "\n",
++                 n_pub_complete, n_staged, n_sync_submit, n_sync_retire, n_superseded);
++      break;
++   }
++
++   mtx_unlock(&track_mutex);
++}
++
+ void
+ vkr_remora_note_image_layout(VkImage image, const VkImageCreateInfo *ci)
+ {
+@@ -458,7 +690,8 @@ vkr_remora_note_cmd_framebuffer(VkCommandBuffer cmd, VkFramebuffer fb)
+ }
+ 
+ void
+-vkr_remora_note_submit(const VkCommandBuffer *cmds, uint32_t count)
++vkr_remora_note_submit(struct vkr_queue *queue, const VkCommandBuffer *cmds,
++                       uint32_t count)
+ {
+    if (!vkr_remora_enabled() || !cmds)
+       return;
+@@ -524,8 +757,28 @@ vkr_remora_note_submit(const VkCommandBuffer *cmds, uint32_t count)
+ 
+          if (pub_client < 0)
+             publish_connect_locked();
+-         publish_frame_locked(disp_res_id, disp_fd, disp_w, disp_h);
++
++         /* STAGE against a fence, do not publish: the submit has only been
++          * ISSUED. Publishing here hands the encoder a buffer the compositor
++          * may still be writing into. */
++         fence_stage_locked(queue, disp_res_id, disp_w, disp_h);
++         n_staged++;
++
++         /* Loud fallback. If a fence can never be armed on this device, staging
++          * alone would publish nothing at all and the mirror would look broken
++          * for a very subtle reason. Publish at submit instead, and say so. */
++         if (fence_obj == VK_NULL_HANDLE && n_staged > 240) {
++            if (!sync_fallback_warned) {
++               sync_fallback_warned = true;
++               fprintf(stderr, "[remora-fence] no fence available after %" PRIu64
++                               " display frames — falling back to publishing at "
++                               "SUBMIT (frames may race the compositor)\n",
++                       n_staged);
++            }
++            publish_frame_locked(disp_res_id, disp_fd, disp_w, disp_h);
++         }
+       }
++
+       if ((uint32_t)res_id != last_frame_res_id) {
+          /* Only on CHANGE: a compositor submits every frame, and logging each
+           * one would bury the signal. The interesting event is the render
+@@ -545,7 +798,8 @@ vkr_remora_note_submit(const VkCommandBuffer *cmds, uint32_t count)
+ }
+ 
+ void
+-vkr_remora_note_submit2(const VkCommandBufferSubmitInfo *infos, uint32_t count)
++vkr_remora_note_submit2(struct vkr_queue *queue,
++                        const VkCommandBufferSubmitInfo *infos, uint32_t count)
+ {
+    if (!vkr_remora_enabled() || !infos)
+       return;
+@@ -553,7 +807,7 @@ vkr_remora_note_submit2(const VkCommandBufferSubmitInfo *infos, uint32_t count)
+     * the only difference between the two submit entry points is the shape of
+     * the command-buffer array. */
+    for (uint32_t i = 0; i < count; i++)
+-      vkr_remora_note_submit(&infos[i].commandBuffer, 1);
++      vkr_remora_note_submit(queue, &infos[i].commandBuffer, 1);
+ }
+ 
+ bool
+diff --git a/src/venus/vkr_remora_track.h b/src/venus/vkr_remora_track.h
+index 621f473c..de1c2e4a 100644
+--- a/src/venus/vkr_remora_track.h
++++ b/src/venus/vkr_remora_track.h
+@@ -35,6 +35,8 @@
+ 
+ #include "vkr_common.h"
+ 
++struct vkr_queue;
++
+ bool vkr_remora_enabled(void);
+ 
+ /* Called from VKR_CMD_CALL for EVERY Cmd* dispatch. Answers the one question
+@@ -72,11 +74,39 @@ void vkr_remora_note_cmd_framebuffer(VkCommandBuffer cmd, VkFramebuffer fb);
+ 
+ /* Called after a submit succeeds. Resolves each command buffer through the
+  * chain and reports any that rendered into a tracked resource. */
+-void vkr_remora_note_submit(const VkCommandBuffer *cmds, uint32_t count);
++void vkr_remora_note_submit(struct vkr_queue *queue, const VkCommandBuffer *cmds,
++                            uint32_t count);
+ 
+ /* vkQueueSubmit2 carries command buffers in VkCommandBufferSubmitInfo rather
+  * than a flat array. ANGLE uses this path, not the vkQueueSubmit one. */
+-void vkr_remora_note_submit2(const VkCommandBufferSubmitInfo *infos, uint32_t count);
++void vkr_remora_note_submit2(struct vkr_queue *queue,
++                             const VkCommandBufferSubmitInfo *infos, uint32_t count);
++
++/* Completion, not submission.
++ *
++ * vkQueueSubmit RETURNING means the GPU has been asked to render the frame, not
++ * that it has. Publishing there hands the encoder a buffer the compositor may
++ * still be writing. Venus already knows when work completes: for its own
++ * timeline it submits an EMPTY submission carrying a fence
++ * (QueueSubmit(queue, 0, NULL, fence)), which by Vulkan's submission-order rule
++ * for signal operations signals only after everything previously submitted on
++ * that queue has finished — and a sync thread retires those in order.
++ *
++ * So a display frame is STAGED at submit and published when the next sync
++ * retires. No new Vulkan calls, no new fence to manage, and the ordering
++ * guarantee is the one Venus itself depends on.
++ *
++ * Called from the queue's sync thread, not the submit path. */
++void vkr_remora_note_sync_submit(uint64_t fence_id);
++void vkr_remora_note_sync_retire(uint64_t fence_id);
++
++/* Venus's own queue syncs turned out NOT to be a usable completion signal here:
++ * they are submitted roughly per display frame, but they accumulate undrained
++ * (measured: 247 submitted, 0 retired, list never empty) because the guest's
++ * progress does not depend on them. So we submit OUR OWN fence, using the same
++ * idiom Venus does — QueueSubmit(queue, 0, NULL, fence) — and wait on it in our
++ * own thread. */
++
+ 
+ /* Most recently submitted render target, or 0 if none seen. */
+ uint32_t vkr_remora_last_frame_res_id(void);
+-- 
+2.54.0
+

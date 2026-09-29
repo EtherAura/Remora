@@ -1,0 +1,23 @@
+From beabe9a6b3fa43ce7cd6c26aefd2049b67de338e Mon Sep 17 00:00:00 2001
+From: jhenrique09 <jhsv09@gmail.com>
+Date: Thu, 13 Oct 2022 21:14:47 -0300
+Subject: [PATCH 71/98] SlicesDatabaseHelper: Use Build.VERSION.INCREMENTAL
+
+Change-Id: Ibf41df806c7f7c5b1671377a713817d3aed076bf
+---
+ src/com/android/settings/slices/SlicesDatabaseHelper.java | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/com/android/settings/slices/SlicesDatabaseHelper.java b/src/com/android/settings/slices/SlicesDatabaseHelper.java
+index ec36eed53ed..19b6b4fa946 100644
+--- a/src/com/android/settings/slices/SlicesDatabaseHelper.java
++++ b/src/com/android/settings/slices/SlicesDatabaseHelper.java
+@@ -247,6 +247,6 @@ public class SlicesDatabaseHelper extends SQLiteOpenHelper {
+ 
+     @VisibleForTesting
+     String getBuildTag() {
+-        return Build.FINGERPRINT;
++        return Build.VERSION.INCREMENTAL;
+     }
+ }
+\ No newline at end of file

@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sun, 16 Aug 2026 22:30:00 -0400
+Subject: [PATCH 27/27] venus: rebuild a dead completion fence, cap publish
+ staleness at 2s
+
+The completion fence and its queue were latched at first use. The day
+SurfaceFlinger lost its VkDevice and recreated it (a VRAM-ceiling crash
+storm), every arm against the dead queue failed, fence_obj stayed non-NULL
+so the loud no-fence fallback never engaged, and the publish path went
+silent FOR HOURS while frame resolution stayed green — the encoder
+keepalived its last real buffer, long freed and reading black, and every
+host-side health check certified the black stream (bd remora-pobz).
+
+Three defenses, layered:
+
+1. Proof-of-death detection: a run of consecutive arm failures (~1 s at
+   display rate), a hard WaitForFences error, or an endless-timeout fence
+   (10 rounds of 1 s) all mark the fence dead. The wait thread never
+   rearms on error — arming on a dead device fails forever, and the old
+   rearm spun that failure silently.
+
+2. Rebuild on the compositor's current queue: the stage path has the live
+   queue in hand every frame; a dead fence is torn down there and the
+   existing creation path remakes it. The old fence is leaked, not
+   destroyed — its device may already be freed. If even creation fails,
+   the pre-existing loud submit-time fallback finally becomes reachable.
+
+3. A 2 s staleness cap, independent of WHY publishing stopped: the
+   reconnect thread re-ships the current display frame whenever the
+   encoder has received nothing for 2 s while connected. A static screen
+   pays one no-op frame per 2 s; any future publish-path wedge is bounded
+   at 2 s of stale picture instead of forever-black.
+
+Wedge counters ride the existing [remora-fence]/[remora-publish] lines so
+the next incident names itself instead of costing a forensic session.
+---
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+index 9dd8739..b63e9f3 100644
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -11,6 +11,7 @@
+ #include <errno.h>
+ #include <sys/socket.h>
+ #include <sys/un.h>
++#include <time.h>
+ 
+ #include <inttypes.h>
+ #include <stdio.h>
+@@ -301,6 +302,30 @@ static uint64_t pub_sent, pub_dropped;
+ static char pub_req_buf[8 * 16];
+ static size_t pub_req_have;
+ 
++/* The wedge counters (bd remora-pobz): arming or waiting can start failing
++ * PERMANENTLY — the day SurfaceFlinger lost its VkDevice and recreated it, the
++ * fence stayed latched to the dead queue, every arm failed, and the publish
++ * path went silent for hours while frame resolution stayed green. Counted and
++ * printed so the next wedge names itself instead of costing a forensic
++ * session; arm_fail_row is the consecutive run that triggers a rebuild. */
++static uint64_t n_fence_arm_fail, n_fence_wait_err, arm_fail_row, n_pub_refresh;
++static uint64_t last_publish_us; /* any successful publish, any path */
++/* Consecutive arm failures before the fence is torn down and rebuilt on the
++ * compositor's current queue. At 60 fps that is one second of proof; a single
++ * hard wait error skips the count entirely. */
++#define FENCE_REBUILD_ROW 60
++/* Consecutive 1 s wait timeouts before an unsignallable fence is declared
++ * dead — it holds fence_busy, and the rebuild is gated on that clearing. */
++#define FENCE_TIMEOUT_ROW 10
++
++static uint64_t
++now_us(void)
++{
++   struct timespec ts;
++   clock_gettime(CLOCK_MONOTONIC, &ts);
++   return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
++}
++
+ /* VkFormat -> DRM fourcc, for the formats a compositor actually presents in.
+  * The byte orders are reversed between the two conventions: Vulkan names
+  * components in memory order, DRM names them in little-endian packed order, so
+@@ -398,6 +423,7 @@ publish_frame_locked(uint32_t res_id, int fd, uint32_t w, uint32_t h)
+    const ssize_t n = sendmsg(pub_client, &mh, MSG_DONTWAIT | MSG_NOSIGNAL);
+    if (n == (ssize_t)sizeof(msg)) {
+       pub_sent++;
++      last_publish_us = now_us();
+       if (need_fd)
+          map_put(&map_res_sent, res_id, 1);
+    } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+@@ -489,8 +515,14 @@ fence_arm_locked(void)
+    mtx_unlock(&fence_queue->vk_mutex);
+    if (r != VK_SUCCESS) {
+       fence_frame.valid = false;
++      arm_fail_row++;
++      if (++n_fence_arm_fail == 1)
++         fprintf(stderr, "[remora-fence] arming failed (vk %d) — a dead compositor device? "
++                         "the fence rebuilds on its current queue after %d in a row\n",
++                 (int)r, FENCE_REBUILD_ROW);
+       return false;
+    }
++   arm_fail_row = 0;
+    fence_busy = true;
+    return true;
+ }
+@@ -499,6 +531,7 @@ static int
+ fence_thread(void *unused)
+ {
+    (void)unused;
++   int timeout_row = 0;
+    for (;;) {
+       mtx_lock(&track_mutex);
+       while (!fence_busy)
+@@ -516,8 +549,35 @@ fence_thread(void *unused)
+       n_fence_wait++;
+       if (r == VK_TIMEOUT) {
+          /* Keep waiting rather than publishing: an unsignalled fence means the
+-          * GPU has not finished, which is precisely what must not be encoded. */
++          * GPU has not finished, which is precisely what must not be encoded.
++          * But not forever — a fence that cannot signal (a wedged device that
++          * still answers TIMEOUT) would hold fence_busy true for good, and the
++          * stage path's rebuild is gated on !fence_busy. Ten rounds is ten
++          * seconds: a GPU genuinely that far behind has no mirror to protect. */
+          n_fence_timeout++;
++         if (++timeout_row >= FENCE_TIMEOUT_ROW) {
++            fprintf(stderr, "[remora-fence] fence unsignalled for %d s — declaring it dead "
++                            "so the stage path can rebuild\n", FENCE_TIMEOUT_ROW);
++            fence_frame.valid = false;
++            fence_busy = false;
++            arm_fail_row = FENCE_REBUILD_ROW;
++            timeout_row = 0;
++         }
++         mtx_unlock(&track_mutex);
++         continue;
++      }
++      timeout_row = 0;
++      if (r != VK_SUCCESS) {
++         /* A hard wait error (device lost, most likely). Do NOT rearm here:
++          * arming on a dead device fails forever, and the old code's rearm
++          * spun that failure silently. Clear the wait and let the stage path
++          * rebuild the fence on the compositor's current queue. */
++         if (++n_fence_wait_err == 1)
++            fprintf(stderr, "[remora-fence] WaitForFences failed (vk %d) — device lost? "
++                            "the stage path rebuilds the fence\n", (int)r);
++         fence_frame.valid = false;
++         fence_busy = false;
++         arm_fail_row = FENCE_REBUILD_ROW; /* one wait error is proof enough */
+          mtx_unlock(&track_mutex);
+          continue;
+       }
+@@ -560,6 +620,26 @@ reconnect_thread(void *unused)
+          publish_connect_locked();
+          if (pub_client >= 0)
+             publish_frame_locked(disp_res_id, disp_fd, disp_w, disp_h);
++      } else if (pub_client >= 0 && disp_res_id
++                 && now_us() - last_publish_us > 2000000) {
++         /* CONNECTED, but nothing has reached the encoder for 2 s. On a live
++          * screen that means the completion path is wedged (the night this was
++          * written: a fence latched to a dead device); on a static screen it
++          * is one no-op frame every 2 s. Either way, re-shipping the CURRENT
++          * display frame bounds ANY publish-path failure at ~2 s of staleness
++          * — the alternative, lived once, was an encoder keepaliving a freed
++          * black buffer for hours while every health check stayed green
++          * (bd remora-pobz). Same mid-render trade the reconnect one-shot
++          * above already makes, at 0.5 Hz worst case. */
++         publish_frame_locked(disp_res_id, disp_fd, disp_w, disp_h);
++         n_pub_refresh++;
++         if (n_pub_refresh == 1 || (n_pub_refresh % 300) == 0)
++            fprintf(stderr,
++                    "[remora-publish] refresh publish #%" PRIu64 " (fence pub=%" PRIu64
++                    " arm_fail=%" PRIu64 " wait_err=%" PRIu64 ") — %s\n",
++                    n_pub_refresh, n_fence_publish, n_fence_arm_fail, n_fence_wait_err,
++                    n_fence_publish ? "the screen is static or the completion path stalled"
++                                    : "the completion path has never published");
+       }
+       mtx_unlock(&track_mutex);
+    }
+@@ -575,6 +655,33 @@ fence_stage_locked(struct vkr_queue *queue, uint32_t res_id, uint32_t w, uint32_
+    struct vkr_device *dev = queue->device;
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* REBUILD A FENCE THAT STOPPED WORKING (bd remora-pobz). The fence and its
++    * queue were latched at first use, which wedged the whole publish path the
++    * day SurfaceFlinger lost its VkDevice and recreated it: every arm against
++    * the dead queue failed, fence_obj stayed non-NULL so the loud no-fence
++    * fallback never engaged, and the stream sat silently stale for hours
++    * while frame resolution stayed green. Proof of death is a RUN of arm
++    * failures (~1 s at display rate; a hard wait error skips the count), and
++    * the compositor's CURRENT queue is in hand right here — rebuild on it.
++    * Deliberately NOT keyed on the queue pointer alone: pointers are reused
++    * by allocation and legitimately vary on multi-queue compositors, and the
++    * failure run already catches every dead queue within a second. The old
++    * fence is LEAKED, not destroyed: its device may already be freed, and
++    * vkDestroyFence into a dead device trades a one-fence leak for a crash.
++    * Gated on !fence_busy so state is never pulled out from under the wait
++    * thread; the wait thread guarantees fence_busy clears — errors clear it
++    * directly, and an endless-timeout fence is declared dead after
++    * FENCE_TIMEOUT_ROW rounds. */
++   if (fence_obj != VK_NULL_HANDLE && !fence_busy && arm_fail_row >= FENCE_REBUILD_ROW) {
++      fprintf(stderr, "[remora-fence] %" PRIu64 " consecutive arm failures — rebuilding the "
++                      "completion fence on the compositor's current queue\n", arm_fail_row);
++      fence_obj = VK_NULL_HANDLE;
++      fence_queue = NULL;
++      fence_frame.valid = false;
++      fence_next.valid = false;
++      arm_fail_row = 0;
++   }
++
+    if (fence_obj == VK_NULL_HANDLE) {
+       const VkFenceCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+       if (vk->CreateFence(dev->base.handle.device, &ci, NULL, &fence_obj) != VK_SUCCESS) {

@@ -1,0 +1,259 @@
+From 3d4a113a11f01480788647d84172a8299a01534c Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Sun, 2 Aug 2026 15:43:20 -0400
+Subject: [PATCH 15/16] venus: an out-of-memory allocation must not kill the
+ ring
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+vkr_dispatch_vkAllocateMemory freed the object and returned when the driver
+refused an allocation, so the guest's object id was never registered. Venus is
+pipelined, so by then the guest had usually queued vkBindImageMemory2 against
+that id; the bind looked it up, missed, and vkr_cs_decoder_lookup_object()
+called vkr_cs_decoder_set_fatal() — which tears down the ring for EVERY client
+on it, not just the one that ran out of memory.
+
+Measured on an 8 GiB card shared with a desktop: a single 4 MiB shortfall took
+down SurfaceFlinger and every drawing app at once. It presented as unrelated
+apps showing a black screen and then dying — including one with no GPU work of
+its own beyond its window.
+
+Register a tombstone instead: the object is added with a VK_NULL_HANDLE driver
+handle, so the lookup resolves and the ring survives. The bind entry points
+(vkBindImageMemory/2, vkBindBufferMemory/2) recognise that handle and return
+VK_ERROR_OUT_OF_DEVICE_MEMORY rather than passing VK_NULL_HANDLE to the driver,
+which is invalid usage and would fault the render server — trading one crash
+for another. The guest that asked for memory gets a normal Vulkan error it can
+handle; everyone else keeps rendering.
+
+udmabuf_fd is set to -1 explicitly on the tombstone. vkr_object_alloc() callocs,
+and a zeroed fd of 0 is a real descriptor: vkr_device_memory_release() would
+close(0), i.e. stdin.
+
+VKR_REMORA_FORCE_ALLOC_FAIL=N fails every Nth allocation so this path can be
+exercised deliberately; unset or 0 is a no-op and is what ships. An error path
+that only runs when the card is genuinely full is a path nobody can test.
+
+Verified with N=40, guest booted against it: 4 forced failures, zero
+"failed to look up object", zero CS errors, zero ring teardowns, SurfaceFlinger
+pid unchanged, AV1 decode 240/240 frames, a second app still running. The same
+conditions previously produced the full cascade.
+---
+ src/venus/vkr_buffer.c        | 12 +++++
+ src/venus/vkr_device_memory.c | 84 ++++++++++++++++++++++++++++++++++-
+ src/venus/vkr_image.c         | 31 +++++++++++++
+ 3 files changed, 125 insertions(+), 2 deletions(-)
+
+diff --git a/src/venus/vkr_buffer.c b/src/venus/vkr_buffer.c
+index 9e466f83..cc920eaa 100644
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -79,6 +79,11 @@ vkr_dispatch_vkBindBufferMemory(UNUSED struct vn_dispatch_context *dispatch,
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+    vn_replace_vkBindBufferMemory_args_handle(args);
++   if (args->memory == VK_NULL_HANDLE) {
++      /* remora-e5x.24 tombstone — see vkr_image.c. */
++      args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++      return;
++   }
+    args->ret =
+       vk->BindBufferMemory(args->device, args->buffer, args->memory, args->memoryOffset);
+ }
+@@ -91,6 +96,13 @@ vkr_dispatch_vkBindBufferMemory2(UNUSED struct vn_dispatch_context *dispatch,
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+    vn_replace_vkBindBufferMemory2_args_handle(args);
++   for (uint32_t i = 0; i < args->bindInfoCount; i++) {
++      if (args->pBindInfos[i].memory == VK_NULL_HANDLE) {
++         /* remora-e5x.24 tombstone — see vkr_image.c. */
++         args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++         return;
++      }
++   }
+    args->ret = vk->BindBufferMemory2(args->device, args->bindInfoCount, args->pBindInfos);
+ }
+ 
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 56a078af..2c3374c1 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -246,6 +246,31 @@ vkr_gbm_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *phys
+ 
+ #endif /* ENABLE_GBM_ALLOCATION */
+ 
++/* remora-e5x.24: see the call site. Returns true every Nth call when
++ * VKR_REMORA_FORCE_ALLOC_FAIL=N is set, so the out-of-memory path can be tested
++ * without actually filling the card. Off unless the env var is set.
++ */
++static bool
++vkr_remora_force_alloc_fail(void)
++{
++   static int every = -1;
++   static unsigned count;
++
++   if (every < 0) {
++      const char *s = getenv("VKR_REMORA_FORCE_ALLOC_FAIL");
++      every = s ? atoi(s) : 0;
++      if (every < 0)
++         every = 0;
++      if (every)
++         vkr_log("remora: FORCING vkAllocateMemory failure every %d calls", every);
++   }
++
++   if (!every)
++      return false;
++
++   return (++count % (unsigned)every) == 0;
++}
++
+ static void
+ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkAllocateMemory *args)
+@@ -418,13 +443,62 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+          valid_fd_types |= 1 << VIRGL_RESOURCE_FD_DMABUF;
+    }
+ 
+-   struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
++   /* remora-e5x.24 fault injection. An out-of-VRAM path that only runs when the
++    * card is genuinely full is a path nobody can test, so it rots. Setting
++    * VKR_REMORA_FORCE_ALLOC_FAIL=N fails every Nth allocation on purpose, which
++    * exercises the tombstone below and the bind guards in vkr_image.c /
++    * vkr_buffer.c. Unset or 0 (the default, and what ships) is a no-op. */
++   const bool forced_fail = vkr_remora_force_alloc_fail();
++   struct vkr_device_memory *mem =
++      forced_fail ? NULL : vkr_device_memory_create_and_add(ctx, args);
++   if (forced_fail)
++      args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    if (!mem) {
++      /* remora-e5x.21: a silently failed allocate leaves a hole in the object
++       * table that the next bind turns into a fatal CS error — say what the
++       * driver refused, loudly, before that happens. */
++      const VkMemoryDedicatedAllocateInfo *ded_info = vkr_find_struct(
++         alloc_info->pNext, VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
++      vkr_log("vkAllocateMemory FAILED ret=%d size=%" PRIu64 " typeIndex=%u "
++              "import_res=%u import_fd=%d dedicated=%s host_visible=%d",
++              args->ret, (uint64_t)alloc_info->allocationSize, mem_type_index,
++              remora_res_id, local_import_info.fd,
++              ded_info ? (ded_info->image ? "image" : (ded_info->buffer ? "buffer" : "empty"))
++                       : "none",
++              !!(property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT));
+       if (local_import_info.fd >= 0)
+          close(local_import_info.fd);
+       if (gbm_bo)
+          vkr_gbm_bo_destroy(gbm_bo);
+       vkr_mtl_shm_free(mtl_shm);
++
++      /* remora-e5x.24: fill the hole with a TOMBSTONE.
++       *
++       * args->ret already carries the failure back to the guest, but venus is
++       * pipelined: the guest has usually queued vkBindImageMemory2 against this
++       * id long before it can act on the error. That bind then looks the id up,
++       * finds nothing, and vkr_cs_decoder_lookup_object() calls set_fatal() —
++       * which tears down the ring for EVERY client on it, not just the one that
++       * ran out of memory. Measured: a single 4 MiB shortfall killed
++       * SurfaceFlinger and every drawing app at once.
++       *
++       * So register the object anyway, with a VK_NULL_HANDLE driver handle. The
++       * lookup then succeeds and the bind guards below turn it into a normal
++       * VK_ERROR_OUT_OF_DEVICE_MEMORY for the one guest that asked — an app may
++       * die, the session does not.
++       *
++       * If the id itself was the problem (alloc_object rejected it) this second
++       * attempt returns NULL too, and we are no worse off than before.
++       */
++      struct vkr_device_memory *tomb = vkr_context_alloc_object(
++         ctx, sizeof(*tomb), VK_OBJECT_TYPE_DEVICE_MEMORY, args->pMemory);
++      if (tomb) {
++         tomb->base.handle.device_memory = VK_NULL_HANDLE;
++         /* calloc zeroes, but 0 is a REAL fd: vkr_device_memory_release() does
++          * `if (udmabuf_fd >= 0) close(udmabuf_fd)` and would close stdin. */
++         tomb->udmabuf_fd = -1;
++         vkr_device_add_object(ctx, dev, &tomb->base);
++      }
+       return;
+    }
+ 
+@@ -516,8 +590,14 @@ vkr_dispatch_vkGetMemoryResourcePropertiesMESA(
+    vn_replace_vkGetMemoryResourcePropertiesMESA_args_handle(args);
+    args->ret =
+       vk->GetMemoryFdPropertiesKHR(args->device, handle_type, res->u.fd, &mem_fd_props);
+-   if (args->ret != VK_SUCCESS)
++   if (args->ret != VK_SUCCESS) {
++      /* remora-e5x.21: the guest treats this as "import is viable?" — a failure
++       * here is the graceful path, so make it visible when diagnosing why an
++       * import went through anyway. */
++      vkr_log("GetMemoryFdPropertiesKHR FAILED ret=%d res_id=%u fd=%d size=%" PRIu64,
++              args->ret, args->resourceId, res->u.fd, (uint64_t)res->size);
+       return;
++   }
+ 
+    args->pMemoryResourceProperties->memoryTypeBits = mem_fd_props.memoryTypeBits;
+ 
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index ed5432fa..f4b2212e 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -44,6 +44,14 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+                                    args->pCreateInfo->extent.height);
+       vkr_remora_note_image_layout(_img->base.handle.image, args->pCreateInfo);
+    }
++   if (!_img && args->pCreateInfo) {
++      /* remora-e5x.21: a pipelined create failure surfaces later as a fatal
++       * missing-object CS error — record what the driver refused. */
++      vkr_log("vkCreateImage FAILED ret=%d format=%d extent=%ux%u tiling=%d usage=0x%x",
++              args->ret, args->pCreateInfo->format, args->pCreateInfo->extent.width,
++              args->pCreateInfo->extent.height, args->pCreateInfo->tiling,
++              args->pCreateInfo->usage);
++   }
+ }
+ 
+ static void
+@@ -105,6 +113,19 @@ vkr_dispatch_vkGetImageSparseMemoryRequirements2(
+                                          args->pSparseMemoryRequirements);
+ }
+ 
++/* remora-e5x.24: a VK_NULL_HANDLE memory here is a TOMBSTONE — the allocation
++ * that should have produced it failed (out of device memory), and
++ * vkr_dispatch_vkAllocateMemory registered a placeholder so the pipelined bind
++ * below would not trip the fatal "failed to look up object" path and kill the
++ * ring for every client. Refuse just this bind instead. Handing VK_NULL_HANDLE
++ * to the driver is invalid usage and would fault the render server.
++ */
++static inline bool
++vkr_remora_bind_memory_is_tombstone(VkDeviceMemory memory)
++{
++   return memory == VK_NULL_HANDLE;
++}
++
+ static void
+ vkr_dispatch_vkBindImageMemory(UNUSED struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkBindImageMemory *args)
+@@ -113,6 +134,10 @@ vkr_dispatch_vkBindImageMemory(UNUSED struct vn_dispatch_context *dispatch,
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+    vn_replace_vkBindImageMemory_args_handle(args);
++   if (vkr_remora_bind_memory_is_tombstone(args->memory)) {
++      args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++      return;
++   }
+    args->ret =
+       vk->BindImageMemory(args->device, args->image, args->memory, args->memoryOffset);
+    if (args->ret == VK_SUCCESS)
+@@ -127,6 +152,12 @@ vkr_dispatch_vkBindImageMemory2(UNUSED struct vn_dispatch_context *dispatch,
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+    vn_replace_vkBindImageMemory2_args_handle(args);
++   for (uint32_t i = 0; i < args->bindInfoCount; i++) {
++      if (vkr_remora_bind_memory_is_tombstone(args->pBindInfos[i].memory)) {
++         args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++         return;
++      }
++   }
+    args->ret = vk->BindImageMemory2(args->device, args->bindInfoCount, args->pBindInfos);
+    /* ANGLE binds through this entry point, not vkBindImageMemory (measured:
+     * that hook's count stayed 0 across a full session). */
+-- 
+2.54.0
+

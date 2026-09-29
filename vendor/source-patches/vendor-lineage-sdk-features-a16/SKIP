@@ -1,0 +1,31 @@
+WRONG-WORLD ON A16 — this strip is A17 compensation, and on lineage-23.0 it CAUSES the crash it
+was written to prevent the mirror image of (bd remora-sgrk: SystemUI crash-loops, "Couldn't get
+lineageglobalactions on binder").
+
+The A17 rationale (bd remora-4ei.62): lineage-24.0 is a pure AOSP-tracking branch with no
+LineageSystemServer hook, so six declared services never run and hasSystemFeature() lied. TRUE
+THERE. On A16 every half of that sentence inverts, verified at the pin rather than inferred:
+
+    frameworks/base SystemServer.java:2999 "// Lineage Services" — reflectively constructs
+    config_externalSystemServer (= org.lineageos.platform.internal.LineageSystemServer) and
+    invokes run(). git blame: ^155701ba6 (LineageOS Infra), i.e. THE UPSTREAM PIN ITSELF.
+    NOTE a grep for "LineageSystemServer" across frameworks/base/services does NOT find this —
+    the class name arrives via a resources string and Class.forName. That grep-invisibility is
+    how the hook was misread as absent once already (remora-sgrk's first analysis).
+
+    LineageSystemServer.startServices() iterates config_externalLineageServices (seven services,
+    LineageGlobalActionsService among them) and starts each iff
+    hasSystemFeature(service.getFeatureDeclaration()) — the features THIS PATCH's strip deletes.
+
+    lineage-23.0's SystemUI keyguard (GlobalActionsDialogLite.java:529) calls
+    LineageGlobalActions unconditionally — no feature check.
+
+So on A16: service halves all exist, the hook runs, and stripping the declarations is the ONLY
+thing standing between the keyguard's unconditional call and a running service. Skipping the
+patch restores upstream's own contract — all seven feature XMLs declared, all seven services
+started, exactly what every real lineage-23.0 device does. Nothing is dishonest afterwards:
+every declared feature is backed.
+
+If lineage-24.0 ever gains the LineageSystemServer hook (the backport forward-ported, or upstream
+becomes a real lineage branch), retire the shared strip entirely rather than this marker — the
+4ei.62 comment in the patched file already says which line to restore first.

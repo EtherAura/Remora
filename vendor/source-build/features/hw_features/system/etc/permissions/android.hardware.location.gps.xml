@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Remora: declare GPS so Play Store considers the device compatible with apps that hard-require
+     uses-feature android.hardware.location.gps (field/logistics apps, e.g. Sonar Field Tech —
+     without it Play shows "this app won't work for your device"). Location actually resolves via
+     the network provider; this only satisfies the install-time feature gate. -->
+<permissions>
+    <feature name="android.hardware.location.gps" />
+</permissions>

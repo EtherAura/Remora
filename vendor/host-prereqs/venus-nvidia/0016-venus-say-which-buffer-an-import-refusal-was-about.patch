@@ -1,0 +1,138 @@
+From 22f943a37d5480754c12ee4d59a6f568c0846259 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Sun, 2 Aug 2026 16:16:36 -0400
+Subject: [PATCH 16/16] venus: say which buffer an import refusal was about
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A refused dmabuf import reported only "vkAllocateMemory FAILED ret=-2", which
+is indistinguishable from the card being full. It usually is not: the same
+message appears with 2 GiB free, because ret=-2 is also how the driver says "I
+will not take this buffer". Telling the two apart needed three facts that were
+nowhere in the log.
+
+At the import site, on failure only:
+  - the dmabuf's EXPORTER, read from /proc/self/fdinfo. "udmabuf" is the known
+    NVIDIA limitation; "drm" is not, and that distinction was being guessed at.
+  - the dmabuf's REAL size against the requested allocationSize, which separates
+    a geometry disagreement from an outright rejection. Both occur: one refusal
+    was 98 KiB short on a 10:9 stride ratio, another matched exactly and was
+    still refused.
+  - the modifier the GUEST built its image with, via
+    GetImageDrmFormatModifierPropertiesEXT on the dedicated image.
+
+And one line per host GPU allocation carrying width, height, format, stride,
+size and the modifier handed out — the other half of that comparison, and the
+only way to tell which allocation a later refusal belonged to.
+
+This is diagnosis, not a fix: it costs nothing on the success path (the import
+site logs only when the allocation already failed) and the allocation line is
+one fprintf. It is what identified the refused buffers as the XB24/RGBX decode
+output, which no amount of staring at sizes would have shown.
+
+Caveat for whoever extends this: the allocation line sits after
+GetImageSubresourceLayout, which is only valid for linear images, so a
+block-linear allocation is not covered by it.
+---
+ src/venus/vkr_device_memory.c | 49 +++++++++++++++++++++++++++++++++++
+ vtest/vtest_gpu_alloc.c       | 16 ++++++++++++
+ 2 files changed, 65 insertions(+)
+
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 2c3374c1..bb175284 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -466,6 +466,55 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+               ded_info ? (ded_info->image ? "image" : (ded_info->buffer ? "buffer" : "empty"))
+                        : "none",
+               !!(property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT));
++
++      /* remora: WHO EXPORTED the buffer we were asked to import? At 2 GiB free
++       * an 8 MiB import has not run out of anything — the driver is refusing
++       * the dmabuf itself, and the exporter is the discriminator. NVIDIA will
++       * not take a udmabuf ("sg->offset != 0"); a buffer it exported itself
++       * should import back. /proc/self/fdinfo/<fd> names the exporter, and the
++       * real size lets a pitch/extent mismatch show up against the requested
++       * allocationSize. */
++      if (local_import_info.fd >= 0) {
++         char p[64];
++         char line[256];
++         snprintf(p, sizeof(p), "/proc/self/fdinfo/%d", local_import_info.fd);
++         FILE *fi = fopen(p, "r");
++         char exp[64] = "?";
++         if (fi) {
++            while (fgets(line, sizeof(line), fi)) {
++               if (!strncmp(line, "exp_name:", 9)) {
++                  char *v = line + 9;
++                  while (*v == '\t' || *v == ' ') v++;
++                  v[strcspn(v, "\n")] = '\0';
++                  snprintf(exp, sizeof(exp), "%.63s", v);
++                  break;
++               }
++            }
++            fclose(fi);
++         }
++         const off_t dmabuf_size = lseek(local_import_info.fd, 0, SEEK_END);
++
++         /* The modifier the GUEST built its image with. Sizes matching while the
++          * import is still refused points at the format/modifier pair, not the
++          * geometry — and this is the only way to see which modifier the guest
++          * chose, to compare against the one the host handed out at
++          * VCMD_RESOURCE_ALLOC_GPU (logged as [remora-alloc] mod=). */
++         uint64_t guest_mod = (uint64_t)-1;
++         if (ded_info && ded_info->image != VK_NULL_HANDLE &&
++             dev->proc_table.GetImageDrmFormatModifierPropertiesEXT) {
++            VkImageDrmFormatModifierPropertiesEXT mod_props = {
++               .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT,
++            };
++            if (dev->proc_table.GetImageDrmFormatModifierPropertiesEXT(
++                   args->device, ded_info->image, &mod_props) == VK_SUCCESS)
++               guest_mod = mod_props.drmFormatModifier;
++         }
++
++         vkr_log("  refused import: exporter=%s dmabuf_size=%lld requested=%llu "
++                 "guest_modifier=0x%" PRIx64,
++                 exp, (long long)dmabuf_size,
++                 (unsigned long long)alloc_info->allocationSize, guest_mod);
++      }
+       if (local_import_info.fd >= 0)
+          close(local_import_info.fd);
+       if (gbm_bo)
+diff --git a/vtest/vtest_gpu_alloc.c b/vtest/vtest_gpu_alloc.c
+index b8baf21b..1d0e775c 100644
+--- a/vtest/vtest_gpu_alloc.c
++++ b/vtest/vtest_gpu_alloc.c
+@@ -338,6 +338,17 @@ alloc_vk_init_locked(void)
+    return 0;
+ }
+ 
++/* Unconditional, one line per GPU allocation: cheap, and the alternative is
++ * guessing which allocation a failed import belonged to. */
++static void
++vkr_log_alloc_geometry(uint32_t width, uint32_t height, uint32_t drm_format,
++                       uint32_t stride, uint64_t size, uint64_t modifier)
++{
++   fprintf(stderr,
++           "[remora-alloc] %ux%u fmt=%.4s stride=%u size=%" PRIu64 " mod=0x%" PRIx64 "\n",
++           width, height, (const char *)&drm_format, stride, size, modifier);
++}
++
+ static int
+ vtest_gpu_alloc_image(uint32_t width, uint32_t height, uint32_t drm_format,
+                       bool linear, uint32_t *out_stride,
+@@ -519,6 +530,11 @@ vtest_gpu_alloc_image(uint32_t width, uint32_t height, uint32_t drm_format,
+       goto out;
+ 
+    *out_stride = (uint32_t)layout.rowPitch;
++   /* remora: pair this with the render server's "refused import" line. When a
++    * guest import asks for more than we allocated, these two logs are the only
++    * way to see WHICH side computed the larger geometry (bd remora-e5x.30). */
++   vkr_log_alloc_geometry(width, height, drm_format, (uint32_t)layout.rowPitch, reqs.size,
++                          *out_modifier);
+    *out_modifier = chosen.drmFormatModifier;
+    *out_size = reqs.size;
+    *out_fd = fd;
+-- 
+2.54.0
+

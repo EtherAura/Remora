@@ -1,0 +1,25 @@
+From 78c8269006e30f41b0a53ba24997bec984a4bc23 Mon Sep 17 00:00:00 2001
+From: Chirayu Desai <chirayudesai1@gmail.com>
+Date: Tue, 7 Jun 2022 16:47:13 +0530
+Subject: [PATCH 47/98] Hide the "Show the vibrate icon in the Status Bar"
+ setting
+
+* We have this controllable like all other status bar icons
+
+Change-Id: I39d2f0ee7849403c404bdfa109e191102466c537
+---
+ .../settings/notification/VibrateIconPreferenceController.java  | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/com/android/settings/notification/VibrateIconPreferenceController.java b/src/com/android/settings/notification/VibrateIconPreferenceController.java
+index d772b47d59e..e538dd12f0f 100644
+--- a/src/com/android/settings/notification/VibrateIconPreferenceController.java
++++ b/src/com/android/settings/notification/VibrateIconPreferenceController.java
+@@ -40,6 +40,6 @@ public class VibrateIconPreferenceController extends SettingPrefController {
+ 
+     @Override
+     public boolean isAvailable() {
+-        return mHasVibrator;
++        return false;
+     }
+ }

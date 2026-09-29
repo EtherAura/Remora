@@ -1,0 +1,28 @@
+From 41470fecd2e9baf2b8d7349648f20f6c18c63cf8 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 12:11:15 -0400
+Subject: [PATCH] A17 container-compat: ProcessList cgroup tolerance
+
+Change-Id: I713df139330aa7b2fcbfefa9763edc74ae8a3dbc
+---
+ services/core/java/com/android/server/am/ProcessList.java | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/am/ProcessList.java b/services/core/java/com/android/server/am/ProcessList.java
+index d8e2cfaae..72da76a8c 100644
+--- a/services/core/java/com/android/server/am/ProcessList.java
++++ b/services/core/java/com/android/server/am/ProcessList.java
+@@ -2694,7 +2694,9 @@ public final class ProcessList extends ProcessListInternal
+                             if (res == -OsConstants.ESRCH) {
+                                 Slog.e(ActivityManagerService.TAG, errorStr);
+                             } else {
+-                                throw new AssertionError(errorStr);
++                                // Process-group (cgroup) creation can fail in the
++                                // container — log instead of asserting system_server to death.
++                                Slog.e(ActivityManagerService.TAG, errorStr);
+                             }
+                         } else {
+                             app.mProcessGroupCreated = true;
+-- 
+2.54.0
+

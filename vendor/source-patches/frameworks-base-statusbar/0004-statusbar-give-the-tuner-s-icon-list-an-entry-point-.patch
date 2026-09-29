@@ -1,0 +1,155 @@
+From 03034f62baae21b93544e3a011a47ffe832c50e8 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Mon, 27 Jul 2026 12:57:48 -0400
+Subject: [PATCH] statusbar: give the tuner's icon list an entry point again
+
+LineageParts' Settings > System > Status bar > "System icons" fires an
+implicit com.android.settings.action.STATUS_BAR_TUNER. Nothing in AOSP
+declares it -- the action is a LineageOS SystemUI addition that
+lineage-24.0 has not forward-ported -- and androidx Preference.performClick
+calls startActivity with no try/catch, so the row is a hard crash:
+
+  android.content.ActivityNotFoundException: No Activity found to handle
+  Intent { act=com.android.settings.action.STATUS_BAR_TUNER }
+
+The screen it wants still exists: tuner_prefs.xml keeps the whole
+status_bar PreferenceScreen, and StatusBarSwitch still writes the
+icon_blacklist secure setting -- which the Compose status bar honors again
+since "statusbar: honor icon_blacklist in the Compose icon pipeline". Only
+the route between the two was missing.
+
+Route it through an activity-alias instead of enabling TunerActivity, so
+the activity stays disabled and its EXTRA_SETTINGS filter does not add a
+"System UI Tuner" tile to Settings. An alias of a disabled target still
+resolves, as the .DemoMode alias has always done.
+
+SubSettingsFragment cannot host this route -- it lifts its preferences out
+of a parent TunerFragment found through getTargetFragment(), and an intent
+entry has no parent -- so inflate the sub-screen by key instead.
+
+Change-Id: I534ccf4aa1c2bb5172fbca946d2ae3ed79fc5389
+---
+ packages/SystemUI/AndroidManifest.xml         | 19 +++++++
+ .../tuner/StatusBarTunerFragment.java         | 52 +++++++++++++++++++
+ .../android/systemui/tuner/TunerActivity.java | 10 +++-
+ 3 files changed, 80 insertions(+), 1 deletion(-)
+ create mode 100644 packages/SystemUI/src/com/android/systemui/tuner/StatusBarTunerFragment.java
+
+diff --git a/packages/SystemUI/AndroidManifest.xml b/packages/SystemUI/AndroidManifest.xml
+index 1a5392dad2ac..313187a33b07 100644
+--- a/packages/SystemUI/AndroidManifest.xml
++++ b/packages/SystemUI/AndroidManifest.xml
+@@ -646,6 +646,25 @@
+             </intent-filter>
+         </activity-alias>
+ 
++        <!-- The tuner's status bar icon list, reachable on its own so that LineageParts'
++             Settings > System > Status bar > "System icons" resolves. Nothing in AOSP handles
++             STATUS_BAR_TUNER, so that preference is otherwise a fatal ActivityNotFoundException.
++             An alias rather than enabling TunerActivity: the activity stays disabled, so its
++             EXTRA_SETTINGS filter keeps its "System UI Tuner" tile out of Settings. An alias of a
++             disabled target still resolves, exactly as .DemoMode above already does. -->
++        <activity-alias android:name=".tuner.StatusBarTuner"
++                  android:targetActivity=".tuner.TunerActivity"
++                  android:icon="@drawable/tuner"
++                  android:theme="@style/TunerSettings"
++                  android:label="@string/status_bar"
++                  android:process=":tuner"
++                  android:exported="true">
++            <intent-filter>
++                <action android:name="com.android.settings.action.STATUS_BAR_TUNER" />
++                <category android:name="android.intent.category.DEFAULT" />
++            </intent-filter>
++        </activity-alias>
++
+         <!-- Callback for invoking a smart action from the screenshot notification. -->
+         <receiver android:name=".screenshot.SmartActionsReceiver"
+                   android:exported="false"/>
+diff --git a/packages/SystemUI/src/com/android/systemui/tuner/StatusBarTunerFragment.java b/packages/SystemUI/src/com/android/systemui/tuner/StatusBarTunerFragment.java
+new file mode 100644
+index 000000000000..a262143cfd64
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/tuner/StatusBarTunerFragment.java
+@@ -0,0 +1,52 @@
++/*
++ * Copyright (C) 2015 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package com.android.systemui.tuner;
++
++import android.os.Bundle;
++
++import androidx.preference.PreferenceFragment;
++
++import com.android.systemui.res.R;
++
++/**
++ * The status bar icon list of {@link R.xml#tuner_prefs}, hosted as a screen in its own right so
++ * that it can be entered directly rather than only by descending through {@link TunerFragment}.
++ *
++ * {@link TunerActivity.SubSettingsFragment} cannot serve this route: it lifts its preferences out
++ * of a parent {@link TunerFragment} reached via getTargetFragment(), and an intent entry has no
++ * parent to lift them from. Inflating the sub-screen by key is the equivalent that stands alone.
++ */
++public class StatusBarTunerFragment extends PreferenceFragment {
++
++    private static final String KEY_STATUS_BAR = "status_bar";
++
++    @Override
++    public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
++        setPreferencesFromResource(R.xml.tuner_prefs, KEY_STATUS_BAR);
++    }
++
++    @Override
++    public void onActivityCreated(Bundle savedInstanceState) {
++        super.onActivityCreated(savedInstanceState);
++        getActivity().getActionBar().setDisplayHomeAsUpEnabled(true);
++    }
++
++    @Override
++    public void onResume() {
++        super.onResume();
++        getActivity().setTitle(R.string.status_bar);
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/tuner/TunerActivity.java b/packages/SystemUI/src/com/android/systemui/tuner/TunerActivity.java
+index d0817d736f07..c601ec1e0ec7 100644
+--- a/packages/SystemUI/src/com/android/systemui/tuner/TunerActivity.java
++++ b/packages/SystemUI/src/com/android/systemui/tuner/TunerActivity.java
+@@ -43,6 +43,11 @@ public class TunerActivity extends Activity implements
+ 
+     private static final String TAG_TUNER = "tuner";
+ 
++    // Fired by LineageParts' Settings > System > Status bar > "System icons". AOSP declares no
++    // handler for it, so without this route that preference throws ActivityNotFoundException.
++    private static final String ACTION_STATUS_BAR_TUNER =
++            "com.android.settings.action.STATUS_BAR_TUNER";
++
+     private final DemoModeController mDemoModeController;
+     private final TunerService mTunerService;
+     private final GlobalSettings mGlobalSettings;
+@@ -74,9 +79,12 @@ public class TunerActivity extends Activity implements
+             final String action = getIntent().getAction();
+             boolean showDemoMode = action != null && action.equals(
+                     "com.android.settings.action.DEMO_MODE");
++            boolean showStatusBar = action != null && action.equals(ACTION_STATUS_BAR_TUNER);
+             final PreferenceFragment fragment = showDemoMode
+                     ? new DemoModeFragment(mDemoModeController, mGlobalSettings)
+-                    : new TunerFragment(mTunerService);
++                    : showStatusBar
++                            ? new StatusBarTunerFragment()
++                            : new TunerFragment(mTunerService);
+             getFragmentManager().beginTransaction().replace(R.id.content_frame,
+                     fragment, TAG_TUNER).commit();
+         }

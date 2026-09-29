@@ -1,0 +1,12 @@
+# Pinned microG payload — refresh by downloading the release assets and updating the sha256s.
+# GmsCore + Companion ship together in the GmsCore release (Companion = FakeStore's successor,
+# package com.android.vending). Plain (non -hw/Huawei) builds.
+microg GmsCore     v0.3.15.250932  com.google.android.gms-250932030.apk
+  sha256 52597e77fd25fdd347574d0457ed1936a4b9561cf4c8d34e7ac8dd8191dfd4b9
+  https://github.com/microg/GmsCore/releases/download/v0.3.15.250932/com.google.android.gms-250932030.apk
+microg Companion   v0.3.15 (84022630)  com.android.vending-84022630.apk
+  sha256 a973e0235a2829773a4faf36d235d5f703d1c04a2adff674ebaa535a2e78f937
+  https://github.com/microg/GmsCore/releases/download/v0.3.15.250932/com.android.vending-84022630.apk
+Aurora Store       f-droid suggested (2026-07-20)  com.aurora.store
+  sha256 c4ce0df0bbb0e82be4e4bd7d8a3e000f08e04457187d560fe2ca3ae52941bf49
+  https://f-droid.org/repo/  (versioncode via /api/v1/packages/com.aurora.store)

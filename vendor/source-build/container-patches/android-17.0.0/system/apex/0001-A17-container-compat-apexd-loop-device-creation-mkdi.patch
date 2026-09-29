@@ -1,0 +1,43 @@
+From b0c67a9afd958de5989ba1f31136421706ede85e Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 12:11:15 -0400
+Subject: [PATCH] A17 container-compat: apexd loop-device creation + mkdir
+ /dev/block
+
+Change-Id: Ic73100db865a30ca2f9af7be3300b9761b6c4e8b
+---
+ apexd/apexd_loop.cpp | 18 ++++++++++--------
+ 1 file changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/apexd/apexd_loop.cpp b/apexd/apexd_loop.cpp
+index bd406e7..71c00e9 100644
+--- a/apexd/apexd_loop.cpp
++++ b/apexd/apexd_loop.cpp
+@@ -507,14 +507,16 @@ static Result<LoopbackDeviceUniqueFd> ConfigureLoopDevice(
+ 
+ static Result<EmptyLoopDevice> WaitForLoopDevice(int num) {
+   std::string device = std::format("/dev/block/loop{}", num);
+-  if constexpr (flags::mount_before_data()) {
+-    // Let's make the node directly
+-    if (access(device.c_str(), F_OK) != 0 && errno == ENOENT) {
+-      if (auto dev = ReadLoopDevNum(num); dev) {
+-        auto st = apexd_private::MakeBlockDeviceNode(
+-            device, 0600, *dev, "u:object_r:loop_device:s0");
+-        if (!st.ok()) LOG(ERROR) << st.error();
+-      }
++  // In a container ueventd does not create loop device nodes on demand, so apexd waits
++  // forever and fails ("Failed to open loop device N"). Create the node ourselves when it's
++  // missing. Upstream only does this under the mount_before_data build flag; do it unconditionally.
++  // apexd-bootstrap runs in parallel with ueventd, so /dev/block may not exist yet — create it.
++  if (access(device.c_str(), F_OK) != 0 && errno == ENOENT) {
++    mkdir("/dev/block", 0755);  // ok if it already exists
++    if (auto dev = ReadLoopDevNum(num); dev) {
++      auto st = apexd_private::MakeBlockDeviceNode(
++          device, 0600, *dev, "u:object_r:loop_device:s0");
++      if (!st.ok()) LOG(ERROR) << st.error();
+     }
+   }
+ 
+-- 
+2.54.0
+

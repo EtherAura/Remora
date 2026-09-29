@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Vendor media codec configuration for remora_x86_64 (bd remora-28ix.4 R1).
+
+     THE TOP-LEVEL FILE. MediaCodecList reads /vendor/etc/media_codecs.xml and nothing else
+     from vendor; every other list reaches the framework because this one includes it. Without
+     this file the device advertises NO vendor codecs at all — MediaCodec then answers
+     "Codec with name 'c2.remora.vaapi.hevc.encoder' is not found on the device" and the
+     mirror's video stream dies at session setup with a server-side configuration error.
+     That is exactly what happened when this config arrived with an OMX plugin's makefile and
+     that inherit was dropped: the plugin was dead weight, but its makefile also carried the
+     whole media configuration. This file is why the device tree owns it — media config is
+     device config, and it must not depend on a HAL nobody enables.
+
+     Ordering is preference: the VAAPI hardware components (rank 260 in the fragment, below
+     the c2.android.* software ~512) come first, then the AOSP software lists.
+
+     No OMX.* entry. No OMX plugin is in this product (see remora.mk): the one that used to
+     ship self-gated on a boot property Remora never emitted, so its encoder was never
+     reachable. Software AVC/HEVC encode remains via the c2.android.*
+     components in the media.swcodec APEX.
+-->
+<MediaCodecs>
+    <!-- VAAPI hardware decode/encode (hardware/remora/c2-va — Remora's own source). Ranked
+         below the software components so hardware wins for its mimes while software stays as
+         the fallback. Each component is declared inside the fragment under its
+         c2.remora.vaapi.* name. -->
+    <Include href="media_codecs_c2_va.xml" />
+
+    <!-- AOSP's software codec lists, copied verbatim from frameworks/av by remora.mk. -->
+    <Include href="media_codecs_google_audio.xml" />
+    <Include href="media_codecs_google_telephony.xml" />
+    <Include href="media_codecs_google_video.xml" />
+</MediaCodecs>

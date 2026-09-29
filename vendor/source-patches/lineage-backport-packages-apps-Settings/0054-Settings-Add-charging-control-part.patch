@@ -1,0 +1,26 @@
+From edf2ac3ce765cd09295da65a1f9faf4740d2935a Mon Sep 17 00:00:00 2001
+From: Danny Trunk <dtrunk90@gmail.com>
+Date: Sun, 22 Jan 2023 21:32:17 +0100
+Subject: [PATCH 54/98] Settings: Add charging control part
+
+Change-Id: Idd82e304ccdc17cbd95b7bc64785fe579d690152
+---
+ res/xml/power_usage_summary.xml | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/res/xml/power_usage_summary.xml b/res/xml/power_usage_summary.xml
+index b8e4e6bb7ee..7e34dd3b091 100644
+--- a/res/xml/power_usage_summary.xml
++++ b/res/xml/power_usage_summary.xml
+@@ -74,6 +74,11 @@
+             settings:requiresConfigMask="64" />
+     </com.android.settingslib.widget.UntitledPreferenceCategory>
+ 
++    <!-- Charging control -->
++    <lineageos.preference.LineagePartsPreference
++        android:key="charging_control"
++        settings:requiresService="lineagehealth" />
++
+     <com.android.settingslib.widget.UntitledPreferenceCategory
+         android:key="percentage_category">
+         <SwitchPreferenceCompat

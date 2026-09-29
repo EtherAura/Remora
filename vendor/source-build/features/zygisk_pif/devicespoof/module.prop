@@ -1,0 +1,6 @@
+id=remora_devicespoof
+name=Remora device-identity spoof
+version=v1
+versionCode=1
+author=Remora
+description=resetprop of the device-identity properties so EVERY app sees a coherent Pixel, not a container build. PIF only covers GMS.

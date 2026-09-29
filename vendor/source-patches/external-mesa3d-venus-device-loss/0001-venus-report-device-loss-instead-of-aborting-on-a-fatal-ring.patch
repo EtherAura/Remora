@@ -1,0 +1,65 @@
+diff --git a/src/virtio/vulkan/vn_ring.c b/src/virtio/vulkan/vn_ring.c
+index f3685b17ac3..1b7b33035dd 100644
+--- a/src/virtio/vulkan/vn_ring.c
++++ b/src/virtio/vulkan/vn_ring.c
+@@ -440,7 +440,8 @@ static bool
+ vn_ring_submit_internal(struct vn_ring *ring,
+                         struct vn_ring_submit *submit,
+                         const struct vn_cs_encoder *cs,
+-                        uint32_t *seqno)
++                        uint32_t *seqno,
++                        bool *out_fatal)
+ {
+    /* write cs to the ring */
+    assert(!vn_cs_encoder_is_empty(cs));
+@@ -457,8 +458,30 @@ vn_ring_submit_internal(struct vn_ring *ring,
+    vn_ring_store_tail(ring);
+    const VkRingStatusFlagsMESA status = vn_ring_load_status(ring);
+    if (status & VK_RING_STATUS_FATAL_BIT_MESA) {
+-      vn_log(NULL, "vn_ring_submit abort on fatal");
+-      abort();
++      /* The host has marked this ring fatal (virglrenderer's ring thread sets
++       * VK_RING_STATUS_FATAL_BIT_MESA on any negative return, then calls
++       * vkr_context_on_ring_fatal). Upstream abort()s here, which takes down
++       * whichever process happened to submit — on Android that is
++       * SurfaceFlinger, and it restarts zygote and the foreground app with it
++       * (bd remora-brhq). Report device loss instead: ANGLE has a device-loss
++       * path, so the caller gets a chance to recover rather than a SIGABRT on
++       * its own thread. The frames are lost either way; only the blast radius
++       * changes.
++       *
++       * abort() never had to unwind, so this path must do the cleanup the
++       * normal one defers to vn_ring_retire_submits(): the submit is NOT yet on
++       * ring->submits (list_addtail is below), so releasing it here is what
++       * keeps it from leaking. Same two steps, same order, as that function.
++       */
++      vn_log(NULL, "vn_ring_submit: ring is fatal, reporting device loss");
++
++      struct vn_renderer *renderer = ring->instance->renderer;
++      for (uint32_t i = 0; i < submit->shmem_count; i++)
++         vn_renderer_shmem_unref(renderer, submit->shmems[i]);
++      list_add(&submit->head, &ring->free_submits);
++
++      *out_fatal = true;
++      return false;
+    }
+ 
+    vn_ring_retire_submits(ring, cur_seqno);
+@@ -638,8 +661,16 @@ vn_ring_submit_locked(struct vn_ring *ring,
+       return result;
+ 
+    uint32_t seqno;
++   bool fatal = false;
+    const bool notify =
+-      vn_ring_submit_internal(ring, submit.submit, submit.cs, &seqno);
++      vn_ring_submit_internal(ring, submit.submit, submit.cs, &seqno, &fatal);
++   if (fatal) {
++      /* vn_ring_submit_internal has already released its own submit; this is
++       * the caller-side half of the same unwind (the success path reaches it
++       * below). Nothing was queued, so there is no seqno to hand back. */
++      vn_ring_submission_cleanup(&submit);
++      return VK_ERROR_DEVICE_LOST;
++   }
+    if (notify) {
+       uint32_t notify_ring_data[8];
+       struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER_LOCAL(

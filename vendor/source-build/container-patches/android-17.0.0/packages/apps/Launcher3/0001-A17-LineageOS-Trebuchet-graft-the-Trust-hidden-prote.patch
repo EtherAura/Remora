@@ -1,0 +1,1959 @@
+From bff7c4a5c2601eb19304086c16b137df5c344094 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Wed, 22 Jul 2026 18:04:20 -0400
+Subject: [PATCH] A17 LineageOS Trebuchet: graft the Trust (hidden/protected
+ apps) feature onto AOSP Launcher3 + Trebuchet branding
+
+Change-Id: Icad0edf311b9a9c77640bf67269a5b7e709221ba
+---
+ AndroidManifest-common.xml                    |   7 +
+ quickstep/res/values/strings.xml              |   4 +-
+ res/drawable/avd_hidden_lock.xml              |  65 ++++++
+ res/drawable/avd_hidden_unlock.xml            |  63 ++++++
+ res/drawable/avd_protected_lock.xml           |  52 +++++
+ res/drawable/avd_protected_unlock.xml         |  52 +++++
+ res/drawable/ic_help.xml                      |  24 +++
+ res/drawable/ic_hidden_locked.xml             |  24 +++
+ res/drawable/ic_hidden_unlocked.xml           |  26 +++
+ res/drawable/ic_protected_locked.xml          |  25 +++
+ res/drawable/ic_protected_unlocked.xml        |  25 +++
+ res/layout/activity_hidden_apps.xml           |  52 +++++
+ res/layout/dialog_trust_welcome.xml           |  61 ++++++
+ res/layout/item_hidden_app.xml                |  61 ++++++
+ res/menu/menu_trust_apps.xml                  |  23 ++
+ res/values/lineage_strings.xml                |  63 ++++++
+ res/xml/launcher_preferences.xml              |   5 +
+ src/com/android/launcher3/AppFilter.java      |   9 +
+ src/com/android/launcher3/Launcher.java       |   9 +
+ .../launcher3/lineage/LineageUtils.java       |  76 +++++++
+ .../trust/LoadTrustComponentsTask.java        | 115 ++++++++++
+ .../lineage/trust/TrustAppsActivity.java      | 177 +++++++++++++++
+ .../lineage/trust/TrustAppsAdapter.java       | 197 +++++++++++++++++
+ .../lineage/trust/UpdateItemTask.java         |  77 +++++++
+ .../lineage/trust/db/TrustComponent.java      |  92 ++++++++
+ .../lineage/trust/db/TrustDatabaseHelper.java | 202 ++++++++++++++++++
+ .../android/launcher3/qsb/QsbWidgetFactory.kt |  12 +-
+ .../launcher3/settings/SettingsActivity.java  |  15 ++
+ .../launcher3/touch/ItemClickHandler.java     |  12 +-
+ 29 files changed, 1619 insertions(+), 6 deletions(-)
+ create mode 100644 res/drawable/avd_hidden_lock.xml
+ create mode 100644 res/drawable/avd_hidden_unlock.xml
+ create mode 100644 res/drawable/avd_protected_lock.xml
+ create mode 100644 res/drawable/avd_protected_unlock.xml
+ create mode 100644 res/drawable/ic_help.xml
+ create mode 100644 res/drawable/ic_hidden_locked.xml
+ create mode 100644 res/drawable/ic_hidden_unlocked.xml
+ create mode 100644 res/drawable/ic_protected_locked.xml
+ create mode 100644 res/drawable/ic_protected_unlocked.xml
+ create mode 100644 res/layout/activity_hidden_apps.xml
+ create mode 100644 res/layout/dialog_trust_welcome.xml
+ create mode 100644 res/layout/item_hidden_app.xml
+ create mode 100644 res/menu/menu_trust_apps.xml
+ create mode 100644 res/values/lineage_strings.xml
+ create mode 100644 src/com/android/launcher3/lineage/LineageUtils.java
+ create mode 100644 src/com/android/launcher3/lineage/trust/LoadTrustComponentsTask.java
+ create mode 100644 src/com/android/launcher3/lineage/trust/TrustAppsActivity.java
+ create mode 100644 src/com/android/launcher3/lineage/trust/TrustAppsAdapter.java
+ create mode 100644 src/com/android/launcher3/lineage/trust/UpdateItemTask.java
+ create mode 100644 src/com/android/launcher3/lineage/trust/db/TrustComponent.java
+ create mode 100644 src/com/android/launcher3/lineage/trust/db/TrustDatabaseHelper.java
+
+diff --git a/AndroidManifest-common.xml b/AndroidManifest-common.xml
+index 342a8c9597..8328a64f58 100644
+--- a/AndroidManifest-common.xml
++++ b/AndroidManifest-common.xml
+@@ -207,5 +207,12 @@
+             </intent-filter>
+         </activity>
+ 
++        <!-- LineageOS Trust: hidden/protected apps manager -->
++        <activity
++            android:name="com.android.launcher3.lineage.trust.TrustAppsActivity"
++            android:label="@string/trust_apps_manager_name"
++            android:theme="@android:style/Theme.DeviceDefault.Settings"
++            android:autoRemoveFromRecents="true" />
++
+     </application>
+ </manifest>
+diff --git a/quickstep/res/values/strings.xml b/quickstep/res/values/strings.xml
+index 7323b1cfef..bebbe9f2ba 100644
+--- a/quickstep/res/values/strings.xml
++++ b/quickstep/res/values/strings.xml
+@@ -18,8 +18,8 @@
+ -->
+ <resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
+ 
+-    <!-- Application name -->
+-    <string name="derived_app_name" translatable="false">Quickstep</string>
++    <!-- Application name (LineageOS Trebuchet branding) -->
++    <string name="derived_app_name" translatable="false">Trebuchet</string>
+ 
+     <!-- Options for recent tasks -->
+     <!-- Title for an option to keep an app pinned to the screen until it is unpinned -->
+diff --git a/res/drawable/avd_hidden_lock.xml b/res/drawable/avd_hidden_lock.xml
+new file mode 100644
+index 0000000000..d208150f95
+--- /dev/null
++++ b/res/drawable/avd_hidden_lock.xml
+@@ -0,0 +1,65 @@
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<animated-vector
++    xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:aapt="http://schemas.android.com/aapt">
++    <aapt:attr name="android:drawable">
++        <vector
++            android:name="visibilitystrike"
++            android:width="24dp"
++            android:height="24dp"
++            android:viewportWidth="24"
++            android:viewportHeight="24">
++            <path
++                android:name="strike_thru_path"
++                android:pathData="M 2 4.27 L 3.27 3 L 3.27 3 L 2 4.27 Z"
++                android:fillColor="?android:attr/textColorSecondary"
++                android:strokeWidth="1"/>
++            <clip-path
++                android:name="strike_thru_mask"
++                android:pathData="M 0 0 L 24 0 L 24 24 L 0 24 L 0 0 Z M 4.54 1.73 L 3.27 3 L 3.27 3 L 4.54 1.73 Z"/>
++            <path
++                android:name="eye_path"
++                android:pathData="M 12 4.5 C 7 4.5 2.73 7.61 1 12 C 2.73 16.39 7 19.5 12 19.5 C 17 19.5 21.27 16.39 23 12 C 21.27 7.61 17 4.5 12 4.5 L 12 4.5 Z M 12 17 C 9.24 17 7 14.76 7 12 C 7 9.24 9.24 7 12 7 C 14.76 7 17 9.24 17 12 C 17 14.76 14.76 17 12 17 L 12 17 Z M 12 9 C 10.34 9 9 10.34 9 12 C 9 13.66 10.34 15 12 15 C 13.66 15 15 13.66 15 12 C 15 10.34 13.66 9 12 9 L 12 9 Z"
++                android:fillColor="?android:attr/textColorSecondary"
++                android:strokeWidth="1"/>
++        </vector>
++    </aapt:attr>
++    <target android:name="strike_thru_path">
++        <aapt:attr name="android:animation">
++            <objectAnimator
++                android:propertyName="pathData"
++                android:startOffset="268"
++                android:duration="1271"
++                android:valueFrom="M 2 4.27 L 3.27 3 L 3.27 3 L 2 4.27 Z"
++                android:valueTo="M 19.73 22 L 21 20.73 L 3.27 3 L 2 4.27 Z"
++                android:valueType="pathType"
++                android:interpolator="@android:interpolator/fast_out_slow_in"/>
++        </aapt:attr>
++    </target>
++    <target android:name="strike_thru_mask">
++        <aapt:attr name="android:animation">
++            <objectAnimator
++                android:propertyName="pathData"
++                android:startOffset="268"
++                android:duration="1271"
++                android:valueFrom="M 0 0 L 24 0 L 24 24 L 0 24 L 0 0 Z M 4.54 1.73 L 3.27 3 L 3.27 3 L 4.54 1.73 Z"
++                android:valueTo="M 0 0 L 24 0 L 24 24 L 0 24 L 0 0 Z M 4.54 1.73 L 3.27 3 L 21 20.73 L 22.27 19.46 Z"
++                android:valueType="pathType"
++                android:interpolator="@android:interpolator/fast_out_slow_in"/>
++        </aapt:attr>
++    </target>
++</animated-vector>
+diff --git a/res/drawable/avd_hidden_unlock.xml b/res/drawable/avd_hidden_unlock.xml
+new file mode 100644
+index 0000000000..2199709fb7
+--- /dev/null
++++ b/res/drawable/avd_hidden_unlock.xml
+@@ -0,0 +1,63 @@
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<animated-vector
++    xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:aapt="http://schemas.android.com/aapt">
++    <aapt:attr name="android:drawable">
++        <vector
++            android:name="visibilitystrike"
++            android:width="24dp"
++            android:height="24dp"
++            android:viewportWidth="24"
++            android:viewportHeight="24">
++            <path
++                android:name="strike_thru_path"
++                android:pathData="M 2 4.27 L 3.27 3 L 3.27 3 L 2 4.27 Z"
++                android:fillColor="?android:attr/textColorSecondary"
++                android:strokeWidth="1"/>
++            <clip-path
++                android:name="strike_thru_mask"
++                android:pathData="M 0 0 L 24 0 L 24 24 L 0 24 L 0 0 Z M 4.54 1.73 L 3.27 3 L 3.27 3 L 4.54 1.73 Z"/>
++            <path
++                android:name="eye_path"
++                android:pathData="M 12 4.5 C 7 4.5 2.73 7.61 1 12 C 2.73 16.39 7 19.5 12 19.5 C 17 19.5 21.27 16.39 23 12 C 21.27 7.61 17 4.5 12 4.5 L 12 4.5 Z M 12 17 C 9.24 17 7 14.76 7 12 C 7 9.24 9.24 7 12 7 C 14.76 7 17 9.24 17 12 C 17 14.76 14.76 17 12 17 L 12 17 Z M 12 9 C 10.34 9 9 10.34 9 12 C 9 13.66 10.34 15 12 15 C 13.66 15 15 13.66 15 12 C 15 10.34 13.66 9 12 9 L 12 9 Z"
++                android:fillColor="?android:attr/textColorSecondary"
++                android:strokeWidth="1"/>
++        </vector>
++    </aapt:attr>
++    <target android:name="strike_thru_path">
++        <aapt:attr name="android:animation">
++            <objectAnimator
++                android:propertyName="pathData"
++                android:duration="1271"
++                android:valueFrom="M 19.73 22 L 21 20.73 L 3.27 3 L 2 4.27 Z"
++                android:valueTo="M 2 4.27 L 3.27 3 L 3.27 3 L 2 4.27 Z"
++                android:valueType="pathType"
++                android:interpolator="@android:interpolator/fast_out_slow_in"/>
++        </aapt:attr>
++    </target>
++    <target android:name="strike_thru_mask">
++        <aapt:attr name="android:animation">
++            <objectAnimator
++                android:propertyName="pathData"
++                android:duration="1271"
++                android:valueFrom="M 0 0 L 24 0 L 24 24 L 0 24 L 0 0 Z M 4.54 1.73 L 3.27 3 L 21 20.73 L 22.27 19.46 Z"
++                android:valueTo="M 0 0 L 24 0 L 24 24 L 0 24 L 0 0 Z M 4.54 1.73 L 3.27 3 L 3.27 3 L 4.54 1.73 Z"
++                android:valueType="pathType"
++                android:interpolator="@android:interpolator/fast_out_slow_in"/>
++        </aapt:attr>
++    </target>
++</animated-vector>
+diff --git a/res/drawable/avd_protected_lock.xml b/res/drawable/avd_protected_lock.xml
+new file mode 100644
+index 0000000000..464a5bf3cc
+--- /dev/null
++++ b/res/drawable/avd_protected_lock.xml
+@@ -0,0 +1,52 @@
++<!--
++     Copyright (C) 2017 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:aapt="http://schemas.android.com/aapt">
++    <aapt:attr name="android:drawable">
++        <vector
++            android:width="24dp"
++            android:height="24dp"
++            android:alpha="1"
++            android:viewportHeight="24"
++            android:viewportWidth="24">
++            <path
++                android:name="lock"
++                android:fillColor="?android:attr/textColorSecondary"
++                android:pathData="M18,20V10H6V20H18M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V10A2,2 0 0,1 6,8H15V6A3,3 0 0,0 12,3A3,3 0 0,0 9,6H7A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,17A2,2 0 0,1 10,15A2,2 0 0,1 12,13A2,2 0 0,1 14,15A2,2 0 0,1 12,17Z" />
++            <group
++                android:name="group"
++                android:pivotX="8"
++                android:pivotY="6">
++                <path
++                    android:name="line"
++                    android:fillColor="?android:attr/textColorSecondary"
++                    android:pathData="M 7, 6 L 9, 6 L 9, 8 L 7, 8 L 7, 6" />
++            </group>
++        </vector>
++    </aapt:attr>
++    <target android:name="group">
++        <aapt:attr name="android:animation">
++            <objectAnimator
++                android:name="group"
++                android:duration="350"
++                android:interpolator="@android:anim/accelerate_decelerate_interpolator"
++                android:propertyName="scaleY"
++                android:valueFrom="0"
++                android:valueTo="1"
++                android:valueType="floatType" />
++        </aapt:attr>
++    </target>
++</animated-vector>
+\ No newline at end of file
+diff --git a/res/drawable/avd_protected_unlock.xml b/res/drawable/avd_protected_unlock.xml
+new file mode 100644
+index 0000000000..374f943d08
+--- /dev/null
++++ b/res/drawable/avd_protected_unlock.xml
+@@ -0,0 +1,52 @@
++<!--
++     Copyright (C) 2017 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:aapt="http://schemas.android.com/aapt">
++    <aapt:attr name="android:drawable">
++        <vector
++            android:width="24dp"
++            android:height="24dp"
++            android:alpha="1"
++            android:viewportHeight="24"
++            android:viewportWidth="24">
++            <path
++                android:name="lock"
++                android:fillColor="?android:attr/textColorSecondary"
++                android:pathData="M18,20V10H6V20H18M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V10A2,2 0 0,1 6,8H15V6A3,3 0 0,0 12,3A3,3 0 0,0 9,6H7A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,17A2,2 0 0,1 10,15A2,2 0 0,1 12,13A2,2 0 0,1 14,15A2,2 0 0,1 12,17Z" />
++            <group
++                android:name="group"
++                android:pivotX="8"
++                android:pivotY="6">
++                <path
++                    android:name="line"
++                    android:fillColor="?android:attr/textColorSecondary"
++                    android:pathData="M 7, 6 L 9, 6 L 9, 8 L 7, 8 L 7, 6" />
++            </group>
++        </vector>
++    </aapt:attr>
++    <target android:name="group">
++        <aapt:attr name="android:animation">
++            <objectAnimator
++                android:name="group"
++                android:duration="350"
++                android:interpolator="@android:anim/accelerate_decelerate_interpolator"
++                android:propertyName="scaleY"
++                android:valueFrom="1"
++                android:valueTo="0"
++                android:valueType="floatType" />
++        </aapt:attr>
++    </target>
++</animated-vector>
+\ No newline at end of file
+diff --git a/res/drawable/ic_help.xml b/res/drawable/ic_help.xml
+new file mode 100644
+index 0000000000..e9a6a70ec5
+--- /dev/null
++++ b/res/drawable/ic_help.xml
+@@ -0,0 +1,24 @@
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++        android:width="24dp"
++        android:height="24dp"
++        android:viewportWidth="24.0"
++        android:viewportHeight="24.0">
++    <path
++        android:fillColor="?android:attr/colorAccent"
++        android:pathData="M11,18h2v-2h-2v2zM12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM12,20c-4.41,0 -8,-3.59 -8,-8s3.59,-8 8,-8 8,3.59 8,8 -3.59,8 -8,8zM12,6c-2.21,0 -4,1.79 -4,4h2c0,-1.1 0.9,-2 2,-2s2,0.9 2,2c0,2 -3,1.75 -3,5h2c0,-2.25 3,-2.5 3,-5 0,-2.21 -1.79,-4 -4,-4z"/>
++</vector>
+diff --git a/res/drawable/ic_hidden_locked.xml b/res/drawable/ic_hidden_locked.xml
+new file mode 100644
+index 0000000000..4cf3a0b67d
+--- /dev/null
++++ b/res/drawable/ic_hidden_locked.xml
+@@ -0,0 +1,24 @@
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24"
++    android:viewportHeight="24">
++    <path
++        android:fillColor="?android:attr/textColorSecondary"
++        android:pathData="M11.83,9L15,12.16C15,12.11 15,12.05 15,12A3,3 0 0,0 12,9C11.94,9 11.89,9 11.83,9M7.53,9.8L9.08,11.35C9.03,11.56 9,11.77 9,12A3,3 0 0,0 12,15C12.22,15 12.44,14.97 12.65,14.92L14.2,16.47C13.53,16.8 12.79,17 12,17A5,5 0 0,1 7,12C7,11.21 7.2,10.47 7.53,9.8M2,4.27L4.28,6.55L4.73,7C3.08,8.3 1.78,10 1,12C2.73,16.39 7,19.5 12,19.5C13.55,19.5 15.03,19.2 16.38,18.66L16.81,19.08L19.73,22L21,20.73L3.27,3M12,7A5,5 0 0,1 17,12C17,12.64 16.87,13.26 16.64,13.82L19.57,16.75C21.07,15.5 22.27,13.86 23,12C21.27,7.61 17,4.5 12,4.5C10.6,4.5 9.26,4.75 8,5.2L10.17,7.35C10.74,7.13 11.35,7 12,7Z" />
++</vector>
+diff --git a/res/drawable/ic_hidden_unlocked.xml b/res/drawable/ic_hidden_unlocked.xml
+new file mode 100644
+index 0000000000..c98d1813e0
+--- /dev/null
++++ b/res/drawable/ic_hidden_unlocked.xml
+@@ -0,0 +1,26 @@
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:name="visibilitystrike"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24"
++    android:viewportHeight="24">
++    <path
++        android:pathData="M 12 4.5 C 7 4.5 2.73 7.61 1 12 C 2.73 16.39 7 19.5 12 19.5 C 17 19.5 21.27 16.39 23 12 C 21.27 7.61 17 4.5 12 4.5 L 12 4.5 Z M 12 17 C 9.24 17 7 14.76 7 12 C 7 9.24 9.24 7 12 7 C 14.76 7 17 9.24 17 12 C 17 14.76 14.76 17 12 17 L 12 17 Z M 12 9 C 10.34 9 9 10.34 9 12 C 9 13.66 10.34 15 12 15 C 13.66 15 15 13.66 15 12 C 15 10.34 13.66 9 12 9 L 12 9 Z"
++        android:fillColor="?android:attr/textColorSecondary"
++        android:strokeWidth="1"/>
++</vector>
+diff --git a/res/drawable/ic_protected_locked.xml b/res/drawable/ic_protected_locked.xml
+new file mode 100644
+index 0000000000..8c39e3e79b
+--- /dev/null
++++ b/res/drawable/ic_protected_locked.xml
+@@ -0,0 +1,25 @@
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24.0"
++    android:viewportHeight="24.0">
++
++    <path
++        android:fillColor="?android:attr/textColorSecondary"
++        android:pathData="M12,17c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM18,8h-1L17,6c0,-2.76 -2.24,-5 -5,-5S7,3.24 7,6v2L6,8c-1.1,0 -2,0.9 -2,2v10c0,1.1 0.9,2 2,2h12c1.1,0 2,-0.9 2,-2L20,10c0,-1.1 -0.9,-2 -2,-2zM8.9,6c0,-1.71 1.39,-3.1 3.1,-3.1s3.1,1.39 3.1,3.1v2L8.9,8L8.9,6zM18,20L6,20L6,10h12v10z"/>
++</vector>
+diff --git a/res/drawable/ic_protected_unlocked.xml b/res/drawable/ic_protected_unlocked.xml
+new file mode 100644
+index 0000000000..6789fcb2bf
+--- /dev/null
++++ b/res/drawable/ic_protected_unlocked.xml
+@@ -0,0 +1,25 @@
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24.0"
++    android:viewportHeight="24.0">
++
++    <path
++        android:fillColor="?android:attr/textColorSecondary"
++        android:pathData="M12,17c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM18,8h-1L17,6c0,-2.76 -2.24,-5 -5,-5S7,3.24 7,6h1.9c0,-1.71 1.39,-3.1 3.1,-3.1 1.71,0 3.1,1.39 3.1,3.1v2L6,8c-1.1,0 -2,0.9 -2,2v10c0,1.1 0.9,2 2,2h12c1.1,0 2,-0.9 2,-2L20,10c0,-1.1 -0.9,-2 -2,-2zM18,20L6,20L6,10h12v10z"/>
++</vector>
+diff --git a/res/layout/activity_hidden_apps.xml b/res/layout/activity_hidden_apps.xml
+new file mode 100644
+index 0000000000..c96dad2dc4
+--- /dev/null
++++ b/res/layout/activity_hidden_apps.xml
+@@ -0,0 +1,52 @@
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="match_parent"
++    android:orientation="vertical">
++
++
++    <androidx.recyclerview.widget.RecyclerView
++        android:id="@+id/hidden_apps_list"
++        android:layout_width="match_parent"
++        android:layout_height="match_parent"
++        android:visibility="gone" />
++
++    <LinearLayout
++        android:id="@+id/hidden_apps_loading"
++        android:layout_width="match_parent"
++        android:layout_height="match_parent"
++        android:gravity="center"
++        android:orientation="vertical">
++
++        <ProgressBar
++            android:id="@+id/hidden_apps_progress_bar"
++            style="@android:style/Widget.DeviceDefault.ProgressBar.Horizontal"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:paddingStart="32dp"
++            android:paddingEnd="32dp"
++            android:max="100"
++            android:progress="0" />
++
++        <TextView
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:layout_marginTop="16dp"
++            android:text="@string/trust_apps_loading"
++            android:textSize="16sp" />
++    </LinearLayout>
++</LinearLayout>
+diff --git a/res/layout/dialog_trust_welcome.xml b/res/layout/dialog_trust_welcome.xml
+new file mode 100644
+index 0000000000..e953d56e0c
+--- /dev/null
++++ b/res/layout/dialog_trust_welcome.xml
+@@ -0,0 +1,61 @@
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="match_parent"
++    android:orientation="horizontal"
++    android:padding="16dp">
++
++    <LinearLayout
++        android:layout_width="0dp"
++        android:layout_height="wrap_content"
++        android:layout_weight="1"
++        android:gravity="center_horizontal"
++        android:orientation="vertical">
++
++        <ImageView
++            android:layout_width="64dp"
++            android:layout_height="64dp"
++            android:src="@drawable/ic_protected_locked" />
++
++        <TextView
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:layout_margin="8dp"
++            android:text="@string/trust_apps_info_protected"
++            android:textAlignment="center" />
++    </LinearLayout>
++
++    <LinearLayout
++        android:layout_width="0dp"
++        android:layout_height="wrap_content"
++        android:layout_weight="1"
++        android:gravity="center_horizontal"
++        android:orientation="vertical">
++
++        <ImageView
++            android:layout_width="64dp"
++            android:layout_height="64dp"
++            android:src="@drawable/ic_hidden_locked" />
++
++        <TextView
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:layout_margin="8dp"
++            android:text="@string/trust_apps_info_hidden"
++            android:textAlignment="center" />
++    </LinearLayout>
++</LinearLayout>
+diff --git a/res/layout/item_hidden_app.xml b/res/layout/item_hidden_app.xml
+new file mode 100644
+index 0000000000..5c4b3d1268
+--- /dev/null
++++ b/res/layout/item_hidden_app.xml
+@@ -0,0 +1,61 @@
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="64dp">
++
++    <ImageView
++        android:id="@+id/item_hidden_app_icon"
++        android:layout_width="48dp"
++        android:layout_height="48dp"
++        android:layout_centerVertical="true"
++        android:layout_marginStart="16dp" />
++
++    <ImageView
++        android:id="@+id/item_protected_app_switch"
++        android:layout_width="40dp"
++        android:layout_height="40dp"
++        android:layout_alignParentEnd="true"
++        android:layout_centerVertical="true"
++        android:layout_marginEnd="56dp"
++        android:padding="8dp"
++        android:background="?android:attr/selectableItemBackgroundBorderless"
++        android:clickable="true"
++        android:focusable="true" />
++
++    <ImageView
++        android:id="@+id/item_hidden_app_switch"
++        android:layout_width="40dp"
++        android:layout_height="40dp"
++        android:layout_alignParentEnd="true"
++        android:layout_centerVertical="true"
++        android:layout_marginEnd="16dp"
++        android:padding="8dp"
++        android:background="?android:attr/selectableItemBackgroundBorderless"
++        android:clickable="true"
++        android:focusable="true" />
++
++    <TextView
++        android:id="@+id/item_hidden_app_title"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:layout_alignEnd="@id/item_hidden_app_switch"
++        android:layout_centerVertical="true"
++        android:textColor="?android:attr/textColorPrimary"
++        android:textSize="16sp"
++        android:layout_marginStart="88dp"
++        android:layout_marginEnd="88dp" />
++</RelativeLayout>
+diff --git a/res/menu/menu_trust_apps.xml b/res/menu/menu_trust_apps.xml
+new file mode 100644
+index 0000000000..43c21b142f
+--- /dev/null
++++ b/res/menu/menu_trust_apps.xml
+@@ -0,0 +1,23 @@
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<menu xmlns:android="http://schemas.android.com/apk/res/android">
++
++    <item
++        android:id="@+id/menu_trust_help"
++        android:icon="@drawable/ic_help"
++        android:showAsAction="always"
++        android:title="@string/trust_apps_help" />
++</menu>
+diff --git a/res/values/lineage_strings.xml b/res/values/lineage_strings.xml
+new file mode 100644
+index 0000000000..eda1bc7206
+--- /dev/null
++++ b/res/values/lineage_strings.xml
+@@ -0,0 +1,63 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Copyright (C) 2018-2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++        http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<resources>
++    <!-- Application name -->
++    <string name="lineageos_app_name" translatable="false">Trebuchet</string>
++
++    <!-- Settings -->
++
++    <!-- Edit workspace -->
++    <string name="settings_lock_layout_title">Lock layout</string>
++    <string name="settings_lock_layout_summary_on">Icons and widgets can\'t be added, removed and moved on the homescreen</string>
++    <string name="settings_lock_layout_summary_off">Icons and widgets can be added, removed and moved on the homescreen</string>
++    <string name="settings_edit_widgets_error">It\'s not possible to add widgets to the home screen</string>
++
++    <!-- Settings title to show Google Now at -1 screen on launcher. [CHAR LIMIT=50] -->
++    <string name="title_show_google_app">Show Google app</string>
++    <!-- Settings message explaining when the -1 screen is available on an LTR device. [CHAR LIMIT=100] -->
++    <string name="msg_minus_one_on_left">When you swipe right from main home screen</string>
++    <!-- Settings message explaining when the -1 screen is available on an RTL device. [CHAR LIMIT=100] -->
++    <string name="msg_minus_one_on_right">When you swipe left from main home screen</string>
++
++    <!-- Folder titles -->
++    <string name="google_folder_title" translatable="false">Google</string>
++
++    <!-- All apps themed icons -->
++    <string name="pref_themed_icons_title">Use themed icons in drawer</string>
++    <string name="pref_themed_icons_summary">Follow themed icons used on home screen</string>
++
++    <!-- Hide labels -->
++    <string name="desktop_show_labels">Show icon labels on desktop</string>
++    <string name="drawer_show_labels">Show icon labels in drawer</string>
++
++    <!-- Open keyboard -->
++    <string name="drawer_open_keyboard_title">Swipe to start search</string>
++    <string name="drawer_open_keyboard_summary">Open keyboard whenever app drawer becomes visible</string>
++
++    <!-- Trust apps -->
++    <string name="trust_apps_manager_name">Hidden &amp; Protected apps</string>
++    <string name="trust_apps_auth_manager">Unlock to manage the hidden and protected apps</string>
++    <string name="trust_apps_auth_open_app">Authenticate to open %1$s</string>
++    <string name="trust_apps_loading">Loading\u2026</string>
++    <string name="trust_apps_no_lock_error">Please set up a secure lock screen to restrict app access</string>
++    <string name="trust_apps_help">Help</string>
++    <string name="trust_apps_info_hidden">Hidden apps and their widgets are hidden from the drawer</string>
++    <string name="trust_apps_info_protected">Protected apps require authentication to be opened from the launcher</string>
++
++    <!-- App suggestions -->
++    <string name="pref_suggestions_title">Suggestions</string>
++    <string name="pref_suggestions_summary">For app drawer &amp; home screen suggestions</string>
++</resources>
+diff --git a/res/xml/launcher_preferences.xml b/res/xml/launcher_preferences.xml
+index 3643699f6d..2a72a61ed5 100644
+--- a/res/xml/launcher_preferences.xml
++++ b/res/xml/launcher_preferences.xml
+@@ -37,4 +37,9 @@
+         launcher:logIdOn="613"
+         launcher:logIdOff="614" />
+ 
++    <!-- LineageOS Trust: hidden/protected apps manager -->
++    <Preference
++        android:key="pref_trust_apps"
++        android:title="@string/trust_apps_manager_name" />
++
+ </androidx.preference.PreferenceScreen>
+diff --git a/src/com/android/launcher3/AppFilter.java b/src/com/android/launcher3/AppFilter.java
+index 8ee7053ccb..b5b6e960d4 100644
+--- a/src/com/android/launcher3/AppFilter.java
++++ b/src/com/android/launcher3/AppFilter.java
+@@ -4,6 +4,7 @@ import android.content.ComponentName;
+ import android.content.Context;
+ 
+ import com.android.launcher3.dagger.ApplicationContext;
++import com.android.launcher3.lineage.trust.db.TrustDatabaseHelper;
+ 
+ import java.util.Arrays;
+ import java.util.Set;
+@@ -17,6 +18,10 @@ import javax.inject.Inject;
+ public class AppFilter {
+ 
+     private final Set<ComponentName> mFilteredComponents;
++    // LineageOS Trust: A17 injects AppFilter via Dagger rather than passing a HiddenAppsFilter
++    // subclass into LauncherAppState, so fold the hidden-apps check in here. The DB is queried live
++    // in shouldShowApp so hide/unhide takes effect without reconstructing this singleton.
++    private final TrustDatabaseHelper mTrustDb;
+ 
+     @Inject
+     public AppFilter(@ApplicationContext Context context) {
+@@ -24,9 +29,13 @@ public class AppFilter {
+                 context.getResources().getStringArray(R.array.filtered_components))
+                 .map(ComponentName::unflattenFromString)
+                 .collect(Collectors.toSet());
++        mTrustDb = TrustDatabaseHelper.getInstance(context);
+     }
+ 
+     public boolean shouldShowApp(ComponentName app) {
++        if (app != null && mTrustDb.isPackageHidden(app.getPackageName())) {
++            return false;
++        }
+         return !mFilteredComponents.contains(app);
+     }
+ }
+diff --git a/src/com/android/launcher3/Launcher.java b/src/com/android/launcher3/Launcher.java
+index 986e7483ae..f69306509f 100644
+--- a/src/com/android/launcher3/Launcher.java
++++ b/src/com/android/launcher3/Launcher.java
+@@ -175,6 +175,7 @@ import com.android.launcher3.folder.FolderIcon;
+ import com.android.launcher3.keyboard.ViewGroupFocusHelper;
+ import com.android.launcher3.logger.LauncherAtom;
+ import com.android.launcher3.logger.LauncherAtom.ContainerInfo;
++import com.android.launcher3.lineage.LineageUtils;
+ import com.android.launcher3.logger.LauncherAtom.WorkspaceContainer;
+ import com.android.launcher3.logging.FileLog;
+ import com.android.launcher3.logging.InstanceId;
+@@ -2008,6 +2009,14 @@ public class Launcher extends StatefulActivity<LauncherState>
+         return result;
+     }
+ 
++    /**
++     * LineageOS Trust: launch a protected app only after the user passes an authentication prompt.
++     */
++    public void startActivitySafelyAuth(View v, Intent intent, ItemInfo item) {
++        LineageUtils.showLockScreen(this, getString(R.string.trust_apps_manager_name),
++                () -> startActivitySafely(v, intent, item));
++    }
++
+     boolean isHotseatLayout(View layout) {
+         // TODO: Remove this method
+         return mHotseat != null && (layout == mHotseat);
+diff --git a/src/com/android/launcher3/lineage/LineageUtils.java b/src/com/android/launcher3/lineage/LineageUtils.java
+new file mode 100644
+index 0000000000..175b78f3c7
+--- /dev/null
++++ b/src/com/android/launcher3/lineage/LineageUtils.java
+@@ -0,0 +1,76 @@
++package com.android.launcher3.lineage;
++
++import android.app.KeyguardManager;
++import android.content.Context;
++import android.content.pm.ApplicationInfo;
++import android.content.pm.PackageManager;
++import android.hardware.biometrics.BiometricManager.Authenticators;
++import android.hardware.biometrics.BiometricPrompt;
++import android.os.CancellationSignal;
++import android.os.Handler;
++import android.os.Looper;
++import android.widget.Toast;
++
++import com.android.launcher3.R;
++
++public class LineageUtils {
++
++    public static boolean isPackageEnabled(Context context, String pkgName) {
++        try {
++            ApplicationInfo ai = context.getPackageManager().getApplicationInfo(pkgName, 0);
++            return ai.enabled;
++        } catch (PackageManager.NameNotFoundException e) {
++            return false;
++        }
++    }
++
++    /**
++     * Shows authentication screen to confirm credentials (pin, pattern or password) for the current
++     * user of the device.
++     *
++     * @param context The {@code Context} used to get {@code KeyguardManager} service
++     * @param title the {@code String} which will be shown as the pompt title
++     * @param successRunnable The {@code Runnable} which will be executed if the user does not setup
++     *                        device security or if lock screen is unlocked
++     */
++    public static void showLockScreen(Context context, String title, Runnable successRunnable) {
++        if (hasSecureKeyguard(context)) {
++            final BiometricPrompt.AuthenticationCallback authenticationCallback =
++                    new BiometricPrompt.AuthenticationCallback() {
++                        @Override
++                        public void onAuthenticationSucceeded(
++                                    BiometricPrompt.AuthenticationResult result) {
++                            successRunnable.run();
++                        }
++
++                        @Override
++                        public void onAuthenticationError(int errorCode, CharSequence errString) {
++                            //Do nothing
++                        }
++            };
++
++            final BiometricPrompt bp = new BiometricPrompt.Builder(context)
++                    .setTitle(title)
++                    .setAllowedAuthenticators(Authenticators.BIOMETRIC_STRONG |
++                                              Authenticators.DEVICE_CREDENTIAL)
++                    .build();
++
++            final Handler handler = new Handler(Looper.getMainLooper());
++            bp.authenticate(new CancellationSignal(),
++                    runnable -> handler.post(runnable),
++                    authenticationCallback);
++        } else {
++            // Notify the user a secure keyguard is required for protected apps,
++            // but allow to set hidden apps
++            Toast.makeText(context, R.string.trust_apps_no_lock_error, Toast.LENGTH_LONG)
++                .show();
++            successRunnable.run();
++        }
++    }
++
++    public static boolean hasSecureKeyguard(Context context) {
++        final KeyguardManager keyguardManager = context.getSystemService(KeyguardManager.class);
++        return keyguardManager != null && keyguardManager.isKeyguardSecure();
++    }
++
++}
+diff --git a/src/com/android/launcher3/lineage/trust/LoadTrustComponentsTask.java b/src/com/android/launcher3/lineage/trust/LoadTrustComponentsTask.java
+new file mode 100644
+index 0000000000..62ffd09fc0
+--- /dev/null
++++ b/src/com/android/launcher3/lineage/trust/LoadTrustComponentsTask.java
+@@ -0,0 +1,115 @@
++/*
++ * Copyright (C) 2019-2024 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package com.android.launcher3.lineage.trust;
++
++import android.content.Intent;
++import android.content.pm.PackageManager;
++import android.content.pm.ResolveInfo;
++import android.graphics.drawable.Drawable;
++import android.os.AsyncTask;
++import android.os.Build;
++
++import androidx.annotation.NonNull;
++
++import com.android.launcher3.AppFilter;
++import com.android.launcher3.lineage.trust.db.TrustComponent;
++import com.android.launcher3.lineage.trust.db.TrustDatabaseHelper;
++
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++
++public class LoadTrustComponentsTask extends AsyncTask<Void, Integer, List<TrustComponent>> {
++    @NonNull
++    private TrustDatabaseHelper mDbHelper;
++
++    @NonNull
++    private PackageManager mPackageManager;
++
++    @NonNull
++    private AppFilter mAppFilter;
++
++    @NonNull
++    private Callback mCallback;
++
++    LoadTrustComponentsTask(@NonNull TrustDatabaseHelper dbHelper,
++            @NonNull PackageManager packageManager,
++            @NonNull AppFilter appFilter,
++            @NonNull Callback callback) {
++        mDbHelper = dbHelper;
++        mPackageManager = packageManager;
++        mAppFilter = appFilter;
++        mCallback = callback;
++    }
++
++    @Override
++    protected List<TrustComponent> doInBackground(Void... voids) {
++        List<TrustComponent> list = new ArrayList<>();
++
++        Intent filter = new Intent(Intent.ACTION_MAIN, null);
++        filter.addCategory(Intent.CATEGORY_LAUNCHER);
++
++        List<ResolveInfo> apps = mPackageManager.queryIntentActivities(filter,
++                PackageManager.GET_META_DATA);
++
++        int numPackages = apps.size();
++        for (int i = 0; i < numPackages; i++) {
++            ResolveInfo app = apps.get(i);
++
++            if (!mAppFilter.shouldShowApp(app.activityInfo.getComponentName())) {
++                continue;
++            }
++
++            try {
++                String pkgName = app.activityInfo.packageName;
++                String label = mPackageManager.getApplicationLabel(
++                        mPackageManager.getApplicationInfo(pkgName,
++                                PackageManager.GET_META_DATA)).toString();
++                Drawable icon = app.loadIcon(mPackageManager);
++                boolean isHidden = mDbHelper.isPackageHidden(pkgName);
++                boolean isProtected = mDbHelper.isPackageProtected(pkgName);
++
++                list.add(new TrustComponent(pkgName, icon, label, isHidden, isProtected));
++
++                publishProgress(Math.round(i * 100f / numPackages));
++            } catch (PackageManager.NameNotFoundException ignored) {
++            }
++        }
++
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++            Collections.sort(list, (a, b) -> a.getLabel().compareTo(b.getLabel()));
++        }
++
++        return list;
++    }
++
++    @Override
++    protected void onProgressUpdate(Integer... values) {
++        if (values.length > 0) {
++            mCallback.onLoadListProgress(values[0]);
++        }
++    }
++
++    @Override
++    protected void onPostExecute(List<TrustComponent> trustComponents) {
++        mCallback.onLoadCompleted(trustComponents);
++    }
++
++    interface Callback {
++        void onLoadListProgress(int progress);
++        void onLoadCompleted(List<TrustComponent> result);
++    }
++}
+diff --git a/src/com/android/launcher3/lineage/trust/TrustAppsActivity.java b/src/com/android/launcher3/lineage/trust/TrustAppsActivity.java
+new file mode 100644
+index 0000000000..692b4de904
+--- /dev/null
++++ b/src/com/android/launcher3/lineage/trust/TrustAppsActivity.java
+@@ -0,0 +1,177 @@
++/*
++ * Copyright (C) 2019-2024 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package com.android.launcher3.lineage.trust;
++
++import static com.android.launcher3.lineage.trust.db.TrustComponent.Kind.HIDDEN;
++import static com.android.launcher3.lineage.trust.db.TrustComponent.Kind.PROTECTED;
++
++import android.app.ActionBar;
++import android.app.Activity;
++import android.app.AlertDialog;
++import android.content.SharedPreferences;
++import android.os.Bundle;
++import android.view.Menu;
++import android.view.MenuInflater;
++import android.view.MenuItem;
++import android.view.View;
++import android.widget.LinearLayout;
++import android.widget.ProgressBar;
++import android.widget.Toast;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.core.graphics.Insets;
++import androidx.core.view.ViewCompat;
++import androidx.core.view.WindowCompat;
++import androidx.core.view.WindowInsetsCompat;
++import androidx.recyclerview.widget.DefaultItemAnimator;
++import androidx.recyclerview.widget.LinearLayoutManager;
++import androidx.recyclerview.widget.RecyclerView;
++
++import com.android.launcher3.AppFilter;
++import com.android.launcher3.LauncherAppState;
++import com.android.launcher3.LauncherPrefs;
++import com.android.launcher3.R;
++import com.android.launcher3.lineage.LineageUtils;
++import com.android.launcher3.lineage.trust.db.TrustComponent;
++import com.android.launcher3.lineage.trust.db.TrustDatabaseHelper;
++
++import java.util.List;
++
++public class TrustAppsActivity extends Activity implements
++        TrustAppsAdapter.Listener,
++        LoadTrustComponentsTask.Callback,
++        UpdateItemTask.UpdateCallback {
++
++    private static final String KEY_TRUST_ONBOARDING = "pref_trust_onboarding";
++
++    private RecyclerView mRecyclerView;
++    private LinearLayout mLoadingView;
++    private ProgressBar mProgressBar;
++
++    private TrustDatabaseHelper mDbHelper;
++    private TrustAppsAdapter mAdapter;
++
++    @Override
++    protected void onCreate(@Nullable Bundle savedInstance) {
++        super.onCreate(savedInstance);
++
++        ActionBar actionBar = getActionBar();
++        if (actionBar != null) {
++            actionBar.setDisplayHomeAsUpEnabled(true);
++        }
++
++        setupEdgeToEdge();
++        setContentView(R.layout.activity_hidden_apps);
++        mRecyclerView = findViewById(R.id.hidden_apps_list);
++        mLoadingView = findViewById(R.id.hidden_apps_loading);
++        mLoadingView.setVisibility(View.VISIBLE);
++        mProgressBar = findViewById(R.id.hidden_apps_progress_bar);
++
++        final boolean hasSecureKeyguard = LineageUtils.hasSecureKeyguard(this);
++        mAdapter = new TrustAppsAdapter(this, hasSecureKeyguard);
++        mDbHelper = TrustDatabaseHelper.getInstance(this);
++
++        mRecyclerView.setLayoutManager(new LinearLayoutManager(this));
++        mRecyclerView.setItemAnimator(new DefaultItemAnimator());
++        mRecyclerView.setAdapter(mAdapter);
++
++        showOnBoarding(false);
++
++        final AppFilter appFilter = new AppFilter(this);
++        new LoadTrustComponentsTask(mDbHelper, getPackageManager(), appFilter, this).execute();
++    }
++
++    @Override
++    public boolean onCreateOptionsMenu(Menu menu) {
++        MenuInflater menuInflater = getMenuInflater();
++        menuInflater.inflate(R.menu.menu_trust_apps, menu);
++        return super.onCreateOptionsMenu(menu);
++    }
++
++    @Override
++    public boolean onOptionsItemSelected(MenuItem item) {
++        int id = item.getItemId();
++        if (id == android.R.id.home) {
++            finish();
++            return true;
++        } else if (id == R.id.menu_trust_help) {
++            showOnBoarding(true);
++            return true;
++        } else {
++            return super.onOptionsItemSelected(item);
++        }
++    }
++
++    @Override
++    public void onHiddenItemChanged(@NonNull TrustComponent component) {
++        new UpdateItemTask(mDbHelper, this, HIDDEN).execute(component);
++    }
++
++    @Override
++    public void onProtectedItemChanged(@NonNull TrustComponent component) {
++        new UpdateItemTask(mDbHelper, this, PROTECTED).execute(component);
++    }
++
++    @Override
++    public void onUpdated(boolean result) {
++        // A17: DaggerSingletonObject has no executeIfCreated; the launcher is running when this
++        // activity is open, and forceReload now takes a caller-name string.
++        LauncherAppState.getInstance(this).getModel().forceReload("TrustAppsActivity");
++    }
++
++    @Override
++    public void onLoadListProgress(int progress) {
++        mProgressBar.setProgress(progress);
++    }
++
++    @Override
++    public void onLoadCompleted(List<TrustComponent> result) {
++        mLoadingView.setVisibility(View.GONE);
++        mRecyclerView.setVisibility(View.VISIBLE);
++        mAdapter.update(result);
++    }
++
++    private void setupEdgeToEdge() {
++        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
++        ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content),
++                (v, windowInsets) -> {
++                    Insets insets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
++                    // Apply the insets paddings to the view.
++                    v.setPadding(insets.left, insets.top, insets.right, insets.bottom);
++
++                    // Return CONSUMED if you don't want the window insets to keep being
++                    // passed down to descendant views.
++                    return WindowInsetsCompat.CONSUMED;
++                });
++    }
++
++    private void showOnBoarding(boolean forceShow) {
++        SharedPreferences preferenceManager = LauncherPrefs.getPrefs(this);
++        if (!forceShow && preferenceManager.getBoolean(KEY_TRUST_ONBOARDING, false)) {
++            return;
++        }
++
++        preferenceManager.edit()
++                .putBoolean(KEY_TRUST_ONBOARDING, true)
++                .apply();
++
++        new AlertDialog.Builder(this)
++                .setView(R.layout.dialog_trust_welcome)
++                .setPositiveButton(android.R.string.ok, null)
++                .show();
++    }
++}
+diff --git a/src/com/android/launcher3/lineage/trust/TrustAppsAdapter.java b/src/com/android/launcher3/lineage/trust/TrustAppsAdapter.java
+new file mode 100644
+index 0000000000..6b827d6e1e
+--- /dev/null
++++ b/src/com/android/launcher3/lineage/trust/TrustAppsAdapter.java
+@@ -0,0 +1,197 @@
++/*
++ * Copyright (C) 2019 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package com.android.launcher3.lineage.trust;
++
++import android.graphics.drawable.Animatable2;
++import android.graphics.drawable.AnimatedVectorDrawable;
++import android.graphics.drawable.Drawable;
++import android.os.Build;
++import android.view.LayoutInflater;
++import android.view.View;
++import android.view.ViewGroup;
++import android.widget.ImageView;
++import android.widget.TextView;
++
++import androidx.annotation.NonNull;
++import androidx.recyclerview.widget.DiffUtil;
++import androidx.recyclerview.widget.RecyclerView;
++
++import com.android.launcher3.R;
++import com.android.launcher3.lineage.trust.db.TrustComponent;
++
++import java.util.ArrayList;
++import java.util.List;
++
++class TrustAppsAdapter extends RecyclerView.Adapter<TrustAppsAdapter.ViewHolder> {
++    private List<TrustComponent> mList = new ArrayList<>();
++    private Listener mListener;
++    private boolean mHasSecureKeyguard;
++
++    TrustAppsAdapter(Listener listener, boolean hasSecureKeyguard) {
++        mListener = listener;
++        mHasSecureKeyguard = hasSecureKeyguard;
++    }
++
++    public void update(List<TrustComponent> list) {
++        DiffUtil.DiffResult result = DiffUtil.calculateDiff(new Callback(mList, list));
++        mList = list;
++        result.dispatchUpdatesTo(this);
++    }
++
++    @NonNull
++    @Override
++    public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int type) {
++        return new ViewHolder(LayoutInflater.from(parent.getContext())
++                .inflate(R.layout.item_hidden_app, parent, false));
++    }
++
++    @Override
++    public void onBindViewHolder(@NonNull ViewHolder viewHolder, int i) {
++        viewHolder.bind(mList.get(i), mHasSecureKeyguard);
++    }
++
++    @Override
++    public int getItemCount() {
++        return mList.size();
++    }
++
++    public interface Listener {
++        void onHiddenItemChanged(@NonNull TrustComponent component);
++
++        void onProtectedItemChanged(@NonNull TrustComponent component);
++    }
++
++    class ViewHolder extends RecyclerView.ViewHolder {
++        private ImageView mIconView;
++        private TextView mLabelView;
++        private ImageView mHiddenView;
++        private ImageView mProtectedView;
++
++        ViewHolder(@NonNull View itemView) {
++            super(itemView);
++
++            mIconView = itemView.findViewById(R.id.item_hidden_app_icon);
++            mLabelView = itemView.findViewById(R.id.item_hidden_app_title);
++            mHiddenView = itemView.findViewById(R.id.item_hidden_app_switch);
++            mProtectedView = itemView.findViewById(R.id.item_protected_app_switch);
++        }
++
++        void bind(TrustComponent component, boolean hasSecureKeyguard) {
++            mIconView.setImageDrawable(component.getIcon());
++            mLabelView.setText(component.getLabel());
++
++            mHiddenView.setImageResource(component.isHidden() ?
++                    R.drawable.ic_hidden_locked : R.drawable.ic_hidden_unlocked);
++            mProtectedView.setImageResource(component.isProtected() ?
++                    R.drawable.ic_protected_locked : R.drawable.ic_protected_unlocked);
++
++            mProtectedView.setVisibility(hasSecureKeyguard ? View.VISIBLE : View.GONE);
++
++            mHiddenView.setOnClickListener(v -> {
++                component.invertVisibility();
++
++                mHiddenView.setImageResource(component.isHidden() ?
++                        R.drawable.avd_hidden_lock : R.drawable.avd_hidden_unlock);
++                AnimatedVectorDrawable avd = (AnimatedVectorDrawable) mHiddenView.getDrawable();
++
++                int position = getAdapterPosition();
++                if (Build.VERSION.SDK_INT > Build.VERSION_CODES.M) {
++                    avd.registerAnimationCallback(new Animatable2.AnimationCallback() {
++                        @Override
++                        public void onAnimationEnd(Drawable drawable) {
++                            updateHiddenList(position, component);
++                        }
++                    });
++                    avd.start();
++                } else {
++                    avd.start();
++                    updateHiddenList(position, component);
++                }
++            });
++
++            mProtectedView.setOnClickListener(v -> {
++                component.invertProtection();
++
++                mProtectedView.setImageResource(component.isProtected() ?
++                        R.drawable.avd_protected_lock : R.drawable.avd_protected_unlock);
++                AnimatedVectorDrawable avd = (AnimatedVectorDrawable) mProtectedView.getDrawable();
++
++                int position = getAdapterPosition();
++                if (Build.VERSION.SDK_INT > Build.VERSION_CODES.M) {
++                    avd.registerAnimationCallback(new Animatable2.AnimationCallback() {
++                        @Override
++                        public void onAnimationEnd(Drawable drawable) {
++                            updateProtectedList(position, component);
++                        }
++                    });
++                    avd.start();
++                } else {
++                    avd.start();
++                    updateProtectedList(position, component);
++                }
++            });
++        }
++
++        private void updateHiddenList(int position, TrustComponent component) {
++            mListener.onHiddenItemChanged(component);
++            updateList(position, component);
++        }
++
++        private void updateProtectedList(int position, TrustComponent component) {
++            mListener.onProtectedItemChanged(component);
++            updateList(position, component);
++        }
++
++        private void updateList(int position, TrustComponent component) {
++            mList.set(position, component);
++            notifyItemChanged(position);
++        }
++    }
++
++    private static class Callback extends DiffUtil.Callback {
++        List<TrustComponent> mOldList;
++        List<TrustComponent> mNewList;
++
++        public Callback(List<TrustComponent> oldList,
++                        List<TrustComponent> newList) {
++            mOldList = oldList;
++            mNewList = newList;
++        }
++
++
++        @Override
++        public int getOldListSize() {
++            return mOldList.size();
++        }
++
++        @Override
++        public int getNewListSize() {
++            return mNewList.size();
++        }
++
++        @Override
++        public boolean areItemsTheSame(int iOld, int iNew) {
++            String oldPkg = mOldList.get(iOld).getPackageName();
++            String newPkg = mNewList.get(iNew).getPackageName();
++            return oldPkg.equals(newPkg);
++        }
++
++        @Override
++        public boolean areContentsTheSame(int iOld, int iNew) {
++            return mOldList.get(iOld).equals(mNewList.get(iNew));
++        }
++    }
++}
+diff --git a/src/com/android/launcher3/lineage/trust/UpdateItemTask.java b/src/com/android/launcher3/lineage/trust/UpdateItemTask.java
+new file mode 100644
+index 0000000000..aad0f1a99e
+--- /dev/null
++++ b/src/com/android/launcher3/lineage/trust/UpdateItemTask.java
+@@ -0,0 +1,77 @@
++/*
++ * Copyright (C) 2019 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package com.android.launcher3.lineage.trust;
++
++import android.os.AsyncTask;
++
++import androidx.annotation.NonNull;
++
++import com.android.launcher3.lineage.trust.db.TrustComponent;
++import com.android.launcher3.lineage.trust.db.TrustDatabaseHelper;
++
++public class UpdateItemTask extends AsyncTask<TrustComponent, Void, Boolean> {
++    @NonNull
++    private TrustDatabaseHelper mDbHelper;
++    @NonNull
++    private UpdateCallback mCallback;
++    @NonNull
++    private TrustComponent.Kind mKind;
++
++    UpdateItemTask(@NonNull TrustDatabaseHelper dbHelper,
++            @NonNull UpdateCallback callback,
++            @NonNull TrustComponent.Kind kind) {
++        mDbHelper = dbHelper;
++        mCallback = callback;
++        mKind = kind;
++    }
++
++    @Override
++    protected Boolean doInBackground(TrustComponent... trustComponents) {
++        if (trustComponents.length < 1) {
++            return false;
++        }
++
++        TrustComponent component = trustComponents[0];
++        String pkgName = component.getPackageName();
++
++        switch (mKind) {
++            case HIDDEN:
++                if (component.isHidden()) {
++                    mDbHelper.addHiddenApp(pkgName);
++                } else {
++                    mDbHelper.removeHiddenApp(pkgName);
++                }
++                break;
++            case PROTECTED:
++                if (component.isProtected()) {
++                    mDbHelper.addProtectedApp(pkgName);
++                } else {
++                    mDbHelper.removeProtectedApp(pkgName);
++                }
++                break;
++        }
++        return true;
++    }
++
++    @Override
++    protected void onPostExecute(Boolean result) {
++        mCallback.onUpdated(result);
++    }
++
++    interface UpdateCallback {
++        void onUpdated(boolean result);
++    }
++}
+diff --git a/src/com/android/launcher3/lineage/trust/db/TrustComponent.java b/src/com/android/launcher3/lineage/trust/db/TrustComponent.java
+new file mode 100644
+index 0000000000..5342bde3df
+--- /dev/null
++++ b/src/com/android/launcher3/lineage/trust/db/TrustComponent.java
+@@ -0,0 +1,92 @@
++/*
++ * Copyright (C) 2019 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package com.android.launcher3.lineage.trust.db;
++
++import android.graphics.drawable.Drawable;
++import androidx.annotation.NonNull;
++
++public class TrustComponent {
++    @NonNull
++    private final String mPackageName;
++    @NonNull
++    private final Drawable mIcon;
++    @NonNull
++    private final String mLabel;
++
++    private boolean mIsHidden;
++    private boolean mIsProtected;
++
++    public TrustComponent(@NonNull String packageName, @NonNull Drawable icon,
++                          @NonNull String label, boolean isHidden, boolean isProtected) {
++        mPackageName = packageName;
++        mIcon = icon;
++        mLabel = label;
++        mIsHidden = isHidden;
++        mIsProtected = isProtected;
++    }
++
++    @NonNull
++    public String getPackageName() {
++        return mPackageName;
++    }
++
++    @NonNull
++    public Drawable getIcon() {
++        return mIcon;
++    }
++
++    @NonNull
++    public String getLabel() {
++        return mLabel;
++    }
++
++    public boolean isHidden() {
++        return mIsHidden;
++    }
++
++    public boolean isProtected() {
++        return mIsProtected;
++    }
++
++    public void invertVisibility() {
++        mIsHidden = !mIsHidden;
++    }
++
++    public void invertProtection() {
++        mIsProtected = !mIsProtected;
++    }
++
++    @Override
++    public boolean equals(Object other) {
++        if (!(other instanceof TrustComponent)) {
++            return false;
++        }
++
++        TrustComponent otherComponent = (TrustComponent) other;
++        return otherComponent.getPackageName().equals(mPackageName) &&
++                otherComponent.isHidden() == mIsHidden;
++    }
++
++    @Override
++    public int hashCode() {
++        return mPackageName.hashCode() + (mIsHidden ? 1 : 0);
++    }
++
++    public enum Kind {
++        HIDDEN,
++        PROTECTED,
++    }
++}
+diff --git a/src/com/android/launcher3/lineage/trust/db/TrustDatabaseHelper.java b/src/com/android/launcher3/lineage/trust/db/TrustDatabaseHelper.java
+new file mode 100644
+index 0000000000..cf7fb1f93b
+--- /dev/null
++++ b/src/com/android/launcher3/lineage/trust/db/TrustDatabaseHelper.java
+@@ -0,0 +1,202 @@
++/*
++ * Copyright (C) 2019 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package com.android.launcher3.lineage.trust.db;
++
++import android.content.ContentValues;
++import android.content.Context;
++import android.database.Cursor;
++import android.database.sqlite.SQLiteDatabase;
++import android.database.sqlite.SQLiteOpenHelper;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
++public class TrustDatabaseHelper extends SQLiteOpenHelper {
++    private static final int DATABASE_VERSION = 1;
++    private static final String DATABASE_NAME = "trust_apps_db";
++
++    private static final String TABLE_NAME = "trust_apps";
++    private static final String KEY_UID = "uid";
++    private static final String KEY_PKGNAME = "pkgname";
++    private static final String KEY_HIDDEN = "hidden";
++    private static final String KEY_PROTECTED = "protected";
++
++    @Nullable
++    private static TrustDatabaseHelper sSingleton;
++
++    private TrustDatabaseHelper(@NonNull Context context) {
++        super(context, DATABASE_NAME, null, DATABASE_VERSION);
++    }
++
++    public static synchronized TrustDatabaseHelper getInstance(@NonNull Context context) {
++        if (sSingleton == null) {
++            sSingleton = new TrustDatabaseHelper(context);
++        }
++
++        return sSingleton;
++    }
++
++    @Override
++    public void onCreate(SQLiteDatabase db) {
++        String CMD_CREATE_TABLE = "CREATE TABLE " + TABLE_NAME +
++                "(" +
++                KEY_UID + " INTEGER PRIMARY KEY AUTOINCREMENT," +
++                KEY_PKGNAME + " TEXT," +
++                KEY_HIDDEN + " INTEGER DEFAULT 0," +
++                KEY_PROTECTED + " INTEGER DEFAULT 0" +
++                ")";
++        db.execSQL(CMD_CREATE_TABLE);
++    }
++
++    @Override
++    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
++    }
++
++    public void addHiddenApp(@NonNull String packageName) {
++        if (isPackageHidden(packageName)) {
++            return;
++        }
++
++        SQLiteDatabase db = getWritableDatabase();
++        db.beginTransaction();
++
++        try {
++            ContentValues values = new ContentValues();
++            values.put(KEY_PKGNAME, packageName);
++            values.put(KEY_HIDDEN, 1);
++
++            int rows = db.update(TABLE_NAME, values, KEY_PKGNAME + " = ?",
++                    new String[]{KEY_PKGNAME});
++            if (rows != 1) {
++                // Entry doesn't exist, create a new one
++                db.insertOrThrow(TABLE_NAME, null, values);
++            }
++            db.setTransactionSuccessful();
++        } catch (Exception e) {
++            // Ignored
++        } finally {
++            db.endTransaction();
++        }
++    }
++
++    public void addProtectedApp(@NonNull String packageName) {
++        if (isPackageProtected(packageName)) {
++            return;
++        }
++
++        SQLiteDatabase db = getWritableDatabase();
++        db.beginTransaction();
++
++        try {
++            ContentValues values = new ContentValues();
++            values.put(KEY_PKGNAME, packageName);
++            values.put(KEY_PROTECTED, 1);
++
++            int rows = db.update(TABLE_NAME, values, KEY_PKGNAME + " = ?",
++                    new String[]{KEY_PKGNAME});
++            if (rows != 1) {
++                // Entry doesn't exist, create a new one
++                db.insertOrThrow(TABLE_NAME, null, values);
++            }
++            db.setTransactionSuccessful();
++        } catch (Exception e) {
++            // Ignored
++        } finally {
++            db.endTransaction();
++        }
++    }
++
++
++    public void removeHiddenApp(@NonNull String packageName) {
++        if (!isPackageHidden(packageName)) {
++            return;
++        }
++
++        SQLiteDatabase db = getWritableDatabase();
++        db.beginTransaction();
++
++        try {
++            ContentValues values = new ContentValues();
++            values.put(KEY_HIDDEN, 0);
++
++            db.update(TABLE_NAME, values, KEY_PKGNAME + " = ?", new String[]{packageName});
++            db.setTransactionSuccessful();
++        } catch (Exception e) {
++            // Ignored
++        } finally {
++            db.endTransaction();
++        }
++    }
++
++    public void removeProtectedApp(@NonNull String packageName) {
++        if (!isPackageProtected(packageName)) {
++            return;
++        }
++
++        SQLiteDatabase db = getWritableDatabase();
++        db.beginTransaction();
++
++        try {
++            ContentValues values = new ContentValues();
++            values.put(KEY_PROTECTED, 0);
++
++            db.update(TABLE_NAME, values, KEY_PKGNAME + " = ?", new String[]{packageName});
++            db.setTransactionSuccessful();
++        } catch (Exception e) {
++            // Ignored
++        } finally {
++            db.endTransaction();
++        }
++    }
++
++    public boolean isPackageHidden(@NonNull String packageName) {
++        String query = String.format("SELECT * FROM %s WHERE %s = ? AND %s = ?", TABLE_NAME,
++                KEY_PKGNAME, KEY_HIDDEN);
++        SQLiteDatabase db = getReadableDatabase();
++        Cursor cursor = db.rawQuery(query, new String[]{packageName, String.valueOf(1)});
++        boolean result = false;
++        try {
++            result = cursor.getCount() != 0;
++        } catch (Exception e) {
++            // Ignored
++        } finally {
++            if (cursor != null && !cursor.isClosed()) {
++                cursor.close();
++            }
++        }
++
++        return result;
++    }
++
++    public boolean isPackageProtected(@NonNull String packageName) {
++        String query = String.format("SELECT * FROM %s WHERE %s = ? AND %s = ?", TABLE_NAME,
++                KEY_PKGNAME, KEY_PROTECTED);
++        SQLiteDatabase db = getReadableDatabase();
++        Cursor cursor = db.rawQuery(query, new String[]{packageName, String.valueOf(1)});
++        boolean result = false;
++        try {
++            result = cursor.getCount() != 0;
++        } catch (Exception e) {
++            // Ignored
++        } finally {
++            if (cursor != null && !cursor.isClosed()) {
++                cursor.close();
++            }
++        }
++
++        return result;
++    }
++}
+diff --git a/src/com/android/launcher3/qsb/QsbWidgetFactory.kt b/src/com/android/launcher3/qsb/QsbWidgetFactory.kt
+index 1137dd255f..27b86be21e 100644
+--- a/src/com/android/launcher3/qsb/QsbWidgetFactory.kt
++++ b/src/com/android/launcher3/qsb/QsbWidgetFactory.kt
+@@ -16,7 +16,6 @@
+ 
+ package com.android.launcher3.qsb
+ 
+-import android.view.LayoutInflater
+ import android.view.View
+ import android.view.ViewGroup
+ import com.android.launcher3.R
+@@ -26,7 +25,14 @@ import javax.inject.Inject
+ open class QsbWidgetFactory @Inject constructor() {
+ 
+     open fun createView(container: ViewGroup): View {
+-        return LayoutInflater.from(container.context)
+-            .inflate(R.layout.qsb_container_hotseat, container, false)
++        // LineageOS: no GApps means no search-widget provider, so the AOSP hotseat "Google"
++        // search box is a permanent dead, unremovable pill. Return an empty 0x0 stand-in carrying the
++        // expected id — the Hotseat's QSB slot then collapses to nothing (a 0-size view renders
++        // nothing regardless of the alpha channel that would otherwise re-show a GONE view).
++        return View(container.context).apply {
++            id = R.id.search_container_hotseat
++            layoutParams = ViewGroup.LayoutParams(0, 0)
++            visibility = View.GONE
++        }
+     }
+ }
+diff --git a/src/com/android/launcher3/settings/SettingsActivity.java b/src/com/android/launcher3/settings/SettingsActivity.java
+index 8075c3dc77..a387533bc6 100644
+--- a/src/com/android/launcher3/settings/SettingsActivity.java
++++ b/src/com/android/launcher3/settings/SettingsActivity.java
+@@ -57,6 +57,8 @@ import com.android.launcher3.LauncherFiles;
+ import com.android.launcher3.R;
+ import com.android.launcher3.display.DisplayController;
+ import com.android.launcher3.display.LauncherDisplayInfo;
++import com.android.launcher3.lineage.LineageUtils;
++import com.android.launcher3.lineage.trust.TrustAppsActivity;
+ import com.android.launcher3.util.SafeCloseable;
+ import com.android.launcher3.util.SettingsCache;
+ 
+@@ -83,6 +85,9 @@ public class SettingsActivity extends FragmentActivity
+     private static final int DELAY_HIGHLIGHT_DURATION_MILLIS = 600;
+     public static final String SAVE_HIGHLIGHTED_KEY = "android:preference_highlighted";
+ 
++    // LineageOS Trust: hidden/protected apps manager preference key
++    public static final String KEY_TRUST_APPS = "pref_trust_apps";
++
+     @Override
+     protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+@@ -328,6 +333,16 @@ public class SettingsActivity extends FragmentActivity
+                             }
+                     );
+                     return !info.isLargeScreen(info.realBounds);
++                case KEY_TRUST_APPS:
++                    // LineageOS Trust: open the hidden/protected apps manager behind a lock screen.
++                    preference.setOnPreferenceClickListener(p -> {
++                        LineageUtils.showLockScreen(getActivity(),
++                                getString(R.string.trust_apps_manager_name), () ->
++                                        startActivity(new Intent(getActivity(),
++                                                TrustAppsActivity.class)));
++                        return true;
++                    });
++                    return true;
+             }
+             return true;
+         }
+diff --git a/src/com/android/launcher3/touch/ItemClickHandler.java b/src/com/android/launcher3/touch/ItemClickHandler.java
+index 32f11b1117..08afaa6ea0 100644
+--- a/src/com/android/launcher3/touch/ItemClickHandler.java
++++ b/src/com/android/launcher3/touch/ItemClickHandler.java
+@@ -29,6 +29,7 @@ import static com.android.launcher3.util.Executors.MAIN_EXECUTOR;
+ import static com.android.launcher3.util.Executors.UI_HELPER_EXECUTOR;
+ 
+ import android.app.AlertDialog;
++import android.content.ComponentName;
+ import android.content.Context;
+ import android.content.Intent;
+ import android.content.pm.LauncherApps;
+@@ -54,6 +55,7 @@ import com.android.launcher3.folder.FolderIcon;
+ import com.android.launcher3.logging.InstanceId;
+ import com.android.launcher3.logging.InstanceIdSequence;
+ import com.android.launcher3.logging.StatsLogManager;
++import com.android.launcher3.lineage.trust.db.TrustDatabaseHelper;
+ import com.android.launcher3.model.data.AppInfo;
+ import com.android.launcher3.model.data.AppPairInfo;
+ import com.android.launcher3.model.data.FolderInfo;
+@@ -427,7 +429,15 @@ public class ItemClickHandler {
+             // Preload the icon to reduce latency b/w swapping the floating view with the original.
+             FloatingIconView.fetchIcon(launcher, v, item, true /* isOpening */);
+         }
+-        launcher.startActivitySafely(v, intent, item);
++        // LineageOS Trust: gate protected apps behind an authentication prompt before launching.
++        ComponentName cn = item.getTargetComponent();
++        boolean isProtected = cn != null
++                && TrustDatabaseHelper.getInstance(launcher).isPackageProtected(cn.getPackageName());
++        if (isProtected) {
++            launcher.startActivitySafelyAuth(v, intent, item);
++        } else {
++            launcher.startActivitySafely(v, intent, item);
++        }
+     }
+ 
+     /**
+-- 
+2.54.0
+

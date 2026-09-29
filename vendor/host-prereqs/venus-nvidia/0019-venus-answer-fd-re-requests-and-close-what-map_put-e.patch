@@ -1,0 +1,164 @@
+From 0000000000000000000000000000000000000019 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Mon, 3 Aug 2026 23:16:00 -0400
+Subject: [PATCH] venus: answer fd re-requests, and close what map_put evicts
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two halves of bd remora-e5x.19.2, the publisher's side.
+
+The encoder now evicts cached fds (LRU when its 16 slots fill, an idle
+sweep for buffers the guest freed) — but the fd travels ONCE per res_id,
+ever, so any eviction of a still-live buffer used to mean a permanent
+per-buffer blackout: header-only frames forever, nothing to import them
+with. The frame socket was always bidirectional; use it. The encoder
+sends { RMFQ, res_id } and the publisher clears that resource's
+sent-flag under the same mutex the maps live under, so the fd rides the
+buffer's very next frame. A wrong eviction now costs one frame.
+
+And 0018's own eviction had a leak: map_put overwrites the stalest
+slot's value, which for map_res_fd is an OPEN FILE — dropping it
+without close() pins that buffer in this process until exit. map_put
+now returns the evicted value and the map_res_fd caller closes it; the
+map cannot know its values are fds, so the caller must.
+---
+ src/venus/vkr_remora_track.c | 69 insertions/changes
+ src/venus/vkr_remora_track.h |  9 +++++++++
+ 2 files changed
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -219,15 +219,15 @@
+    return k;
+ }
+ 
+-/* Insert or overwrite. A full map drops the write rather than evicting: losing
+- * one link is recoverable (that frame is simply not reported), whereas evicting
+- * a live entry would mis-resolve a LATER frame to the wrong resource, which is
+- * worse than reporting nothing. */
+-static void
++/* Insert or overwrite. Returns the value EVICTED to make room, or 0. The map
++ * cannot know what its values mean, and for map_res_fd they are OPEN FILES —
++ * a caller that ignores an evicted fd pins that buffer for the process
++ * lifetime (bd remora-e5x.19.2). */
++static uint64_t
+ map_put(struct handle_map *m, uint64_t key, uint64_t val)
+ {
+    if (!key)
+-      return;
++      return 0;
+    uint64_t i = mix(key) & MAP_MASK;
+    struct map_entry *victim = NULL;
+    for (unsigned probe = 0; probe < MAP_SIZE; probe++) {
+@@ -236,7 +236,7 @@
+          e->key = key;
+          e->val = val;
+          e->used = ++map_clock;
+-         return;
++         return 0;
+       }
+       if (probe < MAP_EVICT_WINDOW && (!victim || e->used < victim->used))
+          victim = e;
+@@ -245,10 +245,13 @@
+     * going deaf is permanent for this process and silent, whereas a wrong
+     * eviction costs at most the frames of one handle until it is re-put. */
+    if (victim) {
++      const uint64_t evicted = victim->val;
+       victim->key = key;
+       victim->val = val;
+       victim->used = ++map_clock;
++      return evicted;
+    }
++   return 0;
+ }
+ 
+ static uint64_t
+@@ -293,6 +296,10 @@
+ static uint64_t pub_retry_tick;
+ static struct handle_map map_res_sent;  /* res_id -> 1 once its fd has been sent */
+ static uint64_t pub_sent, pub_dropped;
++/* Partial fd re-request carried across reads: 8-byte records on a stream
++ * socket arrive however the kernel slices them. */
++static char pub_req_buf[8 * 16];
++static size_t pub_req_have;
+ 
+ /* VkFormat -> DRM fourcc, for the formats a compositor actually presents in.
+  * The byte orders are reversed between the two conventions: Vulkan names
+@@ -324,6 +331,39 @@
+    if (pub_client < 0)
+       return;
+ 
++   /* Drain fd re-requests BEFORE deciding has_fd: the encoder evicts cached
++    * fds now, and the fd is otherwise sent once per res_id, ever — an
++    * evicted-but-live buffer would be a permanent blackout. Clearing the
++    * sent-flag here means a request naming THIS frame's resource is answered
++    * on this very message (bd remora-e5x.19.2). */
++   for (;;) {
++      const ssize_t r = recv(pub_client, pub_req_buf + pub_req_have,
++                             sizeof(pub_req_buf) - pub_req_have, MSG_DONTWAIT);
++      if (r > 0) {
++         pub_req_have += (size_t)r;
++         size_t off = 0;
++         while (pub_req_have - off >= 8) {
++            uint32_t magic, rid;
++            memcpy(&magic, pub_req_buf + off, 4);
++            memcpy(&rid, pub_req_buf + off + 4, 4);
++            off += 8;
++            if (magic == VKR_REMORA_FDREQ_MAGIC)
++               map_put(&map_res_sent, rid, 0);
++         }
++         memmove(pub_req_buf, pub_req_buf + off, pub_req_have - off);
++         pub_req_have -= off;
++         continue;
++      }
++      if (r == 0) {
++         /* Peer gone: same handling as a failed send below. */
++         close(pub_client);
++         pub_client = -1;
++         pub_retry_tick = 0;
++         return;
++      }
++      break; /* EAGAIN/EINTR: nothing (more) queued */
++   }
++
+    const bool need_fd = fd >= 0 && !map_get(&map_res_sent, res_id);
+    struct {
+       uint32_t magic, res_id, width, height, has_fd;
+@@ -406,6 +446,7 @@
+    pub_client = s;
+    /* A fresh connection has cached nothing, so every fd must be sent again. */
+    memset(&map_res_sent, 0, sizeof(map_res_sent));
++   pub_req_have = 0; /* a dead connection's half-read request is not ours */
+    fprintf(stderr, "[remora-publish] connected to encoder at %s\n", path);
+ }
+ 
+@@ -601,7 +642,11 @@
+       const uint64_t old = map_get(&map_res_fd, res_id);
+       if (old)
+          close((int)old);
+-      map_put(&map_res_fd, res_id, (uint64_t)dup_fd);
++      /* A DIFFERENT res_id's fd evicted from a full probe window is an open
++       * file: close it, or its buffer stays pinned in this process forever. */
++      const uint64_t evicted = map_put(&map_res_fd, res_id, (uint64_t)dup_fd);
++      if (evicted)
++         close((int)evicted);
+       map_put(&map_res_sent, res_id, 0);
+    }
+    mtx_unlock(&track_mutex);
+--- a/src/venus/vkr_remora_track.h
++++ b/src/venus/vkr_remora_track.h
+@@ -148,4 +148,12 @@
+  */
+ #define VKR_REMORA_FRAME_MAGIC 0x524d4632u /* "RMF2" — layout fields added */
+ 
++/* The one message the ENCODER sends back: { uint32 magic; uint32 res_id; },
++ * asking for that resource's fd to be sent again. The fd normally travels once
++ * per res_id; the encoder now evicts cached fds (LRU + idle, bd
++ * remora-e5x.19.2), and without a re-request an evicted-but-live buffer would
++ * be a permanent per-buffer blackout. On receipt the sent-flag is cleared and
++ * the fd rides the buffer's next frame. */
++#define VKR_REMORA_FDREQ_MAGIC 0x524d4651u /* "RMFQ" */
++
+ #endif /* VKR_REMORA_TRACK_H */
+-- 
+2.54.0

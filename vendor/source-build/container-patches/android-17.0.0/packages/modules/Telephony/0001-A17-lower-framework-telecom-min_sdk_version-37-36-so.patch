@@ -1,0 +1,35 @@
+From aa3d0a90211ba7862110cae8366322ab5bebde5c Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 12:11:15 -0400
+Subject: [PATCH] A17: lower framework-telecom min_sdk_version 37->36 so it
+ stays on the platform bootclasspath at device SDK 36
+
+Change-Id: Ie652af0066dffb7bd830a33b974924c6d741f81a
+---
+ telecom/framework/Android.bp | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/telecom/framework/Android.bp b/telecom/framework/Android.bp
+index 1687510..02e274b 100644
+--- a/telecom/framework/Android.bp
++++ b/telecom/framework/Android.bp
+@@ -193,7 +193,15 @@ java_sdk_library {
+         "com.android.internal",
+         "com.android.server.telecom",
+     ],
+-    min_sdk_version: "37",
++    // A17: framework-telecom is delivered as a platform /system boot jar (the
++    // RELEASE_TELECOM_MAINLINE_MODULE=false path), not the versioned mainline apex. The image's
++    // platform is finalized at SDK 36 (API 37 is unfinalized in this tree — no prebuilts/sdk/37),
++    // so a module min_sdk_version of "37" makes derive_classpath filter framework-telecom.jar off
++    // the runtime BOOTCLASSPATH (device sdk 36 < 37) while the boot image still bakes it in -> the
++    // boot.art component layout no longer matches runtime and zygote dies. android.telecom.Telecom-
++    // Manager lives only in this jar and SystemServiceRegistry hard-requires it, so it MUST stay on
++    // the classpath. Lower the floor to 36 so build boot image == runtime bootclasspath.
++    min_sdk_version: "36",
+     aconfig_declarations: [
+         "telecom_module_flags",
+         "telecom_bugfix_flags",
+-- 
+2.54.0
+

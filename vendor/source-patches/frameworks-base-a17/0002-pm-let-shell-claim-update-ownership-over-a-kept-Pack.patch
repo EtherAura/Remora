@@ -1,0 +1,33 @@
+From d221cade3a09723594fcaba059d64e6b40d1709e Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sat, 25 Jul 2026 12:18:46 -0400
+Subject: [PATCH] pm: let shell claim update ownership over a kept PackageSetting
+
+Change-Id: I311caf297f62e30fe70a1cc75a8998757e0a32fa
+---
+ .../com/android/server/pm/InstallPackageHelper.java  | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/services/core/java/com/android/server/pm/InstallPackageHelper.java b/services/core/java/com/android/server/pm/InstallPackageHelper.java
+index e7bb826461bc..ba20b95e39f8 100644
+--- a/services/core/java/com/android/server/pm/InstallPackageHelper.java
++++ b/services/core/java/com/android/server/pm/InstallPackageHelper.java
+@@ -404,8 +404,16 @@ final class InstallPackageHelper {
+                             || isUpdateOwnershipDenylisted
+                             || isInstallerUpdateOwnerDenylistProvider) {
+                         installSource = installSource.setUpdateOwnerPackageName(null);
+-                    } else if ((!isUpdateOwnershipEnabled && pkgAlreadyExists)
+-                            || (isUpdateOwnershipEnabled && !isSameUpdateOwner)) {
++                    } else if (((!isUpdateOwnershipEnabled && pkgAlreadyExists)
++                            || (isUpdateOwnershipEnabled && !isSameUpdateOwner))
++                            // A shell-requested claim goes through even when the PackageSetting
++                            // survived: "pm uninstall -k" keeps it (for the uid/data), which
++                            // otherwise makes a data-preserving reinstall never "initial" and
++                            // the ownership claim silently impossible. Shell is this device's
++                            // admin installer (the arm-fetch flow reinstalls injected arm64
++                            // apps keeping their data and must deny Play silent updates).
++                            && !"com.android.shell".equals(
++                                    installSource.mInstallerPackageName)) {
+                         installSource = installSource.setUpdateOwnerPackageName(null);
+                     }
+                 } else if (!isSameUpdateOwner

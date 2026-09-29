@@ -1,0 +1,613 @@
+From b2e60931b7463e4a28c24d1e8b81d479598f6abe Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 31 Jul 2026 21:33:25 -0400
+Subject: [PATCH 04/16] venus: res_id frame-identity tracking (3 of 5 links
+ working)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Tracks the chain that names which buffer a submission rendered into, resolving
+to a virgl res_id — the identity the host already holds an fd for, via
+vtest_resource_import_blob. Better than matching on geometry, which cannot tell
+the primary display from the virtual one and cannot identify the current frame
+at all, since the display buffers are a fixed pool.
+
+WORKING, measured live: memory->res_id (78 hits), image->memory (216 via
+BindImageMemory2), view->image (171), submit (200+). NOT working: cmd->view.
+
+WHAT THE MEASUREMENTS TAUGHT, and it cost three iterations: ANGLE uses the
+MODERN variant of every entry point. vkQueueSubmit2 not vkQueueSubmit,
+vkBindImageMemory2 not vkBindImageMemory. Hooking the legacy name leaves the
+counter at exactly 0, which is indistinguishable from "not loaded" — so each
+hook now announces its own first call rather than reporting only via submit.
+
+STILL OPEN: no render-pass entry point fires. vkCmdBeginRendering,
+vkCmdBeginRenderPass and vkCmdBeginRenderPass2 all stay at 0 while the display
+is demonstrably compositing on this GPU (60% utilisation under animation). The
+framebuffer hook DOES fire, so framebuffers are created — the begin is simply
+not reaching these dispatches. Next suspects: secondary command buffers with
+vkCmdExecuteCommands, or Venus batching command recording outside the per-call
+dispatch path.
+
+Off unless REMORA_VIDEO_CAPTURE=1.
+---
+ src/meson.build                |   1 +
+ src/venus/vkr_command_buffer.c |  17 +++
+ src/venus/vkr_device_memory.c  |  15 ++
+ src/venus/vkr_image.c          |  17 +++
+ src/venus/vkr_queue.c          |  16 ++
+ src/venus/vkr_remora_track.c   | 266 +++++++++++++++++++++++++++++++++
+ src/venus/vkr_remora_track.h   |  62 ++++++++
+ src/venus/vkr_render_pass.c    |   7 +
+ 8 files changed, 401 insertions(+)
+ create mode 100644 src/venus/vkr_remora_track.c
+ create mode 100644 src/venus/vkr_remora_track.h
+
+diff --git a/src/meson.build b/src/meson.build
+index 6207a743..e8d8a32d 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -80,6 +80,7 @@ venus_sources = [
+    'venus/vkr_pipeline.c',
+    'venus/vkr_query_pool.c',
+    'venus/vkr_queue.c',
++   'venus/vkr_remora_track.c',
+    'venus/vkr_render_pass.c',
+    'venus/vkr_renderer.c',
+    'venus/vkr_ring.c',
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index dc42c5a1..d491d6d6 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -5,6 +5,8 @@
+ 
+ #include "vkr_command_buffer.h"
+ 
++#include "vkr_remora_track.h"
++
+ #include "vkr_command_buffer_gen.h"
+ 
+ #ifdef __clang__
+@@ -502,6 +504,9 @@ vkr_dispatch_vkCmdBeginRenderPass(UNUSED struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkCmdBeginRenderPass *args)
+ {
+    VKR_CMD_CALL(CmdBeginRenderPass, args, args->pRenderPassBegin, args->contents);
++   if (vkr_remora_enabled() && args->pRenderPassBegin)
++      vkr_remora_note_cmd_framebuffer(args->commandBuffer,
++                                      args->pRenderPassBegin->framebuffer);
+ }
+ 
+ static void
+@@ -548,6 +553,11 @@ vkr_dispatch_vkCmdBeginRenderPass2(UNUSED struct vn_dispatch_context *dispatch,
+ {
+    VKR_CMD_CALL(CmdBeginRenderPass2, args, args->pRenderPassBegin,
+                 args->pSubpassBeginInfo);
++   /* The THIRD modern-variant entry point ANGLE uses, after QueueSubmit2 and
++    * BindImageMemory2. Hooking only the legacy name left this link at 0. */
++   if (vkr_remora_enabled() && args->pRenderPassBegin)
++      vkr_remora_note_cmd_framebuffer(args->commandBuffer,
++                                      args->pRenderPassBegin->framebuffer);
+ }
+ 
+ static void
+@@ -798,6 +808,13 @@ vkr_dispatch_vkCmdBeginRendering(UNUSED struct vn_dispatch_context *ctx,
+                                  struct vn_command_vkCmdBeginRendering *args)
+ {
+    VKR_CMD_CALL(CmdBeginRendering, args, args->pRenderingInfo);
++   /* Colour attachment 0 is the frame for a compositor; the depth/stencil and
++    * any further attachments are not what an encoder wants. */
++   if (vkr_remora_enabled() && args->pRenderingInfo &&
++       args->pRenderingInfo->colorAttachmentCount &&
++       args->pRenderingInfo->pColorAttachments)
++      vkr_remora_note_cmd_target(args->commandBuffer,
++                                 args->pRenderingInfo->pColorAttachments[0].imageView);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 57a108d6..af6b585a 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -5,6 +5,8 @@
+ 
+ #include "vkr_device_memory.h"
+ 
++#include "vkr_remora_track.h"
++
+ #include <math.h>
+ 
+ #include "venus-protocol/vn_protocol_renderer_transport.h"
+@@ -255,6 +257,9 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+ 
+    VkMemoryAllocateInfo *alloc_info = (VkMemoryAllocateInfo *)args->pAllocateInfo;
+    const uint32_t mem_type_index = alloc_info->memoryTypeIndex;
++   /* bd remora-e5x.6: the virgl resource backing this allocation, if it is an
++    * import. Captured where it is resolved, recorded once the handle exists. */
++   uint32_t remora_res_id = 0;
+    if (unlikely(mem_type_index >= physical_dev->memory_properties.memoryTypeCount)) {
+       args->ret = VK_ERROR_UNKNOWN;
+       return;
+@@ -272,6 +277,11 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+          return;
+       }
+ 
++      /* bd remora-e5x.6: remember which virgl resource backs this allocation.
++       * res_id is the identity the host already holds an fd for, so an encoder
++       * can find the buffer without matching on geometry. */
++      remora_res_id = res_info->resourceId;
++
+       prev_of_res_info->pNext = (const struct VkBaseInStructure *)&local_import_info;
+    }
+ 
+@@ -422,6 +432,11 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    mem->mtl_shm = mtl_shm;
+    mem->allocation_size = alloc_info->allocationSize;
+    mem->memory_type_index = mem_type_index;
++
++   /* Recorded here, not at the import: the VkDeviceMemory handle does not exist
++    * until the object is created, and it is the key the rest of the chain uses. */
++   if (remora_res_id)
++      vkr_remora_note_memory_resource(mem->base.handle.device_memory, remora_res_id);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index 2b627e37..559a2e00 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -5,6 +5,8 @@
+ 
+ #include "vkr_image.h"
+ 
++#include "vkr_remora_track.h"
++
+ #include "vkr_image_gen.h"
+ #include "vkr_physical_device.h"
+ 
+@@ -103,6 +105,8 @@ vkr_dispatch_vkBindImageMemory(UNUSED struct vn_dispatch_context *dispatch,
+    vn_replace_vkBindImageMemory_args_handle(args);
+    args->ret =
+       vk->BindImageMemory(args->device, args->image, args->memory, args->memoryOffset);
++   if (args->ret == VK_SUCCESS)
++      vkr_remora_note_image_memory(args->image, args->memory);
+ }
+ 
+ static void
+@@ -114,6 +118,13 @@ vkr_dispatch_vkBindImageMemory2(UNUSED struct vn_dispatch_context *dispatch,
+ 
+    vn_replace_vkBindImageMemory2_args_handle(args);
+    args->ret = vk->BindImageMemory2(args->device, args->bindInfoCount, args->pBindInfos);
++   /* ANGLE binds through this entry point, not vkBindImageMemory (measured:
++    * that hook's count stayed 0 across a full session). */
++   if (args->ret == VK_SUCCESS && args->pBindInfos) {
++      for (uint32_t i = 0; i < args->bindInfoCount; i++)
++         vkr_remora_note_image_memory(args->pBindInfos[i].image,
++                                      args->pBindInfos[i].memory);
++   }
+ }
+ 
+ static void
+@@ -171,7 +182,13 @@ static void
+ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCreateImageView *args)
+ {
++   /* Read pCreateInfo->image BEFORE the call: create_and_add replaces the
++    * args handles in place, so afterwards it is the host handle and the guest
++    * one is gone. The image handle recorded here must match the one
++    * vkBindImageMemory saw, and that hook also runs post-replacement. */
+    vkr_image_view_create_and_add(dispatch->data, args);
++   if (args->ret == VK_SUCCESS && args->pView && args->pCreateInfo)
++      vkr_remora_note_view_image(*args->pView, args->pCreateInfo->image);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
+index 4287de8e..57f80858 100644
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -5,6 +5,8 @@
+ 
+ #include "vkr_queue.h"
+ 
++#include "vkr_remora_track.h"
++
+ #include "venus-protocol/vn_protocol_renderer_queue.h"
+ 
+ #include "vkr_context.h"
+@@ -450,6 +452,14 @@ vkr_dispatch_vkQueueSubmit(UNUSED struct vn_dispatch_context *dispatch,
+    args->ret =
+       vk->QueueSubmit(args->queue, args->submitCount, args->pSubmits, args->fence);
+    mtx_unlock(&queue->vk_mutex);
++
++   /* After the submit, and only on success: a rejected submit rendered nothing
++    * and must not be reported as a frame (bd remora-e5x.6). */
++   if (args->ret == VK_SUCCESS && vkr_remora_enabled() && args->pSubmits) {
++      for (uint32_t i = 0; i < args->submitCount; i++)
++         vkr_remora_note_submit(args->pSubmits[i].pCommandBuffers,
++                                args->pSubmits[i].commandBufferCount);
++   }
+ }
+ 
+ static void
+@@ -491,6 +501,12 @@ vkr_dispatch_vkQueueSubmit2(UNUSED struct vn_dispatch_context *dispatch,
+    args->ret =
+       vk->QueueSubmit2(args->queue, args->submitCount, args->pSubmits, args->fence);
+    mtx_unlock(&queue->vk_mutex);
++
++   if (args->ret == VK_SUCCESS && vkr_remora_enabled() && args->pSubmits) {
++      for (uint32_t i = 0; i < args->submitCount; i++)
++         vkr_remora_note_submit2(args->pSubmits[i].pCommandBufferInfos,
++                                 args->pSubmits[i].commandBufferInfoCount);
++   }
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+new file mode 100644
+index 00000000..a93ff82a
+--- /dev/null
++++ b/src/venus/vkr_remora_track.c
+@@ -0,0 +1,266 @@
++/* See vkr_remora_track.h. */
++
++#include "vkr_remora_track.h"
++
++#include "c11/threads.h"
++
++#include <inttypes.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++
++/* Open-addressed handle->value maps. Vulkan handles are pointers or uint64 on
++ * this platform, so the low bits are poor hash input for pointer-like values;
++ * mix before masking. Sizes are powers of two and deliberately generous
++ * relative to what a compositor keeps live (SurfaceFlinger holds ~60 buffers),
++ * because eviction here would silently break the chain rather than merely lose
++ * a frame. */
++#define MAP_SIZE 512u
++#define MAP_MASK (MAP_SIZE - 1u)
++
++struct map_entry {
++   uint64_t key;
++   uint64_t val;
++};
++
++struct handle_map {
++   struct map_entry e[MAP_SIZE];
++};
++
++static struct handle_map map_mem_res;    /* VkDeviceMemory -> res_id */
++static struct handle_map map_img_mem;    /* VkImage        -> VkDeviceMemory */
++static struct handle_map map_view_img;   /* VkImageView    -> VkImage */
++static struct handle_map map_cmd_view;   /* VkCommandBuffer -> VkImageView */
++static struct handle_map map_fb_view;    /* VkFramebuffer  -> VkImageView (attach 0) */
++static uint32_t last_frame_res_id;
++/* Per-link counters: with a five-link chain, "no frames" is uninformative —
++ * these say WHICH link is missing. */
++static uint64_t n_mem, n_img, n_view, n_cmd, n_submit, n_resolved;
++
++/* Announce each hook's FIRST call, independently. The counters above only
++ * printed from note_submit, so a chain that breaks BEFORE submit produced no
++ * output at all and looked identical to "not loaded" — which cost a diagnostic
++ * cycle. Each link must be able to report for itself. */
++#define FIRST(tag)                                                                       \
++   do {                                                                                  \
++      static bool seen_##tag;                                                            \
++      if (!seen_##tag) {                                                                  \
++         seen_##tag = true;                                                              \
++         fprintf(stderr, "[remora-hook] first " #tag "\n");                              \
++      }                                                                                  \
++   } while (0)
++static mtx_t track_mutex;
++static once_flag track_once = ONCE_FLAG_INIT;
++
++static void
++track_init(void)
++{
++   mtx_init(&track_mutex, mtx_plain);
++}
++
++bool
++vkr_remora_enabled(void)
++{
++   /* Cached: this is consulted on every dispatch we hook, and the answer
++    * cannot change within a process. */
++   static int cached = -1;
++   if (cached < 0) {
++      const char *v = getenv("REMORA_VIDEO_CAPTURE");
++      cached = (v && *v == '1') ? 1 : 0;
++   }
++   return cached == 1;
++}
++
++static inline uint64_t
++mix(uint64_t k)
++{
++   k ^= k >> 33;
++   k *= UINT64_C(0xff51afd7ed558ccd);
++   k ^= k >> 33;
++   return k;
++}
++
++/* Insert or overwrite. A full map drops the write rather than evicting: losing
++ * one link is recoverable (that frame is simply not reported), whereas evicting
++ * a live entry would mis-resolve a LATER frame to the wrong resource, which is
++ * worse than reporting nothing. */
++static void
++map_put(struct handle_map *m, uint64_t key, uint64_t val)
++{
++   if (!key)
++      return;
++   uint64_t i = mix(key) & MAP_MASK;
++   for (unsigned probe = 0; probe < MAP_SIZE; probe++) {
++      struct map_entry *e = &m->e[(i + probe) & MAP_MASK];
++      if (!e->key || e->key == key) {
++         e->key = key;
++         e->val = val;
++         return;
++      }
++   }
++}
++
++static uint64_t
++map_get(const struct handle_map *m, uint64_t key)
++{
++   if (!key)
++      return 0;
++   uint64_t i = mix(key) & MAP_MASK;
++   for (unsigned probe = 0; probe < MAP_SIZE; probe++) {
++      const struct map_entry *e = &m->e[(i + probe) & MAP_MASK];
++      if (!e->key)
++         return 0;
++      if (e->key == key)
++         return e->val;
++   }
++   return 0;
++}
++
++#define H(x) ((uint64_t)(uintptr_t)(x))
++
++void
++vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id)
++{
++   if (!vkr_remora_enabled())
++      return;
++   call_once(&track_once, track_init);
++   mtx_lock(&track_mutex);
++   n_mem++;
++   FIRST(memory_resource);
++   map_put(&map_mem_res, H(memory), res_id);
++   mtx_unlock(&track_mutex);
++}
++
++void
++vkr_remora_note_image_memory(VkImage image, VkDeviceMemory memory)
++{
++   if (!vkr_remora_enabled())
++      return;
++   call_once(&track_once, track_init);
++   mtx_lock(&track_mutex);
++   n_img++;
++   FIRST(image_memory);
++   map_put(&map_img_mem, H(image), H(memory));
++   mtx_unlock(&track_mutex);
++}
++
++void
++vkr_remora_note_view_image(VkImageView view, VkImage image)
++{
++   if (!vkr_remora_enabled())
++      return;
++   call_once(&track_once, track_init);
++   mtx_lock(&track_mutex);
++   n_view++;
++   FIRST(view_image);
++   map_put(&map_view_img, H(view), H(image));
++   mtx_unlock(&track_mutex);
++}
++
++void
++vkr_remora_note_cmd_target(VkCommandBuffer cmd, VkImageView view)
++{
++   if (!vkr_remora_enabled())
++      return;
++   call_once(&track_once, track_init);
++   mtx_lock(&track_mutex);
++   /* Last writer wins: a command buffer with several render passes is
++    * attributed to the last target it began, which for a compositor is the one
++    * that produced the frame. */
++   map_put(&map_cmd_view, H(cmd), H(view));
++   mtx_unlock(&track_mutex);
++}
++
++void
++vkr_remora_note_framebuffer(VkFramebuffer fb, VkImageView view)
++{
++   if (!vkr_remora_enabled())
++      return;
++   call_once(&track_once, track_init);
++   mtx_lock(&track_mutex);
++   FIRST(framebuffer);
++   map_put(&map_fb_view, H(fb), H(view));
++   mtx_unlock(&track_mutex);
++}
++
++void
++vkr_remora_note_cmd_framebuffer(VkCommandBuffer cmd, VkFramebuffer fb)
++{
++   if (!vkr_remora_enabled())
++      return;
++   call_once(&track_once, track_init);
++   mtx_lock(&track_mutex);
++   const uint64_t view = map_get(&map_fb_view, H(fb));
++   mtx_unlock(&track_mutex);
++   /* Resolve the framebuffer to its attachment now and store the VIEW, so the
++    * submit path has one uniform lookup regardless of which render-pass API the
++    * client used. */
++   if (view)
++      vkr_remora_note_cmd_target(cmd, (VkImageView)(uintptr_t)view);
++}
++
++void
++vkr_remora_note_submit(const VkCommandBuffer *cmds, uint32_t count)
++{
++   if (!vkr_remora_enabled() || !cmds)
++      return;
++   call_once(&track_once, track_init);
++
++   mtx_lock(&track_mutex);
++   n_submit++;
++   FIRST(submit);
++   if (n_submit == 1 || (n_submit % 200) == 0) {
++      fprintf(stderr, "[remora-chain] mem=%" PRIu64 " img=%" PRIu64 " view=%" PRIu64
++                      " cmd=%" PRIu64 " submits=%" PRIu64 " resolved=%" PRIu64 "\n",
++              n_mem, n_img, n_view, n_cmd, n_submit, n_resolved);
++   }
++   for (uint32_t i = 0; i < count; i++) {
++      const uint64_t view = map_get(&map_cmd_view, H(cmds[i]));
++      if (!view)
++         continue;
++      const uint64_t image = map_get(&map_view_img, view);
++      if (!image)
++         continue;
++      const uint64_t memory = map_get(&map_img_mem, image);
++      if (!memory)
++         continue;
++      const uint64_t res_id = map_get(&map_mem_res, memory);
++      if (!res_id)
++         continue;
++
++      n_resolved++;
++      if ((uint32_t)res_id != last_frame_res_id) {
++         /* Only on CHANGE: a compositor submits every frame, and logging each
++          * one would bury the signal. The interesting event is the render
++          * target rotating through the display's buffer pool. */
++         fprintf(stderr, "[remora-frame] res_id=%u\n", (uint32_t)res_id);
++      }
++      last_frame_res_id = (uint32_t)res_id;
++   }
++   mtx_unlock(&track_mutex);
++}
++
++void
++vkr_remora_note_submit2(const VkCommandBufferSubmitInfo *infos, uint32_t count)
++{
++   if (!vkr_remora_enabled() || !infos)
++      return;
++   /* Flatten to the common path rather than duplicating the resolve chain —
++    * the only difference between the two submit entry points is the shape of
++    * the command-buffer array. */
++   for (uint32_t i = 0; i < count; i++)
++      vkr_remora_note_submit(&infos[i].commandBuffer, 1);
++}
++
++uint32_t
++vkr_remora_last_frame_res_id(void)
++{
++   if (!vkr_remora_enabled())
++      return 0;
++   call_once(&track_once, track_init);
++   mtx_lock(&track_mutex);
++   const uint32_t id = last_frame_res_id;
++   mtx_unlock(&track_mutex);
++   return id;
++}
+diff --git a/src/venus/vkr_remora_track.h b/src/venus/vkr_remora_track.h
+new file mode 100644
+index 00000000..eee6d7d0
+--- /dev/null
++++ b/src/venus/vkr_remora_track.h
+@@ -0,0 +1,62 @@
++/*
++ * Frame-identity tracking for host-side video encode (bd remora-e5x.6).
++ *
++ * Android's frames are composed HOST-SIDE: SurfaceFlinger client-composes the
++ * scrcpy VirtualDisplay through ANGLE -> Venus onto this GPU (measured: host GPU
++ * load 56.0% with that display present vs 12.9% without, identical animation).
++ * So the frame an encoder wants is the render target of a submission we execute.
++ *
++ * Venus knows which target that is, but does not remember: struct vkr_image is
++ * only { struct vkr_object base }, i.e. handle mapping. This module adds the
++ * minimum bookkeeping to answer "which buffer, and when", resolving to a virgl
++ * RESOURCE ID — a stable identity the host already holds an fd for, via
++ * vtest_resource_import_blob() -> virgl_renderer_resource_import_blob(). That is
++ * strictly better than matching on geometry, which cannot tell the primary
++ * display from the virtual one (both 3760x1992) and cannot identify the current
++ * frame at all, because the display buffers are a FIXED POOL (measured: 32
++ * allocations before 14 continuous swipes, 32 after).
++ *
++ * The chain, each link a call Venus already dispatches:
++ *   vkAllocateMemory(resourceId)      memory -> res_id
++ *   vkBindImageMemory                 image  -> memory
++ *   vkCreateImageView                 view   -> image
++ *   vkCmdBeginRender[ing|Pass]        cmdbuf -> view
++ *   vkQueueSubmit                     cmdbuf executed => frame ready on res_id
++ *
++ * OFF unless REMORA_VIDEO_CAPTURE=1. This sits on the Vulkan dispatch hot path
++ * of a working mirror and must cost nothing until someone asks for it.
++ */
++
++#ifndef VKR_REMORA_TRACK_H
++#define VKR_REMORA_TRACK_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include "vkr_common.h"
++
++bool vkr_remora_enabled(void);
++
++void vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id);
++void vkr_remora_note_image_memory(VkImage image, VkDeviceMemory memory);
++void vkr_remora_note_view_image(VkImageView view, VkImage image);
++void vkr_remora_note_cmd_target(VkCommandBuffer cmd, VkImageView view);
++
++/* Traditional render passes reach the target through a framebuffer rather than
++ * naming the view at begin time. ANGLE uses this path, not vkCmdBeginRendering
++ * (measured: cmd_target hook count 0 until this was added). */
++void vkr_remora_note_framebuffer(VkFramebuffer fb, VkImageView view);
++void vkr_remora_note_cmd_framebuffer(VkCommandBuffer cmd, VkFramebuffer fb);
++
++/* Called after a submit succeeds. Resolves each command buffer through the
++ * chain and reports any that rendered into a tracked resource. */
++void vkr_remora_note_submit(const VkCommandBuffer *cmds, uint32_t count);
++
++/* vkQueueSubmit2 carries command buffers in VkCommandBufferSubmitInfo rather
++ * than a flat array. ANGLE uses this path, not the vkQueueSubmit one. */
++void vkr_remora_note_submit2(const VkCommandBufferSubmitInfo *infos, uint32_t count);
++
++/* Most recently submitted render target, or 0 if none seen. */
++uint32_t vkr_remora_last_frame_res_id(void);
++
++#endif /* VKR_REMORA_TRACK_H */
+diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
+index 0cb3d70a..bbe348e8 100644
+--- a/src/venus/vkr_render_pass.c
++++ b/src/venus/vkr_render_pass.c
+@@ -5,6 +5,8 @@
+ 
+ #include "vkr_render_pass.h"
+ 
++#include "vkr_remora_track.h"
++
+ #include "vkr_render_pass_gen.h"
+ 
+ static void
+@@ -76,6 +78,11 @@ vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCreateFramebuffer *args)
+ {
+    vkr_framebuffer_create_and_add(dispatch->data, args);
++   /* Attachment 0 is the colour target for a compositor; that is the frame. */
++   if (args->ret == VK_SUCCESS && args->pFramebuffer && args->pCreateInfo &&
++       args->pCreateInfo->attachmentCount && args->pCreateInfo->pAttachments)
++      vkr_remora_note_framebuffer(*args->pFramebuffer,
++                                  args->pCreateInfo->pAttachments[0]);
+ }
+ 
+ static void
+-- 
+2.54.0
+

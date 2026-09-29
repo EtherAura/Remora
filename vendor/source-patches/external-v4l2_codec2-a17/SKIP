@@ -1,0 +1,17 @@
+Subsumed on A17. Every hunk of the shared external-v4l2_codec2 series 0001-0004 is already
+present in the A17 tree's external/v4l2_codec2 (the "A17: Remora c2-va enablement for the VAAPI
+Codec2 path" commit), so re-applying it is a no-op that only produces alarming "patch does not
+apply" noise in the build log.
+
+Verified: `git am -3` of all four onto that base reports "No changes -- Patch already applied"
+and creates no commits, and a distinctive added line from each of the four is present in
+components/.
+
+The series has since grown a 0005 (DecodeComponent: FLAG_DROP_FRAME on kAborted). This marker
+skips it on A17 too, which is correct only because A17 carries the same change as its own
+container patch, container-patches/android-17.0.0/external/v4l2_codec2/0003. The AV1 enum patch
+this marker once swallowed now lives in its own entry, v4l2_av1_enum / external-v4l2_codec2-av1,
+which no SKIP here can touch. Give a new capability its own registry entry rather than a sixth
+file here (bd remora-22n).
+
+Delete this marker if the A17 enablement commit is ever rebased without them.

@@ -1,0 +1,37 @@
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index f062613..f5192ce 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -628,7 +628,31 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 	if ((use_flags & BO_USE_HW_VIDEO_ENCODER) && gbm_mesa_format_is_rgb32(format))
+ 		alloc_args.height = ALIGN(alloc_args.height, 64) + 1;
+ 
+-	if (alloc_args.drm_format == 0) {
++	/*
++	 * A 1-HIGH R8 IS A BLOB, AND BLOBS BELONG ON THE SPOOF PATH (bd remora-4ei.9).
++	 * HAL_PIXEL_FORMAT_BLOB resolves to a REAL drm format — see the R8 combination added in
++	 * gbm_mesa_init, whose own comment says "R8 format is used for Android's
++	 * HAL_PIXEL_FORMAT_BLOB and is used for JPEG snapshots" — so drm_format is non-zero and a
++	 * still-capture buffer sailed past this branch and was requested from the host verbatim as
++	 * a 1-high texture:
++	 *   vtest_wrapper: alloc 929664x1 fmt=0x20203852 flags=7 failed: host status 22
++	 * (0x20203852 is "R8  ", status 22 is EINVAL). The 2D reshape below could not save it
++	 * either: that condition was narrowed to XBGR8888 when the spoof moved off R8, and its own
++	 * comment still says it matches "the row width the R8 spoof used before" — so the genuine
++	 * R8 blob path was left with no reshape at all. Preview was never affected because those
++	 * buffers are ordinary 2D images.
++	 *
++	 * Routing blobs here rather than widening the reshape is deliberate. This branch computes
++	 * bo->meta from the TRUE format and size FIRST and sets bo_layout_ready, so only the
++	 * REQUEST to the host is reshaped; widening the reshape alone would leave the recompute
++	 * below to derive a blob's metadata from the reshaped stride, which is a different buffer
++	 * description than the one the JPEG consumer expects.
++	 *
++	 * Height is the discriminator because that is what makes it a byte array: a 2D R8 texture
++	 * keeps its own path, and for a 1-high one the spoof carries the same bytes either way.
++	 */
++	if (alloc_args.drm_format == 0 ||
++	    (alloc_args.drm_format == DRM_FORMAT_R8 && alloc_args.height == 1)) {
+ 		/* Always use linear for spoofed format allocations. */
+ 		drv_bo_from_format(bo, alloc_args.width, 1, alloc_args.height, format);
+ 

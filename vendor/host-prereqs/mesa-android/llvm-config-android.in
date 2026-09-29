@@ -1,0 +1,54 @@
+#!/bin/sh
+# Host-runnable llvm-config for a CROSS-BUILT LLVM (bd remora-ykhz / bm7.4).
+#
+# WHY THIS EXISTS. Mesa pins `method : 'config-tool'` for its LLVM dependency on every non-Windows
+# host, so it insists on EXECUTING llvm-config. The llvm-config an Android cross build produces is an
+# Android binary and cannot run here; the host's own llvm-config describes the host's Linux LLVM, and
+# pointing Mesa at that gives a build which configures perfectly and then links x86_64-linux archives
+# into an Android driver. Neither is usable.
+#
+# HOW IT WORKS. llvm-config derives its prefix from the location of its own binary, so a NATIVE
+# llvm-config of the same version, copied into the cross install tree, reports that tree's include
+# and lib paths while remaining runnable on the host. It also carries LLVM's real component
+# database, which is the part worth having: `--libs amdgpu` expands to 58 libraries in dependency
+# order, and no hand-written name-matching gets that right.
+#
+# The native and cross builds must therefore share a version AND an LLVM_TARGETS_TO_BUILD, or the
+# component database describes libraries the cross tree does not contain.
+#
+# WHAT HAS TO BE CORRECTED, AND WHY IT IS A FILTER RATHER THAN A CASE. --system-libs is baked in
+# from the NATIVE build's configuration, so it names the host's libraries. Matching on "$1" does not
+# work: meson asks for everything at once, as
+#     llvm-config --libs --ldflags --link-static --system-libs amdgpu bitreader core ...
+# so a positional case matches --libs, falls through, and the host libraries sail into the link line.
+# That is exactly how -lrt -lzstd -lxml2 reached an Android link and failed it. So run the real tool
+# and filter its OUTPUT instead, wherever those flags appear.
+#
+# -lz stays: the NDK ships libz. -lrt does not exist on Android at all (its functions are in libc),
+# and -lzstd/-lxml2 are absent because the cross build disables both.
+#
+# Substitute @REAL@ (the native llvm-config placed in the cross prefix).
+REAL=@REAL@
+
+# Filtered PER TOKEN, not by regex over the line: llvm-config emits these adjacently
+# ("-lz -lzstd -lxml2"), and a /g substitution consumes the space between neighbours, so the second
+# of any pair survives. awk keeps the line structure meson expects while dropping exactly the
+# offending words.
+# NO TRAILING SEPARATOR. The obvious form of this loop, `out = out $i " "`, appends a space after
+# EVERY token including the last, and that silently breaks the single-word answers meson matches
+# EXACTLY rather than parses:
+#     llvm-config --shared-mode  ->  "static "   which != "static"
+# meson then concludes LLVM is a shared build, asks for --libs --link-shared, and llvm-config
+# answers "libLLVM-20.so is missing" for a cross tree that contains 102 static archives and no
+# dylib. The result is a link line carrying -L<llvmdir> and not one -lLLVM, i.e. every LLVM symbol
+# undefined at the final link of libgallium_dri.so, hundreds of lines away from the cause.
+# --libdir was corrupted the same way. Build the separator BETWEEN tokens instead.
+"$REAL" "$@" | awk '{
+    out = ""; sep = ""
+    for (i = 1; i <= NF; i++)
+        if ($i !~ /^-l(rt|zstd|xml2|tinfo|edit)$/) {
+            out = out sep $i
+            sep = " "
+        }
+    print out
+}'

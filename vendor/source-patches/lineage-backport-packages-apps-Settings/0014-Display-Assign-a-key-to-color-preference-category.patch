@@ -1,0 +1,26 @@
+From 4b8be2472c8dc19fad7eff99cf4584a6513f99bf Mon Sep 17 00:00:00 2001
+From: Bruno Martins <bgcngm@gmail.com>
+Date: Wed, 3 Dec 2025 22:05:46 +0000
+Subject: [PATCH 14/98] Display: Assign a key to color preference category
+
+All other categories here have a key assigned, which is quite
+useful to allow injecting preferences into the proper group.
+
+Test: m
+Change-Id: I56b161c98eb7f669703f46d73f56e081ebf18558
+---
+ res/xml/display_settings.xml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/res/xml/display_settings.xml b/res/xml/display_settings.xml
+index f2645d67d9b..2f62fcb1932 100644
+--- a/res/xml/display_settings.xml
++++ b/res/xml/display_settings.xml
+@@ -111,6 +111,7 @@
+     </PreferenceCategory>
+ 
+     <PreferenceCategory
++        android:key="category_key_color"
+         android:title="@string/category_name_color"
+         android:order="-170">
+ 

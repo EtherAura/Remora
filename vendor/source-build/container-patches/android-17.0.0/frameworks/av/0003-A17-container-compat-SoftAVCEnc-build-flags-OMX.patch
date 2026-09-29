@@ -1,0 +1,44 @@
+From a0146931b8660fc41a7b7871ad5b37a3f4141867 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 12:11:16 -0400
+Subject: [PATCH 3/3] A17 container-compat: SoftAVCEnc build flags + OMX
+
+Change-Id: Ia427971f091a9734ad8ca86a47daeb1d3ccf8ce7
+---
+ media/libstagefright/codecs/avcenc/SoftAVCEnc.cpp | 2 +-
+ media/libstagefright/omx/Android.bp               | 6 ++++++
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/media/libstagefright/codecs/avcenc/SoftAVCEnc.cpp b/media/libstagefright/codecs/avcenc/SoftAVCEnc.cpp
+index 01174c9834..78a580103b 100644
+--- a/media/libstagefright/codecs/avcenc/SoftAVCEnc.cpp
++++ b/media/libstagefright/codecs/avcenc/SoftAVCEnc.cpp
+@@ -733,7 +733,7 @@ OMX_ERRORTYPE SoftAVC::initEncoder() {
+ 
+     /* Allocating Memory for Mem Records */
+     {
+-        WORD32 total_size;
++        [[maybe_unused]] WORD32 total_size;  // A17 clang -Werror=unused-but-set-variable
+         iv_mem_rec_t *ps_mem_rec;
+         total_size = 0;
+         ps_mem_rec = mMemRecords;
+diff --git a/media/libstagefright/omx/Android.bp b/media/libstagefright/omx/Android.bp
+index 605569855b..866d24c8e5 100644
+--- a/media/libstagefright/omx/Android.bp
++++ b/media/libstagefright/omx/Android.bp
+@@ -189,6 +189,12 @@ cc_defaults {
+ 
+     cflags: [
+         "-Werror",
++        // These legacy OMX codecs are re-enabled by the bring-back-OMX patch but their
++        // decade-old C source trips A17 clang's stricter set-but-unused diagnostics. Downgrade the
++        // handful of pedantic warnings to non-fatal rather than editing each codec.
++        "-Wno-error=unused-but-set-variable",
++        "-Wno-error=unused-variable",
++        "-Wno-error=unused-function",
+     ],
+ 
+     header_libs: [
+-- 
+2.54.0
+

@@ -1,0 +1,50 @@
+From a1bae60ae0af59447ed078c4af0537db5082bf80 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Sun, 30 Aug 2026 11:12:16 -0400
+Subject: [PATCH] DecodeComponent: set FLAG_DROP_FRAME on kAborted so skipped
+ works complete
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The kAborted arm of onDecodeDone() masked output.flags with
+FLAG_DROP_FRAME instead of setting it. That is dead code in the flush
+flow (reportAbandonedWorks sweeps those works wholesale), but a decoder
+that completes a mid-stream skipped frame through kAborted — a P/B frame
+whose references never entered the DPB — left the work with no flag, no
+output, and isWorkDone() forever false: it head-of-line-blocked
+pumpReportWork() and input stalled at the pipeline depth (~28 works)
+before the next keyframe could arrive.
+
+Setting the flag makes isWorkDone() pass immediately;
+reportWorkIfFinished() already clears it before reporting so the
+framework sees a plain no-output work and regains pipeline capacity.
+
+Change-Id: Ib1ca8f59be38d865c82eab8b9ae3e4018a5b31b8
+---
+ components/DecodeComponent.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/components/DecodeComponent.cpp b/components/DecodeComponent.cpp
+index 0476307..dabd2e7 100644
+--- a/components/DecodeComponent.cpp
++++ b/components/DecodeComponent.cpp
+@@ -485,8 +485,14 @@ void DecodeComponent::onDecodeDone(int32_t bitstreamId, VideoDecoder::DecodeStat
+     switch (status) {
+     case VideoDecoder::DecodeStatus::kAborted:
+         work->input.buffers.front().reset();
++        // SET the drop flag rather than masking with it: a decoder that skips a
++        // frame mid-stream (missing references) completes the work through this
++        // path, and without the flag isWorkDone() never passes — the work then
++        // head-of-line-blocks pumpReportWork() and input stalls at the pipeline
++        // depth. reportWorkIfFinished() clears the flag again before reporting,
++        // so the framework sees a plain no-output work and regains capacity.
+         work->worklets.front()->output.flags = static_cast<C2FrameData::flags_t>(
+-                work->worklets.front()->output.flags & C2FrameData::FLAG_DROP_FRAME);
++                work->worklets.front()->output.flags | C2FrameData::FLAG_DROP_FRAME);
+         mOutputBitstreamIds.push(bitstreamId);
+ 
+         pumpReportWork();
+-- 
+2.54.0
+

@@ -1,0 +1,21 @@
+# The Remora agent as an ANDROID INIT SERVICE — the BAKED variant (bd remora-28ix.3.4).
+#
+# This is vendor/container-scripts/remora-agent.rc with one change: the class path points at the
+# jar this image BUILT (/system_ext/framework/remora-agent.jar) instead of the bind-mounted
+# /remora/agent.dex. Everything the bind-mount rc documents at length — why init and not
+# spawn-per-session, why `user shell`, why late_start after boot_completed, why logcat is the
+# output channel — holds unchanged here; read that file for the reasoning.
+#
+# TRANSITION NOTE: a container of this image must NOT also bind-mount the dev rc — two
+# definitions of `service remora_agent` make init ignore the second with a warning, and which
+# one it read first is a parse-order accident. Builders drops the rc/dex mounts for images that
+# bake the agent (the cutover's engine half).
+
+service remora_agent /system/bin/app_process -Djava.class.path=/system_ext/framework/remora-agent.jar /system/bin com.remora.agent.Main
+    class late_start
+    user shell
+    group shell log
+    disabled
+
+on property:sys.boot_completed=1
+    start remora_agent

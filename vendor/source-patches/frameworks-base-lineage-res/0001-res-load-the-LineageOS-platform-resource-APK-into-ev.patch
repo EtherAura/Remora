@@ -1,0 +1,123 @@
+From 778b0ee1ea20b2ce20e79f21d65ea69dc47ebe18 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Wed, 29 Jul 2026 19:46:32 -0400
+Subject: [PATCH] res: load the LineageOS platform resource APK into every
+ process
+
+The LineageOS SDK ships two halves and only one of them was reachable.
+Platform apps (Settings, LineageParts) static-link org.lineageos.platform
+.internal, so the Lineage classes and their generated R class compile in
+fine -- and that R class points at package id 0x3f, which lives in a
+separate APK, org.lineageos.platform-res.apk, built with
+--allow-reserved-package-id --package-id 63. Nothing put that APK on any
+app's asset path, so every 0x3f lookup threw:
+
+  Resources$NotFoundException: String array resource ID #0x3f020004
+    at lineageos.hardware.LineageHardwareManager.<init>:204
+    at lineageos.preference.ConstraintsHelper.checkConstraints:180
+    at lineageos.preference.ConstraintsHelper.<init>:74
+    at lineageos.preference.SelfRemovingPreference.<init>:24
+    at com.android.settings.DisplaySettings.onCreate:68
+
+i.e. Settings > Display died on inflate, and so would the other six
+screens carrying one of the 13 lineageos.preference widgets.
+
+This is NOT the <library>/uses-library mechanism: there is no
+<library name="org.lineageos.platform"> anywhere in the tree and no app
+declares uses-library, because a shared-library entry would only add the
+jar to the classpath. The resources have to come from the zygote's shared
+system asset set, next to framework-res.apk -- which also explains why
+lineage_sdk_common.mk allow-lists the SDK into /system rather than
+/system_ext ("AOSP has no support of loading framework resources from
+/system_ext"): the path is hardcoded here.
+
+Deleting the offending preferences was the alternative and it does not
+work. ConstraintsHelper's constructor calls checkConstraints
+unconditionally, so removing one widget just moves the crash to the next
+one in the XML.
+
+With the resources resolvable the constraint machinery does its job
+instead of throwing: requiresFeature="lineagehardware:*" routes to
+LineageHardwareManager.isSupported(), the AIDL/HWC2 lookups both come up
+empty on a container with no Lineage HAL, and the widget tombstones
+itself. No LineageSystemServer is required for that -- getService()
+returning null is handled, and the resulting Log.wtf is non-fatal with
+wtf_is_fatal unset.
+
+TWO FILES, AND THE SECOND ONE IS NOT OPTIONAL. Loading the APK in the
+zygote leaves its fd open across every fork, and zygote enforces a static
+allowlist of inheritable fds. Without the fd_utils.cpp entry the first
+fork aborts and the device NEVER BOOTS:
+
+  JNI FatalError called: (system_server) Not allowlisted (64):
+      /system/framework/org.lineageos.platform-res.apk
+  init.svc.zygote: restarting   (system_server processes: 0)
+
+Learned by deploying the AssetManager half alone and boot-looping the
+instance. framework-res.apk sits in that same list one line up for
+exactly the same reason.
+
+Best-effort by design on the load itself. The enclosing catch turns any
+IOException into "Failed to create system AssetManager", i.e. a boot
+loop, so a tree that ships no lineage-sdk (or a Ravenwood host run) must
+not reach it.
+
+Change-Id: I0f27caa0234a292efd609ef9d2a602551b4979b8
+---
+ .../java/android/content/res/AssetManager.java | 18 ++++++++++++++++++
+ core/jni/fd_utils.cpp                          |  3 +++
+ 2 files changed, 21 insertions(+)
+
+diff --git a/core/java/android/content/res/AssetManager.java b/core/java/android/content/res/AssetManager.java
+index e18ba2238905..56a9b58b892b 100644
+--- a/core/java/android/content/res/AssetManager.java
++++ b/core/java/android/content/res/AssetManager.java
+@@ -84,6 +84,10 @@ public final class AssetManager implements AutoCloseable {
+     public static final String FRAMEWORK_APK_PATH = getFrameworkApkPath();
+     private static final String FRAMEWORK_APK_PATH_DEVICE = "/system/framework/framework-res.apk";
+     private static final String FRAMEWORK_APK_PATH_RAVENWOOD = "ravenwood-data/framework-res.apk";
++    // Not under /system_ext: nothing resolves a framework resource APK from there, which is why
++    // vendor/lineage/config/lineage_sdk_common.mk allow-lists the SDK into /system.
++    private static final String LINEAGE_RES_APK_PATH =
++            "/system/framework/org.lineageos.platform-res.apk";
+ 
+     private static final Object sSync = new Object();
+ 
+@@ -284,6 +288,20 @@ public final class AssetManager implements AutoCloseable {
+             final ArrayList<ApkAssets> apkAssets = new ArrayList<>();
+             apkAssets.add(ApkAssets.loadFromPath(frameworkPath, ApkAssets.PROPERTY_SYSTEM));
+ 
++            // The LineageOS platform resources (reserved package id 0x3f). Platform apps
++            // static-link org.lineageos.platform.internal, whose generated R class points at 0x3f,
++            // but nothing else ever puts the resource APK on their asset path — so every such
++            // lookup throws Resources$NotFoundException. Loading it here, in the zygote's shared
++            // system set, is what makes @*lineageos.platform:* resolvable process-wide.
++            // Best-effort on purpose: a tree that ships no lineage-sdk must not lose zygote, and
++            // the enclosing catch turns any IOException into a boot loop.
++            try {
++                apkAssets.add(
++                        ApkAssets.loadFromPath(LINEAGE_RES_APK_PATH, ApkAssets.PROPERTY_SYSTEM));
++            } catch (IOException e) {
++                Log.w(TAG, "Not loading " + LINEAGE_RES_APK_PATH + ": " + e.getMessage());
++            }
++
+             // TODO(Ravenwood): overlay support?
+             final String[] systemIdmapPaths =
+                     RavenwoodHelperBridge.getInstance().isRunningOnRavenwood() ? new String[0] :
+diff --git a/core/jni/fd_utils.cpp b/core/jni/fd_utils.cpp
+index bf6ff81c9294..a41ec788f7ca 100644
+--- a/core/jni/fd_utils.cpp
++++ b/core/jni/fd_utils.cpp
+@@ -44,6 +44,9 @@ static const char* kPathAllowlist[] = {
+         "/sys/kernel/debug/tracing/trace_marker",
+         "/sys/kernel/tracing/trace_marker",
+         "/system/framework/framework-res.apk",
++        // Loaded beside framework-res.apk in the zygote's system asset set, so its fd is inherited
++        // across every fork and has to be allowlisted for exactly the same reason.
++        "/system/framework/org.lineageos.platform-res.apk",
+         "/dev/urandom",
+         "/dev/dri/renderD129", // Fixes b/31172436
+         "/dev/stune/foreground/tasks",
+-- 
+2.54.0
+

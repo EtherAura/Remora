@@ -1,0 +1,43 @@
+From e57c84efeaa3af347c6e30490cdc321acd28c9ee Mon Sep 17 00:00:00 2001
+From: Sam Mortimer <sam@mortimer.me.uk>
+Date: Fri, 6 Oct 2017 22:01:05 -0700
+Subject: [PATCH 48/98] Settings: Add battery and notification lights settings
+
+Change-Id: Ia5f635d2a493a859068af3d6b7502cc6d3db5893
+---
+ res/xml/configure_notification_settings.xml | 5 +++++
+ res/xml/power_usage_summary.xml             | 6 ++++++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/res/xml/configure_notification_settings.xml b/res/xml/configure_notification_settings.xml
+index ed112eedfa6..e77ab9a5eac 100644
+--- a/res/xml/configure_notification_settings.xml
++++ b/res/xml/configure_notification_settings.xml
+@@ -226,5 +226,10 @@
+             android:summary="@string/notification_assistant_summary"
+             settings:controller="com.android.settings.notification.NotificationAssistantPreferenceController"/>
+ 
++        <!-- Notification lights -->
++        <lineageos.preference.LineagePartsPreference
++            android:key="notification_lights"
++            settings:requiresConfig="@*android:bool/config_intrusiveNotificationLed"
++            settings:replacesKey="notification_pulse" />
+     </PreferenceCategory>
+ </PreferenceScreen>
+diff --git a/res/xml/power_usage_summary.xml b/res/xml/power_usage_summary.xml
+index 4890560e3f7..b8e4e6bb7ee 100644
+--- a/res/xml/power_usage_summary.xml
++++ b/res/xml/power_usage_summary.xml
+@@ -66,6 +66,12 @@
+             android:title="@string/smart_battery_manager_title"
+             settings:controller="com.android.settings.fuelgauge.batterytip.BatteryManagerPreferenceController"
+             settings:keywords="@string/keywords_battery_adaptive_preferences" />
++
++        <!-- Battery light -->
++        <lineageos.preference.LineagePartsPreference
++            android:key="battery_lights"
++            settings:requiresConfig="@*lineageos.platform:integer/config_deviceLightCapabilities"
++            settings:requiresConfigMask="64" />
+     </com.android.settingslib.widget.UntitledPreferenceCategory>
+ 
+     <com.android.settingslib.widget.UntitledPreferenceCategory

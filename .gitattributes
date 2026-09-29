@@ -1,0 +1,14 @@
+# Source-build feature payloads (GApps/ndk_translation/Magisk prebuilts) — large binaries
+# extracted from the golden image. Git-LFS keeps the main repo lean. Small config (.mk/.rc/
+# .sh/.xml/.txt) stays as normal text.
+vendor/source-build/features/**/*.apk           filter=lfs diff=lfs merge=lfs -text
+vendor/source-build/features/**/*.so            filter=lfs diff=lfs merge=lfs -text
+vendor/source-build/features/ndk_translation/bin/*                    filter=lfs diff=lfs merge=lfs -text
+vendor/source-build/features/ndk_translation/guest/system/bin/arm64/*   filter=lfs diff=lfs merge=lfs -text
+vendor/source-build/features/ndk_translation/lib64/arm64/cpuinfo     filter=lfs diff=lfs merge=lfs -text
+vendor/source-build/features/magisk/magisk/magisk        filter=lfs diff=lfs merge=lfs -text
+vendor/source-build/features/magisk/magisk/magiskboot    filter=lfs diff=lfs merge=lfs -text
+vendor/source-build/features/magisk/magisk/magiskinit    filter=lfs diff=lfs merge=lfs -text
+vendor/source-build/features/magisk/magisk/magiskpolicy  filter=lfs diff=lfs merge=lfs -text
+vendor/source-build/features/magisk/magisk/busybox       filter=lfs diff=lfs merge=lfs -text
+vendor/source-build/features/widevine/vendor/bin/hw/*    filter=lfs diff=lfs merge=lfs -text

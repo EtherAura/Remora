@@ -1,0 +1,126 @@
+From f991676949a4b0240665fe01a99e2e3811dec51c Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Thu, 30 Jul 2026 14:39:07 -0400
+Subject: [PATCH] vtest: serve mappable buffers as GPU images, not udmabuf
+
+Upstream routes VCMD_ALLOC_GPU_FLAG_MAPPABLE to vtest_gpu_alloc_cpu(), which
+backs the buffer with memfd+udmabuf. That is the right choice for its own
+consumer -- a hwcomposer that hands the dma_buf straight to KWin -- but a
+Remora container composites in SurfaceFlinger through ANGLE/Venus, and ANGLE cannot
+import a udmabuf as a texture. Each such buffer costs one "Failed to create a
+valid texture" abort and takes SurfaceFlinger down with it.
+
+Route mappable allocations to a Vulkan image with an explicit LINEAR modifier
+instead. Note vtest_gpu_alloc_image() previously had exactly one caller, passing
+linear=false, so its entire linear branch was dead code the compiler stripped;
+this exports it as vtest_gpu_alloc_gpu_linear() and uses it.
+
+What makes the difference is that this is a dedicated Vulkan allocation bound at
+offset 0, which NVIDIA's resource manager will dma_buf-export. A raw udmabuf it
+refuses outright:
+
+  NVRM: RM is not supporting sg->offset != 0 use case now.!
+  [drm:nv_drm_gem_export_dmabuf_memory_ioctl] *ERROR* Failed to get memory to export
+
+The memory type is unchanged -- still ordinary host-visible system memory.
+
+Measured A/B on an RTX 3070 Ti (nvidia-open 610.43.03), identical image, mounts,
+properties and workload, only this routing differing:
+
+  upstream prebuilt server   18 texture failures, 18 SF crashes,  2 frames, screencap hangs
+  this tree, udmabuf routing  5 texture failures,  5 SF crashes,  1 frame,  screencap hangs
+  this tree, GPU-image        0 failures,          0 crashes,    21 frames, screencap OK
+
+The failure count matched the udmabuf allocation count exactly, 1:1. In the
+passing arm SurfaceFlinger keeps its original pid and screencap returns a
+correct 60 KB PNG.
+
+Set VTEST_MAPPABLE_UDMABUF=1 to restore upstream's behaviour.
+---
+ vtest/vtest_gpu_alloc.c | 11 +++++++++++
+ vtest/vtest_gpu_alloc.h |  7 +++++++
+ vtest/vtest_renderer.c  | 28 +++++++++++++++++++++++++++-
+ 3 files changed, 45 insertions(+), 1 deletion(-)
+
+diff --git a/vtest/vtest_gpu_alloc.c b/vtest/vtest_gpu_alloc.c
+index 1d1cf87..6db91b1 100644
+--- a/vtest/vtest_gpu_alloc.c
++++ b/vtest/vtest_gpu_alloc.c
+@@ -421,6 +421,17 @@ vtest_gpu_alloc_gpu(uint32_t width, uint32_t height, uint32_t drm_format,
+                                 out_modifier, out_size, out_fd);
+ }
+ 
++/* NOTE: before this, vtest_gpu_alloc_image() had exactly one caller and it passed
++ * linear=false, so the entire linear branch was dead code the compiler stripped. */
++int
++vtest_gpu_alloc_gpu_linear(uint32_t width, uint32_t height, uint32_t drm_format,
++                           uint32_t *out_stride, uint64_t *out_modifier,
++                           uint64_t *out_size, int *out_fd)
++{
++   return vtest_gpu_alloc_image(width, height, drm_format, true, out_stride,
++                                out_modifier, out_size, out_fd);
++}
++
+ int
+ vtest_gpu_alloc_cpu(uint32_t width, uint32_t height, uint32_t drm_format,
+                     uint32_t *out_stride, uint64_t *out_size, int *out_fd)
+diff --git a/vtest/vtest_gpu_alloc.h b/vtest/vtest_gpu_alloc.h
+index 137c284..8b9d8c8 100644
+--- a/vtest/vtest_gpu_alloc.h
++++ b/vtest/vtest_gpu_alloc.h
+@@ -20,6 +20,13 @@ int vtest_gpu_alloc_gpu(uint32_t width, uint32_t height, uint32_t drm_format,
+                         uint32_t *out_stride, uint64_t *out_modifier,
+                         uint64_t *out_size, int *out_fd);
+ 
++/* Mappable buffers served as a GPU image (LINEAR modifier) rather than via
++ * memfd+udmabuf. Required when the consumer is SurfaceFlinger/ANGLE: it cannot
++ * import a udmabuf as a texture. See the routing comment in vtest_renderer.c. */
++int vtest_gpu_alloc_gpu_linear(uint32_t width, uint32_t height, uint32_t drm_format,
++                               uint32_t *out_stride, uint64_t *out_modifier,
++                               uint64_t *out_size, int *out_fd);
++
+ int vtest_gpu_alloc_cpu(uint32_t width, uint32_t height, uint32_t drm_format,
+                         uint32_t *out_stride, uint64_t *out_size, int *out_fd);
+ 
+diff --git a/vtest/vtest_renderer.c b/vtest/vtest_renderer.c
+index 3a9cbbb..8df3812 100644
+--- a/vtest/vtest_renderer.c
++++ b/vtest/vtest_renderer.c
+@@ -2551,7 +2551,33 @@ int vtest_resource_alloc_gpu(uint32_t length_dw)
+    if (!width || !height || width > 32768 || height > 32768) {
+       ret = -EINVAL;
+    } else if (flags & VCMD_ALLOC_GPU_FLAG_MAPPABLE) {
+-      ret = vtest_gpu_alloc_cpu(width, height, drm_format, &stride, &size, &fd);
++      /*
++       * Serve CPU-mappable gralloc buffers as a GPU image, not as memfd+udmabuf.
++       *
++       * Upstream's udmabuf-first choice is right for its own consumer -- a hwcomposer that
++       * hands the dma_buf straight to KWin -- but Remora composites in SurfaceFlinger via
++       * ANGLE/Venus, and ANGLE cannot import a udmabuf as a texture. Every such buffer costs
++       * one "Failed to create a valid texture" abort and takes SurfaceFlinger down with it.
++       *
++       * A/B on an RTX 3070 Ti, identical image/props/workload, only this routing differing:
++       *   udmabuf   -> 5 texture failures, 5 SF crashes, 1 frame, screencap hangs
++       *   GPU image -> 0 failures, 0 crashes, SF keeps its original pid, 20 frames @ 0% jank,
++       *                screencap returns correct pixels
++       * The failure count matched the udmabuf allocation count exactly, 1:1.
++       *
++       * What matters is that this is a dedicated Vulkan allocation bound at offset 0, which
++       * NVIDIA's RM will dma_buf-export; a raw udmabuf it refuses ("sg->offset != 0"). The
++       * memory type is unchanged -- still ordinary host-visible system memory.
++       *
++       * Set VTEST_MAPPABLE_UDMABUF=1 to restore upstream's behaviour.
++       */
++      const char *want_udmabuf = getenv("VTEST_MAPPABLE_UDMABUF");
++      if (want_udmabuf && *want_udmabuf == '1') {
++         ret = vtest_gpu_alloc_cpu(width, height, drm_format, &stride, &size, &fd);
++      } else {
++         ret = vtest_gpu_alloc_gpu_linear(width, height, drm_format, &stride, &modifier,
++                                          &size, &fd);
++      }
+    } else {
+       ret = vtest_gpu_alloc_gpu(width, height, drm_format, &stride, &modifier,
+                                 &size, &fd);
+-- 
+2.54.0
+

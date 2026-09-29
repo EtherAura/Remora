@@ -1,0 +1,89 @@
+From 845b93384420a7f6d683d67c57cef5d5bf3aad0c Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 12:11:15 -0400
+Subject: [PATCH] A17 container-compat: NetBpfLoad non-fatal + ClatCoordinator
+ BPF verify non-fatal
+
+Change-Id: I0746cf5c1e61406857640b92443770fa5a2baef2
+---
+ bpf/loader/NetBpfLoad.cpp                      | 18 ++++++++++++++----
+ ...oid_server_connectivity_ClatCoordinator.cpp |  8 +++++++-
+ 2 files changed, 21 insertions(+), 5 deletions(-)
+
+diff --git a/bpf/loader/NetBpfLoad.cpp b/bpf/loader/NetBpfLoad.cpp
+index 7ba3247..e5c4898 100644
+--- a/bpf/loader/NetBpfLoad.cpp
++++ b/bpf/loader/NetBpfLoad.cpp
+@@ -1754,12 +1754,15 @@ static int doLoad(char** argv, char * const envp[]) {
+         //  kernel does not have CONFIG_BPF_JIT=y)
+         // BPF_JIT is required by R VINTF (which means 4.14/4.19/5.4 kernels),
+         // but 4.14/4.19 were released with P & Q, and only 5.4 is new in R+.
+-        if (!writeFile("/proc/sys/net/core/bpf_jit_enable", "1\n")) return 24;
++        // /proc/sys/net/core is read-only / not writable in the container — log, don't fail.
++        if (!writeFile("/proc/sys/net/core/bpf_jit_enable", "1\n"))
++            ALOGE("write 1 to /proc/sys/net/core/bpf_jit_enable FAILED");
+ 
+         // Enable JIT kallsyms export for privileged users only
+         // (Note: this (open) will fail with ENOENT 'No such file or directory' if
+         //  kernel does not have CONFIG_HAVE_EBPF_JIT=y)
+-        if (!writeFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n")) return 25;
++        if (!writeFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n"))
++            ALOGE("write 1 to /proc/sys/net/core/bpf_jit_kallsyms FAILED");
+     }
+ 
+     // Create all the pin subdirectories
+@@ -1785,13 +1788,16 @@ static int doLoad(char** argv, char * const envp[]) {
+         uint32_t progId = bpfGetNextProgId(0);  // expect 0 with errno == ENOENT
+         if (progId || errno != ENOENT) {
+             ALOGE("bpfGetNextProgId(zero) returned %u (errno %d)", progId, errno);
+-            return 32;
++            // BPF programs/maps are global (kernel-wide, not namespaced); in a container
++            // the host kernel may already have some loaded, so this is not fatal here.
++            // return 32;
+         }
+         errno = 0;
+         uint32_t mapId = bpfGetNextMapId(0);  // expect 0 with errno == ENOENT
+         if (mapId || errno != ENOENT) {
+             ALOGE("bpfGetNextMapId(zero) returned %u (errno %d)", mapId, errno);
+-            return 33;
++            // See above — pre-existing global BPF maps are not fatal in a container.
++            // return 33;
+         }
+     } else if (isAtLeastKernelVersion(4, 14)) {  // implies S through U QPR2
+         // bpfGetNext{Prog,Map}Id require 4.14+
+@@ -1836,9 +1842,13 @@ static int doLoad(char** argv, char * const envp[]) {
+         ALOGE("If this triggers reliably, you're probably missing kernel options or patches.");
+         ALOGE("If this triggers randomly, you might be hitting some memory allocation "
+               "problems or startup script race.");
++        // The container kernel may lack some BPF features; don't hard-fail the loader
++        // (reboot_on_failure would boot-loop) — log and continue.
++#if 0
+         ALOGE("--- DO NOT EXPECT SYSTEM TO BOOT SUCCESSFULLY ---");
+         sleep(20);
+         return 38;
++#endif
+     }
+ 
+     auto end = steady_clock::now();
+diff --git a/service/jni/com_android_server_connectivity_ClatCoordinator.cpp b/service/jni/com_android_server_connectivity_ClatCoordinator.cpp
+index 70991eb..de30af8 100644
+--- a/service/jni/com_android_server_connectivity_ClatCoordinator.cpp
++++ b/service/jni/com_android_server_connectivity_ClatCoordinator.cpp
+@@ -132,7 +132,13 @@ static void verifyClatPerms() {
+ 
+ #undef V2
+ 
+-    if (fatal) abort();
++    // A17: the clat (464xlat) BPF programs/maps are pinned by bpfloader, which is only
++    // partially functional in the container (we already made its failures non-fatal). When these
++    // /sys/fs/bpf/net_shared/*clatd* objects are absent, verifyPerms() sets `fatal`, and this
++    // abort() takes down system_server during NetworkStatsService JNI_OnLoad -> boot never
++    // completes. The container has no NAT64/464xlat path (IPv4 via macvlan), so clat is unused; downgrade
++    // the abort to a log so ClatCoordinator still registers and boot proceeds.
++    if (fatal) ALOGE("clat bpf verification failed; continuing without clat (container)");
+ }
+ 
+ #undef V
+-- 
+2.54.0
+

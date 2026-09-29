@@ -1,0 +1,23 @@
+service android-hardware-media-c2-vaapi-hal-1-2 /vendor/bin/hw/android.hardware.media.c2@1.2-service-vaapi-64
+    class hal
+    user media
+    # 'graphics' + 'gpu' groups so vaGetDisplayDRM can open the VF render node (/dev/dri/renderD*);
+    # mediadrm/drmrpc kept for the codec2 HAL. (the container is --privileged so DAC is permissive anyway.)
+    group mediadrm drmrpc graphics
+    ioprio rt 4
+    task_profiles ProcessCapacityHigh
+    setenv MESA_GLSL_CACHE_DISABLE 1
+    # Point libva at the in-image VA drivers (the mesa_source payload). They install
+    # to /vendor/lib64/dri (the standard VA driver dir), NOT /vendor/lib64 — so LIBVA_DRIVERS_PATH
+    # must include the dri/ subdir or va_openDriver() returns -1 ("No usable DRM render node found for
+    # VAAPI; self-disabling") and both the c2-va encoder and decoder fail to init.
+    # The driver NAME is deliberately NOT set here. It comes from the deploy
+    # (androidboot.va_driver -> ro.boot.va_driver, set by Remora's resolver from the probed host
+    # GPU — bd remora-4ei.80) and is applied by the HAL itself, in VaapiDevice::Create().
+    #
+    # It CANNOT be done here: this line used to read `setenv LIBVA_DRIVER_NAME
+    # ${ro.boot.va_driver:-iHD}` and Android init DOES NOT EXPAND ${prop:-default} in a service
+    # setenv — the HAL got that literal string, libva tried to dlopen
+    # "${ro.boot.va_driver:-iHD}_drv_video.so", and every VAAPI component failed at vaInitialize.
+    # Verified with the property both unset and set: init never expands it (bd remora-e5x.2).
+    setenv LIBVA_DRIVERS_PATH /vendor/lib64/dri

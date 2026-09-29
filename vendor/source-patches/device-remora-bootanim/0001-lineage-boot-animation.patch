@@ -1,0 +1,16 @@
+diff --git a/remora.mk b/remora.mk
+index f7d5d38..532444f 100644
+--- a/remora.mk
++++ b/remora.mk
+@@ -200,3 +200,11 @@
+ # the file is part of this tree, but a build that strips it (bare-AOSP experiments) must
+ # degrade to stock apps, not die.
+ $(call inherit-product-if-exists, $(LOCAL_PATH)/lineage.mk)
++
++# LineageOS boot animation, sized for the display. The dimensions must be set from PRODUCT
++# config (here): the board-config phase's soong_config_set does not reach soong.variables on
++# this device, so TARGET_SCREEN_* never propagates to vendor/lineage's bootanimation genrule
++# and it falls back to a tiny 600px render. half-res frames, like real Lineage devices.
++$(call soong_config_set,lineage_bootanimation,width,3760)
++$(call soong_config_set,lineage_bootanimation,height,1992)
++$(call soong_config_set,lineage_bootanimation,half_res,true)

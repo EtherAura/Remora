@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Titled like the stock system updater it replaces (Settings > System > System updates). -->
+    <string name="app_name">System updates</string>
+    <string name="tile_summary">System image updates, applied by the Remora host</string>
+</resources>

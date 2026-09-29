@@ -1,0 +1,51 @@
+diff --git a/common/sepolicy.mk b/common/sepolicy.mk
+index 9a1620d..7213ac5 100644
+--- a/common/sepolicy.mk
++++ b/common/sepolicy.mk
+@@ -1,31 +1,17 @@
++# A17: intentionally a NO-OP. Upstream contents preserved in sepolicy.mk.orig.
+ #
+-# This policy configuration will be used by all products that
+-# inherit from Lineage
++# build/make/core/config.mk:1315 includes this file on a bare $(wildcard) test — merely having
++# device/lineage/ on disk pulls LineageOS's entire sepolicy into the build, with no product config,
++# no inherit and no LINEAGE_BUILD involved. On an AOSP 17 base that policy does not build:
++#   1. private/file.te references attribute sdcard_posix_contextmount_type, which nothing in this
++#      tree declares (upstream Lineage carries it in its own system/sepolicy fork; ours is AOSP's).
++#   2. Declaring that attribute only exposes the next layer — libsepol then reports
++#      "check_assertions: 2 neverallow failures", i.e. Lineage's rules conflict with AOSP 17's
++#      neverallows. That is open-ended to chase rule by rule.
+ #
+-
+-ifeq ($(TARGET_COPY_OUT_VENDOR), vendor)
+-ifeq ($(BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE),)
+-TARGET_USES_PREBUILT_VENDOR_SEPOLICY ?= true
+-endif
+-endif
+-
+-SYSTEM_EXT_PUBLIC_SEPOLICY_DIRS += \
+-    device/lineage/sepolicy/common/public
+-
+-SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += \
+-    device/lineage/sepolicy/common/private
+-
+-ifeq ($(TARGET_USES_PREBUILT_VENDOR_SEPOLICY), true)
+-SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += \
+-    device/lineage/sepolicy/common/dynamic \
+-    device/lineage/sepolicy/common/system
+-else
+-BOARD_VENDOR_SEPOLICY_DIRS += \
+-    device/lineage/sepolicy/common/dynamic \
+-    device/lineage/sepolicy/common/vendor
+-endif
+-
+-# Include atv rules on atv product
+-ifeq ($(PRODUCT_IS_ATV), true)
+-include device/lineage/sepolicy/atv/sepolicy.mk
+-endif
++# device/remora/lineage.mk already documents this as "a sepolicy cascade not worth it while
++# SELinux is neutered", and it is neutered — this tree applies an "ignore selinux" patch. So the
++# Lineage policy buys nothing here and costs the whole sepolicy build.
++#
++# Emptied rather than deleted so the wildcard still finds a file and the include is a clean no-op;
++# deleting the directory would be a larger, harder-to-review change with the same effect.

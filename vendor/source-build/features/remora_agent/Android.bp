@@ -1,0 +1,20 @@
+// The Remora agent (bd remora-28ix.3.4) as an in-tree platform java_library: the dex jar
+// app_process loads at boot (remora-agent.rc beside it). No sdk_version on purpose — the agent
+// calls hidden APIs (ActivityThread, DisplayManagerGlobal, InputManagerGlobal,
+// VirtualDisplayConfig, ActivityTaskManager) as plain calls, which is the whole promise of
+// building the image from source (docs/MIRROR_AGENT.md). The src/ tree is STAGED from the
+// repo's agent/src by stage-features.sh — agent/build.sh compiles the same files for the
+// bind-mount dev loop, and there must never be a second copy to drift.
+java_library {
+    name: "remora-agent",
+    srcs: ["src/**/*.java"],
+    installable: true,
+    system_ext_specific: true,
+}
+
+prebuilt_etc {
+    name: "remora-agent.rc",
+    src: "remora-agent.rc",
+    sub_dir: "init",
+    system_ext_specific: true,
+}

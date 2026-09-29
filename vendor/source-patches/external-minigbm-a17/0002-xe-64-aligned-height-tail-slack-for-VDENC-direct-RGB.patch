@@ -1,0 +1,84 @@
+From c8c4f497db93d9dd1cf9c4676e94d33a61ab9610 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 17 Jul 2026 21:43:37 -0400
+Subject: xe: 64-aligned height + tail slack for VDENC direct-RGB encoder
+ buffers
+
+VDENC (HEVC low-power) reads a directly-imported RGB source in full
+64x64 CTBs. Encoder-usage 32bpp RGB linear BOs were allocated at
+8-row-aligned height (1992 rows for the 3760x1992 mirror), so the VCS
+read past the BO end and CAT-faulted ('Engine memory CAT error
+class=vcs', bd remora-ftt). Align their height to 64 and add one page
+of tail slack for the last-row CTB-width overshoot
+(ALIGN(w,64)*4 - stride < 256 bytes). Multi-planar formats keep the old
+alignment: their plane offsets are layout-visible.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Change-Id: I7f3c2e9b41d8a06c5d21ea90b8f4a2c3d1e5b6f0
+---
+ xe.c | 38 +++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 37 insertions(+), 1 deletion(-)
+
+diff --git a/xe.c b/xe.c
+index 03c019a..a46a843 100644
+--- a/xe.c
++++ b/xe.c
+@@ -245,6 +245,20 @@ static int xe_add_combinations(struct driver *drv)
+ 	return 0;
+ }
+ 
++/* The 32bpp single-plane RGB formats eligible for the c2-va direct-RGB VDENC
++ * encode source (imported into libva as a DRM_PRIME external buffer). */
++static bool xe_format_is_rgb32(uint32_t format)
++{
++	switch (format) {
++	case DRM_FORMAT_ARGB8888:
++	case DRM_FORMAT_XRGB8888:
++	case DRM_FORMAT_ABGR8888:
++	case DRM_FORMAT_XBGR8888:
++		return true;
++	}
++	return false;
++}
++
+ static int xe_align_dimensions(struct bo *bo, uint32_t format, uint32_t tiling, uint32_t *stride,
+ 			       uint32_t *aligned_height)
+ {
+@@ -287,7 +301,20 @@ static int xe_align_dimensions(struct bo *bo, uint32_t format, uint32_t tiling,
+ 		 * virtgpu_cross_domain backend which passes that flag through.
+ 		 */
+ 		if (bo->meta.use_flags & BO_USE_HW_VIDEO_ENCODER) {
+-			vertical_alignment = 8;
++			/*
++			 * VDENC (HEVC low-power) reads a directly-imported RGB
++			 * source in full 64x64 CTBs, so the allocation must
++			 * cover a 64-row-aligned height or the VCS faults past
++			 * the end of the BO (visible 1992 rows, engine reads
++			 * 2048). Only 32bpp RGB takes the direct-import path;
++			 * multi-planar formats keep the smaller alignment so
++			 * their layout-visible plane offsets don't move — they
++			 * reach the encoder through a VPP copy anyway.
++			 */
++			if (xe_format_is_rgb32(format))
++				vertical_alignment = 64;
++			else
++				vertical_alignment = 8;
+ 		} else if (format == DRM_FORMAT_R8 && *aligned_height == 1)
+ 			vertical_alignment = 1;
+ 		else
+@@ -516,6 +543,15 @@ static int xe_bo_from_format(struct bo *bo, uint32_t width, uint32_t height, uin
+ 		offset += bo->meta.sizes[plane];
+ 	}
+ 
++	/*
++	 * The VDENC CTB walker also reads full 64-px-wide blocks: on the very
++	 * last row that read runs up to ALIGN(width,64)*4 - stride bytes (< 256)
++	 * past the row end. One page of slack keeps it inside the BO.
++	 */
++	if ((bo->meta.use_flags & BO_USE_HW_VIDEO_ENCODER) &&
++	    bo->meta.tiling == XE_TILING_NONE && xe_format_is_rgb32(format))
++		offset += pagesize;
++
+ 	bo->meta.total_size = ALIGN(offset, pagesize);
+ 
+ 	return 0;

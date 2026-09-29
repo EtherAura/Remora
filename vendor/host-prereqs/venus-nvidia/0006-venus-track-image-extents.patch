@@ -1,0 +1,111 @@
+From 829035b3665b3a175fa81019be66350b05c8394d Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 31 Jul 2026 21:59:31 -0400
+Subject: [PATCH 06/16] venus: track image extents, so the display can be
+ labelled
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Frames now carry their render-target extent. Measured live, 136 frames:
+95 at 3760x1992 (the display), 14 at 3760x234 (nav bar), 11 at 3760x56 (status
+bar), 9 at 1920x1920. The display is unmistakable by extent, which is what makes
+labelling a one-time decision rather than a per-frame guess.
+
+Uses the HOST handle from the object vkr_image_create_and_add RETURNS, matching
+the framebuffer and view hooks. The previous attempt called
+vkr_image_from_handle(*args->pImage) — a cast of the GUEST handle — and every
+render-server hook went silent, including ones that had nothing to do with it.
+That is confirmed as the cause: this change alone, done the other way, resolves
+frames exactly as before.
+
+Landed on its own and verified before anything else is added, because every bug
+in this subsystem so far has presented identically as "the counter is 0".
+---
+ src/venus/vkr_image.c        | 10 +++++++++-
+ src/venus/vkr_remora_track.c | 18 +++++++++++++++++-
+ src/venus/vkr_remora_track.h |  4 ++++
+ 3 files changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index f90f9fd6..12e01bb3 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -33,7 +33,15 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+     * situation because the app does not consider the memory external.
+     */
+ 
+-   vkr_image_create_and_add(dispatch->data, args);
++   struct vkr_image *_img = vkr_image_create_and_add(dispatch->data, args);
++   /* HOST handle from the RETURNED OBJECT — the pattern the framebuffer and
++    * view hooks already use. The previous attempt called
++    * vkr_image_from_handle(*args->pImage) instead, which is a cast of the GUEST
++    * handle, and every hook went silent. */
++   if (_img && args->pCreateInfo)
++      vkr_remora_note_image_extent(_img->base.handle.image,
++                                   args->pCreateInfo->extent.width,
++                                   args->pCreateInfo->extent.height);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+index 8e38addf..05d68713 100644
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -33,6 +33,7 @@ static struct handle_map map_img_mem;    /* VkImage        -> VkDeviceMemory */
+ static struct handle_map map_view_img;   /* VkImageView    -> VkImage */
+ static struct handle_map map_cmd_view;   /* VkCommandBuffer -> VkImageView */
+ static struct handle_map map_fb_view;    /* VkFramebuffer  -> VkImageView (attach 0) */
++static struct handle_map map_img_wh;     /* VkImage        -> (w<<32)|h */
+ static uint32_t last_frame_res_id;
+ /* Per-link counters: with a five-link chain, "no frames" is uninformative —
+  * these say WHICH link is missing. */
+@@ -145,6 +146,17 @@ vkr_remora_note_image_memory(VkImage image, VkDeviceMemory memory)
+    mtx_unlock(&track_mutex);
+ }
+ 
++void
++vkr_remora_note_image_extent(VkImage image, uint32_t width, uint32_t height)
++{
++   if (!vkr_remora_enabled())
++      return;
++   call_once(&track_once, track_init);
++   mtx_lock(&track_mutex);
++   map_put(&map_img_wh, H(image), ((uint64_t)width << 32) | height);
++   mtx_unlock(&track_mutex);
++}
++
+ void
+ vkr_remora_note_view_image(VkImageView view, VkImage image)
+ {
+@@ -255,7 +267,11 @@ vkr_remora_note_submit(const VkCommandBuffer *cmds, uint32_t count)
+          /* Only on CHANGE: a compositor submits every frame, and logging each
+           * one would bury the signal. The interesting event is the render
+           * target rotating through the display's buffer pool. */
+-         fprintf(stderr, "[remora-frame] res_id=%u\n", (uint32_t)res_id);
++         {
++            const uint64_t wh = map_get(&map_img_wh, image);
++            fprintf(stderr, "[remora-frame] res_id=%u %ux%u\n", (uint32_t)res_id,
++                    (uint32_t)(wh >> 32), (uint32_t)wh);
++         }
+       }
+       last_frame_res_id = (uint32_t)res_id;
+    }
+diff --git a/src/venus/vkr_remora_track.h b/src/venus/vkr_remora_track.h
+index 30b0ad08..04cf55b7 100644
+--- a/src/venus/vkr_remora_track.h
++++ b/src/venus/vkr_remora_track.h
+@@ -45,6 +45,10 @@ void vkr_remora_note_any_cmd(const char *name);
+ 
+ void vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id);
+ void vkr_remora_note_image_memory(VkImage image, VkDeviceMemory memory);
++
++/* Extent, so the display can be labelled: several targets composite and the
++ * display is the largest. Keyed on the HOST image handle like every other map. */
++void vkr_remora_note_image_extent(VkImage image, uint32_t width, uint32_t height);
+ void vkr_remora_note_view_image(VkImageView view, VkImage image);
+ void vkr_remora_note_cmd_target(VkCommandBuffer cmd, VkImageView view);
+ 
+-- 
+2.54.0
+

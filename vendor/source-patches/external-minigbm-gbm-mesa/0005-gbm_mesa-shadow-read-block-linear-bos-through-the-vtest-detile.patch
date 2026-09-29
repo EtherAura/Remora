@@ -1,0 +1,306 @@
+From: Remora <noreply@localhost>
+Date: Wed, 5 Aug 2026 21:45:00 -0400
+Subject: [PATCH 5/5] gbm_mesa: shadow-read block-linear bos through the vtest detile
+
+bd remora-c1e. Since venus-nvidia 0023 a composited SCANOUT bo is NVIDIA
+block-linear (the host refuses RENDERABLE on a linear modifier), and
+SurfaceFlinger's screenshot path CPU-maps exactly such a bo: the capture
+destination must be RENDERABLE, so it is necessarily block-linear, and the
+caller then reads it assuming linear. Tiled bytes walked linearly are
+horizontal striped noise -- screencap and the Recents thumbnails, the whole
+screen, home screen included. The scrcpy mirror never CPU-reads the buffer
+and is unaffected.
+
+No usage-bit ranking can fix this: the bo must be NVIDIA-renderable AND
+CPU-readable-linear, and no single layout is both. So a SW_READ lock of a
+block-linear bo now fetches a GPU-detiled linear copy through the vtest
+server (VCMD_RESOURCE_READ_GPU, venus-nvidia patch 0024): send the dma_buf
+back with the geometry and modifier the allocator reported, the host blits
+it into linear staging via vkCmdCopyImageToBuffer, and the rows come back at
+meta.strides[0] -- the pitch every consumer of this handle walks. The copy
+is heap, tagged in vma->priv, freed on unmap.
+
+Any failure -- no server, an old server without the command, a refused
+import -- falls back to the raw tiled map, which is exactly the pre-existing
+behaviour: striped, but never fatal. Linear bos (video, blobs) keep the raw
+path untouched, as do WRITE-intent locks: a shadow would silently discard
+their writes, and the raw map at least keeps writes and reads consistent
+within the mapping.
+
+The client lives here and not in libgbm_mesa_wrapper.so: the wrapper's
+gbm_ops ABI carries no map flags, and this layer is where the modifier and
+the SW_READ intent are both visible. No wrapper/alloc_args ABI change, so
+0004's matched-pair constraint is not re-triggered by this patch.
+
+---
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index 4bbb900a03f5469d247f0dd0deaf00677156fae4..ddc6e09ef24444da77611f0c3407b1421074b953 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -35,16 +35,20 @@ extern "C" {
+ #include <fcntl.h>
+ #include <gbm.h>
+ #include <glob.h>
++#include <inttypes.h>
+ #include <iterator>
+ #include <linux/dma-buf.h>
+ #include <log/log.h>
++#include <pthread.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <string>
+ #include <sys/mman.h>
++#include <sys/socket.h>
+ #include <sys/stat.h>
+ #include <sys/sysmacros.h>
+ #include <sys/types.h>
++#include <sys/un.h>
+ #include <unistd.h>
+ #include <vector>
+ #include <xf86drm.h>
+@@ -53,6 +57,181 @@ extern "C" {
+ #define GBM_WRAPPER_NAME "libgbm_mesa_wrapper.so"
+ #define GBM_GET_OPS_SYMBOL "get_gbm_ops"
+ 
++/* ---- vtest shadow-read: GPU-detiled readback of block-linear bos (bd remora-c1e) ----
++ *
++ * A composited SCANOUT bo is NVIDIA block-linear (the host refuses RENDERABLE on a
++ * linear modifier), so the wrapper's raw mmap of its dma_buf hands a linear-assuming
++ * reader tiled bytes: screencap and the Recents thumbnails come back as horizontal
++ * striped noise over the whole screen. Only the GPU understands the layout, so a
++ * SW_READ lock of such a bo fetches a detiled linear copy through the vtest server
++ * (VCMD_RESOURCE_READ_GPU, venus-nvidia patch 0024) instead of mapping the fd.
++ * Linear bos (video, blobs) keep the raw path: their bytes are already right.
++ *
++ * Deliberately NOT in libgbm_mesa_wrapper.so: the wrapper's gbm_ops ABI carries no
++ * map flags, and this layer is where the modifier and the SW_READ intent are both
++ * visible. The constants mirror virglrenderer's vtest_protocol.h, exactly as the
++ * wrapper's own copy does.
++ */
++
++#define SHADOW_VTEST_HDR_DWORDS 2
++#define SHADOW_VCMD_CREATE_RENDERER 8
++#define SHADOW_VCMD_RESOURCE_READ_GPU 45
++#define SHADOW_READ_GPU_REQ_DWORDS 7
++#define SHADOW_READ_GPU_RESP_DWORDS 3
++#define SHADOW_DEFAULT_SOCKET "/dev/venus/venus.sock"
++
++static pthread_mutex_t shadow_mutex = PTHREAD_MUTEX_INITIALIZER;
++static int shadow_sock = -1;
++
++/* The tag gbm_mesa_bo_unmap uses to tell a shadow map from a wrapper map:
++ * vma->priv points at this object, an address nothing else can ever return. */
++static char shadow_cookie;
++
++static int shadow_write_all(int fd, const void *buf, size_t len)
++{
++	const char *p = (const char *)buf;
++	while (len) {
++		ssize_t n = write(fd, p, len);
++		if (n < 0 && errno == EINTR)
++			continue;
++		if (n <= 0)
++			return -1;
++		p += n;
++		len -= (size_t)n;
++	}
++	return 0;
++}
++
++static int shadow_read_all(int fd, void *buf, size_t len)
++{
++	char *p = (char *)buf;
++	while (len) {
++		ssize_t n = read(fd, p, len);
++		if (n < 0 && errno == EINTR)
++			continue;
++		if (n <= 0)
++			return -1;
++		p += n;
++		len -= (size_t)n;
++	}
++	return 0;
++}
++
++static int shadow_send_fd(int sock, int fd)
++{
++	char data = 0;
++	struct iovec iov = { &data, 1 };
++	char ctrl[CMSG_SPACE(sizeof(int))] = { 0 };
++	struct msghdr msg = { 0 };
++	msg.msg_iov = &iov;
++	msg.msg_iovlen = 1;
++	msg.msg_control = ctrl;
++	msg.msg_controllen = sizeof(ctrl);
++
++	struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
++	c->cmsg_level = SOL_SOCKET;
++	c->cmsg_type = SCM_RIGHTS;
++	c->cmsg_len = CMSG_LEN(sizeof(int));
++	memcpy(CMSG_DATA(c), &fd, sizeof(fd));
++
++	ssize_t n;
++	do {
++		n = sendmsg(sock, &msg, 0);
++	} while (n < 0 && errno == EINTR);
++	return n < 0 ? -1 : 0;
++}
++
++static int shadow_connect(void)
++{
++	char path[PROPERTY_VALUE_MAX];
++	if (property_get("mesa.vtest.socket.name", path, NULL) <= 0)
++		strcpy(path, SHADOW_DEFAULT_SOCKET);
++
++	int sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++	if (sock < 0)
++		return -1;
++
++	struct sockaddr_un addr = { 0 };
++	addr.sun_family = AF_UNIX;
++	strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
++	if (connect(sock, (struct sockaddr *)&addr, sizeof(addr))) {
++		drv_loge("shadow read: connect(%s): %s", path, strerror(errno));
++		close(sock);
++		return -1;
++	}
++
++	/* CREATE_RENDERER; the length field is in bytes (strlen+1) */
++	const char name[8] = "sw-read";
++	const uint32_t hdr[SHADOW_VTEST_HDR_DWORDS] = { sizeof(name),
++							SHADOW_VCMD_CREATE_RENDERER };
++	if (shadow_write_all(sock, hdr, sizeof(hdr)) ||
++	    shadow_write_all(sock, name, sizeof(name))) {
++		close(sock);
++		return -1;
++	}
++	return sock;
++}
++
++static int shadow_read_pixels(int buf_fd, uint32_t width, uint32_t height,
++			      uint32_t drm_format, uint64_t modifier, uint32_t row_stride,
++			      void *dst, size_t dst_size)
++{
++	const uint64_t want = (uint64_t)row_stride * height;
++	if (!want || want > dst_size)
++		return -EINVAL;
++
++	const uint32_t req[SHADOW_VTEST_HDR_DWORDS + SHADOW_READ_GPU_REQ_DWORDS] = {
++		SHADOW_READ_GPU_REQ_DWORDS, SHADOW_VCMD_RESOURCE_READ_GPU,
++		width,	  height,
++		drm_format, (uint32_t)modifier,
++		(uint32_t)(modifier >> 32), row_stride,
++		0,
++	};
++	uint32_t resp[SHADOW_VTEST_HDR_DWORDS + SHADOW_READ_GPU_RESP_DWORDS];
++
++	pthread_mutex_lock(&shadow_mutex);
++
++	/* lazy connect + one reconnect (server may restart under us), the same
++	 * shape as the wrapper's allocation path */
++	int attempt;
++	for (attempt = 0; attempt < 2; attempt++) {
++		if (shadow_sock < 0)
++			shadow_sock = shadow_connect();
++		if (shadow_sock < 0)
++			break;
++		if (shadow_write_all(shadow_sock, req, sizeof(req)) == 0 &&
++		    shadow_send_fd(shadow_sock, buf_fd) == 0 &&
++		    shadow_read_all(shadow_sock, resp, sizeof(resp)) == 0)
++			goto have_resp;
++		close(shadow_sock);
++		shadow_sock = -1;
++	}
++	pthread_mutex_unlock(&shadow_mutex);
++	return -ENODEV;
++
++have_resp:
++	{
++		const uint32_t status = resp[SHADOW_VTEST_HDR_DWORDS + 0];
++		const uint64_t got = resp[SHADOW_VTEST_HDR_DWORDS + 1] |
++				     (uint64_t)resp[SHADOW_VTEST_HDR_DWORDS + 2] << 32;
++		if (status) {
++			/* the server sent no payload; the stream is still in sync */
++			pthread_mutex_unlock(&shadow_mutex);
++			return -(int)status;
++		}
++		if (got != want || shadow_read_all(shadow_sock, dst, (size_t)got)) {
++			/* an unexpected payload size desyncs the stream: drop the
++			 * connection rather than misparse every later reply */
++			close(shadow_sock);
++			shadow_sock = -1;
++			pthread_mutex_unlock(&shadow_mutex);
++			return -EIO;
++		}
++	}
++	pthread_mutex_unlock(&shadow_mutex);
++	return 0;
++}
++
+ void gbm_mesa_resolve_format_and_use_flags(struct driver *drv, uint32_t format, uint64_t use_flags,
+ 					   uint32_t *out_format, uint64_t *out_use_flags)
+ {
+@@ -542,12 +721,47 @@ int gbm_mesa_bo_get_plane_fd(struct bo *bo, size_t plane)
+ 
+ void *gbm_mesa_bo_map(struct bo *bo, struct vma *vma, size_t plane, uint32_t map_flags)
+ {
++	auto priv = (GbmMesaBoPriv *)bo->priv;
++
++	/*
++	 * A block-linear bo's raw bytes are tiled, and a SW_READ lock wants pixels:
++	 * fetch a GPU-detiled linear copy from the vtest server instead of mapping
++	 * the fd (bd remora-c1e). Rows land at meta.strides[0], the pitch every
++	 * consumer of this handle walks. Any failure falls back to the raw map —
++	 * exactly the pre-existing behaviour: striped, but never fatal.
++	 *
++	 * A WRITE-intent lock keeps the raw map too: a shadow would silently
++	 * discard the writes, and the raw map at least keeps writes and reads
++	 * consistent within the mapping.
++	 */
++	if ((map_flags & BO_MAP_READ) && !(map_flags & BO_MAP_WRITE) &&
++	    bo->meta.format_modifier != DRM_FORMAT_MOD_LINEAR &&
++	    bo->meta.format_modifier != DRM_FORMAT_MOD_INVALID) {
++		void *shadow = malloc(bo->meta.total_size);
++		if (shadow) {
++			int err = shadow_read_pixels(priv->fds[0].Get(), bo->meta.width,
++						     bo->meta.height, bo->meta.format,
++						     bo->meta.format_modifier,
++						     bo->meta.strides[0], shadow,
++						     bo->meta.total_size);
++			if (!err) {
++				vma->length = bo->meta.total_size;
++				vma->priv = &shadow_cookie;
++				return shadow;
++			}
++			free(shadow);
++			drv_loge("shadow read of %ux%u mod=0x%" PRIx64
++				 " failed (%d); falling back to the raw tiled map",
++				 bo->meta.width, bo->meta.height,
++				 (uint64_t)bo->meta.format_modifier, err);
++		}
++	}
++
+ 	auto drv = gbm_mesa_get_or_init_driver(bo->drv, true);
+ 	auto wr = drv->wrapper;
+ 
+ 	vma->length = bo->meta.total_size;
+ 
+-	auto priv = (GbmMesaBoPriv *)bo->priv;
+ 	assert(priv->gbm_bo != nullptr);
+ 
+ 	void *buf = MAP_FAILED;
+@@ -567,6 +781,14 @@ void *gbm_mesa_bo_map(struct bo *bo, struct vma *vma, size_t plane, uint32_t map
+ 
+ int gbm_mesa_bo_unmap(struct bo *bo, struct vma *vma)
+ {
++	/* a shadow read is heap, not a wrapper mapping; drv.c stored its
++	 * address in vma->addr after gbm_mesa_bo_map returned it */
++	if (vma->priv == &shadow_cookie) {
++		free(vma->addr);
++		vma->priv = nullptr;
++		return 0;
++	}
++
+ 	auto drv = gbm_mesa_get_or_init_driver(bo->drv, true);
+ 	auto wr = drv->wrapper;
+ 

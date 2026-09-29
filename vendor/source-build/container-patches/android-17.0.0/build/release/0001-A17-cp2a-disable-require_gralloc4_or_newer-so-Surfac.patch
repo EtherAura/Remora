@@ -1,0 +1,31 @@
+From 503569adfeff10f32bbd2d0a27930fa4b939d856 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 14:09:51 -0400
+Subject: [PATCH] A17/cp2a: disable require_gralloc4_or_newer so SurfaceFlinger
+ keeps gralloc2 (the container's mapper@2.0)
+
+Change-Id: I21130c5ee132ced332d607420a190f6b1b593434
+---
+ .../require_gralloc4_or_newer_flag_values.textproto        | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/aconfig/cp2a/com.android.graphics.libui.flags/require_gralloc4_or_newer_flag_values.textproto b/aconfig/cp2a/com.android.graphics.libui.flags/require_gralloc4_or_newer_flag_values.textproto
+index 234da30..de83db7 100644
+--- a/aconfig/cp2a/com.android.graphics.libui.flags/require_gralloc4_or_newer_flag_values.textproto
++++ b/aconfig/cp2a/com.android.graphics.libui.flags/require_gralloc4_or_newer_flag_values.textproto
+@@ -1,6 +1,11 @@
+ flag_value {
+   package: "com.android.graphics.libui.flags"
+   name: "require_gralloc4_or_newer"
+-  state: ENABLED
++  # Remora: keep gralloc 2/3 support. This flag (A17/cp2a) drops gralloc 2/3, but the container's
++  # graphics HAL is android.hardware.graphics.mapper@2.0-impl-2.1 (Gralloc2). With the flag ENABLED,
++  # GraphicBufferMapper::requireMapper4() is true so SurfaceFlinger only probes Gralloc5/Gralloc4,
++  # finds neither, and LOG_ALWAYS_FATAL("gralloc-mapper is missing") crash-loops SF -> no boot.
++  # Disable it so the Gralloc2 fallback path is used again.
++  state: DISABLED
+   permission: READ_ONLY
+ }
+-- 
+2.54.0
+

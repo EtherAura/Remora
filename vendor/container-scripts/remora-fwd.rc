@@ -1,0 +1,55 @@
+# The v4->v6 adb forwarder as an ANDROID INIT SERVICE (bd remora-yn4).
+#
+# Bind-mounted to /vendor/etc/init/remora-fwd.rc by buildDockerRunArgv, so it needs no image
+# change and init parses it on every boot alongside the vendor HAL .rc files.
+#
+# Why init rather than the shell supervisor in remora-netfix.sh: init starts this on EVERY
+# container start, including ones Remora knows nothing about. A container restarted outside a
+# deploy — a bare `docker start`, a restart policy, whatever restarted this instance
+# came back with Android healthy and NO forwarder, so adb and the mirror were dead
+# until the next deploy re-ran netfix. Nothing in Remora could have noticed: it was not running.
+#
+# init also supervises for free. A non-oneshot service is restarted when it exits, which is the
+# same job the netfix shell loop does but done by PID 1, so it cannot itself be killed by whatever
+# has been killing fwd — and init LOGS each death to logcat ("Service 'remora_fwd' ... exited"),
+# which is a second, independent record beside the supervisor's own log.
+#
+# /remora/fwd exists only because Remora mounted it. A container without that bind logs a failure
+# to start and carries on booting; nothing else depends on this service.
+# STARTED AFTER BOOT, not with its class. `class main` runs this before the container's network
+# exists — eth0 is renamed into the namespace roughly a minute after init begins — and fwd exits
+# status 1 when it cannot bind, so init restarted it every 5s until the network arrived: measured
+# at 15 failed starts per boot, and enough for init to log "exited 4 times in 4 minutes". It
+# converged, but a service that flaps fifteen times on every boot is noise that would bury the
+# ONE exit worth reading (the spontaneous death this bead is still chasing).
+#
+# `disabled` only suppresses the automatic start with the class; once started, init still restarts
+# it whenever it exits, so the supervision this is here for is unaffected.
+# Run through a shell purely to KEEP fwd's OUTPUT. init discards a service's stdout/stderr, so an
+# init-started fwd said nothing at all — its own "[fwd] bind: ..." line, the one thing that names
+# why a start failed, went nowhere, and repeated "exited with status 1" gave no reason. `exec`
+# replaces the shell with fwd, so init still tracks and restarts fwd's own pid; the shell is a
+# redirection, not a supervisor. Same log the fallback supervisor writes, so there is one place to
+# read whichever mechanism is running (bd remora-yn4).
+# The loop WAITS for /data rather than failing on it: the start trigger fires on the first
+# sys.boot_completed, which this image reaches before /data/local/tmp is writable, so the
+# redirection failed and the shell exited before fwd ever ran.
+#
+# KNOWN RESIDUE, measured and left deliberately: the service still logs ~12 failed starts during
+# boot before it sticks (down from ~24 without the wait). They produce NO output in this log, so
+# they die before fwd runs — the shell wrapper itself is failing that early — and every one is
+# init's own 5s retry, which is why "exited 4 times in 4 minutes" appears. It ALWAYS converges:
+# init.svc.remora_fwd reaches "running", 5556 listens, and one fwd survives. Three rounds of
+# narrowing (late_start + disabled, a bind-retry in fwd.c, this wait loop) each reduced it without
+# removing it, and the remaining cause is not understood. It is noise on a mechanism that works,
+# not a failure — but it is noise in exactly the log someone will read to find the spontaneous
+# death this whole bead is chasing, so anyone reading here should discard boot-window entries and
+# look only at exits AFTER the service has settled.
+service remora_fwd /system/bin/sh -c "until mkdir -p /data/local/tmp 2>/dev/null && : >>/data/local/tmp/remora-fwd.log 2>/dev/null; do sleep 1; done; exec /remora/fwd 5556 5555 >>/data/local/tmp/remora-fwd.log 2>&1"
+    class late_start
+    user root
+    group root
+    disabled
+
+on property:sys.boot_completed=1
+    start remora_fwd

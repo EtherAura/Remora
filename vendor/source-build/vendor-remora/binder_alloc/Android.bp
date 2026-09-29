@@ -1,0 +1,18 @@
+// Remora-specific module AND installed name. Both halves are forced, and the second one is not
+// obvious, so it is written down: a `stem: "binder_alloc"` here is a HARD KATI ERROR in any tree
+// that also defines a binder_alloc module —
+//   out/soong/installs-remora_x86_64.mk: error: overriding commands for target
+//   `out/target/product/remora_x86_64/vendor/bin/binder_alloc', previously defined at ...
+// TESTED, not assumed. It is not a matter of what the product installs: soong emits
+// install rules for a module regardless of whether the product installs it, so the path collides
+// as long as the other project exists in the tree at all.
+//
+// The installed name therefore moves, and the init.rc line that execs it moves with it, in
+// Remora's own container-compat patch for system/core. Those two must change together or the
+// image ships an init.rc naming a binary that is not there (bd remora-28ix.4).
+cc_binary {
+    name: "remora_binder_alloc",
+    srcs: ["main.cpp"],
+    cflags: ["-Wall", "-Werror"],
+    vendor: true,
+}

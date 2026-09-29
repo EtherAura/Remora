@@ -1,0 +1,89 @@
+From 00c922a443a6d99c6773f2bc4fd17d7a37be9d5f Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Fri, 31 Jul 2026 07:14:03 -0400
+Subject: [PATCH] A17 container-compat: sandbox-proof memfd detection in
+ libcutils ashmem
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Sandboxed WebView renderers rendered black (Play sign-in, Geekbench results,
+any WebView): every shared-memory region they received failed validation and
+the renderer could not draw (bd remora-4ei.76).
+
+Two compounding defects in ashmem-dev.cpp:
+
+1. is_memfd_fd() identified a memfd only via readlink(/proc/self/fd/N), which
+   Chromium's renderer sandbox denies with EPERM — and with sys.use_memfd=true
+   a memfd is exactly what every region is. Ask the fd itself first:
+   F_GET_SEALS answers >= 0 for every shmem-backed fd (memfd with or without
+   MFD_ALLOW_SEALING) and EINVAL for ashmem's chardev fd and ordinary files.
+   The /proc probe remains as fallback. All four is_memfd_fd() callers
+   (ashmem_valid, get_size, set_prot_region, pin/unpin) are repaired at once.
+
+2. The ashmem fallback could never work anyway: get_ashmem_device_path()
+   probed /dev/ashmem<boot_id>, a node this container never creates — the
+   existing container-compat patch opens plain /dev/ashmem in __ashmem_open() but left
+   the rdev probe on the suffixed path, so __init_ashmem_rdev() failed
+   image-wide ('Unable to stat ashmem device'). Probe the plain path, which
+   also drops a /proc read a sandboxed process cannot perform.
+
+Verified live on the running A17 instance: the failing pair
+  readlink(/proc/self/fd/N) failed: Operation not permitted
+  Unable to stat ashmem device: No such file or directory
+storms from com.android.webview:sandboxed_process0 on every WebView load, and
+stat of the suffixed path fails even unsandboxed. F_GET_SEALS discrimination
+verified against memfd (sealed + unsealed), a chardev and a regular file.
+
+Change-Id: I8557863d2e4d12aefe739ad0bf77a5ae9a311e6d
+---
+ libcutils/ashmem-dev.cpp | 26 +++++++++++++++++---------
+ 1 file changed, 17 insertions(+), 9 deletions(-)
+
+diff --git a/libcutils/ashmem-dev.cpp b/libcutils/ashmem-dev.cpp
+index 7fdec30df..bca3a5965 100644
+--- a/libcutils/ashmem-dev.cpp
++++ b/libcutils/ashmem-dev.cpp
+@@ -111,15 +111,12 @@ bool use_memfd() {
+ }
+ 
+ static std::string get_ashmem_device_path() {
+-    static const std::string boot_id_path = "/proc/sys/kernel/random/boot_id";
+-    std::string boot_id;
+-    if (!android::base::ReadFileToString(boot_id_path, &boot_id)) {
+-        ALOGE("Failed to read %s: %m", boot_id_path.c_str());
+-        return "";
+-    }
+-    boot_id = android::base::Trim(boot_id);
+-
+-    return "/dev/ashmem" + boot_id;
++    // The container ships a plain /dev/ashmem (memfd-backed shim) — there is no
++    // boot_id-suffixed node, so probing "/dev/ashmem<boot_id>" made __init_ashmem_rdev() fail
++    // everywhere and no genuine ashmem fd could ever pass __ashmem_is_ashmem(). Use the plain
++    // path, matching what __ashmem_open() already opens (bd remora-4ei.76). This also drops the
++    // /proc boot_id read, which a sandboxed process cannot perform anyway.
++    return "/dev/ashmem";
+ }
+ 
+ static bool __init_ashmem_rdev() {
+@@ -197,6 +194,17 @@ static int __ashmem_check_failure(int fd, int result) {
+ }
+ 
+ static bool is_memfd_fd(int fd) {
++    // Ask the fd itself before consulting /proc. Chromium's renderer sandbox denies
++    // readlink(/proc/self/fd/*) with EPERM, and a memfd region is exactly what a sandboxed
++    // WebView renderer receives (sys.use_memfd=true) — so the /proc probe below misidentified
++    // every region, the ashmem fallback could not rescue it either (no ashmem node in the
++    // sandbox's /dev), and WebView composited black (bd remora-4ei.76). F_GET_SEALS answers
++    // >= 0 only for shmem-backed fds — every memfd, sealing-capable or not — while ashmem's
++    // chardev fd and ordinary file fds get EINVAL.
++    if (fcntl(fd, F_GET_SEALS) >= 0) {
++        return true;
++    }
++
+     std::string fd_path = android::base::StringPrintf("/proc/self/fd/%d", fd);
+     std::string result;
+     if (!android::base::Readlink(fd_path, &result)) {
+-- 
+2.54.0
+

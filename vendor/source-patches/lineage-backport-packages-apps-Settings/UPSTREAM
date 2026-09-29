@@ -1,0 +1,8 @@
+project=packages/apps/Settings
+branch=lineage-23.2
+upstream_ref=adf61c13902a2789c965e6d74de5c466f5603b55
+upstream_sha=adf61c13902a2789c965e6d74de5c466f5603b55
+merge_base=87447b4d33d75f26d67014fcf44526883ef01de1
+base_sha=213829fb67f5e070029e0513a088f31bc8f5c1ed
+generated_patches=70
+excluded_patches=28

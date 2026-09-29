@@ -1,0 +1,6 @@
+# Device-local release-config map for remora (bd remora-28ix.4 R1). It contributes
+# remora-specific release-flag value overrides (see flag_values/) on top of whatever
+# base release config is lunched. It declares no new configs or aliases — it exists
+# only to anchor the flag_values/ overrides.
+# Wired in via PRODUCT_RELEASE_CONFIG_MAPS in remora.mk.
+default_containers: "vendor"

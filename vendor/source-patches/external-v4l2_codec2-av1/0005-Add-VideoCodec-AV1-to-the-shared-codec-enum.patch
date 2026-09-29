@@ -1,0 +1,141 @@
+From: Remora <noreply@localhost>
+Date: Sun, 2 Aug 2026 13:05:00 -0400
+Subject: [PATCH 5/5] Add VideoCodec::AV1 to the shared codec enum
+
+c2-va gained an AV1 stateless decode core (VaapiVideoDecoderAV1.cpp), but
+the reusable VideoCodec enum here had no AV1 member, so the component could
+not be registered at all. Adds the member plus every switch arm it makes
+exhaustive: name, profile range (AV1_0..AV1_1), levels, media type, the
+interface's profile/level params, and an output delay of 8 (AV1 holds up to
+8 reference frames, same slot model as VP9). V4L2Decoder groups AV1 with
+VP8/VP9 as whole-frame input, which is what the c2-va path feeds it.
+
+---
+diff --git a/common/Common.cpp b/common/Common.cpp
+index 24bb975..c82b45a 100644
+--- a/common/Common.cpp
++++ b/common/Common.cpp
+@@ -45,6 +45,8 @@ bool isValidProfileForCodec(VideoCodec codec, C2Config::profile_t profile) {
+     case VideoCodec::HEVC:
+         return ((profile >= C2Config::PROFILE_HEVC_MAIN) &&
+                 (profile <= C2Config::PROFILE_HEVC_3D_MAIN));
++    case VideoCodec::AV1:
++        return ((profile >= C2Config::PROFILE_AV1_0) && (profile <= C2Config::PROFILE_AV1_1));
+     default:
+         return false;
+     }
+diff --git a/common/VideoTypes.cpp b/common/VideoTypes.cpp
+index 61feb06..0375c9c 100644
+--- a/common/VideoTypes.cpp
++++ b/common/VideoTypes.cpp
+@@ -21,6 +21,8 @@ const char* VideoCodecToString(VideoCodec codec) {
+         return "VP9";
+     case VideoCodec::HEVC:
+         return "HEVC";
++    case VideoCodec::AV1:
++        return "AV1";
+     }
+ }
+ 
+diff --git a/common/include/v4l2_codec2/common/VideoTypes.h b/common/include/v4l2_codec2/common/VideoTypes.h
+index 54786e8..8f29bfc 100644
+--- a/common/include/v4l2_codec2/common/VideoTypes.h
++++ b/common/include/v4l2_codec2/common/VideoTypes.h
+@@ -19,10 +19,12 @@ enum class VideoCodec {
+     VP8,
+     VP9,
+     HEVC,
++    AV1,
+ };
+ 
+ constexpr std::initializer_list<VideoCodec> kAllCodecs = {VideoCodec::H264, VideoCodec::VP8,
+-                                                          VideoCodec::VP9, VideoCodec::HEVC};
++                                                          VideoCodec::VP9, VideoCodec::HEVC,
++                                                          VideoCodec::AV1};
+ 
+ const char* VideoCodecToString(VideoCodec codec);
+ const char* profileToString(C2Config::profile_t profile);
+diff --git a/components/ComponentStore.cpp b/components/ComponentStore.cpp
+index aa4eba8..4a09336 100644
+--- a/components/ComponentStore.cpp
++++ b/components/ComponentStore.cpp
+@@ -180,6 +180,9 @@ std::shared_ptr<const C2Component::Traits> ComponentStore::getTraits(const C2Str
+     case VideoCodec::HEVC:
+         traits->mediaType = MEDIA_MIMETYPE_VIDEO_HEVC;
+         break;
++    case VideoCodec::AV1:
++        traits->mediaType = MEDIA_MIMETYPE_VIDEO_AV1;
++        break;
+     }
+ 
+     mCachedTraits.emplace(name, traits);
+diff --git a/components/DecodeInterface.cpp b/components/DecodeInterface.cpp
+index f20f3b2..fc49dc8 100644
+--- a/components/DecodeInterface.cpp
++++ b/components/DecodeInterface.cpp
+@@ -155,6 +155,9 @@ DecodeInterface::DecodeInterface(const std::string& name,
+         case VideoCodec::HEVC:
+             profiles = {C2Config::PROFILE_HEVC_MAIN};
+             break;
++        case VideoCodec::AV1:
++            profiles = {C2Config::PROFILE_AV1_0};
++            break;
+         }
+     }
+ 
+@@ -187,6 +190,11 @@ DecodeInterface::DecodeInterface(const std::string& name,
+                       C2Config::LEVEL_VP9_2_1, C2Config::LEVEL_VP9_3,   C2Config::LEVEL_VP9_3_1,
+                       C2Config::LEVEL_VP9_4,   C2Config::LEVEL_VP9_4_1, C2Config::LEVEL_VP9_5};
+             break;
++        case VideoCodec::AV1:
++            levels = {C2Config::LEVEL_AV1_2,   C2Config::LEVEL_AV1_2_1, C2Config::LEVEL_AV1_3,
++                      C2Config::LEVEL_AV1_3_1, C2Config::LEVEL_AV1_4,   C2Config::LEVEL_AV1_4_1,
++                      C2Config::LEVEL_AV1_5,   C2Config::LEVEL_AV1_5_1};
++            break;
+         case VideoCodec::HEVC:
+             levels = {C2Config::LEVEL_HEVC_MAIN_1,   C2Config::LEVEL_HEVC_MAIN_2,
+                       C2Config::LEVEL_HEVC_MAIN_2_1, C2Config::LEVEL_HEVC_MAIN_3,
+@@ -235,6 +243,17 @@ DecodeInterface::DecodeInterface(const std::string& name,
+                              .withSetter(ProfileLevelSetter)
+                              .build());
+         break;
++    case VideoCodec::AV1:
++        inputMime = MEDIA_MIMETYPE_VIDEO_AV1;
++        addParameter(DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
++                             .withDefault(new C2StreamProfileLevelInfo::input(
++                                     0u, static_cast<C2Config::profile_t>(defaultProfile),
++                                     static_cast<C2Config::level_t>(defaultLevel)))
++                             .withFields({C2F(mProfileLevel, profile).oneOf(profiles),
++                                          C2F(mProfileLevel, level).oneOf(levels)})
++                             .withSetter(ProfileLevelSetter)
++                             .build());
++        break;
+ 
+     case VideoCodec::HEVC:
+         inputMime = MEDIA_MIMETYPE_VIDEO_HEVC;
+@@ -462,6 +481,9 @@ uint32_t DecodeInterface::getOutputDelay(VideoCodec codec) {
+     case VideoCodec::VP9:
+         // Reference: https://www.webmproject.org/vp9/levels/
+         return 8;
++    case VideoCodec::AV1:
++        // Same slot model as VP9: up to 8 reference frames may be held.
++        return 8;
+     }
+ }
+ 
+diff --git a/v4l2/V4L2Decoder.cpp b/v4l2/V4L2Decoder.cpp
+index 182c196..685bee5 100644
+--- a/v4l2/V4L2Decoder.cpp
++++ b/v4l2/V4L2Decoder.cpp
+@@ -48,8 +48,9 @@ bool waitForDRC(const C2ConstLinearBlock& input, std::optional<VideoCodec> codec
+         HEVCNalParser parser(view.data(), view.capacity());
+         return parser.locateIDR();
+     }
+-    // For VP8 and VP9 it is assumed that the input buffer contains a single
+-    // frame that is not fragmented.
++    // For VP8, VP9 and AV1 it is assumed that the input buffer contains a
++    // single frame that is not fragmented.
++    case VideoCodec::AV1:
+     case VideoCodec::VP9:
+         // 0 - key frame; 1 - interframe
+         return ((pos[0] & kVP9FrameTypeMask) == 0);

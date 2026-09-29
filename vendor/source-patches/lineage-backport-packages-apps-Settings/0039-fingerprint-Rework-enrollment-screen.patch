@@ -1,0 +1,357 @@
+From 702fcfae26049c02c484b2accb42a90ff35b48e6 Mon Sep 17 00:00:00 2001
+From: Bruno Martins <bgcngm@gmail.com>
+Date: Thu, 3 Feb 2022 21:03:02 +0000
+Subject: [PATCH 39/98] fingerprint: Rework enrollment screen
+
+This is based on the following changes, adapted to Android 12
+considering the fact that AOSP now supports FOD as well as
+fingerprint sensors embedded in the power button:
+
+Author: d34d <clark@cyngn.com>
+Date:   2016-06-23 11:21:45 -0700
+
+    fingerprint: Allow devices to configure sensor location
+
+    The text for enrolling a fingerprint always assumes the sensor is
+    located on the back.  This patch adds a config integer that defines
+    where the sensor is located on the device.
+      0 = back
+      1 = front
+      2 = left side
+      3 = right side
+
+    This patch also adds a new drawable that shows the front of the device
+    when applicable.
+
+    Change-Id: Ia8f5f8ff4ba4d13d35aed3052f60ff665dd4f294
+    TICKET: CYNGNOS-3089
+
+Author: Paul Keith <javelinanddart@gmail.com>
+Date:   2018-01-26 22:23:03 +0100
+
+    FingerprintEnrollFindSensor: Don't overlay front for side sensors
+
+    * Both the base image and the base image + overlay are equally nonsense
+      for devices with a side fingerprint scanner, but for those that overlay
+      a custom fingerprint enrollment graphic, this image overlay wreaks havoc
+    * Only set this overlay to be visible if the sensor is on the front, to
+      allow devices with side sensors to only overlay the base image
+
+    Change-Id: I7cbcea4830d4526cf9f7d139e7f84f21117fa9c4
+
+Author: Michael W <baddaemon87@gmail.com>
+Date:   Thu Jan 17 21:44:28 2019 +0100
+
+    Settings: Make find fingerprint look great again
+
+    * The current logic places the animation based on the size of
+      the whole overlay instead of the image, which is a fixed-size png
+    * Get the size of the image instead and place the dot relative to it
+    * Also use "wrap_content" and add a padding to the top so the
+      distance to the text is a fixed thing, not depending on how
+      much space relative to the wanted space it actually takes
+
+    * Preview: https://imgur.com/a/XanJ2aP
+
+    Change-Id: I2bd08cee1abd1c6bad78ca1efc2189e573ded3cc
+
+Author: LuK1337 <priv.luk@gmail.com>
+Date:   Sat Dec 15 17:11:41 2018 +0100
+
+    fingerprint: Remove unnecessary spacing in enroll layout
+
+    * This makes it look ugly on 480 dpi devices.
+
+    Change-Id: Ia1bbd443063a125878dddd12e5c6a816d289fb82
+
+Author: Bruno Martins <bgcngm@gmail.com>
+Date:   Thu Mar 17 10:30:41 2022 +0000
+
+    FingerprintEnrollEnrolling: Set proper dialog message when user touches fp icon
+
+    Change-Id: Iafd86e636b0c54bbddcf26d153cc671259391259
+
+Author: Michael Bestas <mkbestas@lineageos.org>
+Date:   Tue Dec 6 20:40:45 2022 +0200
+
+    Use AOSP string for side fps enrollment
+
+    Change-Id: I9267b6a75716f45044f4d7a51650ca4f928b104e
+
+Author: Bruno Martins <bgcngm@gmail.com>
+Date:   Tue Apr 18 16:16:34 2023 +0100
+
+    FingerprintEnroll: Add config for dedicated side mounted fps
+
+    Google likes to assume that there only exists devices with
+    fingerprint sensor embedded in the power button, but that's
+    not always true. Since specific enrollment messages were added
+    just for those devices, we need to address our own usecase.
+
+    Change-Id: I56a7d7fe0374fe5a1fce5e24bdbb265cb5edc246
+
+Change-Id: If372ef50c4a719e89a4e80cc20e3eb445af61bc6
+---
+ ...gerprint_sensor_location_front_overlay.png | Bin 0 -> 2704 bytes
+ .../fingerprint_enroll_find_sensor_base.xml   |   5 ----
+ ...fingerprint_enroll_find_sensor_graphic.xml |  16 +++++++++---
+ res/values/cm_strings.xml                     |  24 +++++++++++++++++-
+ res/values/lineage_config.xml                 |   7 +++++
+ res/values/lineage_dimens.xml                 |  21 +++++++++++++++
+ .../FingerprintEnrollEnrolling.java           |  11 +++++++-
+ .../FingerprintEnrollFindSensor.java          |  17 ++++++++++++-
+ .../FingerprintLocationAnimationView.java     |   8 +++++-
+ 9 files changed, 97 insertions(+), 12 deletions(-)
+ create mode 100644 res/drawable-nodpi/fingerprint_sensor_location_front_overlay.png
+ create mode 100644 res/values/lineage_dimens.xml
+
+diff --git a/res/drawable-nodpi/fingerprint_sensor_location_front_overlay.png b/res/drawable-nodpi/fingerprint_sensor_location_front_overlay.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..f1e5bde0edd393e666477fc83e88488d86d56c54
+GIT binary patch
+literal 2704
+zcmeAS@N?(olHy`uVBq!ia0y~yV4Tmuz^uW+1{4w4^tJ#<u_bxCyD<C*!3BGlPX>x`
+z7I;J!Gcf3QgD~S#+i5F-g6t)pzOL*K*u;f+7_>Qsw=pnq$$GjthE&{od-r1Ar2vNG
+z59_T{^k#RSOaJg!{zQ3%iQrv<DE%sq7>fl7+Nt-a7i{j;v7GSv^}@G`j6m~nfP|8%
+ziVPOj?{auMe=zVY_4~BX=GoKq(<<kmUX)P!$oOM=-sBpchcl-NEM-Zb`y_l)zN%Z8
+z6Z;(rriR6bK3kr2o>Z=C6IyvCRd4R}`?}se0`d)$uUbD``TbAq*3C*)+kRQvtYFxa
+zSKRk}#?MWDMd4vy9sCD8SLK}lDD!%m&2h`pkBk;K_dJh@Os`gzdBoiCgTd#p(cgFX
+zGfx$RjN0;YT}<@XigQ-$%7o<`jKAL8yTG@6^ULnU+vjWT7}}dRd6hH2)L9>Y^qShw
+znNKuN<{wtGV|X65+`2zF{dea@H7DQB%Zpl$|D311gHLwBea7Fp|MqQs;hnQu*^WW^
+z++009lu%JS?z^nw{KnH~C(Yp4p;bER_oofBf2C$!dh5T<WB>d0jrY>p8YUk4JmZP;
+zxA$CU{>Oj4v-I}vH=Yd=lVaCO9(JDO|8m<B@p-31r&=aX%bT9I+t~PppeB#)!n@I_
+z{-@ULN#hd{kXQR}XFSn2pOppVSqFLFm_yd8xiy+nj}D9aq;!|4Z<yIuT6tE+z(8XD
+zYooT%ZQ+5I|BG+3bFEgfpHw3*-<Beja3=KIGqqrL+vzJc9~Ms5eAN71X7Tzu6rT{q
+zshGV=`?o#Aob`L#G(tT0Rp>IRJ$`+GaaFG&L$a_u!x46dkBmU%P{RO30`ee)Lkuj8
+zrVghV#7MY#NJe54gIEnzgrp9)7;YzG^9oKUV)F{soPAt?LBWopgCB$*F#{1W(E||<
+zF^Dj#I^1GlBjM&D8Hr5{Vl_|^k~-XCxSfd2E4ZDA%_{@q>>=R9AsVtB{fa0>22$1?
+z8Ce`lX*D1v6Yhc%TY)+tP8^~MqT(~O?lff~s;;HABA*-b@kWukjfpBxKvsFW`njxg
+HN@xNAP22bb
+
+literal 0
+HcmV?d00001
+
+diff --git a/res/layout/fingerprint_enroll_find_sensor_base.xml b/res/layout/fingerprint_enroll_find_sensor_base.xml
+index 62203f71c81..6c3f5d6297b 100644
+--- a/res/layout/fingerprint_enroll_find_sensor_base.xml
++++ b/res/layout/fingerprint_enroll_find_sensor_base.xml
+@@ -29,11 +29,6 @@
+         android:clipToPadding="false"
+         android:clipChildren="false">
+ 
+-        <Space
+-            android:layout_width="wrap_content"
+-            android:layout_height="0dp"
+-            android:layout_weight="1" />
+-
+         <include
+             layout="@layout/fingerprint_enroll_find_sensor_graphic"
+             android:layout_width="match_parent"
+diff --git a/res/layout/fingerprint_enroll_find_sensor_graphic.xml b/res/layout/fingerprint_enroll_find_sensor_graphic.xml
+index d818d48d36f..b755d460a4d 100644
+--- a/res/layout/fingerprint_enroll_find_sensor_graphic.xml
++++ b/res/layout/fingerprint_enroll_find_sensor_graphic.xml
+@@ -17,17 +17,27 @@
+ 
+ <FrameLayout
+     xmlns:android="http://schemas.android.com/apk/res/android"
+-    android:layout_width="@dimen/fingerprint_find_sensor_graphic_size"
+-    android:layout_height="@dimen/fingerprint_find_sensor_graphic_size">
++    android:layout_width="fill_parent"
++    android:layout_height="wrap_content"
++    android:paddingTop="@dimen/fingerprint_find_sensor_padding_top">
+ 
+     <ImageView
+         android:id="@+id/fingerprint_sensor_location"
+         android:layout_width="match_parent"
+-        android:layout_height="match_parent"
++        android:layout_height="wrap_content"
+         android:contentDescription="@string/security_settings_fingerprint_enroll_find_sensor_content_description"
+         android:scaleType="centerInside"
+         android:src="@drawable/fingerprint_sensor_location" />
+ 
++    <ImageView
++        android:id="@+id/fingerprint_sensor_location_front_overlay"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:contentDescription="@string/security_settings_fingerprint_enroll_find_sensor_content_description"
++        android:src="@drawable/fingerprint_sensor_location_front_overlay"
++        android:scaleType="centerInside"
++        android:visibility="gone"/>
++
+     <com.android.settings.biometrics.fingerprint.FingerprintLocationAnimationView
+         android:id="@+id/fingerprint_sensor_location_animation"
+         android:layout_width="match_parent"
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index f05c9273b4d..32a44d2ba84 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <!--
+-     Copyright (C) 2017-2021 The LineageOS Project
++     Copyright (C) 2017-2023 The LineageOS Project
+ 
+      Licensed under the Apache License, Version 2.0 (the "License");
+      you may not use this file except in compliance with the License.
+@@ -48,6 +48,28 @@
+     <string name="tethering_allow_vpn_upstreams_title">Use VPN for connected devices</string>
+     <string name="tethering_allow_vpn_upstreams_summary">When this device is using a VPN, all devices connected to the hotspot will use the same VPN</string>
+ 
++    <!-- Message shown in fingerprint enrollment dialog to locate the sensor -->
++    <string name="fingerprint_enroll_find_sensor_message_front" product="tablet">Locate the fingerprint sensor on the front of your tablet.</string>
++    <string name="fingerprint_enroll_find_sensor_message_front" product="device">Locate the fingerprint sensor on the front of your device.</string>
++    <string name="fingerprint_enroll_find_sensor_message_front" product="default">Locate the fingerprint sensor on the front of your phone.</string>
++    <string name="fingerprint_enroll_find_sensor_message_rear" product="tablet">Locate the fingerprint sensor on the back of your tablet.</string>
++    <string name="fingerprint_enroll_find_sensor_message_rear" product="device">Locate the fingerprint sensor on the back of your device.</string>
++    <string name="fingerprint_enroll_find_sensor_message_rear" product="default">Locate the fingerprint sensor on the back of your phone.</string>
++    <string name="fingerprint_enroll_find_sensor_message_side" product="tablet">Locate the fingerprint sensor on the side of your tablet.</string>
++    <string name="fingerprint_enroll_find_sensor_message_side" product="device">Locate the fingerprint sensor on the side of your device.</string>
++    <string name="fingerprint_enroll_find_sensor_message_side" product="default">Locate the fingerprint sensor on the side of your phone.</string>
++
++    <!-- Message shown when user touches the icon on the screen, instead of the real fingerprint sensor -->
++    <string name="fingerprint_enroll_touch_dialog_message_front" product="tablet">Touch the sensor on the front of your tablet.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_front" product="device">Touch the sensor on the front of your device.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_front" product="default">Touch the sensor on the front of your phone.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_rear" product="tablet">Touch the sensor on the back of your tablet.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_rear" product="device">Touch the sensor on the back of your device.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_rear" product="default">Touch the sensor on the back of your phone.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_side" product="tablet">Touch the sensor on the side of your tablet.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_side" product="device">Touch the sensor on the side of your device.</string>
++    <string name="fingerprint_enroll_touch_dialog_message_side" product="default">Touch the sensor on the side of your phone.</string>
++
+     <!-- Navigation bar hint -->
+     <string name="show_navbar_hint_title">Navigation hint</string>
+     <string name="show_navbar_hint_summary">Show navigation hint bar at the bottom of the screen</string>
+diff --git a/res/values/lineage_config.xml b/res/values/lineage_config.xml
+index 083a3d6e7cc..504893177c6 100644
+--- a/res/values/lineage_config.xml
++++ b/res/values/lineage_config.xml
+@@ -15,6 +15,13 @@
+      limitations under the License.
+ -->
+ <resources>
++    <!-- Indicates whether device has a front facing fingerprint sensor (not udfps). -->
++    <bool name="config_is_front_facing_fps" translatable="false">false</bool>
++
++    <!-- Indicates whether device has a side mounted fingerprint sensor,
++         but a dedicated one, i.e. not embedded in the power button. -->
++    <bool name="config_is_side_fps" translatable="false">false</bool>
++
+     <string-array name="config_ignored_backup_transports" translatable="false">
+         <item>com.android.localtransport/.LocalTransport</item>
+     </string-array>
+diff --git a/res/values/lineage_dimens.xml b/res/values/lineage_dimens.xml
+new file mode 100644
+index 00000000000..d9c2d7df305
+--- /dev/null
++++ b/res/values/lineage_dimens.xml
+@@ -0,0 +1,21 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++     Copyright (C) 2019 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++
++<resources>
++    <!-- Fingerprint -->
++    <dimen name="fingerprint_find_sensor_padding_top">16dp</dimen>
++</resources>
+diff --git a/src/com/android/settings/biometrics/fingerprint/FingerprintEnrollEnrolling.java b/src/com/android/settings/biometrics/fingerprint/FingerprintEnrollEnrolling.java
+index 99f79016e61..80e285ef112 100644
+--- a/src/com/android/settings/biometrics/fingerprint/FingerprintEnrollEnrolling.java
++++ b/src/com/android/settings/biometrics/fingerprint/FingerprintEnrollEnrolling.java
+@@ -1255,10 +1255,19 @@ public class FingerprintEnrollEnrolling extends BiometricsEnrollEnrolling {
+ 
+         @Override
+         public Dialog onCreateDialog(Bundle savedInstanceState) {
++            final boolean isFrontFacingFps = getResources().getBoolean(
++                    R.bool.config_is_front_facing_fps);
++            final boolean isSideMountedFps = getResources().getBoolean(
++                    R.bool.config_is_side_fps);
++            final String fpsLocation = getString(isSideMountedFps
++                    ? R.string.fingerprint_enroll_touch_dialog_message_side : isFrontFacingFps
++                            ? R.string.fingerprint_enroll_touch_dialog_message_front
++                            : R.string.fingerprint_enroll_touch_dialog_message_rear);
++
+             AlertDialog.Builder builder = new AlertDialog.Builder(getActivity(),
+                     R.style.Theme_AlertDialog);
+             builder.setTitle(R.string.security_settings_fingerprint_enroll_touch_dialog_title)
+-                    .setMessage(R.string.security_settings_fingerprint_enroll_touch_dialog_message)
++                    .setMessage(fpsLocation)
+                     .setPositiveButton(R.string.security_settings_fingerprint_enroll_dialog_ok,
+                             new DialogInterface.OnClickListener() {
+                                 @Override
+diff --git a/src/com/android/settings/biometrics/fingerprint/FingerprintEnrollFindSensor.java b/src/com/android/settings/biometrics/fingerprint/FingerprintEnrollFindSensor.java
+index 58d6faa6307..216d3f71f52 100644
+--- a/src/com/android/settings/biometrics/fingerprint/FingerprintEnrollFindSensor.java
++++ b/src/com/android/settings/biometrics/fingerprint/FingerprintEnrollFindSensor.java
+@@ -118,8 +118,23 @@ public class FingerprintEnrollFindSensor extends BiometricEnrollBase implements
+             mIsReverseDefaultRotation = getApplicationContext().getResources().getBoolean(
+                     com.android.internal.R.bool.config_reverseDefaultRotation);
+         } else {
++            // Remaining usecases can be either front facing fps or dedicated
++            // side mounted fps (not embedded in the power button)
++            final boolean isFrontFacingFps = getResources().getBoolean(
++                    R.bool.config_is_front_facing_fps);
++            final boolean isSideMountedFps = getResources().getBoolean(
++                    R.bool.config_is_side_fps);
++            final String fpsLocation = getString(isSideMountedFps
++                    ? R.string.fingerprint_enroll_find_sensor_message_side : isFrontFacingFps
++                            ? R.string.fingerprint_enroll_find_sensor_message_front
++                            : R.string.fingerprint_enroll_find_sensor_message_rear);
++
+             setHeaderText(R.string.security_settings_fingerprint_enroll_find_sensor_title);
+-            setDescriptionText(R.string.security_settings_fingerprint_enroll_find_sensor_message);
++            setDescriptionText(fpsLocation);
++            if (isFrontFacingFps) {
++                findViewById(R.id.fingerprint_sensor_location_front_overlay)
++                        .setVisibility(View.VISIBLE);
++            }
+         }
+         if (savedInstanceState != null) {
+             mNextClicked = savedInstanceState.getBoolean(SAVED_STATE_IS_NEXT_CLICKED, mNextClicked);
+diff --git a/src/com/android/settings/biometrics/fingerprint/FingerprintLocationAnimationView.java b/src/com/android/settings/biometrics/fingerprint/FingerprintLocationAnimationView.java
+index 2916872e73f..08e86c3befa 100644
+--- a/src/com/android/settings/biometrics/fingerprint/FingerprintLocationAnimationView.java
++++ b/src/com/android/settings/biometrics/fingerprint/FingerprintLocationAnimationView.java
+@@ -27,6 +27,7 @@ import android.util.AttributeSet;
+ import android.view.View;
+ import android.view.animation.AnimationUtils;
+ import android.view.animation.Interpolator;
++import android.widget.ImageView;
+ 
+ import androidx.annotation.Nullable;
+ 
+@@ -54,6 +55,7 @@ public class FingerprintLocationAnimationView extends View implements
+     private float mPulseRadius;
+     private ValueAnimator mRadiusAnimator;
+     private ValueAnimator mAlphaAnimator;
++    private ImageView mOverlayImage;
+ 
+     public FingerprintLocationAnimationView(Context context, @Nullable AttributeSet attrs) {
+         super(context, attrs);
+@@ -93,7 +95,11 @@ public class FingerprintLocationAnimationView extends View implements
+     }
+ 
+     private float getCenterY() {
+-        return getHeight() * mFractionCenterY;
++        if (mOverlayImage == null) {
++            mOverlayImage = (ImageView) getRootView().findViewById(
++                    R.id.fingerprint_sensor_location);
++        }
++        return mOverlayImage.getHeight() * mFractionCenterY;
+     }
+ 
+     @Override

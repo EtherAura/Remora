@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Android 17 overlay on the stock AOSP android-17.0.0_r1 manifest.
+
+  NO PROJECTS LEFT. This file is deliberately empty rather than deleted, and both halves of that
+  are on purpose.
+
+  Empty, because A17 now syncs stock AOSP and nothing else. The last entry here was
+  the upstream prebuilts project, tracking its master branch for the Mesa drivers and their
+  dependency closure; R3 (bd remora-ykhz) retired it by building Mesa from source, and
+  bd remora-28ix.4 removed the project and the upstream remote from both this file and
+  pinned-manifest-a17.xml. The header that used to stand here said "when it goes, this file goes" —
+  the first half happened, the second half turned out to be wrong, which is the next paragraph.
+
+  Not deleted, because the engine requires it to exist. SourceBuild.cpp's unpinned path does
+  `cp <source-build>/local_manifests/remora-a<ver>*.xml .repo/local_manifests/` and Chain.cpp
+  preflights the glob, so removing the file breaks unpinned A17 builds with a missing-manifest
+  error rather than doing nothing. An overlay with no projects IS the correct A17 overlay, and it
+  costs nothing to keep: repo reads it, adds nothing, and the tree is stock AOSP plus the staged
+  Remora trees. Keep it in step with pinned-manifest-a17.xml — that one is the reproducible pin,
+  this is the tip-tracking overlay, and a project present in only one of them makes the build
+  depend on which manifest was used.
+
+  Everything Remora authors — device/remora, vendor/remora, hardware/remora/c2-va — is
+  deliberately NOT a project here and never was. It is vendored under vendor/source-build/ and
+  staged into the tree before lunch. No manifest can provide Remora-authored source, and pointing
+  a remote at one machine's disk made the build unreproducible everywhere else (bd remora-28ix.4).
+
+  The upstream device tree and its OMX and c2 components were removed in R2c (bd
+  remora-28ix.4): A17 lunches the staged device/remora, the codec2 wiring is absorbed into
+  vendor/remora, and the OMX plugin gated on a boot arg Remora never emitted.
+
+  Base tree:  repo init -u https://android.googlesource.com/platform/manifest -b android-17.0.0_r1
+  Lunch:      remora_x86_64-cp2a-userdebug
+  See bead remora-cbd.
+-->
+<manifest>
+</manifest>

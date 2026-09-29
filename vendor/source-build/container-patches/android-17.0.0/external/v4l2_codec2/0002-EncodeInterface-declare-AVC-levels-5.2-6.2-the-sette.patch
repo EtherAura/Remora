@@ -1,0 +1,74 @@
+From 7ff2139d9f6ca8251019ce8b1073d793805f4bd0 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Mon, 10 Aug 2026 00:05:43 -0400
+Subject: [PATCH] =?UTF-8?q?EncodeInterface:=20declare=20AVC=20levels=205.2?=
+ =?UTF-8?q?-6.2=20=E2=80=94=20the=20setter=20capped=20at=205.1=20(bd=20rem?=
+ =?UTF-8?q?ora-oac7)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The profile-level setter only considers levels both in kH264Limits and
+in the declared oneOf field, and fails configure outright when none
+admits the requested size x rate. The list stopped at 5.1 (983040
+MB/s), so 3760x1992@60 (1.76 MMB/s) was EINVAL before the encoder was
+asked; 4096x4096 needs level 6 even at 30 fps. Table rows for 6/6.1/6.2
+added per H.264 Table A-1.
+
+Change-Id: I642520bb9ae8546d472699dc9f826d2b3a1055ed
+---
+ common/include/v4l2_codec2/common/H264.h |  6 ++++++
+ components/EncodeInterface.cpp           | 13 +++++++++++--
+ 2 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/common/include/v4l2_codec2/common/H264.h b/common/include/v4l2_codec2/common/H264.h
+index 18770ef..c1189d8 100644
+--- a/common/include/v4l2_codec2/common/H264.h
++++ b/common/include/v4l2_codec2/common/H264.h
+@@ -37,6 +37,12 @@ constexpr H264LevelLimits kH264Limits[] = {
+         {C2Config::LEVEL_AVC_5, 589824, 22080, 135000000},
+         {C2Config::LEVEL_AVC_5_1, 983040, 36864, 240000000},
+         {C2Config::LEVEL_AVC_5_2, 2073600, 36864, 240000000},
++        // Level 6+ (Table A-1): what a 4096x4096 hardware encode actually needs — 65536
++        // MBs/frame overflows every 5.x MaxFS, so without these rows the profile-level setter
++        // has no admissible level for the sizes the VAAPI encoder advertises (bd remora-oac7).
++        {C2Config::LEVEL_AVC_6, 4177920, 139264, 240000000},
++        {C2Config::LEVEL_AVC_6_1, 8355840, 139264, 480000000},
++        {C2Config::LEVEL_AVC_6_2, 16711680, 139264, 800000000},
+ };
+ 
+ uint32_t maxFramerateForLevelH264(C2Config::level_t level, const ui::Size& videoSize);
+diff --git a/components/EncodeInterface.cpp b/components/EncodeInterface.cpp
+index 4626883..d8ed7a2 100644
+--- a/components/EncodeInterface.cpp
++++ b/components/EncodeInterface.cpp
+@@ -298,7 +298,13 @@ void EncodeInterface::Initialize(const C2String& name, const SupportedCapabiliti
+                         .withFields(
+                                 {C2F(mProfileLevel, profile).oneOf(profiles),
+                                  C2F(mProfileLevel, level)
+-                                         // TODO: query supported levels from adaptor.
++                                         // The declared list must cover every row of
++                                         // kH264Limits: the profile-level setter only considers
++                                         // levels that are BOTH in the table and declared here,
++                                         // and it fails configure outright when none admits the
++                                         // requested size × rate. Stopping at 5.1 made
++                                         // 3760x1992@60 (1.76 MMB/s > 5.1's 983040) an EINVAL
++                                         // before the encoder was even asked (bd remora-oac7).
+                                          .oneOf({C2Config::LEVEL_AVC_1, C2Config::LEVEL_AVC_1B,
+                                                  C2Config::LEVEL_AVC_1_1, C2Config::LEVEL_AVC_1_2,
+                                                  C2Config::LEVEL_AVC_1_3, C2Config::LEVEL_AVC_2,
+@@ -306,7 +312,10 @@ void EncodeInterface::Initialize(const C2String& name, const SupportedCapabiliti
+                                                  C2Config::LEVEL_AVC_3, C2Config::LEVEL_AVC_3_1,
+                                                  C2Config::LEVEL_AVC_3_2, C2Config::LEVEL_AVC_4,
+                                                  C2Config::LEVEL_AVC_4_1, C2Config::LEVEL_AVC_4_2,
+-                                                 C2Config::LEVEL_AVC_5, C2Config::LEVEL_AVC_5_1})})
++                                                 C2Config::LEVEL_AVC_5, C2Config::LEVEL_AVC_5_1,
++                                                 C2Config::LEVEL_AVC_5_2, C2Config::LEVEL_AVC_6,
++                                                 C2Config::LEVEL_AVC_6_1,
++                                                 C2Config::LEVEL_AVC_6_2})})
+                         .withSetter(H264ProfileLevelSetter, mInputVisibleSize, mFrameRate, mBitrate)
+                         .build());
+     } else if (caps.codec == VideoCodec::VP8) {
+-- 
+2.54.0
+

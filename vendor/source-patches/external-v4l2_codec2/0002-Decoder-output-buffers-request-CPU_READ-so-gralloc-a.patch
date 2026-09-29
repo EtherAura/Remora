@@ -1,0 +1,91 @@
+From aba02a32fe7bae545b14942d0451d6e26ec7a41f Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sun, 12 Jul 2026 20:08:47 -0400
+Subject: [PATCH] Decoder output buffers: request CPU_READ so gralloc allocates
+ linear
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Without an output-stream usage tuning, CCodec's output block pool gets a
+no-SW-usage gralloc allocation and minigbm (cros_gralloc, minigbm_intel)
+picks an Intel-tiled modifier (0x0100000000000002). SurfaceFlinger's Skia
+render engine silently fails to sample that layout on the xe SR-IOV VF:
+the video layer's frame counter advances at full rate but composition
+shows a stale texture — audio plays, picture frozen (Pluto TV, and any
+ExoPlayer video on the HW decode path).
+
+Mirror of the encoder-input fix in the previous patch, same C2MemoryUsage
+bit-space caveat.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Change-Id: I9e2f4293f6cd4d2f6337dead54e865d9a3273101
+---
+ components/DecodeInterface.cpp                   | 16 ++++++++++++++++
+ components/VideoFramePool.cpp                    |  9 +++++++--
+ .../v4l2_codec2/components/DecodeInterface.h     |  2 ++
+ 3 files changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/components/DecodeInterface.cpp b/components/DecodeInterface.cpp
+index 53689bd..f20f3b2 100644
+--- a/components/DecodeInterface.cpp
++++ b/components/DecodeInterface.cpp
+@@ -264,6 +264,22 @@ DecodeInterface::DecodeInterface(const std::string& name,
+                          .withConstValue(
+                                  new C2StreamBufferTypeSetting::output(0u, C2BufferData::GRAPHIC))
+                          .build());
++
++    // C2MemoryUsage::CPU_READ is included so gralloc allocates the decoder's OUTPUT buffers
++    // LINEAR: minigbm (cros_gralloc, androidboot.remora_gralloc=minigbm_intel) would otherwise
++    // pick an Intel-tiled modifier for a no-SW-usage video target, which SurfaceFlinger's Skia
++    // render engine silently fails to sample on the xe SR-IOV VF — the video layer keeps flipping
++    // (frame counter advances at 30fps) but composition shows a stale texture: playing audio,
++    // frozen frame. Same bit-space caveat as the encoder input fix: this is C2MemoryUsage, NOT
++    // android BufferUsage (CPU_READ_OFTEN here would set READ_PROTECTED and abort SF's Skia
++    // texture creation).
++    addParameter(
++            DefineParam(mOutputMemoryUsage, C2_PARAMKEY_OUTPUT_STREAM_USAGE)
++                    .withConstValue(new C2StreamUsageTuning::output(
++                            0u, static_cast<uint64_t>(android::hardware::graphics::common::V1_0::
++                                                              BufferUsage::VIDEO_DECODER) |
++                                        static_cast<uint64_t>(C2MemoryUsage::CPU_READ)))
++                    .build());
+     addParameter(
+             DefineParam(mOutputDelay, C2_PARAMKEY_OUTPUT_DELAY)
+                     .withConstValue(new C2PortDelayTuning::output(getOutputDelay(*mVideoCodec)))
+diff --git a/components/VideoFramePool.cpp b/components/VideoFramePool.cpp
+index 9927acf..8778118 100644
+--- a/components/VideoFramePool.cpp
++++ b/components/VideoFramePool.cpp
+@@ -75,8 +75,13 @@ std::unique_ptr<VideoFramePool> VideoFramePool::Create(
+     uint64_t usage = static_cast<uint64_t>(BufferUsage::VIDEO_DECODER);
+     if (isSecure) {
+         usage |= C2MemoryUsage::READ_PROTECTED;
+-    } else if (blockPool->getAllocatorId() == C2PlatformAllocatorStore::GRALLOC) {
+-        // CPU access to buffers is only required in byte buffer mode.
++    } else {
++        // CPU access is nominally only needed in byte-buffer mode (GRALLOC allocator), but on
++        // minigbm-intel it is requested in SURFACE mode too: without it minigbm
++        // allocates the BufferQueue output buffers with an Intel-tiled modifier, which the
++        // decoder's linear DRM_PRIME import misreads AND SurfaceFlinger's Skia render engine
++        // silently fails to sample on the xe SR-IOV VF — the video layer flips at full rate
++        // while composition shows a stale texture (audio plays, picture frozen).
+         usage |= C2MemoryUsage::CPU_READ;
+     }
+     const C2MemoryUsage memoryUsage(usage);
+diff --git a/components/include/v4l2_codec2/components/DecodeInterface.h b/components/include/v4l2_codec2/components/DecodeInterface.h
+index 7e513c5..5d95059 100644
+--- a/components/include/v4l2_codec2/components/DecodeInterface.h
++++ b/components/include/v4l2_codec2/components/DecodeInterface.h
+@@ -59,6 +59,8 @@ private:
+     std::shared_ptr<C2StreamBufferTypeSetting::input> mInputFormat;
+     // The memory usage flag of input buffer; should be BufferUsage::VIDEO_DECODER.
+     std::shared_ptr<C2StreamUsageTuning::input> mInputMemoryUsage;
++    // The memory usage flags of output buffers; CPU_READ keeps them gralloc-LINEAR.
++    std::shared_ptr<C2StreamUsageTuning::output> mOutputMemoryUsage;
+     // The output format kind; should be C2FormatVideo.
+     std::shared_ptr<C2StreamBufferTypeSetting::output> mOutputFormat;
+     // The MIME type of input port.
+-- 
+2.54.0
+

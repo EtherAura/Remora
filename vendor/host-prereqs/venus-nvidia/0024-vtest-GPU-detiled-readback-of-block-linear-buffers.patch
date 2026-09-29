@@ -1,0 +1,645 @@
+From 0000000000000000000000000000000000000024 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Wed, 5 Aug 2026 21:30:00 -0400
+Subject: [PATCH] vtest: GPU-detiled readback of block-linear buffers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+bd remora-c1e. Since 0023 a composited SCANOUT buffer is served block-linear
+(NVIDIA refuses RENDERABLE on a linear modifier, bd remora-e5x.25), and
+SurfaceFlinger's screenshot path CPU-maps exactly such a buffer: RenderEngine
+renders the capture into a gralloc destination that must be RENDERABLE, so it
+is necessarily block-linear, and the caller then reads it assuming linear.
+Tiled bytes walked linearly are horizontal striped noise — `screencap` and
+the Recents thumbnails, over the whole screen, home screen included. The
+scrcpy mirror is unaffected (it never CPU-reads the buffer), which is what
+narrows this to the capture path.
+
+No flag ranking can fix it: the destination must be NVIDIA-renderable AND
+CPU-readable-linear, and no single layout satisfies both. So serve the read
+through the one party that understands the layout — the GPU:
+
+  VCMD_RESOURCE_READ_GPU: the guest sends the buffer's dma_buf back
+  (SCM_RIGHTS, like VCMD_RESOURCE_IMPORT_BLOB) with the geometry and
+  modifier VCMD_RESOURCE_ALLOC_GPU reported for it; the host re-imports
+  the fd as a VkImage at that identity, vkCmdCopyImageToBuffer into
+  linear host-visible staging — the GPU detiles — and returns the rows
+  at the caller's requested byte pitch.
+
+The image import uses the explicit-modifier layout (the rowPitch this
+allocator itself reported at alloc time), falling back to a one-candidate
+modifier list, where identical create parameters make the driver recompute
+the identical layout. The copy declares GENERAL -> GENERAL: no layout
+transition (UNDEFINED would license discarding the pixels being read) and no
+ownership transfer; the producer has fenced its work by the time the guest's
+screenshot path locks the buffer.
+
+The allocator's device gains a lazily-created queue handle and transient
+command pool; the alloc-only hot path pays nothing for them. Costs nothing in
+steady state — screenshots are rare, and one line per readback says whether
+the detile served them.
+
+The guest half is the minigbm gbm_mesa gralloc's shadow-read
+(vendor/source-patches/external-minigbm-gbm-mesa 0005): on lock of a
+block-linear bo with SW_READ it fetches through this command instead of
+raw-mapping tiled bytes, and falls back to the raw map if this command is
+missing. Linear bos (video, udmabuf) keep the raw path untouched.
+---
+--- a/vtest/vtest_protocol.h
++++ b/vtest/vtest_protocol.h
+@@ -114,6 +114,8 @@
+  * ring submission that waits on the semaphore
+  */
+ #define VCMD_SEMAPHORE_IMPORT_SYNC_FD 44
++/* GPU-detiled CPU readback of a block-linear dma_buf (reply: status + pixels) */
++#define VCMD_RESOURCE_READ_GPU 45
+ 
+ #define VCMD_RES_CREATE_SIZE 10
+ #define VCMD_RES_CREATE_RES_HANDLE 0 /* must be 0 since protocol version 3 */
+@@ -310,6 +312,31 @@
+ #define VCMD_RESOURCE_ALLOC_GPU_RESP_SIZE_LO 5
+ #define VCMD_RESOURCE_ALLOC_GPU_RESP_SIZE_HI 6
+ 
++/* Read a buffer previously allocated by VCMD_RESOURCE_ALLOC_GPU back through
++ * the GPU, detiling it into linear rows (bd remora-c1e).  A block-linear
++ * buffer's raw bytes are meaningless to a linear-assuming CPU read; the GPU is
++ * the only party that understands the layout, so the readback goes through a
++ * vkCmdCopyImageToBuffer into linear staging.  The request is followed by the
++ * buffer's dma_buf (1 fd, SCM_RIGHTS, client -> server); geometry and modifier
++ * are exactly what VCMD_RESOURCE_ALLOC_GPU returned for it.  ROW_STRIDE is the
++ * byte pitch the caller wants the returned rows laid out at.  The response
++ * carries a status dword and the payload byte count, followed by
++ * ROW_STRIDE * height raw bytes when status == 0.
++ */
++#define VCMD_RESOURCE_READ_GPU_SIZE 7
++#define VCMD_RESOURCE_READ_GPU_WIDTH 0
++#define VCMD_RESOURCE_READ_GPU_HEIGHT 1
++#define VCMD_RESOURCE_READ_GPU_FORMAT 2 /* DRM fourcc */
++#define VCMD_RESOURCE_READ_GPU_MODIFIER_LO 3
++#define VCMD_RESOURCE_READ_GPU_MODIFIER_HI 4
++#define VCMD_RESOURCE_READ_GPU_ROW_STRIDE 5
++#define VCMD_RESOURCE_READ_GPU_FLAGS 6 /* reserved, must be 0 */
++
++#define VCMD_RESOURCE_READ_GPU_RESP_SIZE 3
++#define VCMD_RESOURCE_READ_GPU_RESP_STATUS 0 /* 0 = OK, else -errno */
++#define VCMD_RESOURCE_READ_GPU_RESP_DATA_LO 1
++#define VCMD_RESOURCE_READ_GPU_RESP_DATA_HI 2
++
+ enum vcmd_submit_cmd2_flag {
+    VCMD_SUBMIT_CMD2_FLAG_RING_IDX = 1 << 0,
+    VCMD_SUBMIT_CMD2_FLAG_IN_FENCE_FD = 1 << 1,
+--- a/vtest/vtest.h
++++ b/vtest/vtest.h
+@@ -105,6 +105,7 @@
+ int vtest_sync_export_sync_file(uint32_t length_dw);
+ int vtest_resource_import_blob(uint32_t length_dw);
+ int vtest_resource_alloc_gpu(uint32_t length_dw);
++int vtest_resource_read_gpu(uint32_t length_dw);
+ 
+ int vtest_submit_cmd2(uint32_t length_dw);
+ 
+--- a/vtest/vtest_server.c
++++ b/vtest/vtest_server.c
+@@ -777,6 +777,7 @@
+    HANDLER(SYNC_EXPORT_SYNC_FILE,       sync_export_sync_file,     true   ),
+    HANDLER(RESOURCE_IMPORT_BLOB,        resource_import_blob,      true   ),
+    HANDLER(RESOURCE_ALLOC_GPU,          resource_alloc_gpu,        false  ),
++   HANDLER(RESOURCE_READ_GPU,           resource_read_gpu,         false  ),
+    HANDLER(TIMELINE_GET,                timeline_get,              true   ),
+    HANDLER(SUBMIT_CMD2_TIMELINE,        submit_cmd2_timeline,      true   ),
+    HANDLER(SEMAPHORE_IMPORT_SYNC_FD,    semaphore_import_sync_fd,  true   ),
+--- a/vtest/vtest_gpu_alloc.h
++++ b/vtest/vtest_gpu_alloc.h
+@@ -30,6 +30,15 @@
+ int vtest_gpu_alloc_cpu(uint32_t width, uint32_t height, uint32_t drm_format,
+                         uint32_t *out_stride, uint64_t *out_size, int *out_fd);
+ 
++/* GPU-detiled readback of a buffer this allocator exported (bd remora-c1e):
++ * re-import the dma_buf as a VkImage at its allocation-time geometry and
++ * modifier, vkCmdCopyImageToBuffer into linear staging, copy the rows (laid
++ * out at row_stride bytes) into out. out must hold row_stride * height bytes.
++ * Borrows dmabuf_fd; the caller keeps ownership. */
++int vtest_gpu_read_image(int dmabuf_fd, uint32_t width, uint32_t height,
++                         uint32_t drm_format, uint64_t modifier,
++                         uint32_t row_stride, void *out);
++
+ /*
+  * Registry of recently exported GPU buffers (bd remora-e5x.6).
+  *
+--- a/vtest/vtest_gpu_alloc.c
++++ b/vtest/vtest_gpu_alloc.c
+@@ -54,6 +54,33 @@
+    PFN_vkGetMemoryFdKHR GetMemoryFdKHR;
+    PFN_vkGetPhysicalDeviceFormatProperties2 GetPhysicalDeviceFormatProperties2;
+    PFN_vkGetImageDrmFormatModifierPropertiesEXT GetImageDrmFormatModifierPropertiesEXT;
++
++   /* Readback path (bd remora-c1e): the allocator never submits GPU work, the
++    * detiling read does.  Queue and pool are created lazily on the first read
++    * so the alloc-only hot path pays nothing for them. */
++   PFN_vkGetMemoryFdPropertiesKHR GetMemoryFdPropertiesKHR;
++   PFN_vkGetDeviceQueue GetDeviceQueue;
++   PFN_vkCreateCommandPool CreateCommandPool;
++   PFN_vkAllocateCommandBuffers AllocateCommandBuffers;
++   PFN_vkFreeCommandBuffers FreeCommandBuffers;
++   PFN_vkBeginCommandBuffer BeginCommandBuffer;
++   PFN_vkEndCommandBuffer EndCommandBuffer;
++   PFN_vkCmdPipelineBarrier CmdPipelineBarrier;
++   PFN_vkCmdCopyImageToBuffer CmdCopyImageToBuffer;
++   PFN_vkQueueSubmit QueueSubmit;
++   PFN_vkCreateFence CreateFence;
++   PFN_vkDestroyFence DestroyFence;
++   PFN_vkWaitForFences WaitForFences;
++   PFN_vkCreateBuffer CreateBuffer;
++   PFN_vkDestroyBuffer DestroyBuffer;
++   PFN_vkGetBufferMemoryRequirements GetBufferMemoryRequirements;
++   PFN_vkBindBufferMemory BindBufferMemory;
++   PFN_vkMapMemory MapMemory;
++   PFN_vkUnmapMemory UnmapMemory;
++   PFN_vkInvalidateMappedMemoryRanges InvalidateMappedMemoryRanges;
++
++   VkQueue read_queue;
++   VkCommandPool read_pool;
+ };
+ 
+ static struct alloc_vk alloc_vk;
+@@ -323,6 +350,26 @@
+    GET_DEV(BindImageMemory);
+    GET_DEV(GetMemoryFdKHR);
+    GET_DEV(GetImageDrmFormatModifierPropertiesEXT);
++   GET_DEV(GetMemoryFdPropertiesKHR);
++   GET_DEV(GetDeviceQueue);
++   GET_DEV(CreateCommandPool);
++   GET_DEV(AllocateCommandBuffers);
++   GET_DEV(FreeCommandBuffers);
++   GET_DEV(BeginCommandBuffer);
++   GET_DEV(EndCommandBuffer);
++   GET_DEV(CmdPipelineBarrier);
++   GET_DEV(CmdCopyImageToBuffer);
++   GET_DEV(QueueSubmit);
++   GET_DEV(CreateFence);
++   GET_DEV(DestroyFence);
++   GET_DEV(WaitForFences);
++   GET_DEV(CreateBuffer);
++   GET_DEV(DestroyBuffer);
++   GET_DEV(GetBufferMemoryRequirements);
++   GET_DEV(BindBufferMemory);
++   GET_DEV(MapMemory);
++   GET_DEV(UnmapMemory);
++   GET_DEV(InvalidateMappedMemoryRanges);
+    vk->GetPhysicalDeviceFormatProperties2 =
+       (PFN_vkGetPhysicalDeviceFormatProperties2)vk->get_proc(
+          vk->instance, "vkGetPhysicalDeviceFormatProperties2");
+@@ -580,6 +627,366 @@
+                                 out_modifier, out_size, out_fd);
+ }
+ 
++/*
++ * GPU-detiled readback of a buffer this allocator exported (bd remora-c1e).
++ *
++ * A composited SCANOUT buffer is block-linear (NVIDIA refuses RENDERABLE on a
++ * linear modifier — bd remora-e5x.25), so the guest's raw CPU map of its
++ * dma_buf walks tiled bytes and screencap/Recents read striped noise.  No flag
++ * ranking can fix that: the buffer must be NVIDIA-renderable AND CPU-readable
++ * linear, which no single layout satisfies.  So the read goes through the GPU,
++ * the one party that understands the layout: re-import the dma_buf as a
++ * VkImage at its allocation-time geometry and modifier, vkCmdCopyImageToBuffer
++ * into linear host-visible staging, and hand back the rows.
++ *
++ * The image is created with VkImageDrmFormatModifierExplicitCreateInfoEXT
++ * using the rowPitch this allocator reported at alloc time (the guest echoes
++ * it back as row_stride), which is the standard dmabuf-import contract.  If
++ * the driver refuses the explicit layout, fall back to a single-candidate
++ * modifier list — same inputs as the original allocation, so the driver
++ * recomputes the identical layout.
++ *
++ * The copy declares the image GENERAL -> GENERAL: no layout transition, no
++ * ownership transfer.  An UNDEFINED oldLayout would license the driver to
++ * discard the very pixels being read, and the producer (the render server, a
++ * different process on the same device) has already fenced its work by the
++ * time the guest's screenshot path locks the buffer.
++ */
++int
++vtest_gpu_read_image(int dmabuf_fd, uint32_t width, uint32_t height,
++                     uint32_t drm_format, uint64_t modifier,
++                     uint32_t row_stride, void *out)
++{
++   const VkFormat format = drm_format_to_vk(drm_format);
++   const uint32_t bpp = drm_format_bpp(drm_format);
++   if (format == VK_FORMAT_UNDEFINED || !bpp)
++      return -EINVAL;
++   if (!row_stride || row_stride % bpp || row_stride / bpp < width)
++      return -EINVAL;
++
++   const uint64_t out_size = (uint64_t)row_stride * height;
++
++   pthread_mutex_lock(&alloc_vk_mutex);
++
++   struct alloc_vk *vk = &alloc_vk;
++   int ret = alloc_vk_init_locked();
++   if (ret) {
++      pthread_mutex_unlock(&alloc_vk_mutex);
++      return ret;
++   }
++
++   VkImage image = VK_NULL_HANDLE;
++   VkDeviceMemory image_mem = VK_NULL_HANDLE;
++   VkBuffer staging = VK_NULL_HANDLE;
++   VkDeviceMemory staging_mem = VK_NULL_HANDLE;
++   VkCommandBuffer cmd = VK_NULL_HANDLE;
++   VkFence fence = VK_NULL_HANDLE;
++   ret = -EINVAL;
++
++   if (!vk->read_pool) {
++      vk->GetDeviceQueue(vk->device, 0, 0, &vk->read_queue);
++      const VkCommandPoolCreateInfo pool_info = {
++         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
++         .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
++         .queueFamilyIndex = 0,
++      };
++      if (vk->CreateCommandPool(vk->device, &pool_info, NULL, &vk->read_pool) !=
++          VK_SUCCESS) {
++         vk->read_pool = VK_NULL_HANDLE;
++         goto out;
++      }
++   }
++
++   /* the image: the dma_buf re-imported at its allocation-time identity */
++   {
++      const VkExternalMemoryImageCreateInfo ext_info = {
++         .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
++         .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++      };
++      const VkSubresourceLayout plane0 = {
++         .offset = 0,
++         .size = 0, /* must be 0 for explicit-modifier creates */
++         .rowPitch = row_stride,
++      };
++      const VkImageDrmFormatModifierExplicitCreateInfoEXT explicit_info = {
++         .sType =
++            VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT,
++         .pNext = &ext_info,
++         .drmFormatModifier = modifier,
++         .drmFormatModifierPlaneCount = 1,
++         .pPlaneLayouts = &plane0,
++      };
++      const VkImageDrmFormatModifierListCreateInfoEXT list_info = {
++         .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT,
++         .pNext = &ext_info,
++         .drmFormatModifierCount = 1,
++         .pDrmFormatModifiers = &modifier,
++      };
++      VkImageCreateInfo image_info = {
++         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
++         .pNext = &explicit_info,
++         .imageType = VK_IMAGE_TYPE_2D,
++         .format = format,
++         .extent = { width, height, 1 },
++         .mipLevels = 1,
++         .arrayLayers = 1,
++         .samples = VK_SAMPLE_COUNT_1_BIT,
++         .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
++         .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
++         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
++         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
++      };
++      if (vk->CreateImage(vk->device, &image_info, NULL, &image) != VK_SUCCESS) {
++         /* same inputs as the original allocation, so the driver recomputes
++          * the identical layout */
++         image_info.pNext = &list_info;
++         if (vk->CreateImage(vk->device, &image_info, NULL, &image) !=
++             VK_SUCCESS) {
++            image = VK_NULL_HANDLE;
++            fprintf(stderr,
++                    "[remora-readback] vkCreateImage refused %ux%u fmt=%.4s "
++                    "mod=0x%" PRIx64 " (explicit and list)\n",
++                    width, height, (const char *)&drm_format, modifier);
++            goto out;
++         }
++      }
++   }
++
++   {
++      VkMemoryRequirements reqs;
++      vk->GetImageMemoryRequirements(vk->device, image, &reqs);
++
++      const off_t dmabuf_size = lseek(dmabuf_fd, 0, SEEK_END);
++      if (dmabuf_size > 0 && (uint64_t)dmabuf_size < reqs.size) {
++         /* the fd cannot back the image this geometry describes — a wrong
++          * guest-side echo, not something to hand the GPU */
++         fprintf(stderr,
++                 "[remora-readback] dma_buf holds %" PRIu64 " bytes, image "
++                 "needs %" PRIu64 " — refusing\n",
++                 (uint64_t)dmabuf_size, (uint64_t)reqs.size);
++         goto out;
++      }
++
++      VkMemoryFdPropertiesKHR fd_props = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR,
++      };
++      if (vk->GetMemoryFdPropertiesKHR(vk->device,
++                                       VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++                                       dmabuf_fd, &fd_props) != VK_SUCCESS)
++         goto out;
++
++      const uint32_t allowed = reqs.memoryTypeBits & fd_props.memoryTypeBits;
++      if (!allowed)
++         goto out;
++
++      /* vkAllocateMemory consumes the fd on success; the caller keeps
++       * ownership of its copy */
++      int import_fd = fcntl(dmabuf_fd, F_DUPFD_CLOEXEC, 0);
++      if (import_fd < 0) {
++         ret = -errno;
++         goto out;
++      }
++      const VkImportMemoryFdInfoKHR import_info = {
++         .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
++         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++         .fd = import_fd,
++      };
++      const VkMemoryDedicatedAllocateInfo dedicated_info = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
++         .pNext = &import_info,
++         .image = image,
++      };
++      const VkMemoryAllocateInfo alloc_info = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
++         .pNext = &dedicated_info,
++         .allocationSize = reqs.size,
++         .memoryTypeIndex = (uint32_t)(ffs(allowed) - 1),
++      };
++      if (vk->AllocateMemory(vk->device, &alloc_info, NULL, &image_mem) !=
++          VK_SUCCESS) {
++         image_mem = VK_NULL_HANDLE;
++         close(import_fd);
++         goto out;
++      }
++      if (vk->BindImageMemory(vk->device, image, image_mem, 0) != VK_SUCCESS)
++         goto out;
++   }
++
++   /* linear host-visible staging the GPU detiles into */
++   bool staging_coherent;
++   {
++      const VkBufferCreateInfo buf_info = {
++         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
++         .size = out_size,
++         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
++         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
++      };
++      if (vk->CreateBuffer(vk->device, &buf_info, NULL, &staging) != VK_SUCCESS) {
++         staging = VK_NULL_HANDLE;
++         goto out;
++      }
++
++      VkMemoryRequirements reqs;
++      vk->GetBufferMemoryRequirements(vk->device, staging, &reqs);
++
++      uint32_t mem_type = UINT32_MAX;
++      VkMemoryPropertyFlags mem_flags = 0;
++      /* cached+coherent reads fastest on the CPU side; settle for any
++       * host-visible type and invalidate when coherence is missing */
++      const VkMemoryPropertyFlags prefer[] = {
++         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
++            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
++         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
++         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
++      };
++      for (unsigned p = 0; p < 3 && mem_type == UINT32_MAX; p++) {
++         for (uint32_t i = 0; i < vk->mem_props.memoryTypeCount; i++) {
++            if ((reqs.memoryTypeBits & (1u << i)) &&
++                (vk->mem_props.memoryTypes[i].propertyFlags & prefer[p]) ==
++                   prefer[p]) {
++               mem_type = i;
++               mem_flags = vk->mem_props.memoryTypes[i].propertyFlags;
++               break;
++            }
++         }
++      }
++      if (mem_type == UINT32_MAX)
++         goto out;
++      staging_coherent =
++         (mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
++
++      const VkMemoryAllocateInfo alloc_info = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
++         .allocationSize = reqs.size,
++         .memoryTypeIndex = mem_type,
++      };
++      if (vk->AllocateMemory(vk->device, &alloc_info, NULL, &staging_mem) !=
++          VK_SUCCESS) {
++         staging_mem = VK_NULL_HANDLE;
++         goto out;
++      }
++      if (vk->BindBufferMemory(vk->device, staging, staging_mem, 0) != VK_SUCCESS)
++         goto out;
++   }
++
++   /* record, submit, wait */
++   {
++      const VkCommandBufferAllocateInfo cmd_info = {
++         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
++         .commandPool = vk->read_pool,
++         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
++         .commandBufferCount = 1,
++      };
++      if (vk->AllocateCommandBuffers(vk->device, &cmd_info, &cmd) != VK_SUCCESS) {
++         cmd = VK_NULL_HANDLE;
++         goto out;
++      }
++      const VkCommandBufferBeginInfo begin_info = {
++         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
++         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
++      };
++      if (vk->BeginCommandBuffer(cmd, &begin_info) != VK_SUCCESS)
++         goto out;
++
++      const VkImageMemoryBarrier acquire = {
++         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
++         .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
++         .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
++         .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
++         .newLayout = VK_IMAGE_LAYOUT_GENERAL,
++         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++         .image = image,
++         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
++      };
++      vk->CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
++                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL,
++                             1, &acquire);
++
++      const VkBufferImageCopy region = {
++         .bufferOffset = 0,
++         .bufferRowLength = row_stride / bpp,
++         .bufferImageHeight = height,
++         .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
++         .imageExtent = { width, height, 1 },
++      };
++      vk->CmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_GENERAL, staging, 1,
++                               &region);
++
++      const VkBufferMemoryBarrier to_host = {
++         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
++         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
++         .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
++         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++         .buffer = staging,
++         .size = VK_WHOLE_SIZE,
++      };
++      vk->CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
++                             VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &to_host,
++                             0, NULL);
++
++      if (vk->EndCommandBuffer(cmd) != VK_SUCCESS)
++         goto out;
++
++      const VkFenceCreateInfo fence_info = {
++         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
++      };
++      if (vk->CreateFence(vk->device, &fence_info, NULL, &fence) != VK_SUCCESS) {
++         fence = VK_NULL_HANDLE;
++         goto out;
++      }
++      const VkSubmitInfo submit = {
++         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
++         .commandBufferCount = 1,
++         .pCommandBuffers = &cmd,
++      };
++      if (vk->QueueSubmit(vk->read_queue, 1, &submit, fence) != VK_SUCCESS)
++         goto out;
++      /* 2s: a screenshot blit takes microseconds; anything near the timeout
++       * means the context died and the caller should hear -EIO, not hang */
++      if (vk->WaitForFences(vk->device, 1, &fence, VK_TRUE, 2000000000ull) !=
++          VK_SUCCESS) {
++         ret = -EIO;
++         goto out;
++      }
++   }
++
++   {
++      void *map = NULL;
++      if (vk->MapMemory(vk->device, staging_mem, 0, VK_WHOLE_SIZE, 0, &map) !=
++          VK_SUCCESS)
++         goto out;
++      if (!staging_coherent) {
++         const VkMappedMemoryRange range = {
++            .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
++            .memory = staging_mem,
++            .size = VK_WHOLE_SIZE,
++         };
++         vk->InvalidateMappedMemoryRanges(vk->device, 1, &range);
++      }
++      memcpy(out, map, out_size);
++      vk->UnmapMemory(vk->device, staging_mem);
++   }
++   ret = 0;
++
++out:
++   if (fence)
++      vk->DestroyFence(vk->device, fence, NULL);
++   if (cmd)
++      vk->FreeCommandBuffers(vk->device, vk->read_pool, 1, &cmd);
++   if (staging)
++      vk->DestroyBuffer(vk->device, staging, NULL);
++   if (staging_mem)
++      vk->FreeMemory(vk->device, staging_mem, NULL);
++   if (image)
++      vk->DestroyImage(vk->device, image, NULL);
++   if (image_mem)
++      vk->FreeMemory(vk->device, image_mem, NULL);
++   pthread_mutex_unlock(&alloc_vk_mutex);
++   return ret;
++}
++
+ int
+ vtest_gpu_alloc_cpu(uint32_t width, uint32_t height, uint32_t drm_format,
+                     uint32_t *out_stride, uint64_t *out_size, int *out_fd)
+--- a/vtest/vtest_renderer.c
++++ b/vtest/vtest_renderer.c
+@@ -33,6 +33,7 @@
+ #include <unistd.h>
+ #include <fcntl.h>
+ #include <limits.h>
++#include <inttypes.h>
+ #include <c11/threads.h>
+ 
+ #include "virgl_hw.h"
+@@ -2690,6 +2691,72 @@
+    return ret >= 0 ? 0 : ret;
+ }
+ 
++int vtest_resource_read_gpu(uint32_t length_dw)
++{
++   struct vtest_context *ctx = vtest_get_current_context();
++   uint32_t req[VCMD_RESOURCE_READ_GPU_SIZE];
++   uint32_t resp_buf[VTEST_HDR_SIZE + VCMD_RESOURCE_READ_GPU_RESP_SIZE];
++   uint32_t *resp = &resp_buf[VTEST_CMD_DATA_START];
++   void *data = NULL;
++   int ret;
++
++   if (length_dw != VCMD_RESOURCE_READ_GPU_SIZE)
++      return -EINVAL;
++
++   ret = ctx->input->read(ctx->input, req, sizeof(req));
++   if (ret != sizeof(req))
++      return -1;
++
++   int fd = vtest_receive_fd(ctx->input->data.fd);
++   if (fd < 0)
++      return report_failed_call("vtest_receive_fd", fd);
++
++   const uint32_t width = req[VCMD_RESOURCE_READ_GPU_WIDTH];
++   const uint32_t height = req[VCMD_RESOURCE_READ_GPU_HEIGHT];
++   const uint32_t drm_format = req[VCMD_RESOURCE_READ_GPU_FORMAT];
++   const uint64_t modifier = req[VCMD_RESOURCE_READ_GPU_MODIFIER_LO] |
++                             (uint64_t)req[VCMD_RESOURCE_READ_GPU_MODIFIER_HI] << 32;
++   const uint32_t row_stride = req[VCMD_RESOURCE_READ_GPU_ROW_STRIDE];
++   const uint64_t data_size = (uint64_t)row_stride * height;
++
++   /* Same geometry bounds as the allocator, plus a payload ceiling: a
++    * 32768-wide RGBA row is 128 KiB, so 512 MiB covers every real screen and
++    * still refuses a corrupt request before it can malloc the moon. */
++   if (!width || !height || width > 32768 || height > 32768 ||
++       req[VCMD_RESOURCE_READ_GPU_FLAGS] != 0 ||
++       !data_size || data_size > (512ull << 20)) {
++      ret = -EINVAL;
++   } else if (!(data = malloc(data_size))) {
++      ret = -ENOMEM;
++   } else {
++      ret = vtest_gpu_read_image(fd, width, height, drm_format, modifier,
++                                 row_stride, data);
++   }
++   close(fd);
++
++   /* one line per readback: screenshots are rare and this is the whole
++    * story of whether the detile served them (bd remora-c1e) */
++   fprintf(stderr, "[remora-readback] %ux%u fourcc=%c%c%c%c mod=0x%" PRIx64
++           " row_stride=%u -> %s\n", width, height,
++           (char)(drm_format & 0xff), (char)((drm_format >> 8) & 0xff),
++           (char)((drm_format >> 16) & 0xff), (char)((drm_format >> 24) & 0xff),
++           modifier, row_stride, ret ? strerror(-ret) : "ok");
++
++   memset(resp_buf, 0, sizeof(resp_buf));
++   resp_buf[VTEST_CMD_LEN] = VCMD_RESOURCE_READ_GPU_RESP_SIZE;
++   resp_buf[VTEST_CMD_ID] = VCMD_RESOURCE_READ_GPU;
++   resp[VCMD_RESOURCE_READ_GPU_RESP_STATUS] = ret ? (uint32_t)-ret : 0;
++   resp[VCMD_RESOURCE_READ_GPU_RESP_DATA_LO] = ret ? 0 : (uint32_t)data_size;
++   resp[VCMD_RESOURCE_READ_GPU_RESP_DATA_HI] = ret ? 0 : (uint32_t)(data_size >> 32);
++
++   ret = vtest_block_write(ctx->out_fd, resp_buf, sizeof(resp_buf));
++   if (ret >= 0 && !resp[VCMD_RESOURCE_READ_GPU_RESP_STATUS])
++      ret = vtest_block_write(ctx->out_fd, data, data_size);
++
++   free(data);
++   return ret >= 0 ? 0 : ret;
++}
++
+ int vtest_sync_export_sync_file(uint32_t length_dw)
+ {
+    struct vtest_context *ctx = vtest_get_current_context();
+-- 
+2.54.0
+

@@ -1,0 +1,12 @@
+ABSORBED UPSTREAM — this patch is a backport TO lineage-24.0 of something lineage-23.0 already
+ships, so on A16 it conflicts by trying to add what is already there.
+
+Verified against the A16 pin (155701ba) rather than inferred:
+    core/java/android/content/res/AssetManager.java:85   declares LINEAGE_APK_PATH
+    core/java/android/content/res/AssetManager.java:293  loads it into the zygote's system set
+    core/jni/fd_utils.cpp:47                             allow-lists it for the fork-inherited fd
+The same grep against A17's pin returns nothing, which is why the patch exists at all.
+
+So the capability is PRESENT on A16 through upstream's own implementation; only the constant is
+spelled differently (LINEAGE_APK_PATH there, LINEAGE_RES_APK_PATH here). Nothing is lost by
+skipping. If lineage-24.0 ever absorbs it too, delete the series rather than this marker.

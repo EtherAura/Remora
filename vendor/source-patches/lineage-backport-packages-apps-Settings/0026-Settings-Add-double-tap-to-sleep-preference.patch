@@ -1,0 +1,48 @@
+From 1b66c11badbcc001fe2f2f80d94aa3893cc0793e Mon Sep 17 00:00:00 2001
+From: Rashed Abdel-Tawab <rashed@linux.com>
+Date: Tue, 26 Sep 2017 19:15:26 -0400
+Subject: [PATCH 26/98] Settings: Add double tap to sleep preference
+
+ * Place it under Display settings, near the existing
+   double tap to wake preference.
+
+Change-Id: I0baa49f9367331febf29260a0f60ba3a020be729
+---
+ res/values/cm_strings.xml    | 4 ++++
+ res/xml/display_settings.xml | 8 ++++++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index aa10bd96645..3322ad76c63 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -36,6 +36,10 @@
+     <!-- [CHAR LIMIT=NONE] Device Info screen. Okay we get it, stop pressing, you already have it on -->
+     <string name="show_dev_already_cm">No need, you have already enabled development settings.</string>
+ 
++    <!-- Double tap to sleep on status bar or lockscreen -->
++    <string name="status_bar_double_tap_to_sleep_title">Tap to sleep</string>
++    <string name="status_bar_double_tap_to_sleep_summary">Double-tap on the status bar or lockscreen to turn off the display</string>
++
+     <!-- Navigation bar hint -->
+     <string name="show_navbar_hint_title">Navigation hint</string>
+     <string name="show_navbar_hint_summary">Show navigation hint bar at the bottom of the screen</string>
+diff --git a/res/xml/display_settings.xml b/res/xml/display_settings.xml
+index 2f62fcb1932..533cbca46e4 100644
+--- a/res/xml/display_settings.xml
++++ b/res/xml/display_settings.xml
+@@ -215,6 +215,14 @@
+             android:title="@string/tap_to_wake"
+             android:summary="@string/tap_to_wake_summary"/>
+ 
++        <!-- Double tap to sleep -->
++        <lineageos.preference.LineageSystemSettingSwitchPreference
++            android:key="double_tap_sleep_gesture"
++            android:title="@string/status_bar_double_tap_to_sleep_title"
++            android:summary="@string/status_bar_double_tap_to_sleep_summary"
++            android:defaultValue="@*lineageos.platform:bool/config_dt2sGestureEnabledByDefault"
++            settings:requiresConfig="@*lineageos.platform:bool/config_dt2sGestureAvailable" />
++
+         <ListPreference
+             android:key="theme"
+             android:title="@string/device_theme"

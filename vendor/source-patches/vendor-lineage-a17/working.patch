@@ -1,0 +1,118 @@
+diff --git a/build/soong/Android.bp b/build/soong/Android.bp
+index 295a6af8..cb848942 100644
+--- a/build/soong/Android.bp
++++ b/build/soong/Android.bp
+@@ -21,18 +21,10 @@ bootstrap_go_package {
+ lineage_generator {
+     name: "generated_kernel_includes",
+ 
+-    // The headers make command
+-    cmd: "set -e; " +
+-         "if [ -n \"$(TARGET_KERNEL_PLATFORM_TARGET)\" ]; then " +
+-         "    pushd $(KERNEL_PATH); " +
+-         "    ./tools/bazel --output_user_root=$(KERNEL_BUILD_OUT_PREFIX)$(genDir)/bazel-out --output_root=$(KERNEL_BUILD_OUT_PREFIX)$(genDir)/bazel-out run --experimental_convenience_symlinks=ignore --cpu=$(KERNEL_ARCH) //$(TARGET_KERNEL_SOURCE):$(TARGET_KERNEL_PLATFORM_TARGET)_uapi_headers_dist -- --destdir=$(KERNEL_BUILD_OUT_PREFIX)$(genDir); " +
+-         "    popd; " +
+-         "    gzip -d $(KERNEL_BUILD_OUT_PREFIX)$(genDir)/kernel-uapi-headers.tar.gz; " +
+-         "    tar -xf $(KERNEL_BUILD_OUT_PREFIX)$(genDir)/kernel-uapi-headers.tar -C $(KERNEL_BUILD_OUT_PREFIX)$(genDir); " +
+-         "else " +
+-         "    $(PATH_OVERRIDE_SOONG) $(KERNEL_MAKE_CMD) $(KERNEL_MAKE_FLAGS) -C $(TARGET_KERNEL_SOURCE) O=$(KERNEL_BUILD_OUT_PREFIX)$(genDir) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) headers_install; " +
+-         "fi; " +
+-         "vendor/lineage/tools/clean_headers.sh $(KERNEL_BUILD_OUT_PREFIX)$(genDir)",
++    // Containers run on the HOST kernel, so there is no in-tree kernel to
++    // generate UAPI headers from. Stub to empty header dirs (kernel UAPI headers come
++    // from bionic/prebuilts). Keeps soong analysis happy without any TARGET_KERNEL_* vars.
++    cmd: "mkdir -p $(genDir)/usr/audio/include/uapi $(genDir)/usr/include $(genDir)/usr/include/audio $(genDir)/usr/include/audio/include/uapi $(genDir)/usr/techpack/audio/include",
+ 
+     // Directories that can be imported by a cc_* module generated_headers property
+     export_include_dirs: [
+@@ -42,22 +34,13 @@ lineage_generator {
+         "usr/include/audio/include/uapi",
+         "usr/techpack/audio/include",
+     ],
+-
+-    // Sources for dependency tracking
+-    dep_root: "$(TARGET_KERNEL_SOURCE)",
+-    dep_files: [
+-        "Makefile",
+-        "include/**/*",
+-        "arch/$(KERNEL_ARCH)/include/**/*",
+-        "techpack/audio/include/**/*",
+-    ],
+ }
+ 
+ lineage_generator {
+     name: "prebuilt_kernel_includes",
+ 
+-    // The headers extract command
+-    cmd: "mkdir -p $(KERNEL_BUILD_OUT_PREFIX)$(genDir) && gzip -d < $(TARGET_PREBUILT_KERNEL_HEADERS) | tar -x -C $(KERNEL_BUILD_OUT_PREFIX)$(genDir) && vendor/lineage/tools/clean_headers.sh $(KERNEL_BUILD_OUT_PREFIX)$(genDir)",
++    // No prebuilt device-kernel headers either — stub to empty header dirs.
++    cmd: "mkdir -p $(genDir)/usr/audio/include/uapi $(genDir)/usr/include $(genDir)/usr/include/audio $(genDir)/usr/include/audio/include/uapi $(genDir)/usr/techpack/audio/include",
+ 
+     // Directories that can be imported by a cc_* module generated_headers property
+     export_include_dirs: [
+diff --git a/config/common.mk b/config/common.mk
+index 3b68625f..fc87aa5b 100644
+--- a/config/common.mk
++++ b/config/common.mk
+@@ -153,8 +153,9 @@ endif
+ 
+ ifeq ($(PRODUCT_IS_AUTOMOTIVE),)
+ PRODUCT_PACKAGES += \
+-    LineageParts \
+-    LineageSetupWizard
++    LineageParts
++# LineageSetupWizard: source repo not synced in this tree + unwanted in a container
++# (auto-boots straight to the launcher, no setup wizard). Dropped from the container image.
+ endif
+ 
+ PRODUCT_PACKAGES += \
+diff --git a/build/soong/generator/generator.go b/build/soong/generator/generator.go
+index c98998a5..652cd52f 100644
+--- a/build/soong/generator/generator.go
++++ b/build/soong/generator/generator.go
+@@ -144,26 +144,21 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+ 	tools := map[string]android.Path{}
+ 
+ 	if len(g.properties.Tools) > 0 {
+-		ctx.VisitDirectDepsProxyAllowDisabled(func(proxy android.ModuleProxy) {
+-			module := android.PrebuiltGetPreferred(ctx, proxy)
++		// A17 LineageOS: lineage-24.0's build/soong predates the newer soong host-tool
++		// provider APIs (PrebuiltGetPreferred / HostToolProviderInfoProvider) that upstream
++		// generator.go was updated to use, so the plugin fails to bootstrap. Mirror the in-tree
++		// genrule.go pattern (GetHostToolInfo on the proxy) which does compile against this soong.
++		ctx.VisitDirectDepsProxyAllowDisabled(func(module android.ModuleProxy) {
+ 			switch ctx.OtherModuleDependencyTag(module) {
+ 			case hostToolDepTag:
+ 				tool := ctx.OtherModuleName(module)
+ 				var path android.OptionalPath
+ 
+-				if t, ok := android.OtherModuleProvider(ctx, module, android.HostToolProviderInfoProvider); ok {
+-					if !android.OtherModulePointerProviderOrDefault(ctx, module, android.CommonModuleInfoProvider).Enabled {
+-						if ctx.Config().AllowMissingDependencies() {
+-							ctx.AddMissingDependencies([]string{tool})
+-						} else {
+-							ctx.ModuleErrorf("depends on disabled module %q", tool)
+-						}
+-						break
+-					}
+-					path = t.HostToolPath
++				if h := android.GetHostToolInfo(ctx, module); h != nil {
++					path = h.HostToolPath
+ 				} else {
+ 					ctx.ModuleErrorf("%q is not a host tool provider", tool)
+-					break
++					return
+ 				}
+ 
+ 				if path.Valid() {
+@@ -261,7 +256,9 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+ 	manifestPath := android.PathForModuleOut(ctx, "generator.sbox.textproto")
+ 
+ 	// Use a RuleBuilder to create a rule that runs the command inside an sbox sandbox.
+-	rule := android.NewRuleBuilder(pctx, ctx).Sbox(genDir, manifestPath).SandboxTools()
++	// A17 LineageOS: .SandboxTools() doesn't exist in lineage-24.0's build/soong; plain
++	// .Sbox() is what this soong provides (matches genrule.go's usage in the same tree).
++	rule := android.NewRuleBuilder(pctx, ctx).Sbox(genDir, manifestPath)
+ 
+ 	rule.Command().
+ 		Text(rawCommand).

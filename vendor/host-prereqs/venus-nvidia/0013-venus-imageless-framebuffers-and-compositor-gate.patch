@@ -1,0 +1,312 @@
+From 4453afc273f5b65e47991ebaa7c39f07fafe163f Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sat, 1 Aug 2026 08:52:18 -0400
+Subject: [PATCH 13/16] venus: resolve imageless framebuffers, and publish only
+ the compositor
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Fixes the host-encoded mirror showing the launcher's window instead of the
+screen — app drawer over black, wallpaper missing (bd remora-e5x.15).
+
+Per-context chain counters located the break to one link. SurfaceFlinger did
+everything — 402 memory imports with res_ids, 402 images, 1995 views, 398
+framebuffer bindings — with fb=0 and resolved=0, while the launcher resolved
+352/400 on identical hooks. Verified cause: SF creates its framebuffers with
+VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT (measured flags=0x1; every app context uses
+0x0), so vkCreateFramebuffer carries no views and the framebuffer->view map
+never learns its target. The view arrives at vkCmdBeginRenderPass in
+VkRenderPassAttachmentBeginInfo instead — a structure nothing read.
+
+vkr_remora_note_rp_attachments() now takes attachment 0 from that pNext chain,
+after VKR_CMD_CALL so the handles are already host handles. With it in place SF
+resolves 597/600, at 3760x1992 — the composited display.
+
+That makes positive identification possible, so the extent heuristic is retired:
+only the context named by REMORA_COMPOSITOR (default "surfaceflinger") labels
+and publishes. Extent-plus-activity had now been wrong four separate ways — a
+dead publisher, a competing GL-pass producer, the launcher's own full-screen
+window, and a stale label after resize — because any app can render at exactly
+the display's size. The compositor's output is the mirror's frame by definition.
+Setting REMORA_COMPOSITOR empty restores the old any-context behaviour for
+non-Android guests.
+
+Verified end to end in compose mode: exactly one publisher (surfaceflinger),
+54.5 fps at 3760x1992, zero stream errors, and the captured frame is the
+composited home screen — wallpaper and nav bar, not a window over black.
+
+SF was invisible to earlier instrumentation for two reasons worth remembering:
+every context log sat on the resolved path (circular), and the early lines went
+to a log scrcpy's detached spawn truncates. The per-process announce now fires
+on first submit, before any resolution.
+---
+ src/venus/vkr_command_buffer.c | 33 ++++++++++++
+ src/venus/vkr_remora_track.c   | 97 ++++++++++++++++++++++++++++++++--
+ src/venus/vkr_render_pass.c    | 22 ++++++++
+ 3 files changed, 149 insertions(+), 3 deletions(-)
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index d3b4f8bf..aa2741b8 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -5,6 +5,9 @@
+ 
+ #include "vkr_command_buffer.h"
+ 
++#include <stdio.h>
++#include <unistd.h>
++
+ #include "vkr_remora_track.h"
+ 
+ #include "vkr_command_buffer_gen.h"
+@@ -500,11 +503,41 @@ vkr_dispatch_vkCmdPushConstants(UNUSED struct vn_dispatch_context *dispatch,
+                 args->size, args->pValues);
+ }
+ 
++
++/* The missing link for IMAGELESS framebuffers (bd remora-e5x.15). SurfaceFlinger creates its
++ * framebuffers with VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT (measured: flags=0x1, while every app
++ * context uses 0x0), so vkCreateFramebuffer carries no views and the framebuffer->view map never
++ * learns its target — fb=0 against cmdfb=398, resolved=0 forever. The view arrives HERE instead,
++ * in VkRenderPassAttachmentBeginInfo on the render-pass begin. Runs after VKR_CMD_CALL, so the
++ * handles have already been replaced with host handles — the same key space as every map.
++ * note_cmd_framebuffer stays as the non-imageless route; it only writes on a map hit, so the two
++ * cannot clobber each other. */
++static void
++vkr_remora_note_rp_attachments(VkCommandBuffer cmd, const VkRenderPassBeginInfo *info)
++{
++   if (!vkr_remora_enabled() || !info)
++      return;
++   const VkRenderPassAttachmentBeginInfo *att = NULL;
++   for (const VkBaseInStructure *p = info->pNext; p; p = p->pNext)
++      if (p->sType == VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO)
++         att = (const VkRenderPassAttachmentBeginInfo *)p;
++   if (att && att->attachmentCount && att->pAttachments) {
++      static bool logged;
++      if (!logged) {
++         logged = true;
++         fprintf(stderr, "[remora-fbinfo] pid=%d imageless attachment linked (count=%u)\n",
++                 (int)getpid(), att->attachmentCount);
++      }
++      /* Attachment 0 is the color target for every render pass ANGLE/Skia builds here. */
++      vkr_remora_note_cmd_target(cmd, att->pAttachments[0]);
++   }
++}
+ static void
+ vkr_dispatch_vkCmdBeginRenderPass(UNUSED struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkCmdBeginRenderPass *args)
+ {
+    VKR_CMD_CALL(CmdBeginRenderPass, args, args->pRenderPassBegin, args->contents);
++   vkr_remora_note_rp_attachments(args->commandBuffer, args->pRenderPassBegin);
+    if (vkr_remora_enabled() && args->pRenderPassBegin)
+       vkr_remora_note_cmd_framebuffer(args->commandBuffer,
+                                       args->pRenderPassBegin->framebuffer);
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+index 644badc1..63fe60af 100644
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -3,6 +3,7 @@
+ #include "vkr_remora_track.h"
+ 
+ #include "vkr_queue.h"
++#include "vkr_context.h"
+ #include "vkr_device.h"
+ 
+ #include "c11/threads.h"
+@@ -91,6 +92,14 @@ static uint32_t last_frame_res_id;
+ /* Per-link counters: with a five-link chain, "no frames" is uninformative —
+  * these say WHICH link is missing. */
+ static uint64_t n_mem, n_img, n_view, n_cmd, n_submit, n_resolved;
++/* The framebuffer route is how ANGLE actually reaches its target — it uses render passes, not
++ * dynamic rendering, so n_cmd stays 0 even for contexts that resolve perfectly well. Counting the
++ * fb links separately is what distinguishes "this context uses a route we do not hook" from "this
++ * context is not rendering". */
++static uint64_t n_fb, n_cmdfb;
++/* Who this process is, for the counter line. The counters are process-global statics and Venus
++ * forks per client, so a pid and a name are enough to attribute them. */
++static const char *proc_ctx_name = "?";
+ 
+ /* Announce each hook's FIRST call, independently. The counters above only
+  * printed from note_submit, so a chain that breaks BEFORE submit produced no
+@@ -455,6 +464,17 @@ vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id, int dup_
+    call_once(&track_once, track_init);
+    mtx_lock(&track_mutex);
+    n_mem++;
++   {
++      /* Does this context's memory ever carry a virgl res_id? Without one the chain cannot start,
++       * so a compositor whose output buffer is not an imported dma_buf would submit forever and
++       * never resolve. */
++      static bool mem_announced;
++      if (!mem_announced) {
++         mem_announced = true;
++         fprintf(stderr, "[remora-proc] pid=%d first memory import res_id=%u fd=%d\n",
++                 (int)getpid(), res_id, dup_fd);
++      }
++   }
+    FIRST(memory_resource);
+    map_put(&map_mem_res, H(memory), res_id);
+    if (dup_fd >= 0) {
+@@ -679,6 +699,7 @@ vkr_remora_note_any_cmd(const char *name)
+ void
+ vkr_remora_note_framebuffer(VkFramebuffer fb, VkImageView view)
+ {
++   n_fb++;
+    if (!vkr_remora_enabled())
+       return;
+    call_once(&track_once, track_init);
+@@ -691,6 +712,7 @@ vkr_remora_note_framebuffer(VkFramebuffer fb, VkImageView view)
+ void
+ vkr_remora_note_cmd_framebuffer(VkCommandBuffer cmd, VkFramebuffer fb)
+ {
++   n_cmdfb++;
+    if (!vkr_remora_enabled())
+       return;
+    call_once(&track_once, track_init);
+@@ -715,10 +737,28 @@ vkr_remora_note_submit(struct vkr_queue *queue, const VkCommandBuffer *cmds,
+    mtx_lock(&track_mutex);
+    n_submit++;
+    FIRST(submit);
++   /* Announce this process's context on its FIRST submit, before anything about resolution.
++    * Every context log so far has been on the resolved path, which cannot answer the question
++    * that matters: does SurfaceFlinger submit through this render server AT ALL? If it does and
++    * never resolves, the chain is broken for the compositor; if it never appears, it is not on
++    * this path and no chooser could ever have found it (bd remora-e5x.15). */
++   {
++      static bool announced;
++      if (!announced) {
++         announced = true;
++         proc_ctx_name = (queue && queue->context && queue->context->debug_name)
++                            ? queue->context->debug_name
++                            : "?";
++         fprintf(stderr, "[remora-proc] pid=%d context='%s' SUBMITS\n", (int)getpid(),
++                 proc_ctx_name);
++      }
++   }
+    if (n_submit == 1 || (n_submit % 200) == 0) {
+-      fprintf(stderr, "[remora-chain] mem=%" PRIu64 " img=%" PRIu64 " view=%" PRIu64
+-                      " cmd=%" PRIu64 " submits=%" PRIu64 " resolved=%" PRIu64 "\n",
+-              n_mem, n_img, n_view, n_cmd, n_submit, n_resolved);
++      fprintf(stderr, "[remora-chain] pid=%d ctx='%s' mem=%" PRIu64 " img=%" PRIu64
++                      " view=%" PRIu64 " fb=%" PRIu64 " cmdfb=%" PRIu64 " cmd=%" PRIu64
++                      " submits=%" PRIu64 " resolved=%" PRIu64 "\n",
++              (int)getpid(), proc_ctx_name, n_mem, n_img, n_view, n_fb, n_cmdfb, n_cmd,
++              n_submit, n_resolved);
+    }
+    for (uint32_t i = 0; i < count; i++) {
+       const uint64_t view = map_get(&map_cmd_view, H(cmds[i]));
+@@ -736,6 +776,51 @@ vkr_remora_note_submit(struct vkr_queue *queue, const VkCommandBuffer *cmds,
+ 
+       n_resolved++;
+ 
++      /* Every DISTINCT extent each guest context resolves to, logged BEFORE any display
++       * filtering. Logging inside the display branch only showed contexts that already matched
++       * the label, which is circular: it could never reveal a compositor whose target never got
++       * labelled in the first place (bd remora-e5x.15). */
++      {
++         const uint64_t _wh0 = map_get(&map_img_wh, image);
++         static uint64_t seen_extents[24];
++         static unsigned n_seen;
++         const char *cname = (queue && queue->context && queue->context->debug_name)
++                                ? queue->context->debug_name
++                                : "?";
++         bool known = false;
++         for (unsigned i = 0; i < n_seen; i++)
++            if (seen_extents[i] == _wh0)
++               known = true;
++         if (!known && n_seen < 24) {
++            seen_extents[n_seen++] = _wh0;
++            fprintf(stderr, "[remora-ctx] pid=%d context='%s' resolves %ux%u\n", (int)getpid(),
++                    cname, (uint32_t)(_wh0 >> 32), (uint32_t)_wh0);
++         }
++      }
++
++      /* ONLY THE COMPOSITOR'S FRAMES ARE DISPLAY FRAMES. The extent heuristic alone was wrong
++       * four separate ways — a dead publisher, a competing GL-pass producer, the launcher's own
++       * full-screen window (the drawer-over-black bug), and a stale label after resize — because
++       * any app can render at exactly the display's size. The context name is positive identity:
++       * SurfaceFlinger's composited output is the mirror's frame BY DEFINITION, and with the
++       * imageless-framebuffer link in place its target now resolves (597/600 measured). Contexts
++       * that are not the compositor still feed every diagnostic above; they just never label or
++       * publish. Overridable for non-Android guests via REMORA_COMPOSITOR; setting it empty
++       * restores the old any-context behaviour. */
++      static int is_compositor = -1;
++      if (is_compositor < 0) {
++         const char *want = getenv("REMORA_COMPOSITOR");
++         if (!want)
++            want = "surfaceflinger";
++         is_compositor = (*want == '\0') || strcmp(proc_ctx_name, want) == 0;
++         if (is_compositor && *want)
++            fprintf(stderr, "[remora-publish] pid=%d context='%s' is the compositor — "
++                            "publishing its frames\n",
++                    (int)getpid(), proc_ctx_name);
++      }
++      if (!is_compositor)
++         goto skip_display;
++
+       /* Label the display on the largest target seen, once it grows. A frame
+        * matching that extent is a display frame, and its fd is what an encoder
+        * wants. */
+@@ -783,6 +868,11 @@ vkr_remora_note_submit(struct vkr_queue *queue, const VkCommandBuffer *cmds,
+          disp_res_id = (uint32_t)res_id;
+          disp_fd = fd ? fd : -1;
+ 
++         /* WHICH GUEST PROCESS drew this. The chooser has been picking targets by extent and
++          * recent activity, and that has now been wrong three separate ways — a dead publisher, a
++          * competing one, and finally the launcher's own full-screen window instead of
++          * SurfaceFlinger's composited output. The context carries the guest's own name, so stop
++          * inferring and record it (bd remora-e5x.15). */
+          const uint64_t ft = map_get(&map_img_fmt, image);
+          const uint64_t md = map_get(&map_img_mod, image);
+          const uint64_t ly = map_get(&map_img_lay, image);
+@@ -826,6 +916,7 @@ vkr_remora_note_submit(struct vkr_queue *queue, const VkCommandBuffer *cmds,
+          }
+       }
+ 
++   skip_display:
+       if ((uint32_t)res_id != last_frame_res_id) {
+          /* Only on CHANGE: a compositor submits every frame, and logging each
+           * one would bury the signal. The interesting event is the render
+diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
+index 87e6d7e9..503449ab 100644
+--- a/src/venus/vkr_render_pass.c
++++ b/src/venus/vkr_render_pass.c
+@@ -5,6 +5,9 @@
+ 
+ #include "vkr_render_pass.h"
+ 
++#include <stdio.h>
++#include <unistd.h>
++
+ #include "vkr_remora_track.h"
+ 
+ #include "vkr_render_pass_gen.h"
+@@ -78,6 +81,25 @@ vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCreateFramebuffer *args)
+ {
+    struct vkr_framebuffer *_fb = vkr_framebuffer_create_and_add(dispatch->data, args);
++   /* VERIFY (bd remora-e5x.15): SurfaceFlinger shows fb=0 with cmdfb=398, and the note below is
++    * gated on attachmentCount — so either SF never creates framebuffers here, or it creates them
++    * IMAGELESS (flags bit 1, attachments deferred to vkCmdBeginRenderPass). Log every distinct
++    * (flags, attachmentCount) pair unconditionally to tell those apart. */
++   if (vkr_remora_enabled() && args->pCreateInfo) {
++      static uint64_t seen[8];
++      static unsigned n_seen;
++      const uint64_t key =
++         ((uint64_t)args->pCreateInfo->flags << 32) | args->pCreateInfo->attachmentCount;
++      bool known = false;
++      for (unsigned i = 0; i < n_seen; i++)
++         if (seen[i] == key)
++            known = true;
++      if (!known && n_seen < 8) {
++         seen[n_seen++] = key;
++         fprintf(stderr, "[remora-fbinfo] pid=%d CreateFramebuffer flags=0x%x attachments=%u\n",
++                 (int)getpid(), args->pCreateInfo->flags, args->pCreateInfo->attachmentCount);
++      }
++   }
+    /* Record the HOST handle, not *args->pFramebuffer. The guest handle becomes
+     * the object's ID (vkr_context_alloc_object takes it), while the driver
+     * handle lives in base.handle — and it is the driver handle that
+-- 
+2.54.0
+

@@ -1,0 +1,26 @@
+From 9d7514ad7fb25100ff8b5a20637aadfba2047d2e Mon Sep 17 00:00:00 2001
+From: maxwen <max.weninger@gmail.com>
+Date: Fri, 9 Dec 2022 23:13:11 +0100
+Subject: [PATCH 70/98] Settings: fix typo in settings namespace for qr scanner
+ on ls
+
+its in secure and not in global
+
+Change-Id: I2ec4d93a25f9aed3e9db2151c72fb21918905cdc
+---
+ .../settings/display/QRCodeScannerPreferenceController.java     | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/com/android/settings/display/QRCodeScannerPreferenceController.java b/src/com/android/settings/display/QRCodeScannerPreferenceController.java
+index cb022a74fa8..e15860ec026 100644
+--- a/src/com/android/settings/display/QRCodeScannerPreferenceController.java
++++ b/src/com/android/settings/display/QRCodeScannerPreferenceController.java
+@@ -64,7 +64,7 @@ public class QRCodeScannerPreferenceController extends TogglePreferenceControlle
+     @OnLifecycleEvent(ON_START)
+     public void onStart() {
+         mContentResolver.registerContentObserver(
+-                Settings.Global.getUriFor(SHOW_QR_CODE_SCANNER_SETTING), false,
++                Settings.Secure.getUriFor(SHOW_QR_CODE_SCANNER_SETTING), false,
+                 mSettingsObserver);
+     }
+ 

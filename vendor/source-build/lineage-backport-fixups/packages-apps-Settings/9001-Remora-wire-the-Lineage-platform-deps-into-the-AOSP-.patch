@@ -1,0 +1,35 @@
+From 4c4c0601c0ec4179d20bcaaec23f3f26f61b01de Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sat, 25 Jul 2026 09:51:21 -0400
+Subject: [PATCH] Remora: wire the Lineage platform deps into the AOSP-17
+ static_libs
+
+Upstream backport patches 0003 (org.lineageos.platform.internal) and 0006
+(LineagePreferenceLib) do not apply: AOSP 17 appended dynamiccolors and
+com.android.text.flags-aconfig-java after the device-state-schema anchor they
+expect. Same two modules, placed against the current list. Both are defined in
+lineage-sdk/ and are required by the 5 backported sources that reference the
+Lineage platform APIs.
+
+Change-Id: I4cebf68e18bf4f755e22220e454933bcfa4c3716
+---
+ Android.bp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/Android.bp b/Android.bp
+index 98415d7522a..831e3c1a5a9 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -126,6 +126,12 @@ android_library {
+         "androidx.appsearch_appsearch-builtin-types",
+         "com.android.extensions.appfunctions.impl",
+         "device-state-schema",
++
++        // Lineage dependencies. Upstream backport patches 0003/0006 add these, but their
++        // context does not apply: AOSP 17 appended entries after the device-state-schema
++        // anchor they expect. Same two modules, both defined in lineage-sdk/.
++        "org.lineageos.platform.internal",
++        "LineagePreferenceLib",
+         "dynamiccolors",
+         "com.android.text.flags-aconfig-java",
+     ],

@@ -1,0 +1,76 @@
+From dde7fddebf20be1ea0bc945488c4b45785f8ee57 Mon Sep 17 00:00:00 2001
+From: Michael Bestas <mikeioannina@gmail.com>
+Date: Fri, 8 Nov 2024 12:02:56 +0200
+Subject: [PATCH 65/98] BatteryTip: Hide Learn more button if URL is empty
+
+When help_url_battery_defender is empty, tapping on Learn more button
+causes a NPE.
+
+Issue: calyxos#2809
+Change-Id: Ib1c52dcff430cae7c4bc0793120ace837f5bf4c7
+---
+ .../batterytip/tips/BatteryDefenderTip.java   | 44 +++++++++++--------
+ 1 file changed, 25 insertions(+), 19 deletions(-)
+
+diff --git a/src/com/android/settings/fuelgauge/batterytip/tips/BatteryDefenderTip.java b/src/com/android/settings/fuelgauge/batterytip/tips/BatteryDefenderTip.java
+index b43acac6680..1b871ab9179 100644
+--- a/src/com/android/settings/fuelgauge/batterytip/tips/BatteryDefenderTip.java
++++ b/src/com/android/settings/fuelgauge/batterytip/tips/BatteryDefenderTip.java
+@@ -91,25 +91,27 @@ public class BatteryDefenderTip extends BatteryTip {
+         }
+ 
+         cardPreference.setSelectable(false);
+-        cardPreference.setNegativeButtonText(
+-                Utils.createAccessibleSequence(
+-                        context.getString(R.string.learn_more),
+-                        context.getString(R.string
+-                                .battery_tip_limited_temporarily_sec_button_content_description)));
+-        cardPreference.setNegativeButtonOnClickListener(
+-                unused -> {
+-                    var helpIntent =
+-                            HelpUtils.getHelpIntent(
+-                                    context,
+-                                    context.getString(R.string.help_url_battery_defender),
+-                                    /* backupContext= */ "");
+-                    ActivityCompat.startActivityForResult(
+-                            (Activity) preference.getContext(),
+-                            helpIntent,
+-                            /* requestCode= */ 0,
+-                            /* options= */ null);
+-                });
+-        cardPreference.setNegativeButtonVisible(true);
++        if (getHelpResource() != 0) {
++            cardPreference.setNegativeButtonText(
++                    Utils.createAccessibleSequence(
++                            context.getString(R.string.learn_more),
++                            context.getString(R.string
++                                    .battery_tip_limited_temporarily_sec_button_content_description)));
++            cardPreference.setNegativeButtonOnClickListener(
++                    unused -> {
++                        var helpIntent =
++                                HelpUtils.getHelpIntent(
++                                        context,
++                                        context.getString(getHelpResource()),
++                                        /* backupContext= */ "");
++                        ActivityCompat.startActivityForResult(
++                                (Activity) preference.getContext(),
++                                helpIntent,
++                                /* requestCode= */ 0,
++                                /* options= */ null);
++                    });
++            cardPreference.setNegativeButtonVisible(true);
++        }
+ 
+         cardPreference.setPositiveButtonText(
+                 context.getString(R.string.battery_tip_charge_to_full_button));
+@@ -121,6 +123,10 @@ public class BatteryDefenderTip extends BatteryTip {
+         cardPreference.setPositiveButtonVisible(mIsPluggedIn);
+     }
+ 
++    private int getHelpResource() {
++        return R.string.help_url_battery_defender;
++    }
++
+     private void resumeCharging(Context context) {
+         final Intent intent =
+                 FeatureFactory.getFeatureFactory()

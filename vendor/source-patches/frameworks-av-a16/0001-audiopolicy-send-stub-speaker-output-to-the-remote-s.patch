@@ -1,0 +1,85 @@
+From d398604801a81427a550b7ead8d115f36647779e Mon Sep 17 00:00:00 2001
+From: R <r@l>
+Date: Sun, 30 Aug 2026 11:49:47 -0400
+Subject: [PATCH] 
+ 0001-audiopolicy-send-stub-speaker-output-to-the-remote-s.patch
+
+Change-Id: Ie9f5800d4066f5ee97357c57bae9281b9f658de9
+---
+ .../audiopolicy/enginedefault/src/Engine.cpp  | 46 +++++++++++++++++--
+ 1 file changed, 43 insertions(+), 3 deletions(-)
+
+diff --git a/services/audiopolicy/enginedefault/src/Engine.cpp b/services/audiopolicy/enginedefault/src/Engine.cpp
+index 0ab9083..7fe576e 100644
+--- a/services/audiopolicy/enginedefault/src/Engine.cpp
++++ b/services/audiopolicy/enginedefault/src/Engine.cpp
+@@ -26,6 +26,7 @@
+ 
+ #include "Engine.h"
+ #include <android-base/macros.h>
++#include <android-base/properties.h>
+ #include <AudioPolicyManagerObserver.h>
+ #include <PolicyAudioPort.h>
+ #include <IOProfile.h>
+@@ -809,6 +810,45 @@ audio_devices_t Engine::getPreferredDeviceTypeForLegacyStrategy(
+     return AUDIO_DEVICE_NONE;
+ }
+ 
++// Remora: this container has no speaker.
++//
++// primary_audio_policy_configuration.xml attaches a Speaker and names it defaultOutputDevice,
++// but the primary HAL behind it is AOSP's stub — it accepts every write and plays nothing. The
++// only output that leaves the container is AUDIO_DEVICE_OUT_REMOTE_SUBMIX, which the mirror
++// captures and plays on the host.
++//
++// AOSP withholds the submix from the sonification strategies deliberately: the "no sonification
++// on remote submix (e.g. WFD)" guard in getDevicesForStrategyInt, and the explicit REMOTE_SUBMIX
++// removal for STRATEGY_SONIFICATION_RESPECTFUL in filterOutputDevicesForStrategy. On a phone that
++// is right — the speaker is real and you want the ringtone in your pocket, not on the TV. Here it
++// routes ringtones, alarms, notifications and call audio into the bit bucket while media and the
++// UI sounds that share STRATEGY_MEDIA come through, which presents as "half the sounds are
++// broken" rather than as a routing decision (bd remora-8g24).
++//
++// So substitute: a strategy that has resolved to the stub speaker while a submix IS available
++// goes to the submix instead. Done at the one funnel every output routing decision passes
++// through, rather than case by case, and only ever as a REPLACEMENT for a lone speaker — a
++// strategy that found a real device, or one pinned through setPreferredDeviceForStrategy above,
++// is untouched. It is self-scoping: no capture means no submix device means nothing to
++// substitute, so an unmirrored container behaves exactly as upstream.
++static DeviceVector substituteSubmixForStubSpeaker(const DeviceVector &devices,
++                                                   const DeviceVector &availableOutputDevices) {
++    // Read once: this sits on the routing hot path, and flipping it is a debugging action that
++    // can afford an audioserver restart.
++    static const bool enabled =
++            android::base::GetBoolProperty("persist.remora.submix_all_output", true);
++    if (!enabled || devices.size() != 1
++        || devices[0]->type() != AUDIO_DEVICE_OUT_SPEAKER) {
++        return devices;
++    }
++    // Address "0" is the legacy submix route, the one AudioRecord(REMOTE_SUBMIX) opens. Look it
++    // up in the UNFILTERED device list: filterOutputDevicesForStrategy has already removed it
++    // from the caller's copy for exactly the strategy this exists to rescue.
++    const sp<DeviceDescriptor> submix = availableOutputDevices.getDevice(
++            AUDIO_DEVICE_OUT_REMOTE_SUBMIX, String8("0"), AUDIO_FORMAT_DEFAULT);
++    return submix != nullptr ? DeviceVector(submix) : devices;
++}
++
+ DeviceVector Engine::getDevicesForProductStrategy(product_strategy_t strategy) const {
+     const SwAudioOutputCollection& outputs = getApmObserver()->getOutputs();
+ 
+@@ -836,9 +876,9 @@ DeviceVector Engine::getDevicesForProductStrategy(product_strategy_t strategy) c
+             getDisabledDevicesForProductStrategy(availableOutputDevices, strategy);
+     availableOutputDevices.remove(disabledDevVec);
+ 
+-    return getDevicesForStrategyInt(legacyStrategy,
+-                                    availableOutputDevices,
+-                                    outputs);
++    return substituteSubmixForStubSpeaker(
++            getDevicesForStrategyInt(legacyStrategy, availableOutputDevices, outputs),
++            getApmObserver()->getAvailableOutputDevices());
+ }
+ 
+ DeviceVector Engine::getOutputDevicesForAttributes(const audio_attributes_t &attributes,
+-- 
+2.54.0
+

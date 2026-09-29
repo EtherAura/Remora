@@ -1,0 +1,55 @@
+From 92deb16a43f43f1a1d2adb2a933f65d0dfc1f82a Mon Sep 17 00:00:00 2001
+From: ExactExampl <xmpl@dontsleep.work>
+Date: Thu, 23 Jan 2025 17:49:02 +0200
+Subject: [PATCH 69/98] Partially revert "[Settings] Start SettingsDumpService
+ to dump the db log after the db is"
+
+'Start SettingsDumpService after the MobileNetworkRepository is
+created' sends the intent every single time the
+NetworkDashboardFragment is instantiated (basically every time user
+opens the network dashboard in Settings).
+
+SettingsDumpService's lifecycle never finishes, since it's context is
+passed to the MobileNetworkRepository for singleton instance creation
+which then proceeds to holding a reference to that context thus keeping
+the entire service alive along with the application process, which
+prevents the static singleton from being garbage collected creating an
+indirect retention cycle. All that over time grows into a solid memory
+leak.
+
+SettingsDumpService (as well as MobileNetworkRepository instance,
+obviously) proceed to dangling until the app process gets eventually
+killed by the lmkd (which is unlikely to happen but still was observed
+on several devices running stock ROM) or manually terminated by user,
+but based on the observation, maximum time of dangling could be
+perfectly equal to global system uptime.
+
+This issue still remains all the way up to latest AOSP tags and betas,
+although some vendors stock ROMs seem to have sorted it out.
+
+Since we don't really care about dumping mobile network info
+(especially in production builds), do the minimum changes required to
+remove the dumping feature and avoid future AOSP merge conflicts.
+
+This partially reverts commit d6f3ad9178da5aacbe521d2b2fbfbfc0d93af174.
+
+Change-Id: Ifd7ded6cebd5f247cbdeb88035fdeb21cf060412
+---
+ .../android/settings/network/NetworkDashboardFragment.java    | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/src/com/android/settings/network/NetworkDashboardFragment.java b/src/com/android/settings/network/NetworkDashboardFragment.java
+index b1900cff86b..30d4b5bb3ea 100644
+--- a/src/com/android/settings/network/NetworkDashboardFragment.java
++++ b/src/com/android/settings/network/NetworkDashboardFragment.java
+@@ -92,10 +92,6 @@ public class NetworkDashboardFragment extends DashboardFragment implements
+         controllers.add(vpnPreferenceController);
+         controllers.add(privateDnsPreferenceController);
+ 
+-        // Start SettingsDumpService after the MobileNetworkRepository is created.
+-        Intent intent = new Intent(context, SettingsDumpService.class);
+-        intent.putExtra(SettingsDumpService.EXTRA_KEY_SHOW_NETWORK_DUMP, true);
+-        context.startService(intent);
+         return controllers;
+     }
+ 

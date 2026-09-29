@@ -1,0 +1,42 @@
+From b9e0d6b922a37aae98307db6f362a3884567afdb Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sat, 25 Jul 2026 12:09:23 -0400
+Subject: [PATCH] rootdir: keep host kernel.modprobe and kernel.sysrq intact
+
+Neither sysctl is namespaced, so in a privileged container both writes escape to the HOST kernel. Blanking kernel.modprobe disables module autoload host-wide: rtnetlink veth creation returns EOPNOTSUPP and docker bridge networking breaks on the container host.
+
+Rebased for A17: the container-compat patches already insert a bootchart block and a /sys remount comment into this region, so the A16 context no longer matches.
+
+Change-Id: I4fbcadfc274771a48a10825cc5e40388ad6e2784
+---
+ rootdir/init.rc | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/rootdir/init.rc b/rootdir/init.rc
+index d7b778a75..ddfda1228 100644
+--- a/rootdir/init.rc
++++ b/rootdir/init.rc
+@@ -17,16 +17,16 @@ on early-init
+     mkdir /dev/bootchart 0755 root root
+     bootchart start
+ 
+-    # Disable sysrq from keyboard
+-    write /proc/sys/kernel/sysrq 0
++    # Do NOT write kernel.sysrq / kernel.modprobe here. Neither sysctl is
++    # namespaced, so in a privileged container both writes escape to the HOST kernel.
++    # Blanking kernel.modprobe disables kernel module autoload host-wide: rtnetlink
++    # veth creation returns EOPNOTSUPP and docker bridge networking breaks on the
++    # container host. Android's reason for blanking it (stop kernel-initiated
++    # autoload behind init's back) is meaningless in a container, where the kernel
++    # resolves /sbin/modprobe in the host filesystem anyway.
+     # /sys is mounted read-only in the container; remount rw so early-init writes succeed
+     mount sysfs sysfs /sys remount rw nodev
+ 
+-    # Android doesn't need kernel module autoloading, and it causes SELinux
+-    # denials.  So disable it by setting modprobe to the empty string.  Note: to
+-    # explicitly set a sysctl to an empty string, a trailing newline is needed.
+-    write /proc/sys/kernel/modprobe \n
+-
+     # Set the security context of /adb_keys if present.
+     restorecon /adb_keys
+ 

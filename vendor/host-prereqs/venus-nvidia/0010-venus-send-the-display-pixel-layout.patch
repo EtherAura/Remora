@@ -1,0 +1,243 @@
+From 2c91174f205d438d7d9a729ee9a05d2d08d0ffeb Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 31 Jul 2026 22:48:08 -0400
+Subject: [PATCH 10/16] venus: send the display's pixel layout with each frame
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A dma_buf carries no description of itself. An encoder handed the fd cannot
+derive the format, the DRM modifier or the row pitch, and guessing them yields a
+successful import of garbage — so the publisher now sends them.
+
+The values come from the image's own VkImageCreateInfo, which is the only
+authoritative source. The allocator knows a set of numbers too, but they
+describe the ALLOCATION and not the image bound to it: measured, the allocator
+reports 3760x2049 pitch 15104 (padded, 256-aligned) for a display whose image is
+3760x1992 pitch 15040. Importing with the allocator's pitch would shear every
+frame.
+
+Measured on a live session, and the reason this is worth carrying per frame
+rather than assuming: the display is VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+VK_FORMAT_R8G8B8A8_UNORM, modifier 0x300000000606014 — NVIDIA block-linear, not
+LINEAR. That modifier is one the earlier dma_buf probe already proved importable
+on this host.
+
+Wire format goes to RMF2. The magic is bumped rather than extended silently so a
+stale reader fails loudly instead of misparsing a longer message.
+---
+ src/venus/vkr_image.c        |   4 +-
+ src/venus/vkr_remora_track.c | 103 ++++++++++++++++++++++++++++++++++-
+ src/venus/vkr_remora_track.h |  23 +++++++-
+ 3 files changed, 124 insertions(+), 6 deletions(-)
+
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index 12e01bb3..ed5432fa 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -38,10 +38,12 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+     * view hooks already use. The previous attempt called
+     * vkr_image_from_handle(*args->pImage) instead, which is a cast of the GUEST
+     * handle, and every hook went silent. */
+-   if (_img && args->pCreateInfo)
++   if (_img && args->pCreateInfo) {
+       vkr_remora_note_image_extent(_img->base.handle.image,
+                                    args->pCreateInfo->extent.width,
+                                    args->pCreateInfo->extent.height);
++      vkr_remora_note_image_layout(_img->base.handle.image, args->pCreateInfo);
++   }
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+index db0cf84e..f0e68333 100644
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -39,9 +39,16 @@ static struct handle_map map_cmd_view;   /* VkCommandBuffer -> VkImageView */
+ static struct handle_map map_fb_view;    /* VkFramebuffer  -> VkImageView (attach 0) */
+ static struct handle_map map_img_wh;     /* VkImage        -> (w<<32)|h */
+ static struct handle_map map_res_fd;     /* res_id         -> dup'd dma_buf fd */
++static struct handle_map map_img_fmt;    /* VkImage        -> (tiling<<32)|VkFormat */
++static struct handle_map map_img_mod;    /* VkImage        -> DRM modifier + 1, 0 if none */
++static struct handle_map map_img_lay;    /* VkImage        -> (offset<<32)|rowPitch */
+ 
+ /* The labelled display, and the newest frame seen for it. */
+ static uint32_t disp_w, disp_h, disp_res_id;
++/* Its pixel layout, which an importing encoder needs and cannot derive. */
++static uint32_t disp_format, disp_tiling, disp_offset, disp_pitch;
++static uint64_t disp_modifier = ~0ull;
++static bool disp_layout_logged;
+ static int disp_fd = -1;
+ 
+ 
+@@ -151,6 +158,30 @@ static uint64_t pub_retry_tick;
+ static struct handle_map map_res_sent;  /* res_id -> 1 once its fd has been sent */
+ static uint64_t pub_sent, pub_dropped;
+ 
++/* VkFormat -> DRM fourcc, for the formats a compositor actually presents in.
++ * The byte orders are reversed between the two conventions: Vulkan names
++ * components in memory order, DRM names them in little-endian packed order, so
++ * VK_FORMAT_R8G8B8A8_UNORM is DRM_FORMAT_ABGR8888. Confirmed against the
++ * allocator, which independently reports AB24 for these buffers. */
++static uint32_t
++vk_format_to_fourcc(uint32_t vkformat)
++{
++#define FOURCC(a, b, c, d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
++   switch (vkformat) {
++   case 37: /* VK_FORMAT_R8G8B8A8_UNORM */
++   case 43: /* VK_FORMAT_R8G8B8A8_SRGB  */
++      return FOURCC('A', 'B', '2', '4'); /* DRM_FORMAT_ABGR8888 */
++   case 44: /* VK_FORMAT_B8G8R8A8_UNORM */
++   case 50: /* VK_FORMAT_B8G8R8A8_SRGB  */
++      return FOURCC('A', 'R', '2', '4'); /* DRM_FORMAT_ARGB8888 */
++   case 64: /* VK_FORMAT_A2B10G10R10_UNORM_PACK32 */
++      return FOURCC('A', 'B', '3', '0'); /* DRM_FORMAT_ABGR2101010 */
++   default:
++      return 0; /* unknown: the encoder must refuse rather than guess */
++   }
++#undef FOURCC
++}
++
+ static void
+ publish_frame_locked(uint32_t res_id, int fd, uint32_t w, uint32_t h)
+ {
+@@ -158,9 +189,16 @@ publish_frame_locked(uint32_t res_id, int fd, uint32_t w, uint32_t h)
+       return;
+ 
+    const bool need_fd = fd >= 0 && !map_get(&map_res_sent, res_id);
+-   uint32_t msg[5] = { VKR_REMORA_FRAME_MAGIC, res_id, w, h, need_fd ? 1u : 0u };
+-
+-   struct iovec iov = { .iov_base = msg, .iov_len = sizeof(msg) };
++   struct {
++      uint32_t magic, res_id, width, height, has_fd;
++      uint32_t fourcc, offset, pitch;
++      uint64_t modifier;
++   } msg = {
++      VKR_REMORA_FRAME_MAGIC, res_id, w, h, need_fd ? 1u : 0u,
++      vk_format_to_fourcc(disp_format), disp_offset, disp_pitch, disp_modifier,
++   };
++
++   struct iovec iov = { .iov_base = &msg, .iov_len = sizeof(msg) };
+    struct msghdr mh = { .msg_iov = &iov, .msg_iovlen = 1 };
+    union {
+       char buf[CMSG_SPACE(sizeof(int))];
+@@ -304,6 +342,45 @@ vkr_remora_note_image_extent(VkImage image, uint32_t width, uint32_t height)
+    mtx_unlock(&track_mutex);
+ }
+ 
++void
++vkr_remora_note_image_layout(VkImage image, const VkImageCreateInfo *ci)
++{
++   if (!vkr_remora_enabled() || !ci)
++      return;
++   call_once(&track_once, track_init);
++
++   /* An encoder importing this dma_buf needs format, modifier and plane layout.
++    * Recorded per image rather than logged, so the publish path can report the
++    * DISPLAY's layout specifically — logging at create time buries it among
++    * every other image the compositor makes. */
++   uint64_t mod = ~0ull;
++   uint64_t offset = 0, pitch = 0;
++   const char *modsrc = "none";
++   for (const VkBaseInStructure *p = ci->pNext; p; p = p->pNext) {
++      if (p->sType == VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT) {
++         const VkImageDrmFormatModifierExplicitCreateInfoEXT *e = (const void *)p;
++         mod = e->drmFormatModifier;
++         modsrc = "explicit";
++         if (e->drmFormatModifierPlaneCount && e->pPlaneLayouts) {
++            offset = e->pPlaneLayouts[0].offset;
++            pitch = e->pPlaneLayouts[0].rowPitch;
++         }
++      } else if (p->sType == VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT) {
++         modsrc = "list";
++      }
++   }
++
++   (void)modsrc;
++   mtx_lock(&track_mutex);
++   map_put(&map_img_fmt, H(image), ((uint64_t)ci->tiling << 32) | (uint32_t)ci->format);
++   /* +1 so "recorded, and it is 0 (LINEAR)" is distinguishable from "absent".
++    * LINEAR is the value that actually matters here, so conflating the two with
++    * a plain 0 would be exactly wrong. */
++   map_put(&map_img_mod, H(image), mod == ~0ull ? 0 : mod + 1);
++   map_put(&map_img_lay, H(image), (offset << 32) | (pitch & 0xffffffffu));
++   mtx_unlock(&track_mutex);
++}
++
+ void
+ vkr_remora_note_view_image(VkImageView view, VkImage image)
+ {
+@@ -425,6 +502,26 @@ vkr_remora_note_submit(const VkCommandBuffer *cmds, uint32_t count)
+          const int fd = (int)map_get(&map_res_fd, res_id);
+          disp_res_id = (uint32_t)res_id;
+          disp_fd = fd ? fd : -1;
++
++         const uint64_t ft = map_get(&map_img_fmt, image);
++         const uint64_t md = map_get(&map_img_mod, image);
++         const uint64_t ly = map_get(&map_img_lay, image);
++         disp_format = (uint32_t)ft;
++         disp_tiling = (uint32_t)(ft >> 32);
++         disp_modifier = md ? md - 1 : ~0ull;
++         disp_offset = (uint32_t)(ly >> 32);
++         disp_pitch = (uint32_t)ly;
++         if (!disp_layout_logged) {
++            disp_layout_logged = true;
++            /* Once, for the display only: what an importing encoder has to be
++             * told about this buffer. */
++            fprintf(stderr,
++                    "[remora-layout] DISPLAY %ux%u vkformat=%u tiling=%u "
++                    "modifier=0x%llx offset=%u pitch=%u\n",
++                    disp_w, disp_h, disp_format, disp_tiling,
++                    (unsigned long long)disp_modifier, disp_offset, disp_pitch);
++         }
++
+          if (pub_client < 0)
+             publish_connect_locked();
+          publish_frame_locked(disp_res_id, disp_fd, disp_w, disp_h);
+diff --git a/src/venus/vkr_remora_track.h b/src/venus/vkr_remora_track.h
+index d8ad0211..621f473c 100644
+--- a/src/venus/vkr_remora_track.h
++++ b/src/venus/vkr_remora_track.h
+@@ -56,6 +56,12 @@ void vkr_remora_note_image_memory(VkImage image, VkDeviceMemory memory);
+  * display is the largest. Keyed on the HOST image handle like every other map. */
+ void vkr_remora_note_image_extent(VkImage image, uint32_t width, uint32_t height);
+ void vkr_remora_note_view_image(VkImageView view, VkImage image);
++
++/* Format, DRM modifier and plane layout of an image, from its create info. An
++ * encoder importing the dma_buf needs all three, and the create info is the
++ * authoritative source — the allocator's own numbers describe the allocation,
++ * which is padded differently from the image bound to it. */
++void vkr_remora_note_image_layout(VkImage image, const VkImageCreateInfo *ci);
+ void vkr_remora_note_cmd_target(VkCommandBuffer cmd, VkImageView view);
+ 
+ /* Traditional render passes reach the target through a framebuffer rather than
+@@ -92,11 +98,24 @@ bool vkr_remora_display_frame(uint32_t *res_id, int *fd, uint32_t *width,
+  * current display frame, passing the dma_buf itself by SCM_RIGHTS.
+  *
+  * Wire format, one message per display frame, native byte order:
+- *   struct { uint32 magic; uint32 res_id; uint32 width, height; uint32 has_fd; }
++ *   struct {
++ *      uint32 magic, res_id, width, height, has_fd;
++ *      uint32 fourcc;      DRM format of the plane
++ *      uint32 offset;      plane 0 offset within the dma_buf
++ *      uint32 pitch;       plane 0 row pitch in bytes
++ *      uint64 modifier;    DRM format modifier
++ *   }
+  * When has_fd is 1 an fd rides with the message. The buffer pool rotates
+  * through a handful of resources, so the fd is sent ONCE per res_id and the
+  * encoder caches it; later frames on the same resource carry the header alone.
++ *
++ * The layout fields are not decoration: a dma_buf carries no description of
++ * itself, so an importer cannot derive format, modifier or pitch from the fd,
++ * and guessing them yields a successful import of garbage. They come from the
++ * image's own VkImageCreateInfo, which is the only authoritative source — the
++ * allocator's numbers describe the ALLOCATION, which is padded differently
++ * (measured: 3760x2049 pitch 15104 allocated, 3760x1992 pitch 15040 imaged).
+  */
+-#define VKR_REMORA_FRAME_MAGIC 0x524d4631u /* "RMF1" */
++#define VKR_REMORA_FRAME_MAGIC 0x524d4632u /* "RMF2" — layout fields added */
+ 
+ #endif /* VKR_REMORA_TRACK_H */
+-- 
+2.54.0
+

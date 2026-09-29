@@ -1,0 +1,89 @@
+From 18c9b243c27438437e853229bc2a22c2ae89b20f Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sun, 30 Aug 2026 10:33:46 -0400
+Subject: [PATCH] 
+ 0001-sensors-example-HAL-remora-host-injectable-accel-gyr.patch
+
+Change-Id: I3c4c6ede30c3650e5cbed5439b018bf4c9ebb1c2
+---
+ sensors/aidl/default/Sensor.cpp | 43 ++++++++++++++++++++++-----------
+ 1 file changed, 29 insertions(+), 14 deletions(-)
+
+diff --git a/sensors/aidl/default/Sensor.cpp b/sensors/aidl/default/Sensor.cpp
+index ca3eb14..2ceac41 100644
+--- a/sensors/aidl/default/Sensor.cpp
++++ b/sensors/aidl/default/Sensor.cpp
+@@ -19,6 +19,9 @@
+ #include "utils/SystemClock.h"
+ 
+ #include <cmath>
++#include <cstdio>
++
++#include <android-base/properties.h>
+ 
+ using ::ndk::ScopedAStatus;
+ 
+@@ -27,6 +30,30 @@ namespace android {
+ namespace hardware {
+ namespace sensors {
+ 
++// Remora: host-injectable vec3 payloads. The container host publishes "x,y,z" through these
++// properties (settable over adb; the image ships with SELinux disabled, so the property write is
++// unrestricted); absent or malformed values fall back to the stock static payload, so the HAL
++// behaves exactly like upstream until told otherwise.
++static Event::EventPayload::Vec3 remoraVec3(const char* prop, float dx, float dy,
++                                            float dz) {
++    Event::EventPayload::Vec3 vec3 = {
++            .x = dx,
++            .y = dy,
++            .z = dz,
++            .status = SensorStatus::ACCURACY_HIGH,
++    };
++    const std::string v = ::android::base::GetProperty(prop, "");
++    if (!v.empty()) {
++        float x, y, z;
++        if (sscanf(v.c_str(), "%f,%f,%f", &x, &y, &z) == 3) {
++            vec3.x = x;
++            vec3.y = y;
++            vec3.z = z;
++        }
++    }
++    return vec3;
++}
++
+ static constexpr int32_t kDefaultMaxDelayUs = 10 * 1000 * 1000;
+ 
+ Sensor::Sensor(ISensorsEventCallback* callback)
+@@ -220,13 +247,7 @@ AccelSensor::AccelSensor(int32_t sensorHandle, ISensorsEventCallback* callback)
+ };
+ 
+ void AccelSensor::readEventPayload(EventPayload& payload) {
+-    EventPayload::Vec3 vec3 = {
+-            .x = 0,
+-            .y = 0,
+-            .z = 9.8,
+-            .status = SensorStatus::ACCURACY_HIGH,
+-    };
+-    payload.set<EventPayload::Tag::vec3>(vec3);
++    payload.set<EventPayload::Tag::vec3>(remoraVec3("debug.remora.sensor.accel", 0, 0, 9.8));
+ }
+ 
+ PressureSensor::PressureSensor(int32_t sensorHandle, ISensorsEventCallback* callback)
+@@ -347,13 +368,7 @@ GyroSensor::GyroSensor(int32_t sensorHandle, ISensorsEventCallback* callback) :
+ };
+ 
+ void GyroSensor::readEventPayload(EventPayload& payload) {
+-    EventPayload::Vec3 vec3 = {
+-            .x = 0,
+-            .y = 0,
+-            .z = 0,
+-            .status = SensorStatus::ACCURACY_HIGH,
+-    };
+-    payload.set<EventPayload::Tag::vec3>(vec3);
++    payload.set<EventPayload::Tag::vec3>(remoraVec3("debug.remora.sensor.gyro", 0, 0, 0));
+ }
+ 
+ AmbientTempSensor::AmbientTempSensor(int32_t sensorHandle, ISensorsEventCallback* callback)
+-- 
+2.54.0
+

@@ -1,0 +1,125 @@
+From f5bbe3016d73290305cc6067f7aa6ccb0fa6c2ed Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Fri, 21 Aug 2026 19:27:05 -0400
+Subject: [PATCH] monitor: bound the module.prop status appends (fixes a
+ FORTIFY abort)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+prepare_environment() copies module.prop into pre_section/post_section with strcat, and
+update_status() builds status_text the same way. All three are fixed-size buffers and none of the
+appends is bounded, so on Android 16+ — where bionic compiles strcat to __strcat_chk — the daemon
+aborts instead of writing its status banner.
+
+The module.prop overflow is CUMULATIVE, not one long line: every line is concatenated onto
+whichever section it falls in, so it depends on the total size of the pre- and post-description
+blocks. A prop file of ~1 KB is enough. Reproduced outside Android with the same loop and
+-D_FORTIFY_SOURCE=2: 60 ordinary short lines abort at the 18th, the moment the running total would
+pass 1023, with 'buffer overflow detected' and SIGABRT.
+
+status_text is the worse of the two. daemon_error_info is a heap string whose length arrived as a
+uint32_t over the monitor socket with no upper bound, and it is strcat'd into a char[256]. Under
+FORTIFY that is an abort; without it, a stack buffer overflow.
+
+Switch every append to strlcat with sizeof(dest). A prop file large enough to fill the buffers now
+truncates the banner rather than killing the daemon, which is the right trade for a cosmetic status
+string. Callers wanting no truncation at all would size the buffers from the file length, but that
+is a larger change and not needed to fix the crash.
+---
+ loader/src/ptracer/monitor.c | 40 ++++++++++++++++++++++--------------
+ 1 file changed, 25 insertions(+), 15 deletions(-)
+
+diff --git a/loader/src/ptracer/monitor.c b/loader/src/ptracer/monitor.c
+index eaed44f..542f548 100644
+--- a/loader/src/ptracer/monitor.c
++++ b/loader/src/ptracer/monitor.c
+@@ -790,25 +790,35 @@ void sigchld_listener_stop() {
+   sigchld_process_count = 0;
+ }
+ 
++/* module.prop is copied into these verbatim, split around the description line, so what they must
++   hold is the size of the FILE and not of any single line. They are appended to with strlcat: on a
++   prop file large enough to fill them the banner is truncated, which is the right trade for a
++   cosmetic status string. Appending with strcat instead aborts the daemon outright — see
++   prepare_environment(). */
+ static char pre_section[1024];
+ static char post_section[1024];
+ 
++/* daemon_error_info is a heap string whose length arrived as a uint32_t over the monitor socket,
++   so appending it to a fixed status_text with strcat is unbounded by construction. Every append
++   below goes through this instead; status_text is the caller's local, as it already was. */
++#define STATUS_CAT(str) strlcat(status_text, (str), sizeof(status_text))
++
+ #define WRITE_STATUS_ABI(suffix)                                                     \
+   if (status ## suffix.supported) {                                                  \
+-    strcat(status_text, ", ReZygisk " # suffix "-bit: ");                            \
++    STATUS_CAT(", ReZygisk " # suffix "-bit: ");                                     \
+                                                                                      \
+-    if (tracing_state != TRACING) strcat(status_text, "❌");                         \
++    if (tracing_state != TRACING) STATUS_CAT("❌");                                  \
+     else if (status ## suffix.zygote_injected && status ## suffix.daemon_running)    \
+-      strcat(status_text, "✅");                                                     \
+-    else strcat(status_text, "⚠️");                                                  \
++      STATUS_CAT("✅");                                                              \
++    else STATUS_CAT("⚠️");                                                           \
+                                                                                      \
+     if (!status ## suffix.daemon_running) {                                          \
+       if (status ## suffix.daemon_error_info) {                                      \
+-        strcat(status_text, "(ReZygiskd: ");                                         \
+-        strcat(status_text, status ## suffix.daemon_error_info);                     \
+-        strcat(status_text, ")");                                                    \
++        STATUS_CAT("(ReZygiskd: ");                                                  \
++        STATUS_CAT(status ## suffix.daemon_error_info);                              \
++        STATUS_CAT(")");                                                             \
+       } else {                                                                       \
+-        strcat(status_text, "(ReZygiskd: not running)");                             \
++        STATUS_CAT("(ReZygiskd: not running)");                                      \
+       }                                                                              \
+     }                                                                                \
+   }
+@@ -831,18 +841,18 @@ static bool update_status(const char *message) {
+   char status_text[256] = "Monitor: ";
+   switch (tracing_state) {
+     case TRACING: {
+-      strcat(status_text, "✅");
++      STATUS_CAT("✅");
+ 
+       break;
+     }
+     case STOPPING: [[fallthrough]];
+     case STOPPED: {
+-      strcat(status_text, "⛔");
++      STATUS_CAT("⛔");
+ 
+       break;
+     }
+     case EXITING: {
+-      strcat(status_text, "❌");
++      STATUS_CAT("❌");
+ 
+       break;
+     }
+@@ -951,15 +961,15 @@ static bool prepare_environment() {
+   char line[1024];
+   while (fgets(line, sizeof(line), orig_prop) != NULL) {
+     if (strncmp(line, "description=", strlen("description=")) == 0) {
+-      strcat(pre_section, "description=");
+-      strcat(post_section, line + strlen("description="));
++      strlcat(pre_section, "description=", sizeof(pre_section));
++      strlcat(post_section, line + strlen("description="), sizeof(post_section));
+       after_description = true;
+ 
+       continue;
+     }
+ 
+-    if (after_description) strcat(post_section, line);
+-    else strcat(pre_section, line);
++    if (after_description) strlcat(post_section, line, sizeof(post_section));
++    else strlcat(pre_section, line, sizeof(pre_section));
+   }
+ 
+   fclose(orig_prop);
+-- 
+2.54.0
+

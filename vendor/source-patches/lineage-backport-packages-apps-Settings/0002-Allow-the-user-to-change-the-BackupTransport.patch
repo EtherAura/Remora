@@ -1,0 +1,640 @@
+From 381c12b243baf3160e5f71303800eb039f768f9e Mon Sep 17 00:00:00 2001
+From: Torsten Grote <t@grobox.de>
+Date: Wed, 30 Sep 2020 15:14:49 -0300
+Subject: [PATCH 02/98] Allow the user to change the BackupTransport
+
+Set the following config overlays to activate this feature:
+
+* config_backup_settings_intent to settings://com.android.settings.backup.transport
+* config_backup_settings_label to some user-facing label
+  e.g. Change backup provider
+* config_ignored_backup_transports to hide transports from the list
+
+Co-authored-by: Michael Bestas <mkbestas@lineageos.org>
+Co-authored-by: Michael W <baddaemon87@gmail.com>
+Change-Id: I080d96e2c34045a0e61f3fa1b839f463550f2028
+---
+ AndroidManifest.xml                           |  11 ++
+ res/values/cm_strings.xml                     |  21 ++++
+ res/values/lineage_config.xml                 |  21 ++++
+ res/xml/backup_transport_settings.xml         |  24 ++++
+ .../backup/BackupSettingsFragment.java        |   7 ++
+ .../BackupSettingsPreferenceController.java   |  14 +--
+ .../backup/UserBackupSettingsActivity.java    |   7 +-
+ .../settings/backup/transport/Transport.java  |  29 +++++
+ .../backup/transport/TransportActivity.java   |  45 +++++++
+ .../backup/transport/TransportFragment.java   |  69 +++++++++++
+ .../backup/transport/TransportHelper.java     | 116 ++++++++++++++++++
+ .../TransportPreferenceController.java        |  74 +++++++++++
+ .../android/settings/utils/InsetUtils.java    |  35 ++++++
+ 13 files changed, 465 insertions(+), 8 deletions(-)
+ create mode 100644 res/values/cm_strings.xml
+ create mode 100644 res/values/lineage_config.xml
+ create mode 100644 res/xml/backup_transport_settings.xml
+ create mode 100644 src/com/android/settings/backup/transport/Transport.java
+ create mode 100644 src/com/android/settings/backup/transport/TransportActivity.java
+ create mode 100644 src/com/android/settings/backup/transport/TransportFragment.java
+ create mode 100644 src/com/android/settings/backup/transport/TransportHelper.java
+ create mode 100644 src/com/android/settings/backup/transport/TransportPreferenceController.java
+ create mode 100644 src/com/android/settings/utils/InsetUtils.java
+
+diff --git a/AndroidManifest.xml b/AndroidManifest.xml
+index 1cb5ee4fe3a..80213ef297d 100644
+--- a/AndroidManifest.xml
++++ b/AndroidManifest.xml
+@@ -5951,6 +5951,17 @@
+                        android:value="true" />
+         </activity>
+ 
++        <activity android:name=".backup.transport.TransportActivity"
++                  android:label="@string/backup_transport_title"
++                  android:icon="@drawable/ic_settings_backup"
++                  android:exported="false">
++            <intent-filter>
++                <action android:name="android.intent.action.VIEW" />
++                <category android:name="android.intent.category.DEFAULT" />
++                <data android:scheme="settings"
++                      android:host="com.android.settings.backup.transport" />
++            </intent-filter>
++        </activity>
+ 
+         <activity android:name=".Settings$ContentProtectionSettingsActivity"
+             android:label="@string/content_protection_preference_title"
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+new file mode 100644
+index 00000000000..a7c465a16c3
+--- /dev/null
++++ b/res/values/cm_strings.xml
+@@ -0,0 +1,21 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++     Copyright (C) 2017-2021 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
++    <!-- Backup Transport selection settings menu and activity title -->
++    <string name="backup_transport_setting_label">Change backup provider</string>
++    <string name="backup_transport_title">Select backup provider</string>
++</resources>
+diff --git a/res/values/lineage_config.xml b/res/values/lineage_config.xml
+new file mode 100644
+index 00000000000..083a3d6e7cc
+--- /dev/null
++++ b/res/values/lineage_config.xml
+@@ -0,0 +1,21 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++     Copyright (C) 2020-2021 The LineageOS Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<resources>
++    <string-array name="config_ignored_backup_transports" translatable="false">
++        <item>com.android.localtransport/.LocalTransport</item>
++    </string-array>
++</resources>
+diff --git a/res/xml/backup_transport_settings.xml b/res/xml/backup_transport_settings.xml
+new file mode 100644
+index 00000000000..cc8cc9ac143
+--- /dev/null
++++ b/res/xml/backup_transport_settings.xml
+@@ -0,0 +1,24 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++  ~ Copyright (C) 2020 The Calyx Institute
++  ~
++  ~ Licensed under the Apache License, Version 2.0 (the "License");
++  ~ you may not use this file except in compliance with the License.
++  ~ You may obtain a copy of the License at
++  ~
++  ~      http://www.apache.org/licenses/LICENSE-2.0
++  ~
++  ~ Unless required by applicable law or agreed to in writing, software
++  ~ distributed under the License is distributed on an "AS IS" BASIS,
++  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++  ~ See the License for the specific language governing permissions and
++  ~ limitations under the License
++  -->
++
++<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:settings="http://schemas.android.com/apk/res-auto"
++    android:title="@string/backup_transport_title">
++
++    <!-- content gets filled programmatically -->
++
++</PreferenceScreen>
+diff --git a/src/com/android/settings/backup/BackupSettingsFragment.java b/src/com/android/settings/backup/BackupSettingsFragment.java
+index 7df19f54660..7fcbd63b7ce 100644
+--- a/src/com/android/settings/backup/BackupSettingsFragment.java
++++ b/src/com/android/settings/backup/BackupSettingsFragment.java
+@@ -42,6 +42,13 @@ public class BackupSettingsFragment extends DashboardFragment {
+         super.onCreate(savedInstanceState);
+     }
+ 
++    @Override
++    public void onStart() {
++        super.onStart();
++        // update information when we navigate back from TransportActivity
++        displayResourceTilesToScreen(getPreferenceScreen());
++    }
++
+     /**
+      * Get the tag string for logging.
+      */
+diff --git a/src/com/android/settings/backup/BackupSettingsPreferenceController.java b/src/com/android/settings/backup/BackupSettingsPreferenceController.java
+index 4e0e3b4e748..3208ae4fe76 100644
+--- a/src/com/android/settings/backup/BackupSettingsPreferenceController.java
++++ b/src/com/android/settings/backup/BackupSettingsPreferenceController.java
+@@ -30,24 +30,24 @@ public class BackupSettingsPreferenceController extends AbstractPreferenceContro
+         implements PreferenceControllerMixin {
+     private static final String BACKUP_SETTINGS = "backup_settings";
+     private static final  String MANUFACTURER_SETTINGS = "manufacturer_backup";
+-    private Intent mBackupSettingsIntent;
+-    private CharSequence mBackupSettingsTitle;
+-    private String mBackupSettingsSummary;
++    private final BackupSettingsHelper settingsHelper;
+     private Intent mManufacturerIntent;
+     private String mManufacturerLabel;
+ 
+     public BackupSettingsPreferenceController(Context context) {
+         super(context);
+-        BackupSettingsHelper settingsHelper = new BackupSettingsHelper(context);
+-        mBackupSettingsIntent = settingsHelper.getIntentForBackupSettings();
+-        mBackupSettingsTitle = settingsHelper.getLabelForBackupSettings();
+-        mBackupSettingsSummary = settingsHelper.getSummaryForBackupSettings();
++        settingsHelper = new BackupSettingsHelper(context);
+         mManufacturerIntent = settingsHelper.getIntentProvidedByManufacturer();
+         mManufacturerLabel = settingsHelper.getLabelProvidedByManufacturer();
+     }
+ 
+     @Override
+     public void displayPreference(PreferenceScreen screen) {
++        // we don't get these in the constructor, so we can get updates for them later
++        Intent mBackupSettingsIntent = settingsHelper.getIntentForBackupSettings();
++        CharSequence mBackupSettingsTitle = settingsHelper.getLabelForBackupSettings();
++        String mBackupSettingsSummary = settingsHelper.getSummaryForBackupSettings();
++
+         Preference backupSettings = screen.findPreference(BACKUP_SETTINGS);
+         Preference manufacturerSettings = screen.findPreference(MANUFACTURER_SETTINGS);
+         backupSettings.setIntent(mBackupSettingsIntent);
+diff --git a/src/com/android/settings/backup/UserBackupSettingsActivity.java b/src/com/android/settings/backup/UserBackupSettingsActivity.java
+index adeeca505a5..c099ad4ee8c 100644
+--- a/src/com/android/settings/backup/UserBackupSettingsActivity.java
++++ b/src/com/android/settings/backup/UserBackupSettingsActivity.java
+@@ -1,5 +1,6 @@
+ /*
+  * Copyright (C) 2017 The Android Open Source Project
++ * Copyright (C) 2024 The LineageOS Project
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -28,6 +29,7 @@ import androidx.fragment.app.FragmentManager;
+ import com.android.settings.R;
+ import com.android.settings.SettingsActivity;
+ import com.android.settings.search.BaseSearchIndexProvider;
++import com.android.settings.utils.InsetUtils;
+ import com.android.settingslib.search.Indexable;
+ import com.android.settingslib.search.SearchIndexable;
+ import com.android.settingslib.search.SearchIndexableRaw;
+@@ -86,12 +88,15 @@ public class UserBackupSettingsActivity extends SettingsActivity implements Inde
+             if (Log.isLoggable(TAG, Log.DEBUG)) {
+                 Log.d(TAG, "Manufacturer provided backup settings, showing the preference screen");
+             }
++
++            InsetUtils.applyWindowInsetsListener(findViewById(R.id.main_content));
++
+             // mFragmentManager can be set by {@link #setFragmentManager()} for testing
+             if (mFragmentManager == null) {
+                 mFragmentManager = getSupportFragmentManager();
+             }
+             mFragmentManager.beginTransaction()
+-                    .replace(android.R.id.content, new BackupSettingsFragment())
++                    .replace(R.id.main_content, new BackupSettingsFragment())
+                     .commit();
+         }
+     }
+diff --git a/src/com/android/settings/backup/transport/Transport.java b/src/com/android/settings/backup/transport/Transport.java
+new file mode 100644
+index 00000000000..d2fd6e081f9
+--- /dev/null
++++ b/src/com/android/settings/backup/transport/Transport.java
+@@ -0,0 +1,29 @@
++/*
++ * Copyright (C) 2020 The Calyx Institute
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License
++ */
++
++package com.android.settings.backup.transport;
++
++class Transport {
++    final String name;
++    final CharSequence dataManagementLabel;
++    final CharSequence destinationString;
++
++    Transport(String name, CharSequence dataManagementLabel, CharSequence destinationString) {
++        this.name = name;
++        this.dataManagementLabel = dataManagementLabel;
++        this.destinationString = destinationString;
++    }
++}
+diff --git a/src/com/android/settings/backup/transport/TransportActivity.java b/src/com/android/settings/backup/transport/TransportActivity.java
+new file mode 100644
+index 00000000000..1a11a234f78
+--- /dev/null
++++ b/src/com/android/settings/backup/transport/TransportActivity.java
+@@ -0,0 +1,45 @@
++/*
++ * Copyright (C) 2020 The Calyx Institute
++ * Copyright (C) 2024 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License
++ */
++
++package com.android.settings.backup.transport;
++
++import android.os.Bundle;
++
++import com.android.settings.R;
++import com.android.settings.SettingsActivity;
++import com.android.settings.utils.InsetUtils;
++
++/**
++ * Activity to allow the user to choose the {@link android.app.backup.BackupTransport}.
++ *
++ * Set {@code config_backup_settings_intent} to {@code settings://com.android.settings.backup.transport} to activate.
++ * Don't forget to also set {@code config_backup_settings_label} or else it won't be shown.
++ */
++public class TransportActivity extends SettingsActivity {
++
++    @Override
++    public void onCreate(Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++
++        InsetUtils.applyWindowInsetsListener(findViewById(R.id.main_content));
++
++        getSupportFragmentManager().beginTransaction()
++            .replace(R.id.main_content, new TransportFragment())
++            .commit();
++    }
++
++}
+diff --git a/src/com/android/settings/backup/transport/TransportFragment.java b/src/com/android/settings/backup/transport/TransportFragment.java
+new file mode 100644
+index 00000000000..6c6a8ce9957
+--- /dev/null
++++ b/src/com/android/settings/backup/transport/TransportFragment.java
+@@ -0,0 +1,69 @@
++/*
++ * Copyright (C) 2020 The Calyx Institute
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License
++ */
++
++package com.android.settings.backup.transport;
++
++import android.app.settings.SettingsEnums;
++import android.content.Context;
++import com.android.settings.R;
++import com.android.settings.backup.transport.TransportPreferenceController.OnTransportChangedListener;
++import com.android.settings.dashboard.DashboardFragment;
++import com.android.settingslib.core.AbstractPreferenceController;
++
++import java.util.ArrayList;
++import java.util.List;
++
++public class TransportFragment extends DashboardFragment implements OnTransportChangedListener {
++
++    private static final String TAG = "TransportFragment";
++
++    /**
++     * Get the tag string for logging.
++     */
++    @Override
++    protected String getLogTag() {
++        return TAG;
++    }
++
++    /**
++     * Get the res id for static preference xml for this fragment.
++     */
++    @Override
++    protected int getPreferenceScreenResId() {
++        return R.xml.backup_transport_settings;
++    }
++
++    /**
++     * Get a list of {@link AbstractPreferenceController} for this fragment.
++     */
++    @Override
++    protected List<AbstractPreferenceController> createPreferenceControllers(Context context) {
++        final List<AbstractPreferenceController> controllers = new ArrayList<>();
++        controllers.add(new TransportPreferenceController(context, this));
++        return controllers;
++    }
++
++    @Override
++    public int getMetricsCategory() {
++        return SettingsEnums.BACKUP_SETTINGS;
++    }
++
++    @Override
++    public void onTransportChanged(String transportName) {
++        requireActivity().finish();
++    }
++
++}
+diff --git a/src/com/android/settings/backup/transport/TransportHelper.java b/src/com/android/settings/backup/transport/TransportHelper.java
+new file mode 100644
+index 00000000000..1ab5a596054
+--- /dev/null
++++ b/src/com/android/settings/backup/transport/TransportHelper.java
+@@ -0,0 +1,116 @@
++/*
++ * Copyright (C) 2020 The Calyx Institute
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License
++ */
++
++package com.android.settings.backup.transport;
++
++import android.app.backup.IBackupManager;
++import android.content.Context;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++import android.os.UserHandle;
++import android.util.Log;
++import androidx.annotation.Nullable;
++
++import com.android.settings.R;
++
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Collections;
++import java.util.List;
++
++/**
++ * Helper class for {@link TransportActivity} that interacts with {@link IBackupManager}.
++ */
++class TransportHelper {
++    private static final String TAG = "TransportHelper";
++
++    private final IBackupManager mBackupManager = IBackupManager.Stub.asInterface(
++        ServiceManager.getService(Context.BACKUP_SERVICE));
++
++    private Context mContext;
++
++    TransportHelper(Context context) {
++        mContext = context;
++    }
++
++    List<Transport> getTransports() {
++        String[] backupTransports = getBackupTransports();
++        if (backupTransports == null) return Collections.emptyList();
++        ArrayList<Transport> transports = new ArrayList<>(backupTransports.length);
++        String[] ignoredTransports = mContext.getResources().getStringArray(
++                R.array.config_ignored_backup_transports);
++        for (String name : getBackupTransports()) {
++            boolean ignored = false;
++            for (String ignoredTransport : ignoredTransports) {
++                if (name.equals(ignoredTransport)) ignored = true;
++            }
++            if (ignored) continue;
++            CharSequence label = getLabelFromBackupTransport(name);
++            if (label == null || label.length() == 0) label = name;
++            Transport transport = new Transport(name, label, getSummaryFromBackupTransport(name));
++            transports.add(transport);
++        }
++        return transports;
++    }
++
++    void selectTransport(String name) {
++        try {
++            mBackupManager.selectBackupTransport(name);
++        } catch (RemoteException e) {
++            Log.e(TAG, "Error selecting transport: " + name, e);
++        }
++    }
++
++    @Nullable
++    private String[] getBackupTransports() {
++        try {
++            String[] transports = mBackupManager.listAllTransports();
++            if (Log.isLoggable(TAG, Log.DEBUG)) {
++                Log.d(TAG, "Received all backup transports: " + Arrays.toString(transports));
++            }
++            return transports;
++        } catch (RemoteException e) {
++            Log.e(TAG, "Error getting all backup transports", e);
++        }
++        return null;
++    }
++
++    private CharSequence getLabelFromBackupTransport(String transport) {
++        try {
++            CharSequence label = mBackupManager.getDataManagementLabelForUser(UserHandle.myUserId(), transport);
++            if (Log.isLoggable(TAG, Log.DEBUG)) {
++                Log.d(TAG, "Received the backup settings label from " + transport + ": " + label);
++            }
++            return label;
++        } catch (RemoteException e) {
++            Log.e(TAG, "Error getting data management label for " + transport, e);
++        }
++        return null;
++    }
++
++    private String getSummaryFromBackupTransport(String transport) {
++        try {
++            String summary = mBackupManager.getDestinationString(transport);
++            if (Log.isLoggable(TAG, Log.DEBUG)) {
++                Log.d(TAG, "Received the backup settings summary from " + transport + ": " + summary);
++            }
++            return summary;
++        } catch (RemoteException e) {
++            Log.e(TAG, "Error getting data management summary", e);
++        }
++        return null;
++    }
++}
+diff --git a/src/com/android/settings/backup/transport/TransportPreferenceController.java b/src/com/android/settings/backup/transport/TransportPreferenceController.java
+new file mode 100644
+index 00000000000..1dc5a511911
+--- /dev/null
++++ b/src/com/android/settings/backup/transport/TransportPreferenceController.java
+@@ -0,0 +1,74 @@
++/*
++ * Copyright (C) 2020 The Calyx Institute
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License
++ */
++
++package com.android.settings.backup.transport;
++
++import android.content.Context;
++import androidx.preference.Preference;
++import androidx.preference.PreferenceScreen;
++import com.android.settingslib.core.AbstractPreferenceController;
++
++public class TransportPreferenceController extends AbstractPreferenceController {
++
++    interface OnTransportChangedListener {
++        void onTransportChanged(String transportName);
++    }
++
++    private final OnTransportChangedListener listener;
++    private final TransportHelper transportHelper;
++
++    public TransportPreferenceController(Context context, OnTransportChangedListener listener) {
++        super(context);
++        this.listener = listener;
++        transportHelper = new TransportHelper(context);
++    }
++
++    @Override
++    public void displayPreference(PreferenceScreen screen) {
++        for (Transport transport : transportHelper.getTransports()) {
++            screen.addPreference(getPreferenceForTransport(transport));
++        }
++    }
++
++    private Preference getPreferenceForTransport(Transport transport) {
++        Preference p = new Preference(mContext);
++        p.setTitle(transport.dataManagementLabel);
++        p.setSummary(transport.destinationString);
++        p.setIconSpaceReserved(false);
++        p.setOnPreferenceClickListener(preference -> {
++            transportHelper.selectTransport(transport.name);
++            listener.onTransportChanged(transport.name);
++            return true;
++        });
++        return p;
++    }
++
++    /**
++     * Returns true if preference is available (should be displayed)
++     */
++    @Override
++    public boolean isAvailable() {
++        return true;
++    }
++
++    /**
++     * Returns the key for this preference.
++     */
++    @Override
++    public String getPreferenceKey() {
++        return null;
++    }
++}
+diff --git a/src/com/android/settings/utils/InsetUtils.java b/src/com/android/settings/utils/InsetUtils.java
+new file mode 100644
+index 00000000000..fe3a71bc3d8
+--- /dev/null
++++ b/src/com/android/settings/utils/InsetUtils.java
+@@ -0,0 +1,35 @@
++/*
++ * Copyright (C) 2024 The LineageOS Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License
++ */
++
++package com.android.settings.utils;
++
++import android.view.View;
++
++import androidx.core.graphics.Insets;
++import androidx.core.view.ViewCompat;
++import androidx.core.view.WindowInsetsCompat;
++
++public class InsetUtils {
++    public static void applyWindowInsetsListener(final View rootView) {
++        ViewCompat.setOnApplyWindowInsetsListener(rootView, (view, windowInsets) -> {
++            Insets insets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
++
++            view.setPadding(insets.left, insets.top, insets.right, insets.bottom);
++
++            return WindowInsetsCompat.CONSUMED;
++        });
++    }
++}

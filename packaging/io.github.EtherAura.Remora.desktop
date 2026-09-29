@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Remora
+Comment=Build, deploy and mirror Android running in Docker
+Exec=remora gui
+Icon=io.github.EtherAura.Remora
+Terminal=false
+Type=Application
+Categories=System;Emulator;Qt;
+Keywords=android;docker;container;mirror;emulator;
+StartupWMClass=remora

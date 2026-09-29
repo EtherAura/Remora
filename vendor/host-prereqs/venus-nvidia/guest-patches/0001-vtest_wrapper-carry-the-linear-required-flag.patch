@@ -1,0 +1,44 @@
+From: Remora <remora@localhost>
+Date: Tue, 4 Aug 2026 22:10:00 -0400
+Subject: [PATCH] vtest_wrapper: carry the linear-required flag to the host
+
+bd remora-cq3. Guest half of venus-nvidia patch 0023. minigbm now sets
+alloc_args.linear_required for codec buffers, because on bare/NVIDIA c2-va
+decodes and encodes on the Intel xe VF while this allocator runs on NVIDIA --
+and iHD cannot import NVIDIA's block-linear modifier:
+
+  vaCreateSurfaces(DRM_PRIME_2, modifier=0x300000000606014) failed:
+      resource allocation failed
+
+Without this the flag stops at the wire and the host keeps serving those
+buffers block-linear, so the decoder fails on its first output frame and the
+app restarts the player once per segment -- no video, forever.
+
+NOTE struct alloc_args is the ABI between gralloc.minigbm_gbm_mesa.so (built
+in the Android tree) and this library (built with an Android toolchain against
+the same header). They must be rebuilt and shipped as a matched pair; a
+mismatch reads a field the other side never wrote.
+---
+--- a/src/minigbm-vtest/vtest_wrapper.c	2026-08-04 22:05:42.401770361 -0400
++++ b/src/minigbm-vtest/vtest_wrapper.c	2026-08-04 22:05:56.989629059 -0400
+@@ -40,6 +40,7 @@
+ #define VCMD_RESOURCE_ALLOC_GPU 41
+ #define VCMD_ALLOC_GPU_FLAG_MAPPABLE (1u << 0)
+ #define VCMD_ALLOC_GPU_FLAG_SCANOUT (1u << 1)
++#define VCMD_ALLOC_GPU_FLAG_LINEAR_REQUIRED (1u << 2)
+ #define VCMD_RESOURCE_ALLOC_GPU_RESP_SIZE 7
+ 
+ #define DEFAULT_SOCKET "/dev/venus/venus.sock"
+@@ -212,6 +213,12 @@
+       flags |= VCMD_ALLOC_GPU_FLAG_MAPPABLE;
+    if (args->use_scanout)
+       flags |= VCMD_ALLOC_GPU_FLAG_SCANOUT;
++   /* Codec buffers are read by a SECOND GPU, which is a stronger constraint than
++    * either of the above and the host ranks it that way: a buffer the Intel VF
++    * has to import cannot carry NVIDIA's block-linear modifier, whatever the
++    * compositing GPU would prefer for it (bd remora-cq3). */
++   if (args->linear_required)
++      flags |= VCMD_ALLOC_GPU_FLAG_LINEAR_REQUIRED;
+ 
+    const uint32_t req[VTEST_HDR_SIZE + 4] = {
+       4, VCMD_RESOURCE_ALLOC_GPU,

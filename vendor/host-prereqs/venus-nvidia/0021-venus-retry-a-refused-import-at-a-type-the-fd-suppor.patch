@@ -1,0 +1,228 @@
+From 0000000000000000000000000000000000000021 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Tue, 4 Aug 2026 00:25:00 -0400
+Subject: [PATCH] venus: retry a refused import at a type the fd supports
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The refused imports killing SurfaceFlinger (bd remora-e5x.30) are LINEAR
+buffers — the c2-va decode output and the ImageReader pool; everything
+else the allocator hands out is block-linear, which the fixed
+[remora-alloc] logging (0020) finally shows. NVIDIA places linear
+allocations in system memory under VRAM pressure, and such a dmabuf need
+not offer the device-local type SurfaceFlinger's import asks for: the
+driver answers OUT_OF_DEVICE_MEMORY with 2 GiB free, the e5x.24
+tombstone demotes the crash, and the CS error one bind later destroys
+SF's own context anyway — the UI restarts with the foreground app.
+
+The buffer is importable, just not where the guest asked. On a failed
+dma_buf import, ask the fd what memory types it actually supports
+(vkGetMemoryFdPropertiesKHR, resolved via GetDeviceProcAddr — the guest
+never enables the extension, CreateDevice force-enables it host-side);
+if the requested type is not among them, substitute the first that is
+and redo the allocation. The retry is a raw driver call plus a
+hand-built object in the tombstone's own shape, with the pNext chain
+REBUILT: create_and_add cannot run twice (it replaces args' handles in
+place), and whether the dedicated image handle in the original chain is
+a guest id or a host handle depends on whether the first attempt ran —
+measured as a driver SIGSEGV when the guest id leaked through.
+
+Verified live end to end with the companion injection knob
+(VKR_REMORA_FORCE_TYPE_SUBSTITUTE=1 makes forced failures import-only
+and masks the requested bit, everything else real): fds report
+memoryTypeBits=0x3, type 0 masked, type 1 substituted, 8x RECOVERED in
+one boot — zero CS errors, SurfaceFlinger stable, the mirror carrying
+frames rendered onto substituted memory. Sampling sysmem over PCIe is
+slow; a UI restart is not a frame at all.
+---
+ src/venus/vkr_device_memory.c | substitution retry + injection knob
+ 1 file changed
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index bb175284..37cadbb7 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -12,6 +12,7 @@
+ #include "venus-protocol/vn_protocol_renderer_transport.h"
+ 
+ #include "vkr_device_memory_gen.h"
++#include "vkr_image.h" /* vkr_image_from_handle, for the e5x.30 retry */
+ #include "vkr_metal_helpers.h"
+ #include "vkr_physical_device.h"
+ 
+@@ -271,6 +272,25 @@ vkr_remora_force_alloc_fail(void)
+    return (++count % (unsigned)every) == 0;
+ }
+ 
++/* remora-e5x.30: companion knob. With VKR_REMORA_FORCE_TYPE_SUBSTITUTE=1 a
++ * forced failure applies to IMPORTS only, and the retry below then treats the
++ * guest's requested memory type as unsupported — driving the real substitution
++ * path against the real driver, which otherwise needs a full card and a
++ * sysmem-placed buffer to line up. Off unless set; only meaningful together
++ * with VKR_REMORA_FORCE_ALLOC_FAIL. */
++static bool
++vkr_remora_force_type_substitute(void)
++{
++   static int on = -1;
++   if (on < 0) {
++      const char *s = getenv("VKR_REMORA_FORCE_TYPE_SUBSTITUTE");
++      on = (s && *s == '1') ? 1 : 0;
++      if (on)
++         vkr_log("remora: forced failures will SUBSTITUTE the memory type on imports");
++   }
++   return on == 1;
++}
++
+ static void
+ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkAllocateMemory *args)
+@@ -448,7 +468,9 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+     * VKR_REMORA_FORCE_ALLOC_FAIL=N fails every Nth allocation on purpose, which
+     * exercises the tombstone below and the bind guards in vkr_image.c /
+     * vkr_buffer.c. Unset or 0 (the default, and what ships) is a no-op. */
+-   const bool forced_fail = vkr_remora_force_alloc_fail();
++   bool forced_fail = vkr_remora_force_alloc_fail();
++   if (forced_fail && vkr_remora_force_type_substitute() && local_import_info.fd < 0)
++      forced_fail = false; /* substitute-injection exercises imports only */
+    struct vkr_device_memory *mem =
+       forced_fail ? NULL : vkr_device_memory_create_and_add(ctx, args);
+    if (forced_fail)
+@@ -515,6 +537,117 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+                  exp, (long long)dmabuf_size,
+                  (unsigned long long)alloc_info->allocationSize, guest_mod);
+       }
++
++      /* remora-e5x.30: the buffer is usually importable, just not at the TYPE
++       * the guest asked for. The c2-va decode buffers and the ImageReader pool
++       * are LINEAR ([remora-alloc] shows everything else block-linear), and
++       * NVIDIA places linear allocations in system memory under VRAM pressure —
++       * such a dmabuf offers no device-local memory type, while SurfaceFlinger
++       * imports at typeIndex 0. The refusal reaches vkQueueSubmit one bind
++       * later and destroys SF's own context, restarting the UI (measured; the
++       * tombstone below only demotes the crash, it does not save the frame).
++       * Ask the fd what it actually supports; if the requested type is not in
++       * that set, substitute the first one that is and retry once. Sampling
++       * sysmem over PCIe is slow; a UI restart is not a frame at all. A failed
++       * import does not consume the fd, so the retry may reuse it. */
++      const bool inject_substitute = forced_fail && vkr_remora_force_type_substitute();
++      /* EVERY driver call below uses dev->base.handle.device, never
++       * args->device: whether args' handles are guest ids or replaced host
++       * handles depends on whether the first attempt ran (create_and_add
++       * replaces them in place, and a forced failure skips it) — measured as a
++       * SIGSEGV inside the driver when the guest id leaked through. dev came
++       * from the guest id at dispatch entry and is valid on both paths, which
++       * is the same reason the tombstone below builds its object by hand. */
++      const VkDevice hdev = dev->base.handle.device;
++      /* The proc table only carries procs for extensions the GUEST enabled, and
++       * the guest never asks for VK_KHR_external_memory_fd — the fd import is
++       * vkr's own injection, and CreateDevice force-enables the extension on
++       * the host device. Resolve directly when the table has a hole. */
++      PFN_vkGetMemoryFdPropertiesKHR get_fd_props = dev->proc_table.GetMemoryFdPropertiesKHR;
++      if (!get_fd_props && dev->physical_device->proc_table.GetDeviceProcAddr)
++         get_fd_props = (PFN_vkGetMemoryFdPropertiesKHR)
++            dev->physical_device->proc_table.GetDeviceProcAddr(
++               hdev, "vkGetMemoryFdPropertiesKHR");
++      if ((!forced_fail || inject_substitute) && local_import_info.fd >= 0 &&
++          local_import_info.handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
++          get_fd_props) {
++         VkMemoryFdPropertiesKHR fd_props = {
++            .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR,
++         };
++         uint32_t bits = 0;
++         if (get_fd_props(hdev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++                          local_import_info.fd, &fd_props) == VK_SUCCESS)
++            bits = fd_props.memoryTypeBits;
++         /* Injection simulates exactly the live mismatch: the fd "does not
++          * support" what the guest asked, everything else is real. Say what the
++          * fd reported either way — a healthy VRAM-placed buffer may support
++          * only the one type the guest asked for, which leaves the injection
++          * nothing to substitute, and that must read as a fact, not a silence. */
++         if (inject_substitute) {
++            vkr_log("  injection: fd memoryTypeBits=0x%x requested=%u", bits,
++                    mem_type_index);
++            bits &= ~(1u << mem_type_index);
++         }
++         if (bits && !(bits & (1u << mem_type_index))) {
++            const uint32_t substitute = (uint32_t)__builtin_ctz(bits);
++            /* The raw driver call plus a hand-built object, exactly the
++             * tombstone's shape: create_and_add cannot be called twice (it
++             * replaces args' handles in place). The pNext chain is REBUILT
++             * rather than reused for the same reason — on the forced path the
++             * dedicated image in the original chain is still a guest id, so it
++             * is resolved through the object table exactly as a dispatch entry
++             * would; on the real path it is already the host handle. */
++            VkImage himg = VK_NULL_HANDLE;
++            if (ded_info && ded_info->image != VK_NULL_HANDLE) {
++               if (forced_fail) {
++                  struct vkr_image *img = vkr_image_from_handle(ded_info->image);
++                  if (img)
++                     himg = img->base.handle.image;
++               } else {
++                  himg = ded_info->image;
++               }
++            }
++            const VkMemoryDedicatedAllocateInfo sub_ded = {
++               .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
++               .image = himg,
++            };
++            const VkImportMemoryFdInfoKHR sub_imp = {
++               .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
++               .pNext = himg != VK_NULL_HANDLE ? (const void *)&sub_ded : NULL,
++               .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++               .fd = local_import_info.fd,
++            };
++            const VkMemoryAllocateInfo sub_info = {
++               .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
++               .pNext = &sub_imp,
++               .allocationSize = alloc_info->allocationSize,
++               .memoryTypeIndex = substitute,
++            };
++            VkDeviceMemory sub_handle = VK_NULL_HANDLE;
++            const VkResult sub_ret =
++               dev->proc_table.AllocateMemory(hdev, &sub_info, NULL, &sub_handle);
++            if (sub_ret == VK_SUCCESS) {
++               struct vkr_device_memory *m2 = vkr_context_alloc_object(
++                  ctx, sizeof(*m2), VK_OBJECT_TYPE_DEVICE_MEMORY, args->pMemory);
++               if (m2) {
++                  m2->base.handle.device_memory = sub_handle;
++                  m2->udmabuf_fd = -1;
++                  vkr_device_add_object(ctx, dev, &m2->base);
++                  mem = m2;
++                  alloc_info->memoryTypeIndex = substitute; /* for the tail's record */
++                  args->ret = VK_SUCCESS;
++               } else {
++                  dev->proc_table.FreeMemory(hdev, sub_handle, NULL);
++               }
++            }
++            vkr_log("  import retried at memoryTypeIndex=%u (fd supports 0x%x, guest "
++                    "asked %u): %s",
++                    substitute, fd_props.memoryTypeBits, mem_type_index,
++                    mem ? "RECOVERED" : "still refused");
++         }
++      }
++
++      if (!mem) {
+       if (local_import_info.fd >= 0)
+          close(local_import_info.fd);
+       if (gbm_bo)
+@@ -549,6 +682,7 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+          vkr_device_add_object(ctx, dev, &tomb->base);
+       }
+       return;
++      }
+    }
+ 
+    mem->device = dev;
+@@ -559,7 +693,9 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    mem->gbm_bo = gbm_bo;
+    mem->mtl_shm = mtl_shm;
+    mem->allocation_size = alloc_info->allocationSize;
+-   mem->memory_type_index = mem_type_index;
++   /* alloc_info, not the const snapshot: the e5x.30 retry may have substituted
++    * the type, and this field must describe the memory that exists. */
++   mem->memory_type_index = alloc_info->memoryTypeIndex;
+ 
+    /* Recorded here, not at the import: the VkDeviceMemory handle does not exist
+     * until the object is created, and it is the key the rest of the chain uses. */
+-- 
+2.54.0

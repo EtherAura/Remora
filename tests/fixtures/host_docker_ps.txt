@@ -1,0 +1,5 @@
+jellyfin
+smartctl-exporter
+whisper
+immich_ml_cuda
+cloudflared

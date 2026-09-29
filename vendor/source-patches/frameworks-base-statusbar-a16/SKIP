@@ -1,0 +1,14 @@
+Needs an API A16 does not have. The series reads the icon_blacklist secure setting through
+SecureSettingsRepository.stringSetting(), and A16's repository declares only boolSetting() —
+stringSetting arrives with upstream AOSP commit 9e316a35a304 ("Change DataStore to Secure
+Settings"), which is in lineage-24.0 and not in lineage-23.0. Confirmed with `git log -L` on the
+declaration; no patch in this tree adds it.
+
+A17 also RESHAPED the class the series edits: HomeStatusBarIconBlockListInteractor exposes
+`override val blockedIconSlots: Flow<Set<String>>` with a derived iconBlockList, while A16 has a
+single `val iconBlockList` doing both jobs. So porting is not a rebase — it means backporting the
+repository API and rewriting the interactor hunk against a different class shape.
+
+Remove this SKIP only after backporting stringSetting (interface + impl) and re-deriving the
+interactor change; the capability lost meanwhile is cosmetic (hiding the clock, battery and
+tuner entry from the status bar).

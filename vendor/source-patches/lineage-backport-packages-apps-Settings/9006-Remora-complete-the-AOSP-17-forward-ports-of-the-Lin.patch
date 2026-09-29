@@ -1,0 +1,96 @@
+From 6fb823b3f3ad7900d10336e70ec6d760643cd89b Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sun, 26 Jul 2026 19:38:34 -0400
+Subject: [PATCH] Remora: complete the AOSP 17 forward-ports of the Lineage
+ preferences
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Fixups 9003 (LineageOS legal info) and 9005 (black/AMOLED theme toggle) were
+forward-ported when the build could not yet compile Settings, so their interface
+conformance was never exercised. AOSP 17 has since added abstract members that
+the AOSP-16 originals do not implement, and both classes fail kotlinc:
+
+  LineageLegalPreference        missing getAvailabilityStability(), availabilityDescription
+  DarkModeBlackThemePreference  missing purpose, supportsWrite
+
+DarkModeBlackThemePreference reuses the summary as `purpose`. AOSP asks purpose
+to add context rather than repeat the name, but it is a @StringRes and
+cm_strings.xml is translated into ~90 locales — introducing an untranslated
+string is worse than reusing a summary that already reads as a purpose. Sibling
+LineageLegalPreference already reuses its title for the same reason.
+supportsWrite is genuinely true: the toggle writes BERRY_BLACK_THEME through
+blackThemeStorage, matching AOSP's SwitchPreference, which hardcodes true.
+
+LineageLegalPreference's availabilityDescription is a plain untranslated String
+per AOSP's own convention (see KeyboardVibrationSwitchPreference) and names the
+real precondition: ro.lineagelegal.url resolving to a handleable URL.
+STABLE_UNTIL_APK_UPDATE is correct rather than merely conventional — availability
+depends on a read-only system property and the installed activity set, neither of
+which changes without an APK/OTA update, so the result is safely cacheable.
+
+PreconditionStability lives in metadata.preferencesapi.preconditions, not
+metadata — the shorter path compiles nowhere.
+
+Change-Id: I39ef87bd05bb253291c1d08d0bd6d15d57bd85ec
+---
+ .../deviceinfo/legal/LineageLegalPreference.kt     | 14 ++++++++++++++
+ .../darkmode/DarkModeBlackThemePreference.kt       | 12 ++++++++++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/src/com/android/settings/deviceinfo/legal/LineageLegalPreference.kt b/src/com/android/settings/deviceinfo/legal/LineageLegalPreference.kt
+index 94ffadc9359..a74eec5c624 100644
+--- a/src/com/android/settings/deviceinfo/legal/LineageLegalPreference.kt
++++ b/src/com/android/settings/deviceinfo/legal/LineageLegalPreference.kt
+@@ -20,6 +20,7 @@ import android.content.Intent
+ import android.net.Uri
+ import android.os.SystemProperties
+ import androidx.annotation.StringRes
++import com.android.settingslib.metadata.preferencesapi.preconditions.PreconditionStability
+ import com.android.settingslib.metadata.PreferenceAvailabilityProvider
+ import com.android.settingslib.metadata.PreferenceMetadata
+ import com.android.settingslib.metadata.PreferenceTitleProvider
+@@ -44,6 +45,19 @@ class LineageLegalPreference(override val key: String, @StringRes val defaultTit
+ 
+     override fun getTitle(context: Context): CharSequence? = context.getText(defaultTitle)
+ 
++    // Remora forward-port note: AOSP 17 added these two to PreferenceAvailabilityProvider alongside
++    // the isAvailable() this class already had, so the AOSP-16 original no longer satisfies the
++    // interface. availabilityDescription is a plain (untranslated) String by AOSP's own convention
++    // — see KeyboardVibrationSwitchPreference — and must describe the PRECONDITION, which here is
++    // the ro.lineagelegal.url system property being set to a resolvable URL.
++    override val availabilityDescription =
++        "The ro.lineagelegal.url system property must be set to a URL some activity can handle."
++
++    // STABLE_UNTIL_APK_UPDATE is correct rather than merely conventional: the availability depends
++    // on a read-only system property and the installed activity set, neither of which changes
++    // without an APK/OTA update, so caching the result is safe.
++    override fun getAvailabilityStability() = PreconditionStability.STABLE_UNTIL_APK_UPDATE
++
+     override fun isAvailable(context: Context): Boolean {
+         val url = getLicenseUrl()
+         if (url.isNullOrBlank()) return false
+diff --git a/src/com/android/settings/display/darkmode/DarkModeBlackThemePreference.kt b/src/com/android/settings/display/darkmode/DarkModeBlackThemePreference.kt
+index e0a616855fb..3e9fe956023 100644
+--- a/src/com/android/settings/display/darkmode/DarkModeBlackThemePreference.kt
++++ b/src/com/android/settings/display/darkmode/DarkModeBlackThemePreference.kt
+@@ -35,6 +35,18 @@ class DarkModeBlackThemePreference(context: Context, private val darkModeStorage
+ 
+     override val summary: Int = R.string.berry_black_theme_summary
+ 
++    // Remora forward-port note: AOSP 17 added `purpose` and `supportsWrite` as abstract members
++    // (PreferenceMetadata / BooleanValuePreference), so upstream's AOSP-16 version of this class no
++    // longer compiles. AOSP asks purpose to add context rather than repeat the name, but it is a
++    // @StringRes and cm_strings.xml is translated into ~90 locales — introducing an untranslated
++    // string there is worse than reusing the summary, which already reads as a purpose. Sibling
++    // LineageLegalPreference reuses its title for the same reason.
++    override val purpose: Int = R.string.berry_black_theme_summary
++
++    // The toggle writes LineageSettings.Secure.BERRY_BLACK_THEME via blackThemeStorage, so it is
++    // genuinely writable — matching AOSP's own SwitchPreference, which hardcodes true.
++    override val supportsWrite = true
++
+     override fun storage(context: Context) = blackThemeStorage
+ 
+     override fun isEnabled(context: Context): Boolean {

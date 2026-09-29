@@ -1,0 +1,102 @@
+name: CI
+
+# The whole test surface is offline by design — the core is pure (no QProcess, no filesystem, no
+# Widgets) and everything impure sits behind an injectable Spawner, so all eight suites run on a
+# bare runner with no docker, no device and no Android image. That is what makes CI worth having
+# here rather than a green badge over untested code.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: build + test (Qt 6, Ubuntu)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Qt WebEngine is the heavy one and it is genuinely required (CMakeLists asks for
+      # WebEngineWidgets); FFmpeg's dev headers are what the mirror decodes with, and
+      # libffmpeg-nvenc-dev is FFmpeg's NVIDIA loader (ffnvcodec), which the mirror's CUDA interop
+      # includes — it loads the driver at runtime, so no NVIDIA driver or CUDA toolkit is needed.
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build extra-cmake-modules \
+            qt6-base-dev qt6-multimedia-dev qt6-webengine-dev \
+            libgl1-mesa-dev libffmpeg-nvenc-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      # Qt needs a platform plugin even for non-GUI tests; offscreen keeps it headless.
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+  scripts:
+    name: shell scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+      # The deploy chain and the image build are shell, and a mistake there surfaces halfway
+      # through a two-hour build rather than at the point of the mistake. Enforced at warning level
+      # on Remora's own scripts; the Magisk, ReZygisk, PlayIntegrityFork and Shamiko module scripts
+      # are upstream's, kept byte-for-byte, and are not ours to restyle.
+      - name: shellcheck
+        run: |
+          find . -name '*.sh' -not -path './.git/*' \
+              -not -path './vendor/source-build/features/magisk/magisk/*' \
+              -not -path './vendor/source-build/features/zygisk_pif/pifork/*' \
+              -not -path './vendor/source-build/features/zygisk_pif/rez-mod/*' \
+              -not -path './vendor/source-build/features/zygisk_pif/shamiko/*' -print0 \
+            | xargs -0 -r shellcheck --severity=warning
+      # Each script is parsed by the shell its shebang names. sh is dash on this runner, and a bash
+      # script is not wrong for failing dash — the first run of this gate on a real runner failed
+      # three correct bash scripts that way, because on the machine it was written on sh is bash.
+      - name: Every script parses
+        run: |
+          rc=0
+          for f in $(find . -name '*.sh' -not -path './.git/*'); do
+            case "$(head -n 1 "$f")" in
+              '#!'*bash*) shell=bash ;;
+              *) shell=sh ;;
+            esac
+            "$shell" -n "$f" || { echo "::error file=$f::$shell -n failed"; rc=1; }
+          done
+          exit $rc
+
+  payloads:
+    name: no third-party binaries
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # The release rule, enforced instead of remembered: this repository ships no third-party
+      # binaries (vendor/PAYLOADS.md, docs/adr/0001-own-the-stack.md). Detect by CONTENT — the
+      # payloads that matter here (magisk, magiskboot, busybox, linker64, zygiskd64) carry no
+      # file extension at all, which is exactly how they nearly shipped once.
+      - name: Scan for binaries
+        run: |
+          rc=0
+          for f in $(git ls-files); do
+            case "$f" in docs/*.png|packaging/*.jpg|packaging/*.png|packaging/*.svg) continue ;; esac
+            if file -b --mime "$f" | grep -q 'charset=binary'; then
+              echo "::error file=$f::third-party binary committed — see vendor/PAYLOADS.md"
+              rc=1
+            fi
+          done
+          exit $rc

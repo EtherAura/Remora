@@ -1,0 +1,4 @@
+# DRM render nodes for the VAAPI Codec2 HAL (c2-va).
+# The render node (renderD128/renderD129/...) must be labeled gpu_device so
+# hal_codec2_server can open it via vaGetDisplayDRM().
+/dev/dri/renderD[0-9]+  u:object_r:gpu_device:s0

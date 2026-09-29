@@ -1,0 +1,93 @@
+From fd5b3c2e65f6610aec194a26978be82f72e84c12 Mon Sep 17 00:00:00 2001
+From: Remora <remora@local>
+Date: Sun, 26 Jul 2026 19:59:50 -0400
+Subject: [PATCH] Remora: add AOSP 17's `purpose` to the remaining Lineage info
+ preferences
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+AOSP 17 made `purpose` an abstract member of PreferenceMetadata, so every
+AOSP-16-era Lineage preference class fails kotlinc until it declares one. Three
+remained after 9006:
+
+  LineageVersionDetailPreference
+  LineageBuildDatePreference
+  LineageVendorSecurityPatchLevelPreference
+
+Found by scanning every Lineage-authored Kotlin class implementing
+PreferenceMetadata for the members AOSP 17 now requires, rather than waiting for
+the compiler to surface them one build at a time — each build cycle costs ~12
+minutes to reach Settings, and these three would otherwise have taken three.
+
+All are read-only info rows (PreferenceSummaryProvider, no value type) so only
+`purpose` is missing; none needs supportsWrite or the availability pair. Each
+reuses its own title, which already states exactly what the row shows, and which
+is an already-translated lineageos.platform.internal resource — a purpose string
+invented here would not be translated in any locale. Same reasoning as
+LineageLegalPreference and DarkModeBlackThemePreference.
+
+Change-Id: I4a069ba3966cfef2fb85c951621523945823f2ec
+---
+ .../firmwareversion/LineageBuildDatePreference.kt         | 8 ++++++++
+ .../LineageVendorSecurityPatchLevelPreference.kt          | 8 ++++++++
+ .../firmwareversion/LineageVersionDetailPreference.kt     | 8 ++++++++
+ 3 files changed, 24 insertions(+)
+
+diff --git a/src/com/android/settings/deviceinfo/firmwareversion/LineageBuildDatePreference.kt b/src/com/android/settings/deviceinfo/firmwareversion/LineageBuildDatePreference.kt
+index 191afa5bb9c..8555f6a0bf8 100644
+--- a/src/com/android/settings/deviceinfo/firmwareversion/LineageBuildDatePreference.kt
++++ b/src/com/android/settings/deviceinfo/firmwareversion/LineageBuildDatePreference.kt
+@@ -33,6 +33,14 @@ class LineageBuildDatePreference :
+     override val title: Int
+         get() = org.lineageos.platform.internal.R.string.build_date
+ 
++    // Remora forward-port note: AOSP 17 made `purpose` an abstract member of PreferenceMetadata,
++    // so this AOSP-16-era class no longer satisfies the interface. These are read-only info rows
++    // whose title already states exactly what they show, and the title is a lineageos.platform
++    // resource that is translated — a new purpose string would not be. Reusing the title matches
++    // sibling LineageLegalPreference.
++    override val purpose: Int
++        get() = org.lineageos.platform.internal.R.string.build_date
++
+     override fun bind(preference: Preference, metadata: PreferenceMetadata) {
+         super.bind(preference, metadata)
+         preference.isSelectable = false
+diff --git a/src/com/android/settings/deviceinfo/firmwareversion/LineageVendorSecurityPatchLevelPreference.kt b/src/com/android/settings/deviceinfo/firmwareversion/LineageVendorSecurityPatchLevelPreference.kt
+index 2781173d7da..b3990972b20 100644
+--- a/src/com/android/settings/deviceinfo/firmwareversion/LineageVendorSecurityPatchLevelPreference.kt
++++ b/src/com/android/settings/deviceinfo/firmwareversion/LineageVendorSecurityPatchLevelPreference.kt
+@@ -38,6 +38,14 @@ class LineageVendorSecurityPatchLevelPreference :
+     override val title: Int
+         get() = org.lineageos.platform.internal.R.string.lineage_vendor_security_patch
+ 
++    // Remora forward-port note: AOSP 17 made `purpose` an abstract member of PreferenceMetadata,
++    // so this AOSP-16-era class no longer satisfies the interface. These are read-only info rows
++    // whose title already states exactly what they show, and the title is a lineageos.platform
++    // resource that is translated — a new purpose string would not be. Reusing the title matches
++    // sibling LineageLegalPreference.
++    override val purpose: Int
++        get() = org.lineageos.platform.internal.R.string.lineage_vendor_security_patch
++
+     override fun bind(preference: Preference, metadata: PreferenceMetadata) {
+         super.bind(preference, metadata)
+         preference.isSelectable = false
+diff --git a/src/com/android/settings/deviceinfo/firmwareversion/LineageVersionDetailPreference.kt b/src/com/android/settings/deviceinfo/firmwareversion/LineageVersionDetailPreference.kt
+index 13c34be6241..7296552f36b 100644
+--- a/src/com/android/settings/deviceinfo/firmwareversion/LineageVersionDetailPreference.kt
++++ b/src/com/android/settings/deviceinfo/firmwareversion/LineageVersionDetailPreference.kt
+@@ -46,6 +46,14 @@ class LineageVersionDetailPreference :
+     override val title: Int
+         get() = org.lineageos.platform.internal.R.string.lineage_version
+ 
++    // Remora forward-port note: AOSP 17 made `purpose` an abstract member of PreferenceMetadata,
++    // so this AOSP-16-era class no longer satisfies the interface. These are read-only info rows
++    // whose title already states exactly what they show, and the title is a lineageos.platform
++    // resource that is translated — a new purpose string would not be. Reusing the title matches
++    // sibling LineageLegalPreference.
++    override val purpose: Int
++        get() = org.lineageos.platform.internal.R.string.lineage_version
++
+     override val indexable
+         get() = false
+ 

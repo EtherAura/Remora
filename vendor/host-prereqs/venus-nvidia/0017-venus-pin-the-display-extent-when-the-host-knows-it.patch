@@ -1,0 +1,132 @@
+From 3603a1c85643e5461d1dbce6077fa28ad41dc065 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sun, 2 Aug 2026 16:31:25 -0400
+Subject: [PATCH] venus: pin the display extent when the host knows it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The label is chosen by EXTENT — largest render target wins, and after 240
+submits with nothing at that size it follows whatever else is rendering. Both
+rules assume ONE display.
+
+scrcpy --new-display gives Android a second one, and it is the active one: the
+app renders continuously while the main display sits on a still launcher
+compositing nothing. So the shrink rule handed the label to the app, the host
+encoder published it, and the MIRROR showed the app. Measured, three times in
+one session:
+
+  [remora-display] relabelled 3760x1992 -> 736x1600 (nothing rendered at the
+  old size for 241 submits)
+
+A desktop-mode display larger than the main one would take it by the growth
+rule just as easily.
+
+No extent heuristic can separate "the display resized" from "a second display
+appeared" — both look like new extents arriving while the old one goes quiet.
+The identity has to come from outside, and the host already holds it: the
+display's size is baked into the container at docker run
+(androidboot.remora_width/height are first-write-wins ro props) and cannot
+change while it runs.
+
+REMORA_DISPLAY_SIZE passes it in. The label then becomes that extent and only
+ever that extent: reached the first time something renders at it, never grown
+past, never followed away. A pin that never matches publishes nothing, so it
+says so once with the extents actually seen, rather than leaving a black mirror
+with no explanation anywhere. Unset, every rule behaves exactly as before.
+---
+ src/venus/vkr_remora_track.c | 69 +++++++++++++++++++++++++++++++++---
+ 1 file changed, 65 insertions(+), 4 deletions(-)
+
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+index 40d34bc3..e73ec303 100644
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -64,6 +64,43 @@ static uint32_t cand_w, cand_h;          /* largest extent seen while unseen */
+ /* ~4s at 60fps. Long enough that a display which merely goes idle — a still
+  * screen composites nothing — is not mistaken for one that resized. */
+ #define DISP_STALE_SUBMITS 240
++
++/* Both rules above reason about ONE display, and neither survives a second one.
++ * Android gets a second display whenever an app is opened in its own window
++ * (scrcpy --new-display), and then: it renders continuously while the first sits
++ * on a still launcher, nothing composites at the labelled size for 240 submits,
++ * and the shrink rule hands the label to the app. The host encoder publishes it,
++ * and the MIRROR shows the app — measured, "relabelled 3760x1992 -> 736x1600
++ * (nothing rendered at the old size for 241 submits)". A desktop-mode display
++ * larger than the main one would take it by the growth rule just as easily.
++ *
++ * No extent heuristic can separate "the display resized" from "a second display
++ * appeared" — both look like new extents arriving while the old one goes quiet.
++ * But the host does not have to guess: the display's size is baked into the
++ * container at `docker run` (androidboot.remora_width/height are first-write-
++ * wins ro props), so it is a fact Remora already holds. REMORA_DISPLAY_SIZE
++ * passes it in, and the label becomes that extent and only ever that extent —
++ * reached the first time something renders at it, never grown past, never
++ * followed away. Unset, everything below behaves exactly as before. */
++static bool
++disp_pinned(uint32_t *w, uint32_t *h)
++{
++   /* Cached: consulted per submit, and the environment cannot change under us. */
++   static int cached = -1;
++   static uint32_t pw, ph;
++   if (cached < 0) {
++      const char *v = getenv("REMORA_DISPLAY_SIZE");
++      unsigned a = 0, b = 0;
++      cached = (v && sscanf(v, "%ux%u", &a, &b) == 2 && a && b) ? 1 : 0;
++      pw = a;
++      ph = b;
++      if (cached == 1)
++         fprintf(stderr, "[remora-display] pinned to %ux%u by the host\n", pw, ph);
++   }
++   *w = pw;
++   *h = ph;
++   return cached == 1;
++}
+ /* Its pixel layout, which an importing encoder needs and cannot derive. */
+ static uint32_t disp_format, disp_tiling, disp_offset, disp_pitch;
+ static uint64_t disp_modifier = ~0ull;
+@@ -851,12 +888,36 @@ vkr_remora_note_submit(struct vkr_queue *queue, const VkCommandBuffer *cmds,
+       if (!is_compositor)
+          goto skip_display;
+ 
+-      /* Label the display on the largest target seen, once it grows. A frame
+-       * matching that extent is a display frame, and its fd is what an encoder
+-       * wants. */
++      /* Label the display — from the host's pin when there is one, otherwise on
++       * the largest target seen, once it grows. A frame matching that extent is
++       * a display frame, and its fd is what an encoder wants. */
+       const uint64_t _wh = map_get(&map_img_wh, image);
+       const uint32_t _w = (uint32_t)(_wh >> 32), _h = (uint32_t)_wh;
+-      if (_w && _h && (uint64_t)_w * _h > (uint64_t)disp_w * disp_h) {
++      uint32_t pin_w, pin_h;
++      if (disp_pinned(&pin_w, &pin_h)) {
++         /* The host said which extent is the display. Take it the first time it
++          * renders, and never move again — no growth, no shrink-follow, so no
++          * second display can take the label whatever size it is. */
++         if (_w == pin_w && _h == pin_h && (disp_w != pin_w || disp_h != pin_h)) {
++            disp_w = pin_w;
++            disp_h = pin_h;
++            fprintf(stderr, "[remora-display] labelled %ux%u (pinned)\n", _w, _h);
++         } else if (!disp_w && _w && _h) {
++            /* Still nothing at the pinned extent. A pin that never matches
++             * publishes no frames at all, so say so once, with what IS being
++             * rendered — otherwise the only symptom is a mirror that stays
++             * black and nothing anywhere names the reason. */
++            if ((uint64_t)_w * _h > (uint64_t)cand_w * cand_h) {
++               cand_w = _w;
++               cand_h = _h;
++            }
++            if (++disp_unseen == DISP_STALE_SUBMITS)
++               fprintf(stderr,
++                       "[remora-display] nothing has rendered at the pinned %ux%u in %d "
++                       "submits (largest seen: %ux%u) — no frames will be published\n",
++                       pin_w, pin_h, DISP_STALE_SUBMITS, cand_w, cand_h);
++         }
++      } else if (_w && _h && (uint64_t)_w * _h > (uint64_t)disp_w * disp_h) {
+          disp_w = _w;
+          disp_h = _h;
+          disp_unseen = 0;
+-- 
+2.54.0
+

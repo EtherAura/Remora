@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.EtherAura.Remora</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Remora</name>
+  <developer id="io.github.etheraura">
+    <name>EtherAura</name>
+  </developer>
+  <summary>Build, deploy and mirror Android running in Docker</summary>
+  <description>
+    <p>
+      Remora is a desktop control plane for Android in Docker: compose an Android image
+      feature by feature and build it from source, deploy it to this machine or to any docker host
+      over ssh, and connect with Remora's own hardware-accelerated mirror — a Qt client talking to
+      an agent baked into the image. A headless CLI and a QtWidgets workspace share one
+      unit-tested core.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.EtherAura.Remora.desktop</launchable>
+  <provides>
+    <binary>remora</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Utility</category>
+    <category>System</category>
+  </categories>
+</component>

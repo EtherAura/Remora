@@ -1,0 +1,81 @@
+From: Remora <remora@localhost>
+Subject: [PATCH] vtest: align linear image row pitch to 256 bytes
+
+A LINEAR image whose row pitch is not a multiple of 256 makes the GPU fault a
+few frames into rendering:
+
+    NVRM: Xid (PCI:0000:01:00): 69, name=vkr-ring-1, Class Error:
+          channel 0x28, Class 0000c797, Offset 000019d0, ErrorCode 0000000f
+
+0xc797 is the Ampere_B 3D class and vkr-ring-1 is this server's own Venus ring
+thread, so the invalid 3D-class state is submitted host-side. The context is
+lost, the guest's next fence poll can never succeed, and Venus hard-aborts in
+vn_ring_submit_locked -- taking SurfaceFlinger's RenderEngine with it.
+mesa.vn.debug=...,no_abort does not cover a ring-submit failure.
+
+The failing variable is the pitch, not the size:
+
+    1280 wide -> pitch  5120, %256 = 0    works
+    1920 wide -> pitch  7680, %256 = 0    works
+    3760 wide -> pitch 15040, %256 = 192  faults
+    3840 wide -> pitch 15360, %256 = 0    clean, and LARGER than the failing case
+
+vtest_gpu_alloc_image() reports whatever layout.rowPitch the driver returns,
+while the udmabuf path beside it has always aligned with
+ALLOC_ALIGN(width * bpp, 256) -- which is why only this path was affected. An
+A/B differing only in routing confirms it: VTEST_MAPPABLE_GPU=1 faults,
+VTEST_MAPPABLE_UDMABUF=1 does not.
+
+Pad the width rather than forcing a pitch through
+VkImageDrmFormatModifierExplicitCreateInfoEXT: the driver keeps ownership of
+every other alignment rule, and the padded columns are never addressed because
+the guest is told the real width alongside the reported stride.
+
+Verified end to end at 3760x1992 through `remora up`: Xid 0, no RenderEngine
+abort, and scrcpy reporting "Texture: 3760x1992".
+
+---
+ vtest/vtest_gpu_alloc.c | 24 +++++++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/vtest/vtest_gpu_alloc.c b/vtest/vtest_gpu_alloc.c
+--- a/vtest/vtest_gpu_alloc.c
++++ b/vtest/vtest_gpu_alloc.c
+@@ -313,12 +313,36 @@
+       .drmFormatModifierCount = mod_count,
+       .pDrmFormatModifiers = mod_candidates,
+    };
++   /* LINEAR row pitch MUST land on 256 bytes or the GPU faults.
++    *
++    * An unaligned pitch produces, several frames later, an Xid 69 class error
++    * against the Ampere 3D class (Class 0000c797, Offset 000019d0) that kills
++    * this server's context; the guest then aborts in vn_ring_submit_locked
++    * while polling fence status, taking SurfaceFlinger's RenderEngine with it.
++    * It is NOT a size limit:
++    *   3760 wide -> pitch 15040, 15040 % 256 = 192 -> faults
++    *   3840 wide -> pitch 15360, 15360 % 256 =   0 -> clean, though LARGER
++    * The udmabuf path below has always aligned its stride to 256, which is why
++    * only this path was affected.
++    *
++    * Pad the WIDTH so the driver's own linear pitch comes out aligned, rather
++    * than forcing a pitch through an explicit-layout create: the padded columns
++    * are never addressed (the guest is told the real width and the reported
++    * stride), and letting the driver keep ownership of the layout avoids
++    * second-guessing its other alignment rules.
++    */
++   uint32_t alloc_width = width;
++   if (linear) {
++      const uint32_t bpp = drm_format_bpp(drm_format);
++      if (bpp)
++         alloc_width = (uint32_t)(ALLOC_ALIGN((uint64_t)width * bpp, 256) / bpp);
++   }
+    const VkImageCreateInfo image_info = {
+       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+       .pNext = &mod_info,
+       .imageType = VK_IMAGE_TYPE_2D,
+       .format = format,
+-      .extent = { width, height, 1 },
++      .extent = { alloc_width, height, 1 },
+       .mipLevels = 1,
+       .arrayLayers = 1,
+       .samples = VK_SAMPLE_COUNT_1_BIT,

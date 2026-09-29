@@ -1,0 +1,45 @@
+From 06df257aa08773e9c73f82edb492e5d7f0485593 Mon Sep 17 00:00:00 2001
+From: LineageOS Infra <infra@lineageos.org>
+Date: Wed, 15 Apr 2026 19:24:15 +0000
+Subject: [PATCH 89/98] Automatic translation import
+
+Change-Id: Ice99a9ced2a37704dae3e7dbad18c800485fe9f0
+---
+ res/values-cy/cm_strings.xml | 12 ++++++++++++
+ res/values-ta/cm_strings.xml |  2 +-
+ 2 files changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/res/values-cy/cm_strings.xml b/res/values-cy/cm_strings.xml
+index 9bc6a68429e..7ce81ee17d9 100644
+--- a/res/values-cy/cm_strings.xml
++++ b/res/values-cy/cm_strings.xml
+@@ -78,4 +78,16 @@
+     <string name="wake_when_plugged_or_unplugged_title">Deffro wrth gysylltu â phŵer</string>
+     <string name="wake_when_plugged_or_unplugged_summary">Troi\'r sgrin ymlaen wrth gysylltu neu ddatgysylltu â phŵer</string>
+     <string name="storage_warning_internal">Rhybudd: Mae\'n bosib na fydd yr opsiwn hwn yn gweithio\'n iawn ac yn arwain at golli data, felly ni argymhellir!</string>
++    <string name="battery_technology">Technoleg</string>
++    <string name="battery_health">Iechyd</string>
++    <string name="battery_health_good">Da</string>
++    <string name="battery_health_overheat">Gor-boethi</string>
++    <string name="battery_health_dead">Marw</string>
++    <string name="battery_health_unspecified_failure">Methiant anhysbys</string>
++    <string name="battery_health_cold">Oer</string>
++    <string name="battery_health_unknown">Anhysybys</string>
++    <string name="battery_temperature">Tymheredd</string>
++    <string name="battery_voltage">Foltedd</string>
++    <string name="battery_charge_counter_summary">%1$d mAh</string>
++    <string name="battery_design_capacity">Capasiti dylunio</string>
+ </resources>
+diff --git a/res/values-ta/cm_strings.xml b/res/values-ta/cm_strings.xml
+index dba6a94232e..860b01ff38f 100644
+--- a/res/values-ta/cm_strings.xml
++++ b/res/values-ta/cm_strings.xml
+@@ -94,7 +94,7 @@
+     <string name="battery_health_over_voltage">மிகைமின்னழுத்தம்</string>
+     <string name="battery_health_unspecified_failure">குறிப்பிடப்படாத செயலிழப்பு</string>
+     <string name="battery_health_cold">குளிர்ச்சி</string>
+-    <string name="battery_health_unknown">தெரியவில்லை</string>
++    <string name="battery_health_unknown">அறியா</string>
+     <string name="battery_temperature">வெப்பநிலை</string>
+     <string name="battery_voltage">மின்னழுத்தம்</string>
+     <string name="battery_charge_counter_summary">%1$d mAh</string>

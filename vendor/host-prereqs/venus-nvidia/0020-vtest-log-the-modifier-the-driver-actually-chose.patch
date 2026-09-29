@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000020 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Mon, 3 Aug 2026 23:45:00 -0400
+Subject: [PATCH] vtest: log the modifier the driver actually chose
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The [remora-alloc] line printed *out_modifier one statement BEFORE
+*out_modifier = chosen.drmFormatModifier, i.e. the caller's stale
+in-value — which is 0 on every path. So every allocation logged as
+mod=0x0, and bd remora-e5x.30's host-side survey concluded "everything
+is handed out LINEAR" from what was actually uninitialized memory. The
+allocator's own comment says the opposite is the point: the non-linear
+path deliberately picks the driver's block-linear modifiers because
+NVIDIA's EGL treats LINEAR dmabufs as external-only.
+
+Log after chosen is read, and log chosen itself. The import-refusal
+correlation this line exists for is only as good as the modifier it
+prints.
+---
+ vtest/vtest_gpu_alloc.c | fixed ordering
+ 1 file changed
+diff --git a/vtest/vtest_gpu_alloc.c b/vtest/vtest_gpu_alloc.c
+index 1d0e775c..3d562afa 100644
+--- a/vtest/vtest_gpu_alloc.c
++++ b/vtest/vtest_gpu_alloc.c
+@@ -530,12 +530,15 @@ vtest_gpu_alloc_image(uint32_t width, uint32_t height, uint32_t drm_format,
+       goto out;
+ 
+    *out_stride = (uint32_t)layout.rowPitch;
++   *out_modifier = chosen.drmFormatModifier;
+    /* remora: pair this with the render server's "refused import" line. When a
+     * guest import asks for more than we allocated, these two logs are the only
+-    * way to see WHICH side computed the larger geometry (bd remora-e5x.30). */
++    * way to see WHICH side computed the larger geometry (bd remora-e5x.30).
++    * AFTER chosen is read: this line used to print the caller's stale in-value
++    * for the modifier, which reported every allocation as mod=0x0 and had the
++    * host side wrongly cleared of block-linear involvement. */
+    vkr_log_alloc_geometry(width, height, drm_format, (uint32_t)layout.rowPitch, reqs.size,
+-                          *out_modifier);
+-   *out_modifier = chosen.drmFormatModifier;
++                          chosen.drmFormatModifier);
+    *out_size = reqs.size;
+    *out_fd = fd;
+    ret = 0;
+-- 
+2.54.0

@@ -1,0 +1,238 @@
+From: Remora <noreply@localhost>
+Date: Wed, 6 Aug 2026 20:30:00 -0400
+Subject: [PATCH 25/25] venus: route around NVIDIA sysmem dmabuf re-import corruption
+
+bd remora-e5x.34. NVIDIA cannot correctly re-import a dma_buf backed by its
+own host-visible SYSMEM allocations: the kernel side fails to register the
+second DMA mapping (intermapRegisterDmaMapping "Failed to insert new mapping
+node", gpu_vaspace.c asserts), and the resulting import reads garbage.
+Measured standalone (tools/nv12chain.c): a dedicated multi-planar NV12 import
+over such an fd reads plane 1 as ZEROS — the green camera/video preview — and
+a single-plane re-import of the same fd walks the pages in REVERSE order.
+VRAM-backed buffers re-import fine, which is why ordinary GPU-rendered app
+surfaces never showed any of this.
+
+Three coordinated moves, none of which needs a guest change:
+
+1. vtest_gpu_alloc: pad LINEAR allocations' height until the driver's own
+   reqs.size lands on a 128 KiB multiple. An importer's dedicated image is
+   sized to that multiple where the allocator's own image is sized tightly
+   (camera blob: allocated 720896, importer demanded 786432 = ALIGN(.,128K),
+   alignment=65536), and the shortfall made every camera-app launch a refused
+   import, a NULL bind, a CS error and a dead SurfaceFlinger. The guest still
+   sees the real width/height/stride; the padded rows only make the exported
+   fd long enough.
+
+2. vkr_image: remember which HOST images are multi-planar YCbCr (small ring;
+   a session makes a handful), and log each YCbCr create with its explicit
+   plane layout — the number to compare against gralloc's arithmetic when a
+   sampler misreads.
+
+3. vkr_device_memory: refuse dedicated YCbCr imports for every context EXCEPT
+   SurfaceFlinger's, before the driver sees them. App consumers (video
+   players) have a CPU fallback that renders CORRECT COLOR — video owed its
+   correct color to exactly this fallback all along, triggered until now by
+   the accidental size mismatch that (1) removes. SurfaceFlinger's ANGLE has
+   no usable fallback — a refusal there is a CS error and a dead compositor,
+   measured — so SF's imports proceed: its camera preview shows zero chroma
+   (green) but is LIVE and STABLE, and photo capture is CPU-side and correct.
+
+Net effect on a live instance: camera opens, previews (green), captures
+colored photos; video plays in full color; SurfaceFlinger survives all of it.
+The residual green preview falls with a real fix: an allocator whose buffers
+NVIDIA can re-import (GBM on nvidia-drm) or a driver fix upstream.
+---
+--- a/vtest/vtest_gpu_alloc.c	2026-08-06 20:28:35.223205694 -0400
++++ b/vtest/vtest_gpu_alloc.c	2026-08-06 20:28:35.224800026 -0400
+@@ -515,6 +515,42 @@
+    VkMemoryRequirements reqs;
+    vk->GetImageMemoryRequirements(vk->device, image, &reqs);
+ 
++   /* remora-e5x.34: a LINEAR allocation must be importable as somebody ELSE's
++    * dedicated image, and NVIDIA sizes that importer's image to a 128 KiB
++    * multiple where it sizes THIS image (attachment usage, this exact create)
++    * tightly. Measured on the camera preview blob: R8 4096x176 allocated here
++    * at reqs.size=720896, while SurfaceFlinger's import of the same bytes
++    * demanded size=786432 alignment=65536 — ALIGN(720896, 128K) exactly — and
++    * the shortfall was a refused import, a NULL bind, and a dead ring, every
++    * time a camera app opened (the vkr import site logs it as 'fd too SMALL').
++    * The fd's length is fixed at allocation, so this is the only place the gap
++    * can close. Pad the HEIGHT until the driver's own answer lands on the
++    * 128 KiB multiple — same trick as the width padding above, and like it the
++    * guest keeps seeing the real height and stride: the padded rows exist only
++    * so the exported fd is long enough for the strictest importer. Bounded and
++    * driver-owned: each pass jumps by the deficit in whole rows and re-asks. */
++   if (linear) {
++      const uint64_t kImportAlign = 128 * 1024;
++      uint32_t padded_height = height;
++      for (int guard = 0; guard < 8 && (reqs.size % kImportAlign); guard++) {
++         const uint64_t target = ALLOC_ALIGN(reqs.size, kImportAlign);
++         const uint64_t row = reqs.size / padded_height;
++         padded_height += (uint32_t)((target - reqs.size + row - 1) / row);
++         VkImageCreateInfo padded = image_info;
++         padded.extent.height = padded_height;
++         vk->DestroyImage(vk->device, image, NULL);
++         image = VK_NULL_HANDLE;
++         if (vk->CreateImage(vk->device, &padded, NULL, &image) != VK_SUCCESS)
++            goto out;
++         vk->GetImageMemoryRequirements(vk->device, image, &reqs);
++      }
++      if (padded_height != height)
++         fprintf(stderr,
++                 "[remora-alloc] linear height padded %u -> %u so the fd reaches "
++                 "the importer's %" PRIu64 "-multiple (size=%" PRIu64 ")\n",
++                 height, padded_height, kImportAlign, (uint64_t)reqs.size);
++   }
++
+    uint32_t mem_type = UINT32_MAX;
+    const VkMemoryPropertyFlags want =
+       linear ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+--- a/src/venus/vkr_image.h	2026-08-06 20:28:35.247490632 -0400
++++ b/src/venus/vkr_image.h	2026-08-06 20:28:35.226303808 -0400
+@@ -44,2 +44,6 @@
+ 
+ #endif /* VKR_IMAGE_H */
++
++/* remora-e5x.34: YCbCr host-image registry — see vkr_image.c */
++void vkr_remora_remember_ycbcr_image(VkImage img);
++bool vkr_remora_image_is_ycbcr(VkImage img);
+--- a/src/venus/vkr_image.c	2026-08-06 20:28:35.247406894 -0400
++++ b/src/venus/vkr_image.c	2026-08-06 20:28:35.225503868 -0400
+@@ -43,6 +43,42 @@
+                                    args->pCreateInfo->extent.width,
+                                    args->pCreateInfo->extent.height);
+       vkr_remora_note_image_layout(_img->base.handle.image, args->pCreateInfo);
++
++      /* remora-e5x.34: the camera preview samples its chroma as ZEROS — a
++       * coherent luma image rendered green — while the CPU paths (HAL write,
++       * JPEG capture) read the same buffer correctly. The two sides can only
++       * disagree about the PLANE LAYOUT, and the GPU side's belief is stated
++       * right here, in the guest's create of the YCbCr sampler image. YCbCr
++       * creates are rare (one per camera/video surface), so logging every one
++       * is cheap, and each explicit plane layout names the offset and pitch
++       * the sampler will actually walk — the number to compare against the
++       * gralloc arithmetic the CPU sides used. */
++      const VkFormat fmt = args->pCreateInfo->format;
++      const bool ycbcr = fmt >= VK_FORMAT_G8B8G8R8_422_UNORM &&
++                         fmt <= VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM;
++      if (ycbcr)
++         vkr_remora_remember_ycbcr_image(_img->base.handle.image);
++      if (ycbcr) {
++         char pl[192];
++         int n = snprintf(pl, sizeof pl, "mod=implicit");
++         for (const VkBaseInStructure *p = args->pCreateInfo->pNext; p; p = p->pNext) {
++            if (p->sType ==
++                VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT) {
++               const VkImageDrmFormatModifierExplicitCreateInfoEXT *e = (const void *)p;
++               n = snprintf(pl, sizeof pl, "mod=0x%llx",
++                            (unsigned long long)e->drmFormatModifier);
++               for (uint32_t i = 0;
++                    i < e->drmFormatModifierPlaneCount && n > 0 && n < (int)sizeof pl; i++)
++                  n += snprintf(pl + n, sizeof pl - n, " p%u[off=%llu pitch=%llu]", i,
++                                (unsigned long long)e->pPlaneLayouts[i].offset,
++                                (unsigned long long)e->pPlaneLayouts[i].rowPitch);
++               break;
++            }
++         }
++         vkr_log("YCbCr image created: format=%d extent=%ux%u tiling=%d %s", fmt,
++                 args->pCreateInfo->extent.width, args->pCreateInfo->extent.height,
++                 args->pCreateInfo->tiling, pl);
++      }
+    }
+    if (!_img && args->pCreateInfo) {
+       /* remora-e5x.21: a pipelined create failure surfaces later as a fatal
+@@ -383,2 +419,29 @@
+       vkr_dispatch_vkDestroySamplerYcbcrConversion;
+ }
++
++/* remora-e5x.34: which HOST images are multi-planar YCbCr. The import site
++ * refuses dedicated imports for these — NVIDIA corrupts the DMA mapping when
++ * re-importing its own host-visible sysmem exports (probe: plane 1 reads
++ * zeros, single-plane re-imports walk pages in REVERSE), so letting the
++ * import "succeed" ships a green preview while a clean refusal sends the
++ * consumer down its CPU fallback, which renders correct color. A small ring
++ * is plenty: a session holds a handful of camera/video sampler images. */
++static VkImage remora_ycbcr_ring[64];
++static unsigned remora_ycbcr_next;
++
++void
++vkr_remora_remember_ycbcr_image(VkImage img)
++{
++   remora_ycbcr_ring[remora_ycbcr_next++ % 64] = img;
++}
++
++bool
++vkr_remora_image_is_ycbcr(VkImage img)
++{
++   if (img == VK_NULL_HANDLE)
++      return false;
++   for (unsigned i = 0; i < 64; i++)
++      if (remora_ycbcr_ring[i] == img)
++         return true;
++   return false;
++}
+--- a/src/venus/vkr_device_memory.c	2026-08-06 20:28:35.222481983 -0400
++++ b/src/venus/vkr_device_memory.c	2026-08-06 20:28:35.223796057 -0400
+@@ -333,6 +333,62 @@
+          remora_fd = fcntl(local_import_info.fd, F_DUPFD_CLOEXEC, 0);
+ 
+       prev_of_res_info->pNext = (const struct VkBaseInStructure *)&local_import_info;
++
++      /* remora-e5x.34: REFUSE dedicated MULTI-PLANAR (YCbCr) imports before the
++       * driver ever sees them. NVIDIA corrupts the DMA mapping when it
++       * re-imports its own host-visible sysmem exports — measured standalone:
++       * the multi-planar import reads plane 1 as ZEROS (the green camera/video
++       * preview), a single-plane re-import of the same fd walks the pages in
++       * REVERSE order, and each attempt logs
++       * 'intermapRegisterDmaMapping: Failed to insert new mapping node' /
++       * gpu_vaspace.c asserts in the kernel. A refusal here is the SAFE
++       * failure: the guest gets a normal error plus the e5x.24 tombstone, the
++       * consumer (ANGLE) falls back to its CPU upload path, and that path
++       * renders CORRECT COLOR — video playback owed its correct color to
++       * exactly this fallback all along, triggered until now by an accidental
++       * size mismatch rather than by policy. Letting the import 'succeed'
++       * ships zero chroma; failing it cleanly ships the right pixels slower.
++       * Revisit when the allocator can produce buffers NVIDIA can re-import
++       * (GBM-on-nvidia-drm), or when the driver fixes sysmem re-import. */
++      const VkMemoryDedicatedAllocateInfo *early_ded = vkr_find_struct(
++         alloc_info->pNext, VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
++      /* GUEST id at this point — create_and_add has not replaced handles yet,
++       * so resolve through the object table before asking the ring (which
++       * stores HOST handles; same trap the e5x.30 retry documents). */
++      const struct vkr_image *early_img =
++         early_ded && early_ded->image != VK_NULL_HANDLE
++            ? vkr_image_from_handle(early_ded->image)
++            : NULL;
++      /* …but NEVER refuse SurfaceFlinger's own imports: its ANGLE has no
++       * usable fallback — a refused import there ends in a CS error and a
++       * dead compositor, measured twice tonight. SF's camera-preview import
++       * proceeds (green preview, stable, photos correct — the vtest height
++       * pad makes its sizes match); every APP context gets the refusal and
++       * with it the CPU fallback's correct color (video players sample in
++       * their own context). Context names come from the guest; SF's is
++       * literally "surfaceflinger". */
++      const bool sf_ctx = ctx->debug_name && strstr(ctx->debug_name, "surfaceflinger");
++      if (!sf_ctx && early_img &&
++          vkr_remora_image_is_ycbcr(early_img->base.handle.image)) {
++         vkr_log("refusing dedicated YCbCr import of res %u (ctx '%s') — NVIDIA "
++                 "sysmem re-import corrupts the mapping; consumer falls back to "
++                 "its CPU path, which renders correct color",
++                 res_info->resourceId,
++                 ctx->debug_name ? ctx->debug_name : "?");
++         if (local_import_info.fd >= 0)
++            close(local_import_info.fd);
++         if (remora_fd >= 0)
++            close(remora_fd);
++         args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++         struct vkr_device_memory *tomb = vkr_context_alloc_object(
++            ctx, sizeof(*tomb), VK_OBJECT_TYPE_DEVICE_MEMORY, args->pMemory);
++         if (tomb) {
++            tomb->base.handle.device_memory = VK_NULL_HANDLE;
++            tomb->udmabuf_fd = -1;
++            vkr_device_add_object(ctx, dev, &tomb->base);
++         }
++         return;
++      }
+    }
+ 
+    VkExportMemoryAllocateInfo *export_info =

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Remora device-compat: declare GPS so Play considers the device compatible with
+     field/logistics apps that hard-require android.hardware.location.gps (e.g. Sonar Field Tech).
+     Location resolves via the network provider (already present); this satisfies the install-time
+     uses-feature gate. -->
+<permissions>
+    <feature name="android.hardware.location.gps" />
+</permissions>

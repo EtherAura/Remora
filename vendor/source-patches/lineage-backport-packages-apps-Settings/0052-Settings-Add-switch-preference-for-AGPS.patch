@@ -1,0 +1,177 @@
+From 456a2668a901ee08f0b74f87347d9611cd1da082 Mon Sep 17 00:00:00 2001
+From: juwei <juwei@codeaurora.org>
+Date: Mon, 7 May 2018 13:31:50 +0800
+Subject: [PATCH 52/98] Settings: Add switch preference for AGPS
+
+Allow toggling AGPS (which in turn disables SUPL) using the existing
+AOSP mechanism that was simply never exposed to the user.
+Based on the following commits from CodeAurora, modified to
+use SwitchPreference and improved strings:
+
+Author: juwei <juwei@codeaurora.org>
+Date:   Mon May 7 13:31:50 2018 +0800
+    Settings: Add AGPS setting menu.
+
+    Add AGPS setting switch to allow user turn on/off
+    AGPS function.
+
+    Change-Id: If8a20a8293b9f4b12933bc3820b4cd135a938b72
+    CRs-Fixed: 2169854
+
+Author: hoffc <hoffc@codeaurora.org>
+Date:   Wed Dec 19 15:56:07 2018 +0800
+    Settings: Refactor Agps preference controller code
+
+    (1) Extract inner class AgpsPreferenceController as one standalone file.
+    (2) Delete the useless code of reading the SUPL server and port from etc/gps.conf file.
+    (3) Remove the config item "config_agps_enabled".
+
+    Change-Id: I20465aa4375c7fe64bc84f579a39178506b8e211
+    CRs-Fixed: 2370304
+
+Author: hoffc <hoffc@codeaurora.org>
+Date:   Tue Jun 1 08:52:31 2021 +0800
+    Settings: fix NPE caused by missing agps preference definition
+
+    No agps preference is defined in location settings, results in NPE when agps controller init
+
+    add agps preference definition in location settings
+
+    Change-Id: I92e3293bccb90da7b6a1057e2dd83f8aa909d308
+    CRs-Fixed: 2958241
+
+Issue: calyxos#1490
+Co-authored-by: Chirayu Desai <chirayudesai1@gmail.com>
+Co-authored-by: Michael Bestas <mkbestas@lineageos.org>
+Change-Id: Idea7026f0c954c1f2a056e7b4595a879ef161f5c
+---
+ res/values/cm_strings.xml                     |  5 ++
+ res/xml/location_settings.xml                 |  6 ++
+ .../location/AgpsPreferenceController.java    | 74 +++++++++++++++++++
+ .../settings/location/LocationSettings.java   |  1 +
+ 4 files changed, 86 insertions(+)
+ create mode 100644 src/com/android/settings/location/AgpsPreferenceController.java
+
+diff --git a/res/values/cm_strings.xml b/res/values/cm_strings.xml
+index cb43331c301..73e5a73824d 100644
+--- a/res/values/cm_strings.xml
++++ b/res/values/cm_strings.xml
+@@ -124,4 +124,9 @@
+ 
+     <!-- Warning message for the sd card setup -->
+     <string name="storage_warning_internal">Warning: This option may not work properly or lead to data loss and is therefore not recommended!</string>
++
++    <!-- Location settings screen, setting check box label if Assisted GPS should be enabled -->
++    <string name="assisted_gps">Use assisted GPS</string>
++    <!-- Location settings screen, setting summary for Assisted GPS switch -->
++    <string name="assisted_gps_summary">Download satellite assistance data from the internet which can greatly improve the GPS startup performance. For emergency calls, assisted GPS is always allowed.</string>
+ </resources>
+diff --git a/res/xml/location_settings.xml b/res/xml/location_settings.xml
+index 5d5c6b6cd38..74bc00b4ff8 100644
+--- a/res/xml/location_settings.xml
++++ b/res/xml/location_settings.xml
+@@ -44,6 +44,12 @@
+         android:fragment="com.android.settings.location.RecentLocationAccessSeeAllFragment"
+         settings:controller="com.android.settings.location.RecentLocationAccessSeeAllExpressiveButtonPreferenceController" />
+ 
++    <SwitchPreferenceCompat
++        android:key="assisted_gps"
++        android:title="@string/assisted_gps"
++        android:summary="@string/assisted_gps_summary"
++        settings:controller="com.android.settings.location.AgpsPreferenceController"/>
++
+     <com.android.settingslib.widget.UntitledPreferenceCategory
+         android:key="location_advanced_settings">
+ 
+diff --git a/src/com/android/settings/location/AgpsPreferenceController.java b/src/com/android/settings/location/AgpsPreferenceController.java
+new file mode 100644
+index 00000000000..0b0bb73a6f0
+--- /dev/null
++++ b/src/com/android/settings/location/AgpsPreferenceController.java
+@@ -0,0 +1,74 @@
++/*
++ * Copyright (C) 2011 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.settings.location;
++
++import android.content.ContentResolver;
++import android.content.Context;
++import android.provider.Settings;
++
++import androidx.preference.SwitchPreferenceCompat;
++import androidx.preference.Preference;
++import androidx.preference.PreferenceScreen;
++
++public class AgpsPreferenceController extends LocationBasePreferenceController {
++    private static final String KEY_ASSISTED_GPS = "assisted_gps";
++
++    private SwitchPreferenceCompat mAgpsPreference;
++
++    public AgpsPreferenceController(Context context, String key) {
++        super(context, key);
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return KEY_ASSISTED_GPS;
++    }
++
++    @AvailabilityStatus
++    public int getAvailabilityStatus() {
++        return AVAILABLE;
++    }
++
++    @Override
++    public void displayPreference(PreferenceScreen screen) {
++        super.displayPreference(screen);
++        mAgpsPreference = (SwitchPreferenceCompat) screen.findPreference(KEY_ASSISTED_GPS);
++    }
++
++    @Override
++    public void updateState(Preference preference) {
++        if (mAgpsPreference != null) {
++            mAgpsPreference.setChecked(Settings.Global.getInt(
++                    mContext.getContentResolver(), Settings.Global.ASSISTED_GPS_ENABLED, 1) == 1);
++        }
++    }
++
++    @Override
++    public boolean handlePreferenceTreeClick(Preference preference) {
++        if (KEY_ASSISTED_GPS.equals(preference.getKey())) {
++            final ContentResolver cr = mContext.getContentResolver();
++            final boolean switchState = mAgpsPreference.isChecked();
++            Settings.Global.putInt(cr, Settings.Global.ASSISTED_GPS_ENABLED,
++                    switchState ? 1 : 0);
++            return true;
++        }
++        return false;
++    }
++
++    @Override
++    public void onLocationModeChanged(int mode, boolean restricted) {}
++}
+diff --git a/src/com/android/settings/location/LocationSettings.java b/src/com/android/settings/location/LocationSettings.java
+index aefa7307d23..f09f1bbd21c 100644
+--- a/src/com/android/settings/location/LocationSettings.java
++++ b/src/com/android/settings/location/LocationSettings.java
+@@ -123,6 +123,7 @@ public class LocationSettings extends DashboardFragment implements
+         use(LocationForWorkPreferenceController.class).init(this);
+         use(LocationSettingsFooterPreferenceController.class).init(this);
+         use(LocationForPrivateProfilePreferenceController.class).init(this);
++        use(AgpsPreferenceController.class).init(this);
+     }
+ 
+     @Override

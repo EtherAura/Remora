@@ -1,0 +1,240 @@
+From f97b316c4761cb4ebc4d3df78243b278465663d8 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 31 Jul 2026 22:27:47 -0400
+Subject: [PATCH 09/16] venus: publish display frames to a host encoder over a
+ socket
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The res_id chain identifies which buffer holds the current display frame; this
+hands that buffer to a separate encoder process, passing the dma_buf itself by
+SCM_RIGHTS so the pixels never leave the GPU.
+
+One message per display frame — magic, res_id, extent, has_fd — with the fd sent
+once per resource and cached by the receiver, since the display rotates through a
+fixed pool. sendmsg() is MSG_DONTWAIT: this runs on the submit path, so a stalled
+encoder costs a dropped notification, never a blocked compositor.
+
+Two things measured while validating the transport, both of which produced a
+working-looking socket that delivered the wrong thing:
+
+A resource id does not mean one buffer for the life of the server — virgl
+RECYCLES ids. Keeping the first fd seen for an id made two of four display
+res_ids hand back 65536-byte fds, the size of a 120x120 icon that had previously
+held the id, in place of the 30 MiB frame. The newest import wins, and the
+"already sent" record is cleared with it so a connected encoder is re-sent the
+live fd rather than caching a dead one.
+
+The ENCODER listens and the render server connects, not the reverse. Venus forks
+a render server per client connection (measured: 11 on a live session) and each
+composites for a different guest process; an app drawing a full-screen surface
+reports the display's extent, so no fork can tell on its own whether it owns the
+screen. With the server listening they fought over one socket path — each new
+fork unlinked the incumbent and bound its own, so the name resolved to whoever
+bound last while the rest listened on orphaned inodes, and an encoder connected
+successfully to a process that never rendered another frame. Connecting removes
+the contention and makes the choice decidable, because only the encoder sees
+every candidate at once. It also sidesteps res_id ambiguity: ids are per-context,
+so all three publishers in a live session report res_id=4 for different buffers.
+---
+ src/venus/vkr_remora_track.c | 133 +++++++++++++++++++++++++++++++++--
+ src/venus/vkr_remora_track.h |  12 ++++
+ 2 files changed, 139 insertions(+), 6 deletions(-)
+
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+index a2a86095..db0cf84e 100644
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -4,6 +4,10 @@
+ 
+ #include "c11/threads.h"
+ 
++#include <errno.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++
+ #include <inttypes.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -39,6 +43,8 @@ static struct handle_map map_res_fd;     /* res_id         -> dup'd dma_buf fd *
+ /* The labelled display, and the newest frame seen for it. */
+ static uint32_t disp_w, disp_h, disp_res_id;
+ static int disp_fd = -1;
++
++
+ static uint32_t last_frame_res_id;
+ /* Per-link counters: with a five-link chain, "no frames" is uninformative —
+  * these say WHICH link is missing. */
+@@ -125,6 +131,110 @@ map_get(const struct handle_map *m, uint64_t key)
+ 
+ #define H(x) ((uint64_t)(uintptr_t)(x))
+ 
++/* Publisher: the ENCODER listens and we connect, not the other way round.
++ *
++ * Venus forks a render server PER CLIENT CONNECTION, so a live session runs a
++ * dozen of them (measured: 11), and each one composites for a different guest
++ * process. SurfaceFlinger draws the screen, but an app drawing a full-screen
++ * surface has the same extent, so every fork independently decides it owns "the
++ * display". With the server listening they fought over one socket path: each new
++ * fork unlinked the incumbent and bound its own, leaving the name pointing at
++ * whoever bound LAST while the rest listened on orphaned inodes. An encoder then
++ * connected successfully to a process that never rendered another frame.
++ *
++ * Connecting inverts that: one listener, no name to contend for, and every
++ * candidate publisher shows up as its own connection. Choosing between them is
++ * the encoder's job — it can see extent and frame rate across all of them, which
++ * no single fork can. */
++static int pub_client = -1;
++static uint64_t pub_retry_tick;
++static struct handle_map map_res_sent;  /* res_id -> 1 once its fd has been sent */
++static uint64_t pub_sent, pub_dropped;
++
++static void
++publish_frame_locked(uint32_t res_id, int fd, uint32_t w, uint32_t h)
++{
++   if (pub_client < 0)
++      return;
++
++   const bool need_fd = fd >= 0 && !map_get(&map_res_sent, res_id);
++   uint32_t msg[5] = { VKR_REMORA_FRAME_MAGIC, res_id, w, h, need_fd ? 1u : 0u };
++
++   struct iovec iov = { .iov_base = msg, .iov_len = sizeof(msg) };
++   struct msghdr mh = { .msg_iov = &iov, .msg_iovlen = 1 };
++   union {
++      char buf[CMSG_SPACE(sizeof(int))];
++      struct cmsghdr align;
++   } cmsg_u;
++
++   if (need_fd) {
++      memset(&cmsg_u, 0, sizeof(cmsg_u));
++      mh.msg_control = cmsg_u.buf;
++      mh.msg_controllen = sizeof(cmsg_u.buf);
++      struct cmsghdr *cm = CMSG_FIRSTHDR(&mh);
++      cm->cmsg_level = SOL_SOCKET;
++      cm->cmsg_type = SCM_RIGHTS;
++      cm->cmsg_len = CMSG_LEN(sizeof(int));
++      memcpy(CMSG_DATA(cm), &fd, sizeof(int));
++   }
++
++   /* MSG_DONTWAIT is the point: this runs on the submit path, and a slow or
++    * stalled encoder must never block the compositor. A dropped notification
++    * costs one frame; a blocked submit costs the mirror. */
++   const ssize_t n = sendmsg(pub_client, &mh, MSG_DONTWAIT | MSG_NOSIGNAL);
++   if (n == (ssize_t)sizeof(msg)) {
++      pub_sent++;
++      if (need_fd)
++         map_put(&map_res_sent, res_id, 1);
++   } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
++      pub_dropped++;
++   } else {
++      /* Peer gone: drop it and reconnect on the next display frame rather than
++       * after another full retry interval. */
++      close(pub_client);
++      pub_client = -1;
++      pub_retry_tick = 0;
++      fprintf(stderr, "[remora-publish] encoder disconnected (sent=%" PRIu64
++                      " dropped=%" PRIu64 ")\n", pub_sent, pub_dropped);
++   }
++}
++
++/* Try to reach the encoder. Rate-limited rather than once-only: the encoder is
++ * a separate process that may start long after the mirror, and may restart. */
++static void
++publish_connect_locked(void)
++{
++   /* Retried on a frame counter, not a timer — this is only ever reached from
++    * the submit path, so frames are the clock that matters, and a retry costs a
++    * connect() on a unix socket that is either there or instantly refused. */
++   if (pub_retry_tick++ % 120)
++      return;
++
++   const char *path = getenv("REMORA_FRAME_SOCKET");
++   if (!path || !*path)
++      path = "/tmp/remora-frames.sock";
++
++   struct sockaddr_un addr;
++   if (strlen(path) >= sizeof(addr.sun_path))
++      return;
++
++   const int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++   if (s < 0)
++      return;
++   memset(&addr, 0, sizeof(addr));
++   addr.sun_family = AF_UNIX;
++   strcpy(addr.sun_path, path);
++   if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
++      close(s);
++      return;
++   }
++
++   pub_client = s;
++   /* A fresh connection has cached nothing, so every fd must be sent again. */
++   memset(&map_res_sent, 0, sizeof(map_res_sent));
++   fprintf(stderr, "[remora-publish] connected to encoder at %s\n", path);
++}
++
+ void
+ vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id, int dup_fd)
+ {
+@@ -140,12 +250,20 @@ vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id, int dup_
+    FIRST(memory_resource);
+    map_put(&map_mem_res, H(memory), res_id);
+    if (dup_fd >= 0) {
+-      /* One fd per resource: a repeat import closes the newcomer rather than
+-       * leaking it or churning the stored one. */
+-      if (map_get(&map_res_fd, res_id))
+-         close(dup_fd);
+-      else
+-         map_put(&map_res_fd, res_id, (uint64_t)dup_fd);
++      /* REPLACE, do not keep the first. virgl RECYCLES resource ids: an id
++       * freed and reissued for a different buffer would otherwise keep serving
++       * the stale fd forever. Measured before this fix — two of four display
++       * res_ids handed back 65536-byte fds, the size of a 120x120 icon that had
++       * previously held the id, instead of the 30 MiB frame. The newest import
++       * is what the id means now.
++       * The publisher's "already sent" record is cleared with it, so a
++       * connected encoder is re-sent the new fd rather than caching the dead
++       * one. */
++      const uint64_t old = map_get(&map_res_fd, res_id);
++      if (old)
++         close((int)old);
++      map_put(&map_res_fd, res_id, (uint64_t)dup_fd);
++      map_put(&map_res_sent, res_id, 0);
+    }
+    mtx_unlock(&track_mutex);
+ }
+@@ -307,6 +425,9 @@ vkr_remora_note_submit(const VkCommandBuffer *cmds, uint32_t count)
+          const int fd = (int)map_get(&map_res_fd, res_id);
+          disp_res_id = (uint32_t)res_id;
+          disp_fd = fd ? fd : -1;
++         if (pub_client < 0)
++            publish_connect_locked();
++         publish_frame_locked(disp_res_id, disp_fd, disp_w, disp_h);
+       }
+       if ((uint32_t)res_id != last_frame_res_id) {
+          /* Only on CHANGE: a compositor submits every frame, and logging each
+diff --git a/src/venus/vkr_remora_track.h b/src/venus/vkr_remora_track.h
+index eb754e2c..d8ad0211 100644
+--- a/src/venus/vkr_remora_track.h
++++ b/src/venus/vkr_remora_track.h
+@@ -87,4 +87,16 @@ uint32_t vkr_remora_last_frame_res_id(void);
+ bool vkr_remora_display_frame(uint32_t *res_id, int *fd, uint32_t *width,
+                               uint32_t *height);
+ 
++/* Frame publisher. Listens on $REMORA_FRAME_SOCKET (default
++ * /tmp/remora-frames.sock) and tells a connected encoder which buffer holds the
++ * current display frame, passing the dma_buf itself by SCM_RIGHTS.
++ *
++ * Wire format, one message per display frame, native byte order:
++ *   struct { uint32 magic; uint32 res_id; uint32 width, height; uint32 has_fd; }
++ * When has_fd is 1 an fd rides with the message. The buffer pool rotates
++ * through a handful of resources, so the fd is sent ONCE per res_id and the
++ * encoder caches it; later frames on the same resource carry the header alone.
++ */
++#define VKR_REMORA_FRAME_MAGIC 0x524d4631u /* "RMF1" */
++
+ #endif /* VKR_REMORA_TRACK_H */
+-- 
+2.54.0
+

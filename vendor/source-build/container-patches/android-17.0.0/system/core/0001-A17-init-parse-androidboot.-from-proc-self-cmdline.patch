@@ -1,0 +1,55 @@
+From fa5215f1fc5ed191204d49ec105150c98664c21f Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Wed, 22 Jul 2026 01:41:13 -0400
+Subject: [PATCH] A17 init: parse androidboot.* from /proc/self/cmdline (init
+ argv)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In a container /proc/cmdline is the host kernel's, so ImportKernelCmdline never
+sees the androidboot.* boot args docker passes on init's own argv. Parse
+/proc/self/cmdline in ProcessKernelCmdline so ro.boot.* is populated — without
+it ro.hardware=unknown (composer/gralloc HAL lookup) and the display defaults to
+720x1280 instead of the requested androidboot.remora_width/height.
+
+Change-Id: I4ef9c3e5792cc3d63774e565b6c2be24f5e8a2a3
+---
+ init/property_service.cpp | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/init/property_service.cpp b/init/property_service.cpp
+index 7575c98fd..3e367fa60 100644
+--- a/init/property_service.cpp
++++ b/init/property_service.cpp
+@@ -1397,6 +1397,27 @@ static void ProcessKernelCmdline() {
+             InitPropertySet(key, value);
+         }
+     });
++    // A17: in a container /proc/cmdline is the HOST kernel's — it carries no androidboot.*.
++    // The boot args (androidboot.hardware, remora_width/height/dpi, remora_gpu_mode, ...) are
++    // passed on init's OWN argv by `docker run ... /init qemu=1 androidboot.hardware=remora ...`
++    // (first_stage forwards them to second_stage). ImportKernelCmdline never sees them, so parse
++    // /proc/self/cmdline directly here — otherwise ro.boot.* stays empty (ro.hardware=unknown, the
++    // display falls back to 720x1280, etc.).
++    std::string self_cmdline;
++    if (ReadFileToString("/proc/self/cmdline", &self_cmdline)) {
++        for (size_t start = 0; start < self_cmdline.size();) {
++            size_t end = self_cmdline.find('\0', start);
++            if (end == std::string::npos) end = self_cmdline.size();
++            const std::string entry = self_cmdline.substr(start, end - start);
++            start = end + 1;
++            const size_t eq = entry.find('=');
++            if (eq == std::string::npos) continue;
++            const std::string key = entry.substr(0, eq);
++            if (StartsWith(key, ANDROIDBOOT_PREFIX)) {
++                InitPropertySet("ro.boot." + key.substr(ANDROIDBOOT_PREFIX.size()), entry.substr(eq + 1));
++            }
++        }
++    }
+ }
+ 
+ 
+-- 
+2.54.0
+

@@ -1,0 +1,155 @@
+From 3553809cdf490992fd7564f4ab52c1c73f2d7872 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 31 Jul 2026 22:01:31 -0400
+Subject: [PATCH 07/16] venus: capture the imported dma_buf fd per resource
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Display frames now carry the fd an encoder consumes: res_id=15 -> fd=59,
+res_id=16 -> fd=61, res_id=10 -> fd=45, each res_id stably mapped, 93 display
+frames with valid fds over one session. Combined with the extent from the
+previous commit, a frame now reports res_id + WxH + fd — everything needed to
+encode it.
+
+Taken at the import because that is where the fd exists: the virgl resource
+table holds it, but reaching in from outside a context is awkward, and
+local_import_info.fd is consumed by the driver import immediately after. dup,
+never steal — disturbing that fd would break the allocation itself, which was
+the second suspect when the combined attempt regressed.
+
+Ownership passes into the tracker, including when tracking is disabled (it
+closes rather than leaks). One fd per resource; a repeat import closes the
+newcomer rather than churning the stored one.
+
+Landed alone and verified, like the extent change before it.
+---
+ src/venus/vkr_device_memory.c | 10 +++++++++-
+ src/venus/vkr_remora_track.c  | 34 ++++++++++++++++++++++++++++++----
+ src/venus/vkr_remora_track.h  |  8 +++++++-
+ 3 files changed, 46 insertions(+), 6 deletions(-)
+
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index af6b585a..56a078af 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -260,6 +260,7 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    /* bd remora-e5x.6: the virgl resource backing this allocation, if it is an
+     * import. Captured where it is resolved, recorded once the handle exists. */
+    uint32_t remora_res_id = 0;
++   int remora_fd = -1;
+    if (unlikely(mem_type_index >= physical_dev->memory_properties.memoryTypeCount)) {
+       args->ret = VK_ERROR_UNKNOWN;
+       return;
+@@ -281,6 +282,10 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+        * res_id is the identity the host already holds an fd for, so an encoder
+        * can find the buffer without matching on geometry. */
+       remora_res_id = res_info->resourceId;
++      /* dup, do not steal: local_import_info.fd is consumed by the driver
++       * import below, and disturbing it would break the allocation itself. */
++      if (local_import_info.fd >= 0)
++         remora_fd = fcntl(local_import_info.fd, F_DUPFD_CLOEXEC, 0);
+ 
+       prev_of_res_info->pNext = (const struct VkBaseInStructure *)&local_import_info;
+    }
+@@ -436,7 +441,10 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    /* Recorded here, not at the import: the VkDeviceMemory handle does not exist
+     * until the object is created, and it is the key the rest of the chain uses. */
+    if (remora_res_id)
+-      vkr_remora_note_memory_resource(mem->base.handle.device_memory, remora_res_id);
++      vkr_remora_note_memory_resource(mem->base.handle.device_memory, remora_res_id,
++                                      remora_fd);
++   else if (remora_fd >= 0)
++      close(remora_fd);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+index 05d68713..bad10341 100644
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -34,6 +34,7 @@ static struct handle_map map_view_img;   /* VkImageView    -> VkImage */
+ static struct handle_map map_cmd_view;   /* VkCommandBuffer -> VkImageView */
+ static struct handle_map map_fb_view;    /* VkFramebuffer  -> VkImageView (attach 0) */
+ static struct handle_map map_img_wh;     /* VkImage        -> (w<<32)|h */
++static struct handle_map map_res_fd;     /* res_id         -> dup'd dma_buf fd */
+ static uint32_t last_frame_res_id;
+ /* Per-link counters: with a five-link chain, "no frames" is uninformative —
+  * these say WHICH link is missing. */
+@@ -121,16 +122,40 @@ map_get(const struct handle_map *m, uint64_t key)
+ #define H(x) ((uint64_t)(uintptr_t)(x))
+ 
+ void
+-vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id)
++vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id, int dup_fd)
+ {
+-   if (!vkr_remora_enabled())
++   if (!vkr_remora_enabled()) {
++      /* Ownership passed to us even when disabled — do not leak it. */
++      if (dup_fd >= 0)
++         close(dup_fd);
+       return;
++   }
+    call_once(&track_once, track_init);
+    mtx_lock(&track_mutex);
+    n_mem++;
+    FIRST(memory_resource);
+    map_put(&map_mem_res, H(memory), res_id);
++   if (dup_fd >= 0) {
++      /* One fd per resource: a repeat import closes the newcomer rather than
++       * leaking it or churning the stored one. */
++      if (map_get(&map_res_fd, res_id))
++         close(dup_fd);
++      else
++         map_put(&map_res_fd, res_id, (uint64_t)dup_fd);
++   }
++   mtx_unlock(&track_mutex);
++}
++
++int
++vkr_remora_res_fd(uint32_t res_id)
++{
++   if (!vkr_remora_enabled())
++      return -1;
++   call_once(&track_once, track_init);
++   mtx_lock(&track_mutex);
++   const uint64_t fd = map_get(&map_res_fd, res_id);
+    mtx_unlock(&track_mutex);
++   return fd ? (int)fd : -1;
+ }
+ 
+ void
+@@ -269,8 +294,9 @@ vkr_remora_note_submit(const VkCommandBuffer *cmds, uint32_t count)
+           * target rotating through the display's buffer pool. */
+          {
+             const uint64_t wh = map_get(&map_img_wh, image);
+-            fprintf(stderr, "[remora-frame] res_id=%u %ux%u\n", (uint32_t)res_id,
+-                    (uint32_t)(wh >> 32), (uint32_t)wh);
++            fprintf(stderr, "[remora-frame] res_id=%u %ux%u fd=%d\n", (uint32_t)res_id,
++                    (uint32_t)(wh >> 32), (uint32_t)wh,
++                    (int)map_get(&map_res_fd, res_id));
+          }
+       }
+       last_frame_res_id = (uint32_t)res_id;
+diff --git a/src/venus/vkr_remora_track.h b/src/venus/vkr_remora_track.h
+index 04cf55b7..f786168d 100644
+--- a/src/venus/vkr_remora_track.h
++++ b/src/venus/vkr_remora_track.h
+@@ -43,7 +43,13 @@ bool vkr_remora_enabled(void);
+  * looking in vkr_ring.c instead. */
+ void vkr_remora_note_any_cmd(const char *name);
+ 
+-void vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id);
++/* dup_fd is a dup of the imported dma_buf, or -1, and OWNERSHIP PASSES HERE.
++ * The encoder consumes an fd, and taking it at the import saves reaching back
++ * into the virgl resource table from outside a context. */
++void vkr_remora_note_memory_resource(VkDeviceMemory memory, uint32_t res_id, int dup_fd);
++
++/* dma_buf fd for a resource, or -1. NOT owned by the caller — dup to keep. */
++int vkr_remora_res_fd(uint32_t res_id);
+ void vkr_remora_note_image_memory(VkImage image, VkDeviceMemory memory);
+ 
+ /* Extent, so the display can be labelled: several targets composite and the
+-- 
+2.54.0
+

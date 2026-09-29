@@ -1,0 +1,49 @@
+From bf08ce03c86c554104d9906968532783fc3b51e3 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 24 Jul 2026 19:47:14 -0400
+Subject: [PATCH] A17: mark the mirror displays secure so DRM/HDCP layers
+ composite
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The mirror is a non-secure virtual display, so SurfaceFlinger blanks protected
+(Widevine/HDCP) layers to SolidColor black on it — PlutoTV/Netflix &c. play
+fine on the secure primary display but show black in the mirror. The in-image
+agent runs as shell and cannot request VIRTUAL_DISPLAY_FLAG_SECURE, so upgrade
+its two displays — "remora-mirror" and "remora-display" — to secure in
+createVirtualDisplay. The container has no real external output to protect.
+Fixes bd remora-wes. (First written for the scrcpy server's "scrcpy" display;
+retargeted when the agent replaced it, after which it had matched nothing.)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Change-Id: I1317186ce17e8017d082f4f2d3aa95404deb2fe6
+---
+ services/surfaceflinger/SurfaceFlinger.cpp | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 28331b3d61..02d206f0f8 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -642,6 +642,17 @@ sp<IBinder> SurfaceFlinger::createVirtualDisplay(
+         return nullptr;
+     }
+ 
++    // Remora: the agent's mirror and new-display surfaces are the container's only display path,
++    // and there is no real external output to protect, so they must capture protected
++    // (Widevine/HDCP) layers — otherwise DRM video composites as SolidColor black in the mirror
++    // while playing on the secure primary display. The agent runs as shell, which cannot request
++    // VIRTUAL_DISPLAY_FLAG_SECURE (DisplayManagerService rejects it), so upgrade those two here.
++    if (!isSecure && (displayName == "remora-mirror" || displayName == "remora-display")) {
++        ALOGI("remora: marking mirror display %s secure so it can capture protected layers",
++              displayName.c_str());
++        isSecure = true;
++    }
++
+     ALOGD("Creating virtual display: %s", displayName.c_str());
+ 
+     class DisplayToken : public BBinder {
+-- 
+2.54.0
+

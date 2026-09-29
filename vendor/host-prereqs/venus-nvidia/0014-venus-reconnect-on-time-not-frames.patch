@@ -1,0 +1,77 @@
+From 13de0308f925351b9fcf073268dc4ba07316a09a Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sat, 1 Aug 2026 09:31:59 -0400
+Subject: [PATCH 14/16] venus: reconnect to the encoder on time, not on frames
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Publishing retries rode on display frames, which deadlocks with a still screen:
+an encoder that restarts while nothing composes is never reconnected to,
+because the retry that would reconnect only fires when a frame arrives.
+Measured as a mirror that stayed grey from connect until the first swipe — the
+encoder-side keepalive could not help, since it never received material to
+re-send.
+
+A watchdog thread now retries every 500ms while disconnected, and on success
+immediately republishes the last composed display frame, so a restarted encoder
+has a frame within ~500ms regardless of composition.
+---
+ src/venus/vkr_remora_track.c | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/src/venus/vkr_remora_track.c b/src/venus/vkr_remora_track.c
+index 63fe60af..40d34bc3 100644
+--- a/src/venus/vkr_remora_track.c
++++ b/src/venus/vkr_remora_track.c
+@@ -116,10 +116,21 @@ static const char *proc_ctx_name = "?";
+ static mtx_t track_mutex;
+ static once_flag track_once = ONCE_FLAG_INIT;
+ 
++static int reconnect_thread(void *unused);
++
+ static void
+ track_init(void)
+ {
+    mtx_init(&track_mutex, mtx_plain);
++   /* The reconnect watchdog. Publishing retries used to ride on display frames, which deadlocks
++    * with a still screen: an encoder that restarts while nothing composes is never reconnected
++    * to, because the retry that would reconnect only fires when a frame arrives — measured as a
++    * mirror that stays GREY from connect until the first swipe. This thread retries on TIME
++    * instead, and on success immediately republishes the last composed frame, so a restarted
++    * encoder has material within ~500ms of a still screen. */
++   thrd_t t;
++   if (thrd_create(&t, reconnect_thread, NULL) == thrd_success)
++      thrd_detach(t);
+ }
+ 
+ bool
+@@ -414,6 +425,25 @@ fence_thread(void *unused)
+    return 0;
+ }
+ 
++static int
++reconnect_thread(void *unused)
++{
++   (void)unused;
++   for (;;) {
++      struct timespec ts = { .tv_sec = 0, .tv_nsec = 500 * 1000 * 1000 };
++      thrd_sleep(&ts, NULL);
++      mtx_lock(&track_mutex);
++      if (pub_client < 0 && disp_res_id) {
++         pub_retry_tick = 0; /* bypass the per-frame rate gate: this IS the rate limit */
++         publish_connect_locked();
++         if (pub_client >= 0)
++            publish_frame_locked(disp_res_id, disp_fd, disp_w, disp_h);
++      }
++      mtx_unlock(&track_mutex);
++   }
++   return 0;
++}
++
+ /* Caller holds track_mutex. */
+ static void
+ fence_stage_locked(struct vkr_queue *queue, uint32_t res_id, uint32_t w, uint32_t h)
+-- 
+2.54.0
+

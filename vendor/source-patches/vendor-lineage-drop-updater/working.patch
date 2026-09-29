@@ -1,0 +1,29 @@
+diff --git a/config/common.mk b/config/common.mk
+index fc87aa5b..3319e6fd 100644
+--- a/config/common.mk
++++ b/config/common.mk
+@@ -159,11 +159,19 @@ PRODUCT_PACKAGES += \
+ endif
+ 
+ PRODUCT_PACKAGES += \
+-    LineageSettingsProvider \
+-    Updater
+-
+-PRODUCT_COPY_FILES += \
+-    vendor/lineage/prebuilt/common/etc/init/init.lineage-updater.rc:$(TARGET_COPY_OUT_SYSTEM_EXT)/etc/init/init.lineage-updater.rc
++    LineageSettingsProvider
++
++# Updater (+ its init rc) dropped from the container image: there is no A/B slot pair and no OTA
++# payload to stream in a container, and Remora ships its own in-Android updater (the system_updater
++# feature) which is what actually services this image. It also does NOT COMPILE here —
++# BatteryMonitor.kt calls UpdateEngine.setPerformanceMode(), a LineageOS addition to
++# android.os.UpdateEngine carried in their frameworks/base patches; the app suite pins to
++# lineage-23.2 where it exists, while this platform frameworks/base is lineage-24.0, still pristine
++# AOSP with those patches not forward-ported (bd remora-cbd.1).
++# REMOVED HERE, at the only line that adds it, because PRODUCT_PACKAGES_REMOVE DOES NOT EXIST in
++# this build system — it appears nowhere in build/ or vendor/lineage/, so a removal block in a
++# device tree's lineage.mk is silently inert (bd remora-cbd.1). The rc is dropped too: it would
++# otherwise install an init service for a package that is no longer built.
+ 
+ # Config
+ PRODUCT_PACKAGES += \

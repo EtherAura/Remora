@@ -1,0 +1,15 @@
+# SELinux policy for the VAAPI Codec2 HAL (hardware/remora/c2-va — Remora's own source).
+#
+# The VAAPI service runs in the standard hal_codec2_server domain. To decode/encode on a
+# host GPU via libva, it must open the DRM render node (labeled gpu_device by our
+# file_contexts) and allocate DMA-buf backed output surfaces shared with the C2 graphic
+# block pool.
+
+# libva opens the DRM render node with vaGetDisplayDRM() and issues DRM ioctls.
+allow hal_codec2_server gpu_device:chr_file { read write open ioctl };
+
+# The codec2 output buffer pool and VAAPI surface export (vaExportSurfaceHandle
+# DRM_PRIME) allocate DMA-buf memory from the system dma-buf heap. Legacy ion is
+# included for parity with platforms that still route allocations through it.
+allow hal_codec2_server dmabuf_system_heap_device:chr_file { read write open ioctl };
+allow hal_codec2_server ion_device:chr_file { read write open ioctl };

@@ -1,0 +1,426 @@
+From: Remora <noreply@localhost>
+Date: Thu, 7 Aug 2026 10:55:00 -0400
+Subject: [PATCH 26/26] vtest: allocate R8 blobs via GBM, and admit 64K-aligned YCbCr imports
+
+bd remora-e5x.35, the residual of e5x.34's route-around. Two independent
+defect legs, separated by standalone measurement (tools/gbmchain.c, with
+tools/nv12chain.c mode 5 as the control):
+
+1. The ALLOCATION BACKEND. NVIDIA cannot correctly re-import a dma_buf
+   backed by its own Vulkan host-visible sysmem export (kernel
+   intermapRegisterDmaMapping failures; single-plane re-imports walk pages
+   in REVERSE). The same bytes allocated through GBM on nvidia-drm --
+   the allocator every Wayland compositor exercises daily -- re-import
+   byte-perfectly. The GBM dmabuf still mmap()s (the guest is a container
+   and maps the fd directly), gbm_bo_map works, stride comes out
+   256-aligned, and the fd is the allocation's sole owner once the bo is
+   destroyed.
+
+2. PLANE-OFFSET ALIGNMENT. The driver maps dedicated YCbCr imports at
+   64 KiB granularity (import reqs.alignment=65536; the kernel names the
+   failure 'MMU: given non-contig 4KB pages for 64kB mapping'). An NV12
+   import whose chroma plane starts at the guest's tight offset (480000)
+   reads plane 1 as ALL ZEROS even on a GBM allocation -- the green
+   preview exactly -- while the same buffer with chroma at 524288 reads
+   both planes perfectly. NVIDIA's own native GBM NV12 layout puts chroma
+   at 655360: 64 KiB-aligned, confirming the rule. The control shows
+   alignment alone does NOT rescue a sysmem export, so both legs are
+   necessary.
+
+The GBM route covers ONLY the R8 spoofed blobs (the gralloc CPU-format
+class: camera NV12, sw-decode YUV, c2 bitstream blocks), whose consumers
+are the guest CPU and NVIDIA itself. Real-fourcc linear buffers -- the
+decoder's RGBX output pool, the encoder's direct-RGB input -- keep the
+Vulkan sysmem export: they are imported by the INTEL iGPU's VA driver,
+and iHD refuses DRM_PRIME_2 import of an nvidia-GBM dmabuf outright
+('vaCreateSurfaces failed: resource allocation failed', measured live as
+a dead hw codec session on the first frame), while it imports the Vulkan
+sysmem export fine, and SF's single-plane sampling of that class is the
+one sysmem re-import that behaves. The e5x.34 128 KiB fd-size padding
+carries over to the GBM path; libgbm is dlopened (VTEST_ALLOC_GBM=0 /
+VTEST_ALLOC_GBM_NODE=... overrides) and any failure falls back -- loudly,
+once -- to the old path.
+
+The e5x.34 refusal policy migrates accordingly: vkr_image now records
+whether a YCbCr create's explicit plane offsets are all 64 KiB-aligned,
+and the import site admits ALIGNED dedicated YCbCr imports for every
+context -- with the guest gralloc aligning its YUV plane offsets
+(external-minigbm-gbm-mesa patch 0007), those read correctly, so apps get
+the fast GPU path with correct color. Tight or implicit layouts keep the
+refusal and their color-correct CPU fallback; SurfaceFlinger keeps its
+never-refuse exemption (a refusal there is a dead compositor, measured).
+
+--- a/vtest/vtest_gpu_alloc.c
++++ b/vtest/vtest_gpu_alloc.c
+@@ -15,6 +15,7 @@
+ #include <sys/ioctl.h>
+ #include <sys/mman.h>
+ #include <unistd.h>
++#include <xf86drm.h>
+ 
+ #define VK_NO_PROTOTYPES
+ #include <vulkan/vulkan.h>
+@@ -652,6 +653,189 @@
+                                 out_modifier, out_size, out_fd);
+ }
+ 
++/* --- GBM-backed linear allocation (bd remora-e5x.35) ----------------------
++ *
++ * NVIDIA cannot correctly re-import a dma_buf backed by its own Vulkan
++ * host-visible SYSMEM export: the kernel fails to register the second DMA
++ * mapping (intermapRegisterDmaMapping / gpu_vaspace.c asserts) and the import
++ * reads garbage — plane 1 as zeros (the green preview), single-plane
++ * re-imports walking pages in REVERSE.  A GBM allocation on nvidia-drm is the
++ * same memory class (sysmem, CPU-mappable) through the allocator compositors
++ * exercise daily, and its re-imports are byte-perfect — measured standalone in
++ * tools/gbmchain.c, which also proves the dmabuf mmap()s (the guest is a
++ * container and maps the fd directly) and that the fd is the allocation's
++ * sole owner once the bo is destroyed.
++ *
++ * libgbm is dlopened like Vulkan above so hosts without it keep the old path;
++ * the declarations here are the handful of entry points we use, spelled out
++ * so the build does not grow a gbm.h dependency. */
++struct gbm_device;
++struct gbm_bo;
++#define REMORA_GBM_BO_USE_LINEAR (1u << 4)
++
++struct alloc_gbm {
++   void *lib;
++   int drm_fd;
++   struct gbm_device *dev;
++   struct gbm_device *(*create_device)(int fd);
++   struct gbm_bo *(*bo_create)(struct gbm_device *dev, uint32_t width,
++                               uint32_t height, uint32_t format, uint32_t flags);
++   void (*bo_destroy)(struct gbm_bo *bo);
++   uint32_t (*bo_get_stride)(struct gbm_bo *bo);
++   uint64_t (*bo_get_modifier)(struct gbm_bo *bo);
++   int (*bo_get_fd)(struct gbm_bo *bo);
++};
++
++static struct alloc_gbm alloc_gbm = { .drm_fd = -1 };
++static bool alloc_gbm_failed;
++
++/* under alloc_vk_mutex, like everything else in this file */
++static int
++alloc_gbm_init_locked(void)
++{
++   struct alloc_gbm *g = &alloc_gbm;
++
++   if (g->dev)
++      return 0;
++   if (alloc_gbm_failed)
++      return -ENODEV;
++   alloc_gbm_failed = true; /* cleared on success */
++
++   const char *env = getenv("VTEST_ALLOC_GBM");
++   if (env && *env == '0')
++      return -ENODEV;
++
++   g->lib = dlopen("libgbm.so.1", RTLD_NOW | RTLD_LOCAL);
++   if (!g->lib)
++      g->lib = dlopen("libgbm.so", RTLD_NOW | RTLD_LOCAL);
++   if (!g->lib)
++      return -ENODEV;
++#define GET_GBM(field, sym)                                                    \
++   do {                                                                        \
++      *(void **)&g->field = dlsym(g->lib, sym);                                \
++      if (!g->field)                                                           \
++         return -ENODEV;                                                       \
++   } while (0)
++   GET_GBM(create_device, "gbm_create_device");
++   GET_GBM(bo_create, "gbm_bo_create");
++   GET_GBM(bo_destroy, "gbm_bo_destroy");
++   GET_GBM(bo_get_stride, "gbm_bo_get_stride");
++   GET_GBM(bo_get_modifier, "gbm_bo_get_modifier");
++   GET_GBM(bo_get_fd, "gbm_bo_get_fd");
++#undef GET_GBM
++
++   /* the node must be the NVIDIA one — this box also has an iGPU whose mesa
++    * GBM would allocate buffers the NVIDIA driver cannot import at all */
++   const char *want_node = getenv("VTEST_ALLOC_GBM_NODE");
++   if (want_node) {
++      g->drm_fd = open(want_node, O_RDWR | O_CLOEXEC);
++   } else {
++      for (int i = 128; i < 136 && g->drm_fd < 0; i++) {
++         char node[32];
++         snprintf(node, sizeof(node), "/dev/dri/renderD%d", i);
++         int fd = open(node, O_RDWR | O_CLOEXEC);
++         if (fd < 0)
++            continue;
++         drmVersionPtr v = drmGetVersion(fd);
++         if (v && !strcmp(v->name, "nvidia-drm"))
++            g->drm_fd = fd;
++         else
++            close(fd);
++         if (v)
++            drmFreeVersion(v);
++      }
++   }
++   if (g->drm_fd < 0)
++      return -ENODEV;
++
++   g->dev = g->create_device(g->drm_fd);
++   if (!g->dev) {
++      close(g->drm_fd);
++      g->drm_fd = -1;
++      return -ENODEV;
++   }
++
++   fprintf(stderr, "vtest_gpu_alloc: linear allocations via GBM on nvidia-drm\n");
++   alloc_gbm_failed = false;
++   return 0;
++}
++
++static int
++vtest_gpu_alloc_gbm_linear(uint32_t width, uint32_t height, uint32_t drm_format,
++                           uint32_t *out_stride, uint64_t *out_modifier,
++                           uint64_t *out_size, int *out_fd)
++{
++   pthread_mutex_lock(&alloc_vk_mutex);
++
++   struct alloc_gbm *g = &alloc_gbm;
++   int ret = alloc_gbm_init_locked();
++   if (ret) {
++      pthread_mutex_unlock(&alloc_vk_mutex);
++      return ret;
++   }
++   ret = -EINVAL;
++
++   /* GBM formats ARE the DRM fourccs, so drm_format passes straight through;
++    * a format the backend refuses falls back to the Vulkan path per-call.
++    *
++    * The height-padding loop is the e5x.34 contract carried over: an
++    * importer's DEDICATED image is sized to a 128 KiB multiple where the
++    * allocation itself is sized tightly, NVIDIA requires dedicated-import
++    * size to equal the dmabuf size exactly, and the fd's length is fixed
++    * here.  The guest keeps seeing the real height and stride; the padded
++    * rows only make the exported fd long enough.  lseek is the truth about
++    * what the allocator actually exported, so the loop checks that. */
++   const uint64_t kImportAlign = 128 * 1024;
++   uint32_t padded_height = height;
++   uint32_t stride = 0;
++   int fd = -1;
++   for (int guard = 0; guard < 8; guard++) {
++      struct gbm_bo *bo =
++         g->bo_create(g->dev, width, padded_height, drm_format, REMORA_GBM_BO_USE_LINEAR);
++      if (!bo)
++         goto out;
++      stride = g->bo_get_stride(bo);
++      const uint64_t modifier = g->bo_get_modifier(bo);
++      fd = g->bo_get_fd(bo);
++      /* the fd owns the allocation from here (gbmchain-verified); the bo
++       * handle is transient, same as the VkImage in the path below */
++      g->bo_destroy(bo);
++      if (fd < 0 || !stride)
++         goto out;
++      if (modifier != 0) {
++         /* not linear after all — the whole point of this class is a layout
++          * the guest can mmap and address arithmetically */
++         goto out;
++      }
++      const off_t fd_size = lseek(fd, 0, SEEK_END);
++      if (fd_size <= 0)
++         goto out;
++      if ((uint64_t)fd_size % kImportAlign == 0) {
++         vkr_log_alloc_geometry(width, height, drm_format, stride,
++                                (uint64_t)fd_size, 0);
++         *out_stride = stride;
++         *out_modifier = 0;
++         *out_size = (uint64_t)fd_size;
++         *out_fd = fd;
++         registry_record(fd, width, height, drm_format, stride, 0,
++                         (uint64_t)fd_size);
++         ret = 0;
++         pthread_mutex_unlock(&alloc_vk_mutex);
++         return ret;
++      }
++      const uint64_t target = ALLOC_ALIGN((uint64_t)fd_size, kImportAlign);
++      padded_height += (uint32_t)((target - (uint64_t)fd_size + stride - 1) / stride);
++      close(fd);
++      fd = -1;
++   }
++
++out:
++   if (fd >= 0)
++      close(fd);
++   pthread_mutex_unlock(&alloc_vk_mutex);
++   return ret;
++}
++
+ /* NOTE: before this, vtest_gpu_alloc_image() had exactly one caller and it passed
+  * linear=false, so the entire linear branch was dead code the compiler stripped. */
+ int
+@@ -659,6 +843,40 @@
+                            uint32_t *out_stride, uint64_t *out_modifier,
+                            uint64_t *out_size, int *out_fd)
+ {
++   /* R8 blobs go to GBM — everything else keeps the Vulkan sysmem export.
++    *
++    * The linear class serves two disjoint consumer sets, measured live (bd
++    * remora-e5x.35):
++    *  - R8 spoofed blobs are the guest gralloc's CPU-format buffers (NV12
++    *    camera frames, YV12 sw-decode, c2 bitstream blocks).  Their consumers
++    *    are the guest CPU (mmap) and the NVIDIA GPU itself — and NVIDIA's
++    *    re-import of its own Vulkan sysmem export is corrupt (reverse page
++    *    walks, YCbCr plane 1 zeros; tools/gbmchain.c), where a GBM
++    *    allocation re-imports byte-perfectly.
++    *  - Real-fourcc linear buffers (the decoder's RGBX output pool, the
++    *    encoder's direct-RGB input) are imported by the INTEL iGPU's VA
++    *    driver, and iHD refuses DRM_PRIME_2 import of an nvidia-GBM dmabuf
++    *    outright ('vaCreateSurfaces failed: resource allocation failed',
++    *    which kills every hw codec session) while it imports the Vulkan
++    *    sysmem export fine.  SF's own single-plane sampling of those is the
++    *    one sysmem re-import that behaves, so that class stays put. */
++   if (drm_format == ALLOC_DRM_FORMAT_R8) {
++      int ret = vtest_gpu_alloc_gbm_linear(width, height, drm_format, out_stride,
++                                           out_modifier, out_size, out_fd);
++      if (!ret)
++         return 0;
++      /* Loudly ONCE: on a fallen-back allocation every dedicated YCbCr import
++       * of it will read broken chroma, and that should be diagnosable here. */
++      static bool warned;
++      if (!warned) {
++         warned = true;
++         fprintf(stderr,
++                 "vtest_gpu_alloc: GBM blob allocation unavailable (%d) — falling "
++                 "back to Vulkan sysmem export, whose NVIDIA YCbCr re-imports are "
++                 "corrupt (bd remora-e5x.35)\n",
++                 ret);
++      }
++   }
+    return vtest_gpu_alloc_image(width, height, drm_format, true, out_stride,
+                                 out_modifier, out_size, out_fd);
+ }
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -56,28 +56,38 @@
+       const VkFormat fmt = args->pCreateInfo->format;
+       const bool ycbcr = fmt >= VK_FORMAT_G8B8G8R8_422_UNORM &&
+                          fmt <= VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM;
+-      if (ycbcr)
+-         vkr_remora_remember_ycbcr_image(_img->base.handle.image);
+       if (ycbcr) {
++         /* remora-e5x.35: an EXPLICIT layout whose every plane offset lands on
++          * a 64 KiB boundary is importable on NVIDIA (the driver maps YCbCr
++          * imports at that granularity; gbmchain.c measures tight offsets
++          * reading plane 1 as zeros and aligned ones byte-perfect). Implicit
++          * layouts stay unverifiable, so they keep the refusal. */
++         bool aligned_64k = false;
+          char pl[192];
+          int n = snprintf(pl, sizeof pl, "mod=implicit");
+          for (const VkBaseInStructure *p = args->pCreateInfo->pNext; p; p = p->pNext) {
+             if (p->sType ==
+                 VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT) {
+                const VkImageDrmFormatModifierExplicitCreateInfoEXT *e = (const void *)p;
++               aligned_64k = e->drmFormatModifierPlaneCount > 0;
+                n = snprintf(pl, sizeof pl, "mod=0x%llx",
+                             (unsigned long long)e->drmFormatModifier);
+                for (uint32_t i = 0;
+-                    i < e->drmFormatModifierPlaneCount && n > 0 && n < (int)sizeof pl; i++)
++                    i < e->drmFormatModifierPlaneCount && n > 0 && n < (int)sizeof pl; i++) {
++                  if (e->pPlaneLayouts[i].offset % (64 * 1024))
++                     aligned_64k = false;
+                   n += snprintf(pl + n, sizeof pl - n, " p%u[off=%llu pitch=%llu]", i,
+                                 (unsigned long long)e->pPlaneLayouts[i].offset,
+                                 (unsigned long long)e->pPlaneLayouts[i].rowPitch);
++               }
+                break;
+             }
+          }
+-         vkr_log("YCbCr image created: format=%d extent=%ux%u tiling=%d %s", fmt,
++         vkr_remora_remember_ycbcr_image(_img->base.handle.image, aligned_64k);
++         vkr_log("YCbCr image created: format=%d extent=%ux%u tiling=%d %s%s", fmt,
+                  args->pCreateInfo->extent.width, args->pCreateInfo->extent.height,
+-                 args->pCreateInfo->tiling, pl);
++                 args->pCreateInfo->tiling, pl,
++                 aligned_64k ? " (64K-aligned, importable)" : "");
+       }
+    }
+    if (!_img && args->pCreateInfo) {
+@@ -425,14 +435,25 @@
+  * zeros, single-plane re-imports walk pages in REVERSE), so letting the
+  * import "succeed" ships a green preview while a clean refusal sends the
+  * consumer down its CPU fallback, which renders correct color. A small ring
+- * is plenty: a session holds a handful of camera/video sampler images. */
+-static VkImage remora_ycbcr_ring[64];
++ * is plenty: a session holds a handful of camera/video sampler images.
++ *
++ * remora-e5x.35 adds the aligned flag: NVIDIA maps YCbCr imports at 64 KiB
++ * granularity, and a GBM-backed allocation whose EXPLICIT plane offsets all
++ * land on 64 KiB boundaries imports byte-perfectly (tools/gbmchain.c). Such
++ * images are safe to import for every context; only tight-offset (or
++ * implicit-layout) ones keep the refusal and their CPU fallback. */
++static struct {
++   VkImage img;
++   bool aligned_64k;
++} remora_ycbcr_ring[64];
+ static unsigned remora_ycbcr_next;
+ 
+ void
+-vkr_remora_remember_ycbcr_image(VkImage img)
++vkr_remora_remember_ycbcr_image(VkImage img, bool aligned_64k)
+ {
+-   remora_ycbcr_ring[remora_ycbcr_next++ % 64] = img;
++   const unsigned slot = remora_ycbcr_next++ % 64;
++   remora_ycbcr_ring[slot].img = img;
++   remora_ycbcr_ring[slot].aligned_64k = aligned_64k;
+ }
+ 
+ bool
+@@ -441,7 +462,18 @@
+    if (img == VK_NULL_HANDLE)
+       return false;
+    for (unsigned i = 0; i < 64; i++)
+-      if (remora_ycbcr_ring[i] == img)
++      if (remora_ycbcr_ring[i].img == img)
+          return true;
+    return false;
+ }
++
++bool
++vkr_remora_image_ycbcr_aligned(VkImage img)
++{
++   if (img == VK_NULL_HANDLE)
++      return false;
++   for (unsigned i = 0; i < 64; i++)
++      if (remora_ycbcr_ring[i].img == img)
++         return remora_ycbcr_ring[i].aligned_64k;
++   return false;
++}
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -45,5 +45,6 @@
+ #endif /* VKR_IMAGE_H */
+ 
+ /* remora-e5x.34: YCbCr host-image registry — see vkr_image.c */
+-void vkr_remora_remember_ycbcr_image(VkImage img);
++void vkr_remora_remember_ycbcr_image(VkImage img, bool aligned_64k);
+ bool vkr_remora_image_is_ycbcr(VkImage img);
++bool vkr_remora_image_ycbcr_aligned(VkImage img);
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -368,8 +368,22 @@
+        * their own context). Context names come from the guest; SF's is
+        * literally "surfaceflinger". */
+       const bool sf_ctx = ctx->debug_name && strstr(ctx->debug_name, "surfaceflinger");
+-      if (!sf_ctx && early_img &&
+-          vkr_remora_image_is_ycbcr(early_img->base.handle.image)) {
++      /* remora-e5x.35: the refusal RELAXES for images whose explicit plane
++       * offsets are all 64 KiB-aligned. With the allocator on GBM-on-nvidia-drm
++       * (vtest_gpu_alloc_gbm_linear) and the guest gralloc aligning YUV plane
++       * offsets, such imports read every byte correctly (tools/gbmchain.c) —
++       * so every context gets the fast GPU path and correct color. Tight or
++       * implicit layouts keep the refusal and their color-correct CPU
++       * fallback: those are the pre-migration buffers this policy exists for. */
++      const bool ycbcr_img =
++         early_img && vkr_remora_image_is_ycbcr(early_img->base.handle.image);
++      const bool ycbcr_ok =
++         ycbcr_img && vkr_remora_image_ycbcr_aligned(early_img->base.handle.image);
++      if (ycbcr_ok)
++         vkr_log("allowing dedicated YCbCr import of res %u (ctx '%s') — plane "
++                 "offsets 64K-aligned, NVIDIA imports these correctly",
++                 res_info->resourceId, ctx->debug_name ? ctx->debug_name : "?");
++      if (!sf_ctx && ycbcr_img && !ycbcr_ok) {
+          vkr_log("refusing dedicated YCbCr import of res %u (ctx '%s') — NVIDIA "
+                  "sysmem re-import corrupts the mapping; consumer falls back to "
+                  "its CPU path, which renders correct color",

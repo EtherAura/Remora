@@ -1,0 +1,35 @@
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index dff2722..f062613 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -674,6 +674,30 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 		alloc_args.height = 1;
+ 		alloc_args.force_linear = true;
+ 
++		/*
++		 * AND IT IS NOT SCANOUT, whatever the use flags say (bd remora-4ei.9).
++		 * A spoofed buffer is a BYTE ARRAY that happens to be described as a
++		 * texture; nothing ever scans it out. The camera block above sets
++		 * scanout_strong for every CAMERA_READ|CAMERA_WRITE bo — an RPi4 CSI
++		 * alignment workaround inherited from upstream, applied "globally for
++		 * now" — and strong is what suppresses the non-scanout retry below. So
++		 * a still-capture JPEG, which is HAL_PIXEL_FORMAT_BLOB and therefore
++		 * lands here with CAMERA_WRITE set, asked the external allocator for a
++		 * 1024xN SCANOUT texture, got refused, and had no second chance:
++		 *   [minigbm:gbm_mesa_bo_create] Failed to allocate buffer
++		 *   BufferQueueProducer [ImageReader-800x600f21m4] createGraphicBuffer failed
++		 *   ExtCamDevSsn: threadLoop: requestStreamBuffers call failed!
++		 * -> ImageCaptureException "Capture request failed with reason 0".
++		 * Preview survived because those buffers are real 2D images the host
++		 * can hand back as scanout; only the BLOB shape could not be.
++		 *
++		 * Clearing strong alone would have been enough (the retry would catch
++		 * it), but asking for scanout on a byte array is wrong on its face and
++		 * the retry costs a failed round trip to the allocator.
++		 */
++		alloc_args.use_scanout = false;
++		scanout_strong = false;
++
+ 		drv_logv("Unable to allocate 0x%08x format, allocate as 1D buffer", format);
+ 	}
+ 

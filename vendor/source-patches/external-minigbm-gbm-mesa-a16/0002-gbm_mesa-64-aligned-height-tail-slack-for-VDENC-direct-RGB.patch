@@ -1,0 +1,89 @@
+From 54acf2d6b395371e9a9fd45942b80dcad43baaa4 Mon Sep 17 00:00:00 2001
+From: R <r@l>
+Date: Sun, 30 Aug 2026 17:37:57 -0400
+Subject: [PATCH] 
+ 0002-gbm_mesa-64-aligned-height-tail-slack-for-VDENC-direct-RGB.patch
+
+Change-Id: Ia391a671987762d3afca42cd5662a70255440b09
+---
+ gbm_mesa_driver/gbm_mesa_internals.cpp | 50 ++++++++++++++++++++++++++
+ 1 file changed, 50 insertions(+)
+
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index 07104a7..aa8e8e1 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -105,6 +105,20 @@ int gbm_mesa_driver_init(struct driver *drv)
+ 				   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE);
+ 	drv_modify_combination(drv, DRM_FORMAT_NV21, &linear_metadata, BO_USE_HW_VIDEO_ENCODER);
+ 
++	/*
++	 * Linear 32bpp RGB as a VDENC encode source (the c2-va direct-RGB
++	 * path: the encoder imports the composited RGB buffer straight into
++	 * libva and EncSliceLP does the CSC). Without these combos the encoder
++	 * usage request fails drv_get_combination and cros_gralloc silently
++	 * strips BO_USE_HW_VIDEO_ENCODER on retry, so the CTB-64 height
++	 * alignment below would never be reached and every frame would take the
++	 * VPP copy path instead. Ported from the xe backend (bd remora-ftt).
++	 */
++	drv_modify_combination(drv, DRM_FORMAT_ABGR8888, &linear_metadata, BO_USE_HW_VIDEO_ENCODER);
++	drv_modify_combination(drv, DRM_FORMAT_XBGR8888, &linear_metadata, BO_USE_HW_VIDEO_ENCODER);
++	drv_modify_combination(drv, DRM_FORMAT_ARGB8888, &linear_metadata, BO_USE_HW_VIDEO_ENCODER);
++	drv_modify_combination(drv, DRM_FORMAT_XRGB8888, &linear_metadata, BO_USE_HW_VIDEO_ENCODER);
++
+ 	/*
+ 	 * R8 format is used for Android's HAL_PIXEL_FORMAT_BLOB and is used for JPEG snapshots
+ 	 * from camera and input/output from hardware decoder/encoder.
+@@ -309,6 +323,20 @@ static void gbm_mesa_inode_to_handle(struct bo *bo)
+ 	}
+ }
+ 
++/* The 32bpp single-plane RGB formats eligible for the c2-va direct-RGB VDENC
++ * encode source (imported into libva as a DRM_PRIME external buffer). */
++static bool gbm_mesa_format_is_rgb32(uint32_t format)
++{
++	switch (format) {
++	case DRM_FORMAT_ARGB8888:
++	case DRM_FORMAT_XRGB8888:
++	case DRM_FORMAT_ABGR8888:
++	case DRM_FORMAT_XBGR8888:
++		return true;
++	}
++	return false;
++}
++
+ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
+ 		       uint64_t use_flags)
+ {
+@@ -347,6 +375,28 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 		size_align = 4096;
+ 	}
+ 
++	/*
++	 * VDENC (HEVC low-power) reads a directly-imported RGB encode source in
++	 * full 64x64 CTBs, so the buffer must cover a 64-row-aligned height or
++	 * c2-va rejects it ("Direct-RGB input BO too small for the VDENC read
++	 * footprint") and copies every frame through VPP instead. Same contract
++	 * the xe backend implements for the stock gralloc (bd remora-ftt).
++	 *
++	 * Unlike xe, the size is not ours to inflate after the fact: the buffer is
++	 * allocated by the wrapper from alloc_args, and drv_bo_from_format below
++	 * derives meta.total_size from this same height. Padding total_size alone
++	 * would promise the encoder rows that were never allocated — precisely the
++	 * overrun this contract exists to prevent — so the rows go into the
++	 * REQUEST. drv_bo_from_format does not touch meta.height, so the buffer
++	 * still reports its true visible size.
++	 *
++	 * The extra row past the 64-alignment covers the last-row CTB-width
++	 * overshoot (the walker reads up to ALIGN(w,64)*4 - stride beyond the row,
++	 * always < 256 bytes); a row is the cheapest unit this allocator can add.
++	 */
++	if ((use_flags & BO_USE_HW_VIDEO_ENCODER) && gbm_mesa_format_is_rgb32(format))
++		alloc_args.height = ALIGN(alloc_args.height, 64) + 1;
++
+ 	if (alloc_args.drm_format == 0) {
+ 		/* Always use linear for spoofed format allocations. */
+ 		drv_bo_from_format(bo, alloc_args.width, 1, alloc_args.height, format);
+-- 
+2.54.0
+

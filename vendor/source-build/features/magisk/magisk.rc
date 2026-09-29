@@ -1,0 +1,62 @@
+# MAGISKTMP IS /debug_ramdisk, NOT /sbin — deliberate, bd remora-4ei.94.
+#
+# Magisk does not pick this path; magisk-setup.sh below builds the tmpfs there, and every later
+# line has to agree. (Upstream v30.7 in fact HARDCODES /debug_ramdisk, so the two now agree by
+# construction rather than by convention — one less thing to keep in step.) It used to say /sbin, which meant a /sbin DIRECTORY EXISTED on a device claiming to
+# be a Pixel 8 Pro running Android 17. Android 11 removed /sbin, and the Remora image itself does
+# not ship one (verified by docker export | tar -t: only debug_ramdisk/ is there) — so /sbin was
+# created purely by this line, and its mere existence was a root tell that every DenyList feature
+# in Magisk is structurally unable to hide, because it is a directory rather than a mount.
+#
+# Measured with a root-artifact probe run as a real app uid: inside a denylisted app's
+# namespace Magisk's tmpfs IS correctly unmounted, but /sbin survived as an empty 0750 directory
+# and stat() on it succeeded. With this change /sbin never exists at all, while /debug_ramdisk is a
+# stock AOSP directory present on every real device, so an empty one is exactly what an app expects
+# to find. Verified on a derived image: magisk --path -> /debug_ramdisk, /sbin ABSENT, magiskd up,
+# magisk -V 30.6:MAGISK:R, /debug_ramdisk/su -> ./magisk.
+#
+# THIS DOES NOT MAKE THE DEVICE UNDETECTABLE and should not be sold as such: /data/adb still exists
+# and is stat-able by any app (/data is drwxrwx--x on stock too), and the structural leaks in bd
+# remora-4ei.51 — getenforce=Disabled, no /sys/fs/selinux, x86_64 cpu abi — are untouched.
+#
+# ANY CONSUMER OF THE MAGISK CLI MUST PROBE BOTH PATHS, because images built before this change
+# still put it at /sbin. See Deployers.cpp and features/zygisk_pif/install.sh.
+on post-fs-data
+    start logd
+    # UPSTREAM Magisk (bd remora-28ix.6), which has no --setup-sbin and no --auto-selinux: the
+    # tmpfs environment magiskinit would build from a patched boot image is built by our own
+    # script instead, and everything after it is upstream's ordinary init-hook sequence.
+    exec u:r:su:s0 root root -- /system/bin/sh /system/etc/init/magisk/magisk-setup.sh
+    # THE --live CALL IS GUARDED, and the comment that used to sit here — "SELinux is disabled in
+    # this container, so these are inert today" — was WRONG about this line in a way that cost
+    # something. It is not inert: with no /sys/fs/selinux, magiskpolicy --live fopen()s a policy
+    # that cannot exist and fread()s the NULL, which bionic turns into
+    # `FORTIFY: fread: null FILE*` — a SIGABRT, and a TOMBSTONE, every boot.
+    #
+    # MEASURED on the daily device: 24 of 43 tombstones were this one abort. The
+    # tombstone ring is finite, so a known-benign crash that repeats every boot EVICTS REAL CRASH
+    # EVIDENCE — bd remora-e5x.28.1's fdsan frame-distribution test could not be run at all,
+    # because the tombstones it needed had already been pushed out.
+    #
+    # Guarded rather than deleted, which keeps the original intent intact: the call IS the correct
+    # one the moment this container runs with SELinux enforcing, and the guard is exactly that
+    # condition rather than a version or a feature flag. `|| exit 0` so a skipped call is a clean
+    # exit rather than a non-zero one init would log. /system/bin/sh here matches the setup exec
+    # above and the pm-install exec below.
+    exec u:r:su:s0 root root -- /system/bin/sh -c "[ -e /sys/fs/selinux/policy ] || exit 0; exec /debug_ramdisk/magiskpolicy --live --magisk"
+    exec u:r:su:s0 root root -- /debug_ramdisk/magisk --post-fs-data
+on nonencrypted
+    exec u:r:su:s0 root root -- /debug_ramdisk/magisk --service
+on property:vold.decrypt=trigger_restart_framework
+    exec u:r:su:s0 root root -- /debug_ramdisk/magisk --service
+on property:sys.boot_completed=1
+    mkdir /data/adb/magisk 755
+    exec u:r:su:s0 root root -- /debug_ramdisk/magisk --boot-complete
+    # com.topjohnwu.magisk, not io.github.huskydg.magisk: this is upstream's app now. The two are
+    # signed with different keys, so a /data carrying the Delta app must have it uninstalled first
+    # or this install fails INSTALL_FAILED_UPDATE_INCOMPATIBLE (bd remora-82c.13).
+    exec -- /system/bin/sh -c "if [ ! -e /data/data/com.topjohnwu.magisk ] ; then pm install /system/etc/init/magisk/magisk.apk ; fi"
+on property:init.svc.zygote=restarting
+    exec u:r:su:s0 root root -- /debug_ramdisk/magisk --zygote-restart
+on property:init.svc.zygote=stopped
+    exec u:r:su:s0 root root -- /debug_ramdisk/magisk --zygote-restart

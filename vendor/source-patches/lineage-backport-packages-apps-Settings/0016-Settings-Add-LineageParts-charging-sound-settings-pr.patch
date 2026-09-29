@@ -1,0 +1,30 @@
+From ac2cf53a9105843678a38c27cd5658ba7417ea26 Mon Sep 17 00:00:00 2001
+From: Sam Mortimer <sam@mortimer.me.uk>
+Date: Mon, 7 Nov 2016 23:38:08 -0800
+Subject: [PATCH 16/98] Settings: Add LineageParts charging sound settings
+ preference
+
+Replace the existing AOSP setting with this.
+
+Change-Id: I13894a86bcfad8d1dfaedc2dcbca6ad70f651b5c
+---
+ res/xml/sound_settings.xml | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/res/xml/sound_settings.xml b/res/xml/sound_settings.xml
+index 99479eb996e..3070a7ac6e4 100644
+--- a/res/xml/sound_settings.xml
++++ b/res/xml/sound_settings.xml
+@@ -202,6 +202,12 @@
+             android:title="@string/charging_sounds_title"
+             android:order="-40"/>
+ 
++        <!-- Custom charging sounds -->
++        <lineageos.preference.LineagePartsPreference
++            android:key="charging_sounds_settings"
++            settings:replacesKey="charging_sounds"
++            settings:requiresConfig="@bool/config_show_charging_sounds" />
++
+         <!-- Docking sounds -->
+         <SwitchPreferenceCompat
+             android:key="dock_sounds_enabled"

@@ -1,0 +1,33 @@
+From 34318396b423e4a4b0f3afdd0472c234bf3de71a Mon Sep 17 00:00:00 2001
+From: Michael Bestas <mikeioannina@gmail.com>
+Date: Fri, 1 Aug 2014 18:34:15 +0300
+Subject: [PATCH 17/98] Settings: Fix the failing strings
+
+Having double quotes around the strings causes crowdin
+to export translations with unescaped quotes.
+Removing them has no side effect and fixes crowdin export.
+
+Change-Id: I93865d793eef711f8738e00e843e9d4670724c66
+---
+ res/values/strings.xml | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/res/values/strings.xml b/res/values/strings.xml
+index ea5dbdff62b..3e4982057cb 100644
+--- a/res/values/strings.xml
++++ b/res/values/strings.xml
+@@ -4078,11 +4078,11 @@
+     <!-- Button title to factory data reset the entire device. The "(factory reset)" part is optional for translation. [CHAR LIMIT=30 BACKUP_MESSAGE_ID=3531267871084279512]-->
+     <string name="main_clear_short_title">Erase all data (factory reset)</string>
+     <!-- SD card & phone storage settings screen, list of items in user data storage (USB storage or SD card) that will be erased during this operation [CHAR LIMIT=NONE] -->
+-    <string name="main_clear_desc_also_erases_external">"<li>Music</li>\n<li>Photos</li>\n<li>Other user data</li>"</string>
++    <string name="main_clear_desc_also_erases_external"><li>Music</li>\n<li>Photos</li>\n<li>Other user data</li></string>
+     <!-- SD card & phone storage settings screen, list of items on an eSIM (embedded SIM) that will be erased during this operation [CHAR LIMIT=NONE] -->
+-    <string name="main_clear_desc_also_erases_esim">"<li>eSIMs</li>"</string>
++    <string name="main_clear_desc_also_erases_esim"><li>eSIMs</li></string>
+     <!-- SD card & phone storage settings screen, notification if there are eSIM (embedded SIM) profiles present that the user's mobile service plan will not be canceled [CHAR LIMIT=NONE] -->
+-    <string name="main_clear_desc_no_cancel_mobile_plan">"\n\nThis will not cancel your mobile service plan.</string>
++    <string name="main_clear_desc_no_cancel_mobile_plan">\n\nThis will not cancel your mobile service plan.</string>
+     <!-- SD card & phone storage settings screen, message on screen after user selects Reset phone button [CHAR LIMIT=NONE] -->
+     <string name="main_clear_final_desc">All of your personal information and downloaded apps will be deleted. You can\u2019t undo this action.</string>
+     <!-- SD card & phone storage settings screen, message on screen after user selects Reset phone button [CHAR LIMIT=NONE] -->

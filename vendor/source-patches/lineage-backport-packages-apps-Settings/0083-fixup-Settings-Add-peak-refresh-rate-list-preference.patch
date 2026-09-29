@@ -1,0 +1,27 @@
+From a458b678b78e40c9e6b7d84d8119cf22dd0374dc Mon Sep 17 00:00:00 2001
+From: LuK1337 <priv.luk@gmail.com>
+Date: Mon, 2 Feb 2026 23:07:42 +0100
+Subject: [PATCH 83/98] fixup! Settings: Add peak refresh rate list preference
+
+Use infinity for the highest refresh rate available.
+
+Change-Id: Iba45e2e9a5564f5f49038fff14e019f5e4f69d11
+---
+ .../display/PeakRefreshRateListPreferenceController.java      | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/com/android/settings/display/PeakRefreshRateListPreferenceController.java b/src/com/android/settings/display/PeakRefreshRateListPreferenceController.java
+index e51f5d45110..9acf6c1125f 100644
+--- a/src/com/android/settings/display/PeakRefreshRateListPreferenceController.java
++++ b/src/com/android/settings/display/PeakRefreshRateListPreferenceController.java
+@@ -87,7 +87,9 @@ public class PeakRefreshRateListPreferenceController extends BasePreferenceContr
+                         m.getPhysicalHeight() == mode.getPhysicalHeight()) {
+                     mEntries.add(String.format("%.02fHz", m.getRefreshRate())
+                             .replaceAll("[\\.,]00", ""));
+-                    mValues.add(String.format(Locale.US, "%.02f", m.getRefreshRate()));
++                    mValues.add(mValues.isEmpty()
++                            ? "Infinity"
++                            : String.format(Locale.US, "%.02f", m.getRefreshRate()));
+                 }
+             }
+         }

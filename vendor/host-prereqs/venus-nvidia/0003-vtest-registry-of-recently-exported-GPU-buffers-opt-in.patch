@@ -1,0 +1,207 @@
+From a2e5090edd3c998a7c151b60b44965adcf3dc59c Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Fri, 31 Jul 2026 20:18:54 -0400
+Subject: [PATCH 03/16] vtest: registry of recently exported GPU buffers,
+ opt-in
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A host-side encoder can encode Android's frames without the pixels ever leaving
+the GPU: they are VkImages allocated here and composed into host-side by the
+render server (bd remora-e5x.6). To do that it needs a live handle, and this
+allocator keeps none — VCMD_RESOURCE_ALLOC_GPU carries no resource handle, the
+caller sends the dma_buf fd to the guest and then close()s it, and there is no
+UNREF for this path. Nothing will ever tell us a buffer died.
+
+So keep a DUP OF THE FD rather than the VkImage: the fd is what an encoder
+consumes, it keeps the allocation alive by itself, and it avoids holding Vulkan
+objects whose lifetime we could not bound. Retention is a small ring with
+eviction for the same reason — with no unref, unbounded retention would pin GPU
+memory for the life of the server.
+
+Slot validity is `serial != 0`, not `fd >= 0`: the array is static, so an
+untouched slot has fd == 0, and evicting one would close stdin.
+
+Off unless REMORA_VIDEO_CAPTURE=1, checked once and cached. This is the
+allocation hot path of a working mirror and must cost nothing until asked for.
+---
+ vtest/vtest_gpu_alloc.c | 105 ++++++++++++++++++++++++++++++++++++++++
+ vtest/vtest_gpu_alloc.h |  33 +++++++++++++
+ 2 files changed, 138 insertions(+)
+
+diff --git a/vtest/vtest_gpu_alloc.c b/vtest/vtest_gpu_alloc.c
+index 667eabeb..b8baf21b 100644
+--- a/vtest/vtest_gpu_alloc.c
++++ b/vtest/vtest_gpu_alloc.c
+@@ -6,6 +6,7 @@
+ #include <dlfcn.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#include <inttypes.h>
+ #include <linux/udmabuf.h>
+ #include <pthread.h>
+ #include <stdio.h>
+@@ -59,6 +60,104 @@ static struct alloc_vk alloc_vk;
+ static pthread_mutex_t alloc_vk_mutex = PTHREAD_MUTEX_INITIALIZER;
+ static bool alloc_vk_failed;
+ 
++/* --- exported-buffer registry (bd remora-e5x.6) --------------------------
++ * Rationale and lifetime story are in vtest_gpu_alloc.h. In short: dup the fd
++ * (not the VkImage), keep a bounded ring because this path has no unref, and
++ * stay off unless REMORA_VIDEO_CAPTURE=1.
++ */
++static struct vtest_gpu_buffer_info registry[VTEST_GPU_REGISTRY_MAX];
++static unsigned registry_count;   /* entries in use, <= VTEST_GPU_REGISTRY_MAX */
++static unsigned registry_next;    /* ring write cursor */
++static uint64_t registry_serial;
++static pthread_mutex_t registry_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++static bool
++registry_enabled(void)
++{
++   /* Read once: getenv on every allocation would be needless work on a hot
++    * path, and the answer cannot change within a process. */
++   static int cached = -1;
++   if (cached < 0) {
++      const char *v = getenv("REMORA_VIDEO_CAPTURE");
++      cached = (v && *v == '1') ? 1 : 0;
++   }
++   return cached == 1;
++}
++
++static void
++registry_record(int fd, uint32_t width, uint32_t height, uint32_t drm_format,
++                uint32_t stride, uint64_t modifier, uint64_t size)
++{
++   if (!registry_enabled())
++      return;
++
++   /* dup() BEFORE the caller closes its copy. A failed dup is not worth
++    * failing the allocation over — the guest still gets its buffer, the
++    * encoder just will not see this one. */
++   int keep = fcntl(fd, F_DUPFD_CLOEXEC, 0);
++   if (keep < 0)
++      return;
++
++   pthread_mutex_lock(&registry_mutex);
++
++   struct vtest_gpu_buffer_info *slot = &registry[registry_next];
++   /* Validity is `serial != 0`, NOT `fd >= 0`: this array is static, so an
++    * untouched slot has fd == 0 — which is stdin, and closing it here would be
++    * a memorable bug.
++    * Evicting closes the old fd, which is what actually releases the buffer:
++    * while we hold it, the allocation cannot be freed even after the guest
++    * drops its own reference. */
++   if (slot->serial)
++      close(slot->fd);
++
++   slot->fd = keep;
++   slot->width = width;
++   slot->height = height;
++   slot->drm_format = drm_format;
++   slot->stride = stride;
++   slot->modifier = modifier;
++   slot->size = size;
++   slot->serial = ++registry_serial;
++
++   registry_next = (registry_next + 1) % VTEST_GPU_REGISTRY_MAX;
++   if (registry_count < VTEST_GPU_REGISTRY_MAX)
++      registry_count++;
++
++   const uint64_t serial = slot->serial;
++   pthread_mutex_unlock(&registry_mutex);
++
++   /* Outside the lock: this is how step 2 learns what the display buffer looks
++    * like versus every other allocation. Which entry is the frame is still an
++    * open question (bd remora-e5x.6), and it is meant to be answered from this
++    * output rather than guessed. */
++   fprintf(stderr, "[remora-capture] serial=%" PRIu64 " %ux%u fmt=%.4s "
++                   "stride=%u mod=0x%" PRIx64 " size=%" PRIu64 "\n",
++           serial, width, height, (const char *)&drm_format, stride, modifier,
++           size);
++}
++
++unsigned
++vtest_gpu_registry_snapshot(struct vtest_gpu_buffer_info *out, unsigned max)
++{
++   if (!out || !max)
++      return 0;
++
++   pthread_mutex_lock(&registry_mutex);
++
++   /* Newest first: a consumer looking for the current frame wants the most
++    * recent allocation of a given geometry, and should not have to sort. */
++   unsigned n = 0;
++   for (unsigned i = 0; i < registry_count && n < max; i++) {
++      unsigned idx = (registry_next + VTEST_GPU_REGISTRY_MAX - 1 - i)
++                     % VTEST_GPU_REGISTRY_MAX;
++      if (registry[idx].serial)
++         out[n++] = registry[idx];
++   }
++
++   pthread_mutex_unlock(&registry_mutex);
++   return n;
++}
++
+ static VkFormat
+ drm_format_to_vk(uint32_t drm_format)
+ {
+@@ -425,6 +524,12 @@ vtest_gpu_alloc_image(uint32_t width, uint32_t height, uint32_t drm_format,
+    *out_fd = fd;
+    ret = 0;
+ 
++   /* Record BEFORE returning: vtest_renderer.c sends this fd to the guest and
++    * then close()s it, so this is the last point at which the host can take a
++    * reference (bd remora-e5x.6). No-op unless REMORA_VIDEO_CAPTURE=1. */
++   registry_record(fd, width, height, drm_format, *out_stride, *out_modifier,
++                   *out_size);
++
+ out:
+    /* The exported dma_buf keeps the underlying allocation alive on NVIDIA;
+     * the VkImage/VkDeviceMemory handles themselves are transient. */
+diff --git a/vtest/vtest_gpu_alloc.h b/vtest/vtest_gpu_alloc.h
+index 8b9d8c8f..56d517f6 100644
+--- a/vtest/vtest_gpu_alloc.h
++++ b/vtest/vtest_gpu_alloc.h
+@@ -30,4 +30,37 @@ int vtest_gpu_alloc_gpu_linear(uint32_t width, uint32_t height, uint32_t drm_for
+ int vtest_gpu_alloc_cpu(uint32_t width, uint32_t height, uint32_t drm_format,
+                         uint32_t *out_stride, uint64_t *out_size, int *out_fd);
+ 
++/*
++ * Registry of recently exported GPU buffers (bd remora-e5x.6).
++ *
++ * Android's frames are VkImages allocated HERE and composed into host-side by
++ * the render server, so a host-side encoder can encode them without the pixels
++ * ever leaving the GPU. To do that it needs a live handle to the buffer, but
++ * this allocator is a stateless service: VCMD_RESOURCE_ALLOC_GPU carries no
++ * resource handle, the caller sends the dma_buf fd to the guest and then
++ * close()s it, and there is no UNREF for this path. Nothing will ever tell us
++ * a buffer died.
++ *
++ * So the registry keeps a DUP OF THE FD, not the VkImage: the fd is what an
++ * encoder consumes, it keeps the underlying allocation alive by itself, and it
++ * avoids holding Vulkan objects whose lifetime we could not otherwise bound.
++ * Retention is a small ring with eviction, precisely because there is no unref
++ * — an unbounded registry would pin GPU memory for the life of the server.
++ *
++ * OFF unless REMORA_VIDEO_CAPTURE=1. This sits on the allocation hot path of a
++ * working mirror; it must cost nothing until someone asks for it.
++ */
++#define VTEST_GPU_REGISTRY_MAX 8
++
++struct vtest_gpu_buffer_info {
++   int fd;              /* owned by the registry — do NOT close, dup() to keep */
++   uint32_t width, height, drm_format, stride;
++   uint64_t modifier, size;
++   uint64_t serial;     /* monotonic; higher = more recently allocated */
++};
++
++/* Copy up to max entries, newest first. Returns how many were written. */
++unsigned vtest_gpu_registry_snapshot(struct vtest_gpu_buffer_info *out,
++                                     unsigned max);
++
+ #endif /* VTEST_GPU_ALLOC_H */
+-- 
+2.54.0
+

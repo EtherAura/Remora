@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Copyright 2020 The Chromium Authors. All rights reserved.
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file.
+
+     Codec2 media_codecs fragment for the VAAPI HAL (c2-va). Included from the
+     device media_codecs.xml. The c2.remora.vaapi.* codecs are given rank 260 so
+     they sit BELOW the c2.android.* software decoders' rank of 512 (lower rank =
+     higher preference), letting the hardware VAAPI path win when a capable node
+     is present while the software decoders remain as a fallback.
+
+     Each component is listed once, under its canonical c2.remora.vaapi.* name.
+     The pre-migration aliases went when the store stopped registering them
+     (bd remora-28ix.4): an entry here and a store registration must come and go
+     together, or createByCodecName fails on the one the other still names.
+
+     AVC, HEVC, VP9 and AV1 are all decode-complete and shipped enabled="true"
+     (bd remora-zbt). VP9 profile 2 and AV1 10-bit stay out: the surface pool is
+     NV12-only, so a 10-bit stream would decode into a surface that cannot hold
+     it — declared depth follows what the pool can actually carry.
+-->
+<MediaCodecs>
+    <Decoders>
+        <!-- H.264 / AVC: Baseline, Main and High profiles up to Level 5.1,
+             up to 4096x4096. rank=260 (< 512 software). -->
+        <MediaCodec name="c2.remora.vaapi.avc.decoder" type="video/avc" rank="260" enabled="true">
+            <Limit name="size" min="16x16" max="4096x4096" />
+            <Limit name="alignment" value="2x2" />
+            <Limit name="block-size" value="16x16" />
+            <!-- 4096x4096 / (16x16) = 65536 macroblocks. -->
+            <Limit name="block-count" range="1-65536" />
+            <!-- ~65536 blocks * 60 fps. -->
+            <Limit name="blocks-per-second" range="1-3932160" />
+            <Limit name="bitrate" range="1-62500000" />
+            <Feature name="adaptive-playback" />
+        </MediaCodec>
+
+        <!-- HEVC / H.265: stateless decode core implemented in
+             VaapiVideoDecoderHEVC.cpp (bd remora-zbt). Main profile, 8-bit 4:2:0. -->
+        <MediaCodec name="c2.remora.vaapi.hevc.decoder" type="video/hevc" rank="260" enabled="true">
+            <Limit name="size" min="16x16" max="4096x4096" />
+            <Limit name="alignment" value="2x2" />
+            <Limit name="block-size" value="16x16" />
+            <Limit name="block-count" range="1-65536" />
+            <Limit name="blocks-per-second" range="1-3932160" />
+            <Limit name="bitrate" range="1-62500000" />
+            <Feature name="adaptive-playback" />
+        </MediaCodec>
+
+        <!-- VP9: profile-0 stateless decode core (VaapiVideoDecoderVP9.cpp). -->
+        <MediaCodec name="c2.remora.vaapi.vp9.decoder" type="video/x-vnd.on2.vp9" rank="260" enabled="true">
+            <Limit name="size" min="16x16" max="4096x4096" />
+            <Limit name="alignment" value="2x2" />
+            <Limit name="block-size" value="16x16" />
+            <Limit name="block-count" range="1-65536" />
+            <Limit name="blocks-per-second" range="1-3932160" />
+            <Limit name="bitrate" range="1-62500000" />
+            <Feature name="adaptive-playback" />
+        </MediaCodec>
+
+        <!-- AV1: libgav1-parsed stateless decode core (VaapiVideoDecoderAV1.cpp). -->
+        <MediaCodec name="c2.remora.vaapi.av1.decoder" type="video/av01" rank="260" enabled="true">
+            <Limit name="size" min="16x16" max="4096x4096" />
+            <Limit name="alignment" value="2x2" />
+            <Limit name="block-size" value="16x16" />
+            <Limit name="block-count" range="1-65536" />
+            <Limit name="blocks-per-second" range="1-3932160" />
+            <Limit name="bitrate" range="1-62500000" />
+            <Feature name="adaptive-playback" />
+        </MediaCodec>
+
+        <!-- Pre-migration aliases (bd remora-28ix.4): same limits, rank+1 so the
+             canonical spelling wins name-less selection. -->
+    </Decoders>
+
+    <!-- Hardware VAAPI encoder. Beats the AOSP software encoders whose
+         c2.android.hevc.encoder is HARD-CAPPED at 512x512, letting the mirror
+         carry the full panel (e.g. 3760x1992) in H.265 at low CPU. rank=260
+         (< 512 software) so the HW path wins when a capable node is present,
+         with the software encoders remaining as a fallback.
+
+         The AVC entry was withheld while VaapiVideoEncoder's H.264 builders were
+         TODO stubs (self-disable at init lands AFTER CCodec commits to the
+         component, so advertising it made every video/avc encode a hard failure
+         instead of a c2.android.avc.encoder fallback — bd remora-tbg). The
+         builders are implemented now (bd remora-oac7), so full-resolution H.264
+         encode (screenrecord at the native 3760x1992, MediaRecorder captures)
+         resolves here instead of dying on the software encoder's 2048x2048
+         apex cap. -->
+    <Encoders>
+        <!-- H.265 / HEVC (PRIORITY — the full-res mirror goal): Main profile,
+             up to 4096x4096. bitrate up to 50 Mbps. -->
+        <MediaCodec name="c2.remora.vaapi.hevc.encoder" type="video/hevc" rank="260">
+            <Limit name="size" min="16x16" max="4096x4096" />
+            <Limit name="alignment" value="2x2" />
+            <Limit name="block-size" value="16x16" />
+            <Limit name="bitrate" range="1-50000000" />
+            <Feature name="adaptive-playback" />
+        </MediaCodec>
+        <!-- H.264 / AVC: Constrained Baseline / Main / High, up to 4096x4096 —
+             what screenrecord and MediaRecorder pick by default. rank 261, strictly
+             BEHIND the HEVC entry: full-hardware H.265 is always the preferred codec,
+             and AVC exists so h264-only consumers work at
+             full resolution, never to win a choice HEVC could take. Still < 512 so
+             it beats the software AVC encoder for its own mime. -->
+        <MediaCodec name="c2.remora.vaapi.avc.encoder" type="video/avc" rank="261">
+            <Limit name="size" min="16x16" max="4096x4096" />
+            <Limit name="alignment" value="2x2" />
+            <Limit name="block-size" value="16x16" />
+            <Limit name="bitrate" range="1-50000000" />
+            <Feature name="adaptive-playback" />
+        </MediaCodec>
+
+        <!-- Pre-migration aliases (bd remora-28ix.4): rank+1 per mime, so within
+             each spelling generation HEVC still beats AVC and within each mime the
+             canonical spelling wins. -->
+    </Encoders>
+</MediaCodecs>
