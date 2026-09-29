@@ -107,8 +107,10 @@ QString repoBringupCmd(const QString &tree, const QString &repoUrl, const QStrin
             // Only on the pinned arm: the unpinned arm installs local manifests over default.xml
             // and has no version-suffixed snapshot to compare against.
             ? QStringLiteral("{ [ -f %1/%2 ] || { echo \"no pinned manifest for Android %3 "
-                             "(%1/%2) — regenerate it with 'repo manifest -r -o' from a synced "
-                             "tree, or untick 'Pin to Remora's tested manifest'\"; exit 1; }; } "
+                             "(%1/%2) — regenerate it with 'repo manifest -r -o' from a freshly "
+                             "synced tree BEFORE any patch pass (taken after it, the pin names "
+                             "local patch commits no remote has), or untick 'Pin to Remora's "
+                             "tested manifest'\"; exit 1; }; } "
                              "&& cp %1/%2 .repo/manifests/remora-pinned.xml && "
                              "rm -f .repo/local_manifests/*.xml && "
                              "repo init -m remora-pinned.xml && "

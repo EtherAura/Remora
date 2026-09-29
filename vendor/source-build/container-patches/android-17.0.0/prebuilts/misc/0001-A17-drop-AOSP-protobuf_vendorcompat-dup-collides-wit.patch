@@ -1,0 +1,84 @@
+From bdaed65b45fa59b8390c4ddecec62ac2790c2746 Mon Sep 17 00:00:00 2001
+From: Remora <noreply@localhost>
+Date: Tue, 21 Jul 2026 20:29:05 -0400
+Subject: [PATCH] A17: drop AOSP protobuf_vendorcompat dup (collides with
+ hardware/lineage/compat)
+
+lineage-24.0 pulls platform/prebuilts/misc from aosp, whose 26Q2 snap added
+protobuf_vendorcompat modules that collide by name with LineageOS's superset
+copy in hardware/lineage/compat, failing soong analysis. Unused arm vendor
+shims for an x86_64 container image; keep the LineageOS definition.
+
+Change-Id: If79b1738cb43f67929fda5345ea18e0e4c7db184
+---
+ protobuf_vendorcompat/Android.bp | 60 ++++++--------------------------
+ 1 file changed, 10 insertions(+), 50 deletions(-)
+
+diff --git a/protobuf_vendorcompat/Android.bp b/protobuf_vendorcompat/Android.bp
+index dc9273e..688d71e 100644
+--- a/protobuf_vendorcompat/Android.bp
++++ b/protobuf_vendorcompat/Android.bp
+@@ -1,50 +1,10 @@
+-package {
+-    default_applicable_licenses: ["prebuilts_misc_protobuf_vendorcompat_license"],
+-}
+-
+-// See: http://go/android-license-faq
+-license {
+-    name: "prebuilts_misc_protobuf_vendorcompat_license",
+-    license_kinds: ["SPDX-license-identifier-BSD"],
+-    license_text: ["LICENSE"],
+-}
+-
+-cc_prebuilt_library_shared {
+-    name: "libprotobuf-cpp-full-21.12-vendorcompat",
+-    stem: "libprotobuf-cpp-full-21.12",
+-    vendor: true,
+-    target: {
+-        android_arm: {
+-            srcs: ["arm/libprotobuf-cpp-full-21.12.so"],
+-        },
+-    },
+-
+-    shared_libs: [
+-        "libc++",
+-        "libc",
+-        "libdl",
+-        "liblog",
+-        "libm",
+-        "libz",
+-    ],
+-}
+-
+-cc_prebuilt_library_shared {
+-    name: "libprotobuf-cpp-lite-21.12-vendorcompat",
+-    stem: "libprotobuf-cpp-lite-21.12",
+-    vendor: true,
+-    target: {
+-        android_arm: {
+-            srcs: ["arm/libprotobuf-cpp-lite-21.12.so"],
+-        },
+-    },
+-
+-    shared_libs: [
+-        "libc++",
+-        "libc",
+-        "libdl",
+-        "liblog",
+-        "libm",
+-        "libz",
+-    ],
+-}
++// Remora/A17 LineageOS: neutralized.
++//
++// AOSP's platform/prebuilts/misc (which Remora's LineageOS-24 tree pulls from the aosp remote)
++// gained protobuf_vendorcompat in its 26Q2 snap. Those modules
++// (libprotobuf-cpp-{full,lite}-21.12-vendorcompat) collide by name with LineageOS's own, newer,
++// superset copy in hardware/lineage/compat/Android.bp (which additionally carries arm64, arm64_16k
++// and the 3.9.1/unversioned variants), producing a soong "module already defined" bootstrap failure.
++//
++// These are arm vendor-blob compat shims, unused by the x86_64 Remora container build. Drop the
++// AOSP duplicate here; hardware/lineage/compat remains the single definition.
+-- 
+2.55.0
+
