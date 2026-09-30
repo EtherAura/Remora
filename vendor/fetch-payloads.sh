@@ -1,7 +1,7 @@
 #!/bin/sh
 # Stage the third-party binary payloads a source build needs, into
 # vendor/source-build/features/<payload>/ — the directories the public repo deliberately does not
-# carry (vendor/PAYLOADS.md, ADR-0001).
+# carry (vendor/PAYLOADS.md).
 #
 #   vendor/fetch-payloads.sh            # report what is present and what is missing
 #   vendor/fetch-payloads.sh <payload>  # stage one

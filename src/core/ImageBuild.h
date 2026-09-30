@@ -21,7 +21,7 @@ struct ImageRecipe {
 
 // Reproduces the predecessor overlay model (IMAGE-RECIPE.md): a custom image is a Dockerfile-COPY
 // overlay on a base tag. widevine_l3 and gapps are overlay-able; the rest is base-baked.
-// gapps is what makes the clean-mirror policy deliver (ADR-0001, bd remora-sgkg): a user can take
+// gapps is what makes the clean-mirror policy deliver (docs/IMAGE_MIRROR.md, bd remora-sgkg): a user can take
 // a published GApps-free image and apply the proprietary half locally in seconds, instead of
 // being told to run an hour-scale source build. arm_translate is the same shape and the same
 // argument, but is not done here. magisk_root is NOT this shape at all — it patches init and the

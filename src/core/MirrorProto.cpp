@@ -277,8 +277,8 @@ QList<quint16> mirrorForwardPorts(const QString &forwardList, const QString &ser
     // THE scrcpy_<hex> TUNNEL ALTERNATIVE IS GONE (bd remora-28ix.4 step 4). It matched
     // the jar tunnel a pre-cutover session opened, so such a forward could still be counted and
     // cleaned. Nothing can create one now: the device half is the in-image agent, and an image old
-    // enough to lack the bake is REFUSED outright rather than falling back (see ADR-0001 / the
-    // mirror note in CLAUDE.md), so there is no path that opens a scrcpy tunnel. A stale forward
+    // enough to lack the bake is REFUSED outright rather than falling back (see
+    // docs/MIRROR_AGENT.md), so there is no path that opens a scrcpy tunnel. A stale forward
     // left by such a session is now ignored rather than reaped — `adb forward --remove-all` clears
     // it, and it costs a port entry until then.
     QList<quint16> out;

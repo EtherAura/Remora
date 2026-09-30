@@ -68,7 +68,7 @@ androguard.log
 # stale driver.
 vendor/source-build/features/mesa_source/lib64/
 
-# Third-party binary payloads — never committed here (vendor/PAYLOADS.md, docs/adr/0001).
+# Third-party binary payloads — never committed here (vendor/PAYLOADS.md).
 # vendor/fetch-payloads.sh stages them; a build refuses if an enabled feature's payload is absent.
 vendor/**/*.apk
 vendor/**/*.so

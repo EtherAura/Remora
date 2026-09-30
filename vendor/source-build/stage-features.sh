@@ -14,7 +14,7 @@ PRODUCT_MK="$TREE/device/remora/remora_x86_64.mk"
 [ -f "$PRODUCT_MK" ] || { echo "stage-features: $PRODUCT_MK not found (wrong tree?)"; exit 1; }
 
 # A feature was asked for and its payload is not here. The public repo ships the .mk files and
-# READMEs but NOT the third-party binaries beside them (vendor/PAYLOADS.md, ADR-0001), so this is
+# READMEs but NOT the third-party binaries beside them (vendor/PAYLOADS.md), so this is
 # the normal state of a fresh clone — and it must FAIL, loudly, naming the fix. Staging without
 # it would produce a green build whose image silently lacks the feature it was configured for,
 # which is the failure shape bd remora-4ei.53 and remora-4ei.55 already cost us twice.

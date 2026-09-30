@@ -387,7 +387,7 @@ fi
 
 # 4. media_codecs.xml is the top-level list every other codec list hangs off. Dropping it with an
 #    unrelated inherit once made the image advertise NO codecs and killed the mirror at session
-#    setup — the failure that produced rule 1 in CLAUDE.md.
+#    setup — which is why device config lives in the device tree, never with an optional HAL.
 if [ -f "$tmp/vendor/etc/media_codecs.xml" ]; then
     say "media_codecs.xml present ($(wc -l < "$tmp/vendor/etc/media_codecs.xml") lines)"
 else

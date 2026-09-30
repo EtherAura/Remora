@@ -1,7 +1,6 @@
 # The image mirror: which tags may be published, and what each one obliges
 
-Companion to the licensing audit in [ADR-0001](adr/0001-own-the-stack.md). The ADR decides the
-*policy*; this file applies it to the actual tag registry (`imageTags()` in
+This file applies Remora's publishing policy to the actual tag registry (`imageTags()` in
 `src/core/Features.cpp`) and states the result tag by tag, because "audited" has to mean a specific
 list rather than a principle.
 
@@ -9,7 +8,7 @@ list rather than a principle.
 
 ## The policy, in one paragraph
 
-ADR-0001 decided to publish **both** flavours — audited clean images *and* GApps/Widevine
+The decision is to publish **both** flavours — audited clean images *and* GApps/Widevine
 variants — while keeping `vendor/fetch-payloads.sh` for anyone who would rather add the proprietary
 parts on their own machine. That is a deliberate acceptance of the same exposure OpenGApps
 and every ROM mirror carry: Google licenses no redistribution of GApps, and the Widevine
@@ -38,7 +37,7 @@ published only under the accepted-exposure decision.
 | `remora24:x86_64-gapps-wv` | `widevine_l3` | + Widevine CDM | **yes** |
 | `remora24:x86_64-gapps-wv-hwc2` | `hw_video_decode` (c2-va, Remora's own) | unchanged | **yes** |
 
-**All four are publishable.** That reverses ADR-0001's earlier reading, which concluded the
+**All four are publishable.** That reverses an earlier reading, which concluded the
 publishable set was empty — a conclusion that rested entirely on `magisk_root`, which every tag
 carries and whose source had no home. Moving to upstream Magisk v30.7 resolved it.
 
@@ -67,8 +66,7 @@ A publish step that omits these is not a licensing grey area, it is non-complian
 | AOSP / LineageOS | Apache-2.0 | all four tags | attribution — `NOTICE` carries it |
 
 **There is no kernel obligation.** A container shares the host's kernel: a Remora image contains no
-kernel image and no kernel modules, so there is no GPLv2 kernel source to offer with it (see
-ADR-0001's licensing audit).
+kernel image and no kernel modules, so there is no GPLv2 kernel source to offer with it.
 
 ## `index.txt`
 

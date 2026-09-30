@@ -6,8 +6,7 @@ GNU General Public License, version 3, as published by the Free Software Foundat
 for the full text and for the warranty disclaimer.
 
 This NOTICE records the third-party work Remora builds on. It is required reading before
-redistributing Remora or anything it builds; the reasoning behind it is in
-docs/adr/0001-own-the-stack.md, and the per-payload detail is in vendor/PAYLOADS.md.
+redistributing Remora or anything it builds; the per-payload detail is in vendor/PAYLOADS.md.
 
 
 == What this distribution contains ==
@@ -69,7 +68,7 @@ LineageOS — the LineageOS project and contributors. Apache License 2.0.
 
 Linux kernel — no entry needed. A Remora image carries no kernel: the container runs on the
     host's, and a built image contains no kernel image and no kernel modules. There is therefore
-    no GPL v2 kernel source to offer with one (docs/adr/0001-own-the-stack.md).
+    no GPL v2 kernel source to offer with one.
 
 redroid — its authors. Apache License 2.0.  https://github.com/remote-android/redroid-doc
     Remora's device tree and container-compatibility patches began as this project's work.

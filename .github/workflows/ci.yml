@@ -86,7 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The release rule, enforced instead of remembered: this repository ships no third-party
-      # binaries (vendor/PAYLOADS.md, docs/adr/0001-own-the-stack.md). Detect by CONTENT — the
+      # binaries (vendor/PAYLOADS.md). Detect by CONTENT — the
       # payloads that matter here (magisk, magiskboot, busybox, linker64, zygiskd64) carry no
       # file extension at all, which is exactly how they nearly shipped once.
       - name: Scan for binaries

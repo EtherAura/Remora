@@ -25,7 +25,7 @@ offer matching source. Delta's did not survive: `HuskyDG/Magisk-Delta`, `HuskyDG
 `huskydg/Magisk-Delta` all return 404 — the account itself is gone — leaving no source to offer at
 any price. Upstream's
 is live at `github.com/topjohnwu/Magisk`, tag `v30.7`. That is a hard requirement, not a preference
-— see `vendor/PAYLOADS.md` and ADR-0001.
+— see `vendor/PAYLOADS.md`.
 
 ## History: the swap that failed, and why this one did not
 

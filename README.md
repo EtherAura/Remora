@@ -173,8 +173,6 @@ Docker or a device.
   deps, status), with each entry's honest status and what it actually delivers.
 - **[docs/MIRROR_AGENT.md](docs/MIRROR_AGENT.md)** — the device half: what the in-image agent does,
   why it needs no reflection, and the wire protocol it speaks.
-- **[docs/adr/](docs/adr/)** — architecture decision records; ADR-0001 is why Remora owns its
-  whole mirror stack.
 
 ### Licence
 
