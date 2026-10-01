@@ -21,13 +21,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * A persistent init service (or, during development, an app_process launched by hand) listening
  * on localabstract:remora_agent. Compiled in-tree against the platform framework.jar — hidden
- * APIs are plain calls here, never reflection. Protocol v2: a versioned RMRA hello on every
- * connection, then either a session request (control) or an attach (video). kind=mirror is
- * complete — control (bd remora-28ix.3.1) and video (bd remora-28ix.3.2); the other kinds land
- * in bd remora-28ix.3.3.
+ * APIs are plain calls here, never reflection. Protocol v3, Remora's own: a versioned RMRA hello
+ * on every connection, then either a session request (control) or an attach (video, audio), and
+ * from there on nothing but records (docs/MIRROR_PROTOCOL.md). kind=mirror is complete — control
+ * (bd remora-28ix.3.1) and video (bd remora-28ix.3.2); the other kinds land in
+ * bd remora-28ix.3.3.
  */
 public final class Main {
-    static final int PROTO_VERSION = 2;
+    static final int PROTO_VERSION = 3;
     static final int CAPABILITIES = 0;  // capability bits — none yet
     static final String SOCKET_NAME = "remora_agent";
     private static final byte[] MAGIC = {'R', 'M', 'R', 'A'};
@@ -41,8 +42,8 @@ public final class Main {
     // — and "kind=mirror" and "attach video" would otherwise both be a leading 0x01.
     static final int ROLE_CONTROL = 0;
     static final int ROLE_VIDEO = 1;
-    // Audio is a ROLE, not a positional third socket the way v1 had it: with roles, a session
-    // that has no video no longer renumbers everything after it (bd remora-28ix.3.6).
+    // Audio is a ROLE, not a positional third socket: with roles, a session that has no video
+    // never renumbers everything after it (bd remora-28ix.3.6).
     static final int ROLE_AUDIO = 2;
 
     private static final AtomicInteger nextSessionId = new AtomicInteger(1);
@@ -91,8 +92,10 @@ public final class Main {
             DataInputStream in = new DataInputStream(c.getInputStream());
             DataOutputStream out = new DataOutputStream(c.getOutputStream());
 
-            // Hello: magic, u16 version, u16 flags — both directions. Version mismatch is a
-            // negotiation, not an exception (the v1 exact-match gate is the disease v2 cures).
+            // Hello: magic, u16 version, u16 flags — both directions. The agent always answers
+            // with its own version, so a client of any version learns what it is talking to and
+            // can say so; then a client that is not v3 is dropped. There is no negotiating down:
+            // this agent speaks v3 only, and the user-facing refusal is the client's to make.
             byte[] magic = new byte[4];
             in.readFully(magic);
             if (!java.util.Arrays.equals(magic, MAGIC)) {
@@ -105,7 +108,11 @@ public final class Main {
             out.writeShort(PROTO_VERSION);
             out.writeShort(CAPABILITIES);
             out.flush();
-            int version = Math.min(clientVersion, PROTO_VERSION);
+            if (clientVersion != PROTO_VERSION) {
+                Ln.w("client speaks protocol v" + clientVersion + ", this agent v" + PROTO_VERSION
+                     + " — dropping connection");
+                return;
+            }
 
             final int role = in.readUnsignedByte();
             if (role == ROLE_VIDEO) {
@@ -113,7 +120,7 @@ public final class Main {
             } else if (role == ROLE_AUDIO) {
                 serveAudio(in, out);
             } else if (role == ROLE_CONTROL) {
-                serveControl(version, in, out);
+                serveControl(in, out);
             } else {
                 Ln.w("unknown connection role " + role + ", dropping connection");
             }
@@ -121,19 +128,22 @@ public final class Main {
             // peer went away mid-handshake — normal teardown, nothing to log
         } catch (IOException e) {
             Ln.w("connection error: " + e);
+        } catch (RuntimeException e) {
+            // One connection's bug ends that connection. Uncaught, it would end the process — and
+            // with it every other session the agent is serving (bd remora-hsdz).
+            Ln.e("connection failed", e);
         }
     }
 
     // A control connection: u8 kind, u16-prefixed "key=value\n" option block, then the connection
     // IS the control socket for the session it opened.
-    private static void serveControl(int version, DataInputStream in, DataOutputStream out)
-            throws IOException {
+    private static void serveControl(DataInputStream in, DataOutputStream out) throws IOException {
         final int kind = in.readUnsignedByte();
         int optLen = in.readUnsignedShort();
         byte[] optRaw = new byte[optLen];
         in.readFully(optRaw);
         Map<String, String> opts = parseOptions(optRaw);
-        Ln.i("v" + version + " session request kind=" + kind + " opts=" + opts);
+        Ln.i("session request kind=" + kind + " opts=" + opts);
 
         // Reply shape is the contract: u8 status, u32 sessionId, then (status != 0) a
         // u16-prefixed UTF-8 reason.
@@ -166,8 +176,8 @@ public final class Main {
             }
             case KIND_LIST_APPS: {
                 // Request/response on this connection (docs/MIRROR_AGENT.md): the ok reply, then
-                // one u32-prefixed UTF-8 blob of v1's " * Name  pkg" lines. No session outlives
-                // the answer — the connection is done when the blob is written.
+                // one u32-prefixed UTF-8 blob of " * Name  pkg" lines (AppList). No session
+                // outlives the answer — the connection is done when the blob is written.
                 out.writeByte(0);
                 out.writeInt(nextSessionId.getAndIncrement());
                 byte[] listing = AppList.listing();
@@ -236,20 +246,21 @@ public final class Main {
         }
     }
 
-    // An audio connection: u32 sessionId, then the v1 stream framing — codec id and packets, no
-    // session packet (audio has no geometry). Same attach shape as video, different role.
+    // An audio connection: u32 sessionId, then a v3 media stream — START, CONFIG and FRAMEs,
+    // no FORMAT (audio has no geometry). Same attach shape as video, different role.
     private static void serveAudio(DataInputStream in, DataOutputStream out) throws IOException {
         final int sessionId = in.readInt();
         Session session = sessions.get(sessionId);
         VideoStreamer streamer = new VideoStreamer(out);
         if (session == null) {
             Ln.w("audio attach for unknown session " + sessionId);
-            streamer.writeDisabled(true);
+            streamer.writeEnd(VideoStreamer.END_FAILED, "unknown session " + sessionId);
             return;
         }
         AudioEncoder audio = new AudioEncoder(sessionId, session.opts, streamer);
         if (!session.attachAudio(audio)) {
-            streamer.writeDisabled(true);  // the control connection closed while we were setting up
+            // the control connection closed while we were setting up
+            streamer.writeEnd(VideoStreamer.END_FAILED, "session closed during setup");
             return;
         }
         try {
@@ -259,16 +270,16 @@ public final class Main {
         }
     }
 
-    // A video connection: u32 sessionId, then the v1 stream framing in the other direction.
+    // A video connection: u32 sessionId, then a v3 media stream in the other direction.
     private static void serveVideo(DataInputStream in, DataOutputStream out) throws IOException {
         final int sessionId = in.readInt();
         Session session = sessions.get(sessionId);
         VideoStreamer streamer = new VideoStreamer(out);
         if (session == null) {
-            // No session reply exists on this connection to carry an error, so say it the only
-            // way the video stream can: the config-error sentinel in place of the codec id.
+            // No session reply exists on this connection to carry an error, so say it the way
+            // every stream can: END in place of START.
             Ln.w("video attach for unknown session " + sessionId);
-            streamer.writeDisabled(true);
+            streamer.writeEnd(VideoStreamer.END_FAILED, "unknown session " + sessionId);
             return;
         }
         ScreenEncoder encoder;
@@ -276,11 +287,12 @@ public final class Main {
             encoder = new ScreenEncoder(session, streamer);
         } catch (ScreenEncoder.ConfigurationException e) {
             Ln.w("session " + sessionId + " video: " + e.getMessage());
-            streamer.writeDisabled(true);
+            streamer.writeEnd(VideoStreamer.END_FAILED, e.getMessage());
             return;
         }
         if (!session.attachEncoder(encoder)) {
-            streamer.writeDisabled(true);  // the control connection closed while we were setting up
+            // the control connection closed while we were setting up
+            streamer.writeEnd(VideoStreamer.END_FAILED, "session closed during setup");
             return;
         }
         try {

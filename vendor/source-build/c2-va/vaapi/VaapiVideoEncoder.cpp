@@ -754,9 +754,9 @@ VASurfaceID VaapiVideoEncoder::importInputAsSurface(const InputFrame& frame, boo
             fourcc = VA_FOURCC_BGRA;
             rtFormat = VA_RT_FORMAT_RGB32;
             break;
-        // scrcpy's virtual-display surface reports VideoPixelFormat::ARGB. Empirically (screencap vs
-        // our output), the memory is R,G,B,A, so it must be imported as VA_FOURCC_RGBA — labelling it
-        // BGRA swapped R<->B. The X* variants and ABGR are the mirror cases.
+        // The agent's virtual-display surface reports VideoPixelFormat::ARGB. Empirically (screencap
+        // vs our output), the memory is R,G,B,A, so it must be imported as VA_FOURCC_RGBA — labelling
+        // it BGRA swapped R<->B. The X* variants and ABGR are the mirror cases.
         case VideoPixelFormat::ARGB:
         case VideoPixelFormat::XRGB:
             fourcc = VA_FOURCC_RGBA;

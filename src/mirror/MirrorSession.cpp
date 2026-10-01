@@ -215,7 +215,12 @@ void MirrorSession::openAgentConnection(const QString &connectError, const QStri
         if (d->hello.size() < kAgentHelloSize) return;
         // Nothing can follow the hello: the agent answers, it never speaks first, so there is no
         // trailing byte here to carry into the next reader.
-        settle(parseAgentHello(d->hello).has_value(), helloError);
+        const auto hello = parseAgentHello(d->hello);
+        if (!hello) return settle(false, helloError);
+        // An agent, but one that speaks another protocol version: its own refusal, which names
+        // the side to update — never the "no agent" wording (bd remora-c79i).
+        const QString refusal = agentVersionRefusal(*hello);
+        settle(refusal.isEmpty(), refusal);
     });
     connect(d->deadline, &QTimer::timeout, this, [settle, connectError] {
         settle(false, connectError);
@@ -402,14 +407,17 @@ void MirrorSession::agentUnavailable(const QString &why) {
     // Only the device END not answering is evidence about the image. Running out of tunnel ports
     // is a host-side fact — seventeen forwards held by other clients, or a device adb never got
     // to — and prescribing a rebuild for it was the wrong advice every time.
+    if (why.startsWith(QLatin1String(kAgentVersionRefusalPrefix))) {
+        finishStart(false, why);
+        return;
+    }
     if (why.startsWith(QLatin1String("no usable tunnel port"))) {
         finishStart(false, QStringLiteral("could not open an adb tunnel to the device (%1) — "
                                           "is it up and connected? (`adb devices`)").arg(why));
         return;
     }
     finishStart(false, QStringLiteral("no in-image agent (%1) — rebuild the image with the "
-                                      "mirror_agent feature (the v1 fallback is gone, "
-                                      "bd remora-28ix.5)").arg(why));
+                                      "mirror_agent feature").arg(why));
 }
 
 // The encoder is the listening side and binds its socket before any frame exists, so a mirror
@@ -418,10 +426,9 @@ void MirrorSession::agentUnavailable(const QString &why) {
 // animation for as long as the encoder took to appear — up to the full retry budget, ~12 s of
 // dead GUI thread in the worst case (bd remora-xrlh).
 //
-// The budget is kept in the shape the reference client used: at most kExtVideoAttempts connects,
-// 50 ms apart, under an overall deadline. Per-attempt timeouts are gone — a unix connect either
-// resolves or fails at once, so what the old 250 ms wait actually measured was the gap between
-// retries, which is now the retry timer.
+// The budget is at most kExtVideoAttempts connects, 50 ms apart, under an overall deadline.
+// Per-attempt timeouts are gone — a unix connect either resolves or fails at once, so what the
+// old 250 ms wait actually measured was the gap between retries, which is now the retry timer.
 void MirrorSession::connectExternalVideoAsync(std::function<void(bool, QString)> done) {
     static constexpr int kExtVideoAttempts = 40;
     static constexpr int kExtVideoRetryMs = 50;
@@ -464,7 +471,7 @@ void MirrorSession::connectExternalVideoAsync(std::function<void(bool, QString)>
                                  settle(false, err);
                                  return;
                              }
-                             extVideo_->abort();  // reusable after abort; the fork reused it too
+                             extVideo_->abort();  // reusable after abort
                              QTimer::singleShot(kExtVideoRetryMs, this, [this, d] {
                                  if (!d->settled) extVideo_->connectToServer(opts_.externalVideoSocket);
                              });
@@ -479,8 +486,7 @@ void MirrorSession::connectExternalVideoAsync(std::function<void(bool, QString)>
 // start is the only shape that cleans up after those (bd remora-28ix.2.4, remora-6f92). Liveness
 // is the owner's lock file, not a device-side snapshot, and our own forward does not exist yet
 // at session start; a live pre-lock-scheme session loses only its LISTENER — established streams
-// survive a forward removal, and mirrors never redial mid-session. The v1 reverse-tunnel sweep
-// (scrcpy_*) went with the v1 path itself: no jar server, no reverse tunnels to leak.
+// survive a forward removal, and mirrors never redial mid-session.
 void MirrorSession::sweepStaleTunnels() {
     const QString adb = QStringLiteral("adb");
     runAdbCaptureAsync(adbForwardListArgv(adb), [this, adb](bool ok, QString list) {
@@ -560,8 +566,8 @@ void MirrorSession::startVideoReader() {
     connect(readerThread_, &QThread::finished, reader_, &QObject::deleteLater);
     // Queued by construction (different threads), which is what preserves ordering between these
     // and keeps every one of them running on the session's thread, exactly as before.
-    connect(reader_, &VideoReader::codecIdReady, this, &MirrorSession::onReaderCodecId);
-    connect(reader_, &VideoReader::sessionInfo, this, &MirrorSession::onReaderSession);
+    connect(reader_, &VideoReader::codecReady, this, &MirrorSession::onReaderCodec);
+    connect(reader_, &VideoReader::formatReady, this, &MirrorSession::onReaderFormat);
     connect(reader_, &VideoReader::packetReady, this, &MirrorSession::onReaderPacket);
     connect(reader_, &VideoReader::streamFailed, this, &MirrorSession::fail);
     connect(reader_, &VideoReader::socketClosed, this, [this] {
@@ -570,19 +576,19 @@ void MirrorSession::startVideoReader() {
     readerThread_->start();
 }
 
-void MirrorSession::onReaderCodecId(quint32 codecId) {
-    mergeConfig_ = codecId != kCodecAv1;
+void MirrorSession::onReaderCodec(quint8 codec) {
+    mergeConfig_ = codec != kCodecAv1;
     QString err;
-    if (!decoder_.init(codecId, opts_.hwDecode, &err)) return fail(err);
+    if (!decoder_.init(codec, opts_.hwDecode, &err)) return fail(err);
     if (opts_.recordPath.isEmpty()) return;
-    if (!recorder_.open(opts_.recordPath, codecId, opts_.audio && !audioDead_, &err))
+    if (!recorder_.open(opts_.recordPath, codec, opts_.audio && !audioDead_, &err))
         return fail(err);
     recording_ = true;
-    if (audioCodecSeen_) recorder_.setAudioCodec(audioDemux_.codecId());
+    if (audioCodecSeen_) recorder_.setAudioCodec(audioDemux_.codec());
 }
 
-void MirrorSession::onReaderSession(const SessionInfo &info) {
-    videoSize_ = QSize(int(info.width), int(info.height));
+void MirrorSession::onReaderFormat(const FrameFormat &format) {
+    videoSize_ = QSize(int(format.width), int(format.height));
     if (recording_) recorder_.setSize(videoSize_);
     emit videoSizeChanged(videoSize_);
 }
@@ -669,24 +675,24 @@ void MirrorSession::drainVideoStream() {
         const auto e = demux_.next();
         if (e == StreamDemuxer::Event::NeedMoreData) return;
         switch (e) {
-            case StreamDemuxer::Event::CodecId: {
-                mergeConfig_ = demux_.codecId() != kCodecAv1;
+            case StreamDemuxer::Event::Started: {
+                mergeConfig_ = demux_.codec() != kCodecAv1;
                 QString err;
-                if (!decoder_.init(demux_.codecId(), opts_.hwDecode, &err)) return fail(err);
+                if (!decoder_.init(demux_.codec(), opts_.hwDecode, &err)) return fail(err);
                 if (!opts_.recordPath.isEmpty()) {
-                    if (!recorder_.open(opts_.recordPath, demux_.codecId(),
+                    if (!recorder_.open(opts_.recordPath, demux_.codec(),
                                         opts_.audio && !audioDead_, &err))
                         return fail(err);
                     recording_ = true;
                     // The audio socket may have announced its codec before the video stream
                     // opened the recorder — replay what it missed, or the header would wait
                     // the full hold cap for news that already arrived.
-                    if (audioCodecSeen_) recorder_.setAudioCodec(audioDemux_.codecId());
+                    if (audioCodecSeen_) recorder_.setAudioCodec(audioDemux_.codec());
                 }
                 break;
             }
-            case StreamDemuxer::Event::Session: {
-                const auto s = demux_.session();
+            case StreamDemuxer::Event::Format: {
+                const auto s = demux_.format();
                 videoSize_ = QSize(int(s.width), int(s.height));
                 if (recording_) recorder_.setSize(videoSize_);
                 emit videoSizeChanged(videoSize_);
@@ -695,10 +701,9 @@ void MirrorSession::drainVideoStream() {
             case StreamDemuxer::Event::Packet:
                 decodePacket(demux_.takePacket());
                 break;
-            case StreamDemuxer::Event::StreamDisabled:
-                return fail(QStringLiteral("the server disabled the video stream"));
-            case StreamDemuxer::Event::ConfigError:
-                return fail(QStringLiteral("server-side configuration error on the video stream"));
+            case StreamDemuxer::Event::Unavailable:
+            case StreamDemuxer::Event::Failed:
+                return fail(videoEndMessage(demux_.detail()));
             case StreamDemuxer::Event::Error:
                 return fail(QStringLiteral("video stream framing error: %1").arg(demux_.errorString()));
             case StreamDemuxer::Event::NeedMoreData: break;  // unreachable
@@ -717,16 +722,16 @@ void MirrorSession::drainAudioStream() {
         const auto e = audioDemux_.next();
         if (e == StreamDemuxer::Event::NeedMoreData) return;
         switch (e) {
-            case StreamDemuxer::Event::CodecId: {
+            case StreamDemuxer::Event::Started: {
                 audioCodecSeen_ = true;
-                if (recording_) recorder_.setAudioCodec(audioDemux_.codecId());
+                if (recording_) recorder_.setAudioCodec(audioDemux_.codec());
                 QString err;
-                if (!audioPlayer_.init(audioDemux_.codecId(), &err)) {
+                if (!audioPlayer_.init(audioDemux_.codec(), &err)) {
                     qWarning("mirror: audio disabled: %s", qUtf8Printable(err));
                     audioDead_ = true;
                     return;
                 }
-                qInfo("mirror: audio on (codec id 0x%08x, 48 kHz stereo)", audioDemux_.codecId());
+                qInfo("mirror: audio on (codec 0x%02x, 48 kHz stereo)", audioDemux_.codec());
                 break;
             }
             case StreamDemuxer::Event::Packet: {
@@ -742,18 +747,17 @@ void MirrorSession::drainAudioStream() {
                 audioPlayer_.submit(pkt);
                 break;
             }
-            // Audio failure never takes the session down — video is the load-bearing half. The
-            // reference client treats a config error as fatal; an opt-in extra losing itself
-            // loudly beats losing the mirror (deliberate divergence, bd remora-28ix.2.2).
+            // Audio failure never takes the session down — video is the load-bearing half. Not
+            // even a config error is fatal: an opt-in extra losing itself loudly beats losing
+            // the mirror (deliberate, bd remora-28ix.2.2).
             // The recorder hears about it too, so a held header stops waiting for a stream
             // that is not coming.
-            case StreamDemuxer::Event::StreamDisabled:
-                qWarning("mirror: the server disabled the audio stream");
-                audioDead_ = true;
-                if (recording_) recorder_.audioUnavailable();
-                return;
-            case StreamDemuxer::Event::ConfigError:
-                qWarning("mirror: server-side audio configuration error — audio off");
+            case StreamDemuxer::Event::Unavailable:
+            case StreamDemuxer::Event::Failed:
+                qWarning("mirror: the agent ended the audio stream (%s) — audio off",
+                         qUtf8Printable(audioDemux_.detail().isEmpty()
+                                            ? QStringLiteral("no reason given")
+                                            : audioDemux_.detail()));
                 audioDead_ = true;
                 if (recording_) recorder_.audioUnavailable();
                 return;
@@ -763,26 +767,25 @@ void MirrorSession::drainAudioStream() {
                 audioDead_ = true;
                 if (recording_) recorder_.audioUnavailable();
                 return;
-            case StreamDemuxer::Event::Session:
+            case StreamDemuxer::Event::Format:
             case StreamDemuxer::Event::NeedMoreData:
-                break;  // audio has no session packets
+                break;  // audio carries no FORMAT
         }
     }
 }
 
 void MirrorSession::onControlData() {
     if (!control_) return;
-    // start_app rode the session-create params (agentSessionParams); v1's TYPE_START_APP control
-    // message went with the v1 path.
     deviceMsgs_.feed(control_->readAll());
     while (auto m = deviceMsgs_.next()) {
-        if (m->type == DeviceMessage::Type::Clipboard) emit deviceClipboard(m->clipboardText);
-        // AckClipboard / UhidOutput: nothing to do yet (no uhid devices, no sequenced sets).
+        if (m->type == DeviceRecord::Clipboard) emit deviceClipboard(m->clipboardText);
+        // ClipboardAck: nothing to do yet — the client sends no sequenced sets.
     }
     if (deviceMsgs_.error()) {
-        // Unknown type = no resync point. Stop reading; the video stream is unaffected.
+        // A framing violation leaves no way to find the next record. Stop reading; the video
+        // stream is unaffected.
         disconnect(control_, &QTcpSocket::readyRead, this, &MirrorSession::onControlData);
-        qWarning("mirror: unknown device message — control channel reads stopped");
+        qWarning("mirror: device message framing error — control channel reads stopped");
     }
 }
 
@@ -879,8 +882,10 @@ bool agentListApps(const QString &serial, QByteArray *out, QString *error, bool 
     QByteArray hello;
     while (hello.size() < kAgentHelloSize && sock.waitForReadyRead(3000))
         hello.append(sock.readAll());
-    if (!parseAgentHello(hello))
-        return fail(QStringLiteral("no RMRA hello from the device"), true);
+    const auto agent = parseAgentHello(hello);
+    if (!agent) return fail(QStringLiteral("no RMRA hello from the device"), true);
+    if (const QString refusal = agentVersionRefusal(*agent); !refusal.isEmpty())
+        return fail(refusal, false);
 
     sock.write(agentSessionRequest(SessionKind::ListApps, {}));
     QByteArray buf;

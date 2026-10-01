@@ -73,11 +73,9 @@ Linux kernel — no entry needed. A Remora image carries no kernel: the containe
 redroid — its authors. Apache License 2.0.  https://github.com/remote-android/redroid-doc
     Remora's device tree and container-compatibility patches began as this project's work.
 
-scrcpy — Genymobile and Romain Vimont. Apache License 2.0.
-    https://github.com/Genymobile/scrcpy
-    Remora no longer ships any scrcpy code. Its mirror protocol reuses scrcpy 4.0's control
-    message, device message and stream framing BYTE LAYOUTS, which are specified in
-    docs/MIRROR_PROTOCOL.md; that reuse is the reason this entry remains.
+scrcpy — Genymobile and Romain Vimont. Apache License 2.0.  https://github.com/Genymobile/scrcpy
+    Parts of Remora's in-image mirror agent are derived from this project's server: key
+    composition, input injection and the video encoder loop.
 
 
 == Redistribution of built images ==

@@ -665,24 +665,14 @@ static QString shSingleQuote(const QString &s) {
            + QLatin1Char('\'');
 }
 
-// THE GUEST-SIDE SCRCPY REAPER STOOD HERE AND IS GONE (bd remora-28ix.4 step 4).
-// killStaleServer, LocalSessions and liveLocalSessions together killed a lingering pre-cutover guest
-// server for a target — carefully, by OWNERSHIP: a server died only when no local client still
-// held its scid, because the blunt pkill it replaced decapitated live PIP sessions (bd
-// remora-4ei.43) and left husks holding the encoder's video socket forever (bd remora-8d7).
+// THERE IS NO GUEST-SIDE SERVER REAP. The device half is the in-image agent, a long-running INIT
+// SERVICE — `service remora_agent`, class late_start, started once on sys.boot_completed
+// (features/remora_agent/remora-agent.rc). One process for the container's lifetime, not one per
+// session, so there is nothing per-session to leak and nothing to reap; an image without the
+// agent is refused outright. Killing it would disconnect every live session, PIP included.
 //
-// IT IS REMOVED BECAUSE THE PROCESS IT REAPED CANNOT EXIST, not merely because of the name. Its
-// whole premise was scrcpy's model: a server SPAWNED PER SESSION, which leaks the VF encoder
-// context if it outlives its client. The device half is now the in-image agent, and the agent is
-// a long-running INIT SERVICE — `service remora_agent`, class late_start, started once on
-// sys.boot_completed (features/remora_agent/remora-agent.rc). One process for the container's
-// lifetime, not one per session, so there is nothing per-session to leak and nothing to reap.
-// An image too old to bake the agent is REFUSED outright rather than falling back to scrcpy, so
-// no reachable deploy can produce the process this looked for.
-//
-// WHAT STILL REAPS: reapSessionOrphans below, which is the HOST side — this profile's mirror
-// clients and frame encoder that outlived their guest server. That is a different leak with a
-// different owner and it is untouched; the two were always complementary rather than redundant.
+// WHAT REAPS: reapSessionOrphans below, which is the HOST side — this profile's mirror clients
+// and frame encoder that outlived their guest session.
 
 void appendStatusLine(const QString &statusPath, const QString &text) {
     if (statusPath.isEmpty()) return;
@@ -822,9 +812,9 @@ static QString waitFirstBootSettled(Spawner &sp, const RunContext &ctx, const QS
 
     // Work WAS in flight, so that link is no longer a current fact — the property pass is exactly
     // what takes adbd (and the framework) down with it. The marker the caller writes next means
-    // "adb is verified and the mirror is about to attach"; that is what the fork's attach gate
+    // "adb is verified and the mirror is about to attach"; that is what the mirror's attach gate
     // trusts, and handing off into the tail of the outage is the same drop by a later name (the
-    // fork's whole log then reads "adb: error: device offline"). So re-establish it here, and
+    // mirror's whole log then reads "adb: error: device offline"). So re-establish it here, and
     // insist the device stay answerable for a moment rather than catch the eye of the outage.
     // Bounded and fail-open, like everything above it.
     int stable = 0;
@@ -2402,8 +2392,8 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
             int served = servedConsumers();
             // An ADOPTED SPLASH is not starved — it is not connected YET, and the difference is
             // invisible to this probe. It was told to attach one livenessDelayMs ago and still has
-            // to notice the marker, finish its outro, tear down its renderer, push the server and
-            // open the video socket: seconds, not milliseconds. Sampled once at t+1s it therefore
+            // to notice the marker, finish its outro, tear down its renderer, start its device
+            // session and open the video socket: seconds, not milliseconds. Sampled once at t+1s it therefore
             // ALWAYS reads as serving nobody, so this check killed the very window the hand-off
             // had just been arranged for, and the retry spawned a replacement — the other half of
             // the drop-then-reappear in bd remora-82x, confirmed on a cold run whose splash log
@@ -2412,8 +2402,8 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
             // Its OWN budget, deliberately not mirrorHoldMs. The two answer different questions —
             // "did the window survive?" versus "has the mirror finished arriving?" — and they have
             // different natural sizes: arriving means finishing the animation, tearing down the
-            // splash renderer, pushing the server jar and opening the video socket, measured at
-            // ~14.5 s on a cold connect. Sharing the liveness hold's number meant that shortening
+            // splash renderer, starting the device session and opening the video socket, measured
+            // at ~14.5 s on a cold connect. Sharing the liveness hold's number meant that shortening
             // the hold to 3 s silently started killing every adopted splash for being "starved"
             // three seconds into a fourteen-second arrival.
             constexpr int kConsumerArrivalMs = 30000;

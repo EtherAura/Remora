@@ -48,7 +48,7 @@ struct SessionOptions {
     QHash<int, BindAction> keyBind;
     QList<Qt::KeyboardModifiers> shortcutMods = defaultShortcutMods();
     // A mirror that never receives a frame shows nothing but pins the encoder and holds VRAM —
-    // the ghost the fork's first-frame timeout exists to kill. Same semantics here.
+    // the ghost this first-frame timeout exists to kill.
     int firstFrameTimeoutMs = 45000;
     // How long "nothing is listening on the agent socket" is retried before it becomes the
     // rebuild-the-image refusal. Zero = refuse immediately (the 28ix.5 contract for a session
@@ -126,8 +126,8 @@ private:
     // thread instead of by a readAll() on this one (bd remora-10bt). Same handling, same order —
     // only the demuxing moved.
     void startVideoReader();
-    void onReaderCodecId(quint32 codecId);
-    void onReaderSession(const SessionInfo &info);
+    void onReaderCodec(quint8 codec);
+    void onReaderFormat(const FrameFormat &format);
     void onReaderPacket(const MediaPacket &packet);
     // Both transports' shared tail: recorder tap, config merge, decode, emit. Also the
     // only place that can measure the STREAM (bytes, decode cost) rather than the window

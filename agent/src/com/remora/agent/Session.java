@@ -101,7 +101,7 @@ public final class Session {
         }
         ((NewDisplayCapture) capture).requestResize(width, height);
         ScreenEncoder e = encoder;
-        // Rebuild the encoder around the new size, and mark the next session packet as a CLIENT
+        // Rebuild the encoder around the new size, and mark the next FORMAT record as a CLIENT
         // resize so the client knows not to resize its window back.
         if (e != null) e.onClientResize();
     }

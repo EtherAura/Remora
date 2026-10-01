@@ -20,7 +20,7 @@
  *             -> av_hwframe_map        (AV_PIX_FMT_VULKAN, zero copy)
  *             -> scale_vulkan=format=nv12   (encoders want YUV, the display is RGBA)
  *             -> hevc_vulkan
- *             -> the v1 mirror wire format (scrcpy 4.0 lineage)
+ *             -> protocol v3 stream records (docs/MIRROR_PROTOCOL.md §2.1)
  *
  * The Vulkan device is DERIVED FROM THE DRM NODE rather than chosen by index.
  * The frame must be imported by the same physical GPU that rendered it, and
@@ -436,8 +436,8 @@ publisher_read(struct publisher *p, struct frame_msg *out, int max_out)
    return produced;
 }
 
-/* Elapsed ms since the first call, for correlating the encoder's events with the client's
- * SCRCPY_TRACE timeline. The two logs are the only way to see which side of the socket a stall
+/* Elapsed ms since the first call, for correlating the encoder's events with the mirror
+ * client's log. The two logs are the only way to see which side of the socket a stall
  * lives on, and neither carried a timestamp (bd remora-90y). */
 static double
 enc_ms(void)
@@ -1482,9 +1482,9 @@ stats_report(struct stats *st, int width, int height)
 
 struct output {
    int fd;          /* mirror connection, or a plain file */
-   bool framed;     /* emit v1 mirror framing (scrcpy 4.0 lineage) rather than raw Annex-B */
+   bool framed;     /* emit protocol v3 stream records rather than raw Annex-B */
    bool sent_config;
-   bool sent_header;  /* codec id + first session packet are sent exactly once */
+   bool sent_header;  /* START + the first FORMAT are sent exactly once */
    bool need_keyframe; /* a consumer just attached: it cannot decode mid-GOP */
    /* Hold packets back until the first KEYFRAME actually passes. Requesting an IDR on attach is
     * not enough: the encoder pipeline is async (async_depth=4), so P-frames submitted BEFORE the
@@ -1541,42 +1541,81 @@ put_be64(uint8_t *p, uint64_t v)
    put_be32(p + 4, (uint32_t)v);
 }
 
-/* The v1 stream header (scrcpy 4.0 lineage): a 4-byte codec id, then a 12-byte session packet
- * carrying the frame size. The mirror client's demuxer reads it (src/mirror), and
- * tests/test_mirrorproto.cpp pins the byte layout. */
+/* Protocol v3, Remora's own (docs/MIRROR_PROTOCOL.md): everything on the socket is a record —
+ * u32 size (the type byte plus the body), u8 type, body — and this socket carries exactly a
+ * device video stream: START and FORMAT on connect, CONFIG before the first frame, then FRAMEs.
+ * The mirror client's StreamDemuxer reads it (src/mirror) and tests/test_mirrorproto.cpp pins the
+ * byte layout. */
+#define REC_START  0x01
+#define REC_FORMAT 0x02
+#define REC_CONFIG 0x03
+#define REC_FRAME  0x04
+
+#define CODEC_H264 0x01
+#define CODEC_H265 0x02
+#define CODEC_AV1  0x03
+
+#define FRAME_FLAG_KEY 0x01
+
+/* A record header: u32 size, which counts the type byte and the whole body, then u8 type. The
+ * body follows in the caller's own writes, so a frame is never copied just to join its header. */
+#define REC_HEAD 5
+
 static void
-output_header(struct output *o, const char *codec_name, int width, int height)
+put_record(uint8_t *p, uint8_t type, size_t body)
+{
+   put_be32(p, (uint32_t)(1 + body));
+   p[4] = type;
+}
+
+/* The codec in START, from what the encoder actually is rather than what was asked for: "h265"
+ * and an explicit "hevc_nvenc" are both HEVC, and only the context knows that for every name. */
+static uint8_t
+stream_codec(const AVCodecContext *avctx)
+{
+   switch (avctx->codec_id) {
+   case AV_CODEC_ID_HEVC:
+      return CODEC_H265;
+   case AV_CODEC_ID_AV1:
+      return CODEC_AV1;
+   default:
+      return CODEC_H264;
+   }
+}
+
+/* FORMAT: the frame size. Sent after START at connect, and AGAIN on its own whenever the size
+ * changes mid-stream — that is how a device-side resize is signalled, so a host-side one uses the
+ * same record. The flags byte's client-resize bit is never set here: the host encoder only ever
+ * follows the display. */
+static void
+output_format(struct output *o, int width, int height)
 {
    if (o->fd < 0 || !o->framed)
       return;
-   const uint32_t codec_id = strstr(codec_name, "hevc") ? 0x68323635u : 0x68323634u;
-   uint8_t hdr[4 + 12];
-   put_be32(hdr, codec_id);
-   put_be32(hdr + 4, 0x80000000u);
-   put_be32(hdr + 8, (uint32_t)width);
-   put_be32(hdr + 12, (uint32_t)height);
-   if (!write_all(o->fd, hdr, sizeof(hdr)))
+   uint8_t rec[REC_HEAD + 4 + 4 + 1];
+   put_record(rec, REC_FORMAT, 4 + 4 + 1);
+   put_be32(rec + REC_HEAD, (uint32_t)width);
+   put_be32(rec + REC_HEAD + 4, (uint32_t)height);
+   rec[REC_HEAD + 8] = 0;
+   if (!write_all(o->fd, rec, sizeof(rec)))
       o->gone = true;
 }
 
-/* The v1 session packet: sent after the codec id at startup, and AGAIN on its
- * own whenever the frame size changes mid-stream. That is how a device-side
- * resize is signalled, so a host-side one uses the same path. */
+/* START, then the first FORMAT: what a consumer is owed once, before anything else. */
 static void
-output_session(struct output *o, int width, int height)
+output_header(struct output *o, const AVCodecContext *avctx)
 {
    if (o->fd < 0 || !o->framed)
       return;
-   uint8_t pkt[12];
-   put_be32(pkt, 0x80000000u);
-   put_be32(pkt + 4, (uint32_t)width);
-   put_be32(pkt + 8, (uint32_t)height);
-   if (!write_all(o->fd, pkt, sizeof(pkt)))
+   uint8_t rec[REC_HEAD + 1];
+   put_record(rec, REC_START, 1);
+   rec[REC_HEAD] = stream_codec(avctx);
+   if (!write_all(o->fd, rec, sizeof(rec))) {
       o->gone = true;
+      return;
+   }
+   output_format(o, avctx->width, avctx->height);
 }
-
-#define FLAG_CONFIG (1ull << 62)
-#define FLAG_KEY    (1ull << 61)
 
 static void
 output_packet(struct output *o, const AVPacket *pkt)
@@ -1589,15 +1628,14 @@ output_packet(struct output *o, const AVPacket *pkt)
       write_all(o->fd, pkt->data, (size_t)pkt->size);
       return;
    }
+   if (pkt->size <= 0)
+      return; /* a FRAME carries at least one byte */
 
-   uint64_t flags = 0;
-   if (pkt->flags & AV_PKT_FLAG_KEY)
-      flags |= FLAG_KEY;
-   const uint64_t pts = (uint64_t)(pkt->pts > 0 ? pkt->pts : 0) & ((1ull << 61) - 1);
-
-   uint8_t hdr[12];
-   put_be64(hdr, pts | flags);
-   put_be32(hdr + 8, (uint32_t)pkt->size);
+   /* FRAME: u64 ptsUs, u8 flags, then the packet. */
+   uint8_t hdr[REC_HEAD + 8 + 1];
+   put_record(hdr, REC_FRAME, 8 + 1 + (size_t)pkt->size);
+   put_be64(hdr + REC_HEAD, (uint64_t)(pkt->pts > 0 ? pkt->pts : 0));
+   hdr[REC_HEAD + 8] = (pkt->flags & AV_PKT_FLAG_KEY) ? FRAME_FLAG_KEY : 0;
    if (!write_all(o->fd, hdr, sizeof(hdr)) ||
        !write_all(o->fd, pkt->data, (size_t)pkt->size))
       o->gone = true;
@@ -1617,10 +1655,9 @@ output_config(struct output *o, const AVCodecContext *avctx)
       return;
    }
    o->sent_config = true;
-   /* Parameter sets go once, before any frame, flagged CONFIG. */
-   uint8_t hdr[12];
-   put_be64(hdr, FLAG_CONFIG);
-   put_be32(hdr + 8, (uint32_t)avctx->extradata_size);
+   /* Parameter sets go once, before any frame, as a CONFIG record. */
+   uint8_t hdr[REC_HEAD];
+   put_record(hdr, REC_CONFIG, (size_t)avctx->extradata_size);
    if (!write_all(o->fd, hdr, sizeof(hdr)) ||
        !write_all(o->fd, avctx->extradata, (size_t)avctx->extradata_size))
       o->gone = true;
@@ -2579,10 +2616,10 @@ main(int argc, char **argv)
             o->waiting_key = true;
             fprintf(stderr, "[encoder] %.0f ms: video consumer connected (%u attached)\n",
                     enc_ms(), outputs_framed_count(outs, n_outs));
-            /* If frames were already flowing, the stream header is owed immediately; otherwise it
-             * goes out when the encoder opens, which is the usual order. */
+            /* If frames were already flowing, START and FORMAT are owed immediately; otherwise
+             * they go out when the encoder opens, which is the usual order. */
             if (ready && !probe) {
-               output_header(o, codec_name, enc.avctx->width, enc.avctx->height);
+               output_header(o, enc.avctx);
                o->sent_header = true;
                output_config(o, enc.avctx);
             }
@@ -2793,18 +2830,19 @@ main(int argc, char **argv)
                      memset(o, 0, sizeof(*o));
                      o->fd = ffd;  /* framed=false: raw Annex-B, and never reaped for idleness */
                   }
-                  /* Consumers that connected before any frame existed are owed the header now.
-                   * After a resize they have already had one, and re-sending the codec id would
-                   * desynchronise the stream — they get a session packet instead. Per consumer,
-                   * because with fan-out they do not all arrive at the same point in the stream:
-                   * one may predate the first frame while another joined after a resize. */
+                  /* Consumers that connected before any frame existed are owed START and FORMAT
+                   * now. After a resize they have already had START, which is only ever the first
+                   * record of a stream — they get a FORMAT with the new size, and the new
+                   * encoder's CONFIG. Per consumer, because with fan-out they do not all arrive at
+                   * the same point in the stream: one may predate the first frame while another
+                   * joined after a resize. */
                   for (unsigned oi = 0; oi < n_outs; oi++) {
                      struct output *o = &outs[oi];
                      if (o->sent_header) {
-                        output_session(o, enc.avctx->width, enc.avctx->height);
+                        output_format(o, enc.avctx->width, enc.avctx->height);
                         o->sent_config = false;
                      } else {
-                        output_header(o, codec_name, enc.avctx->width, enc.avctx->height);
+                        output_header(o, enc.avctx);
                         o->sent_header = true;
                      }
                      output_config(o, enc.avctx);

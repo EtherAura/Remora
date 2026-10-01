@@ -13,6 +13,9 @@ namespace remora {
 struct ResolvedConfig {
     Backend backend;
     QString imageTag, containerName, dataDir;
+    // The Android release the profile names (android_version=, default 16) — the same number the
+    // image tag was derived from. Asked where the release changes what the HOST must provide.
+    int androidVersion = 16;
     QString dataBaseDir;  // overlayfs shared lower layer — mounted only when useOverlayfs
     std::optional<QString> rezmodsDir;  // shared staging tree on the docker host (opt-in)
     int width, height, dpi;

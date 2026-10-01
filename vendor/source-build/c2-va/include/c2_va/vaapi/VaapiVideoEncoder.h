@@ -42,7 +42,7 @@ namespace android {
 //     reconstructed (reference) surface and a coded (bitstream) buffer;
 //   * per frame: import the InputFrame's dma-buf as a DRM_PRIME VA surface,
 //     VPP-convert to NV12 into the encode-source surface if the input is not
-//     already NV12 (scrcpy Surface input is typically RGBA), build the
+//     already NV12 (mirror Surface input is typically RGBA), build the
 //     sequence/picture/slice VAEnc*ParameterBufferHEVC buffers, submit the
 //     misc rate-control parameter and — on key frames — the packed VPS/SPS/PPS
 //     headers, then vaBeginPicture / vaRenderPicture / vaEndPicture;

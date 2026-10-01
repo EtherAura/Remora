@@ -12,10 +12,9 @@ import java.util.TreeMap;
  * kind=list-apps (bd remora-28ix.3.4): the launchable-app listing, served over the control
  * connection as one u32-prefixed UTF-8 blob instead of a server process's stdout.
  *
- * The line format is v1's --list-apps verbatim — " * Name  pkg" for system apps, " - " for user
- * apps, package last — because remora-app-menu.sh's awk is the consumer and its contract is the
- * marker, the dot in the last field, and whitespace collapsing. Nothing here may change without
- * that script.
+ * The line format — " * Name  pkg" for system apps, " - " for user apps, package last — is fixed
+ * by its consumer: remora-app-menu.sh's awk, whose contract is the marker, the dot in the last
+ * field, and whitespace collapsing. Nothing here may change without that script.
  */
 public final class AppList {
     public static byte[] listing() {

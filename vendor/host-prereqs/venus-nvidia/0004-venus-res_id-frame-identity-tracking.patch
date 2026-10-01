@@ -525,7 +525,7 @@ index 00000000..eee6d7d0
 + * Frame-identity tracking for host-side video encode (bd remora-e5x.6).
 + *
 + * Android's frames are composed HOST-SIDE: SurfaceFlinger client-composes the
-+ * scrcpy VirtualDisplay through ANGLE -> Venus onto this GPU (measured: host GPU
++ * mirror VirtualDisplay through ANGLE -> Venus onto this GPU (measured: host GPU
 + * load 56.0% with that display present vs 12.9% without, identical animation).
 + * So the frame an encoder wants is the render target of a submission we execute.
 + *

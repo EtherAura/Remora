@@ -16,7 +16,7 @@ static constexpr qint64 kAudioHoldCapMs = 3000;
 
 Recorder::~Recorder() { finalize(); }
 
-bool Recorder::open(const QString &path, quint32 codecId, bool expectAudio, QString *error) {
+bool Recorder::open(const QString &path, quint8 codecId, bool expectAudio, QString *error) {
     codecId_ = codecId;
     audioResolved_ = !expectAudio;
     const QByteArray local = path.toLocal8Bit();
@@ -32,7 +32,7 @@ bool Recorder::open(const QString &path, quint32 codecId, bool expectAudio, QStr
     return true;
 }
 
-void Recorder::setAudioCodec(quint32 codecId) {
+void Recorder::setAudioCodec(quint8 codecId) {
     audioCodecId_ = codecId;
     audioResolved_ = true;
 }
@@ -49,7 +49,7 @@ bool Recorder::writeHeader(QString *error) {
         case kCodecH265: id = AV_CODEC_ID_HEVC; break;
         case kCodecAv1: id = AV_CODEC_ID_AV1; break;
         default:
-            if (error) *error = QStringLiteral("unrecordable codec id 0x%1").arg(codecId_, 8, 16);
+            if (error) *error = QStringLiteral("unrecordable codec 0x%1").arg(codecId_, 2, 16, QLatin1Char('0'));
             return false;
     }
     stream_ = avformat_new_stream(fmt_, nullptr);

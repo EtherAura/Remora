@@ -209,8 +209,8 @@ int runMirrorMain(QApplication &app) {
     }
 
     // The window class identity: Wayland app_id and X11 WM_CLASS both derive from the desktop
-    // file name — this is what replaces the fork's SDL_APP_ID/SDL_VIDEO_X11_WMCLASS pair, so
-    // the PIP's constant class and per-app StartupWMClass matching keep working.
+    // file name — this is what keeps the PIP's constant class and per-app StartupWMClass
+    // matching working.
     //
     // A window WITHOUT --app-id is Remora itself, and must say so: an unset desktop file name
     // leaves the compositor nothing to resolve, so the mirror showed a generic Wayland glyph

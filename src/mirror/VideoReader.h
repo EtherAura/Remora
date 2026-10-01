@@ -48,8 +48,8 @@ signals:
     // One signal per demuxer event, queued across the thread boundary, which preserves both order
     // and the session's existing handling — the GUI side kept its switch, it just no longer owns
     // the socket that feeds it.
-    void codecIdReady(quint32 codecId);
-    void sessionInfo(SessionInfo info);
+    void codecReady(quint8 codec);
+    void formatReady(FrameFormat format);
     void packetReady(MediaPacket packet);
     void streamFailed(QString why);
     void socketClosed();

@@ -80,6 +80,7 @@
 #include "core/ImageBuild.h"
 #include "core/MirrorInput.h"  // the SDL key-name table the mirror client parses key_bind with
 #include "core/Parsers.h"
+#include "core/Prereqs.h"  // releaseNeedsAshmem — the readiness probe asks it of the profile
 #include "engine/SourceBuild.h"
 #include "core/SourcePatches.h"
 #include "store/Store.h"
@@ -579,8 +580,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         // gpu-host comes from the RESOLVED profile, not from the backend — the same correction
         // `remora check` already carries. It used to be `b == Vm`, so the GPU/Venus readiness rows
         // could never appear in the GUI on bare or remote however the profile was configured.
+        const ResolvedConfig rc = resolve(cfg_, b);
         auto *w = new ReadinessWorker(b, cfg_.backend.sshHost.value_or(QString()).trimmed(),
-                                      resolve(cfg_, b).gpuMode == GpuMode::Host, nullptr);
+                                      rc.gpuMode == GpuMode::Host,
+                                      rc.networkMode == QLatin1String("macvlan"),
+                                      !rc.sharedInputs.isEmpty(),
+                                      releaseNeedsAshmem(rc.androidVersion), nullptr);
         connect(w, &ReadinessWorker::sigReady, this, [this](bool ready, QStringList lines) {
             appendLog(QStringLiteral("── deploy-target readiness ──"));
             for (const QString &l : lines) appendLog(l);
@@ -1914,8 +1919,9 @@ void MainWindow::buildUi() {
             navKeyHints_ << keyHint;
         }
         // A captured key is normalised to its bare keycode, refused outright when it cannot be
-        // spelled for the mirror, and taken from any other row that held it — the fork refuses a
-        // duplicate key at launch, which would cost the whole mirror for one stale row.
+        // spelled for the mirror, and taken from any other row that held it — a key_bind naming
+        // one key twice is ambiguous, and the previous mirror client refused it at launch, which
+        // cost the whole mirror for one stale row.
         for (int i = 0; i < navKeyEdits_.size(); ++i) {
             connect(navKeyEdits_.at(i), &QKeySequenceEdit::keySequenceChanged, this,
                     [this, i](const QKeySequence &seq) {

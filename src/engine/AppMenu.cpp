@@ -176,7 +176,8 @@ bool appMenuSync(Spawner &sp, const RemoraConfig &cfg, Backend backend, const QS
     env.insert(QStringLiteral("ICONDUMP_DEX"),
                vendorScript(QStringLiteral("host-scripts"), QStringLiteral("icondump.dex")));
     // The script's app enumeration runs the in-house client (remora mirror --list-apps): hand it
-    // the binary this engine IS. No server jar since the v1 purge — the agent answers.
+    // the binary this engine IS. Nothing is pushed to the device for it — the in-image agent
+    // answers.
     env.insert(QStringLiteral("REMORA_BIN"), self);
     const ProcResult r = sp.run(
         {QStringLiteral("bash"), script, target, execTmpl, instance, execMirror, execDesktop,

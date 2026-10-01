@@ -12,7 +12,7 @@
 # same failure mode remora-fwd.rc exists to prevent. Init also restarts it if it dies, which is
 # the whole of the supervision a long-lived listener needs.
 #
-# `user shell` is the capability set the scrcpy-server ran with and everything the agent needs:
+# `user shell` is everything the agent needs:
 # input injection, SurfaceControl, MediaCodec, and — via com.android.shell's
 # READ_CLIPBOARD_IN_BACKGROUND — the clipboard from the background. Running as root would be a
 # larger blast radius for no new capability. `group shell log` matches, and log lets it write
@@ -27,7 +27,7 @@
 #
 # /remora/agent.dex exists only because Remora mounted it. A container without that bind logs a
 # failed start and carries on booting; nothing else depends on this service, and the client's
-# probe answers its absence by falling back to the v1 jar path.
+# probe answers its absence with a refusal naming the image rebuild.
 service remora_agent /system/bin/app_process -Djava.class.path=/remora/agent.dex /system/bin com.remora.agent.Main
     class late_start
     user shell

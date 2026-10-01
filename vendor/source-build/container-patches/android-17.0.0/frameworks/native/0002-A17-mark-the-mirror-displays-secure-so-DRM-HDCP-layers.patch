@@ -13,8 +13,7 @@ fine on the secure primary display but show black in the mirror. The in-image
 agent runs as shell and cannot request VIRTUAL_DISPLAY_FLAG_SECURE, so upgrade
 its two displays — "remora-mirror" and "remora-display" — to secure in
 createVirtualDisplay. The container has no real external output to protect.
-Fixes bd remora-wes. (First written for the scrcpy server's "scrcpy" display;
-retargeted when the agent replaced it, after which it had matched nothing.)
+Fixes bd remora-wes.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 Change-Id: I1317186ce17e8017d082f4f2d3aa95404deb2fe6

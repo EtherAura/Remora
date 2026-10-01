@@ -38,7 +38,7 @@ public:
     // "cuda" / "nvdec"; "vaapi" (render-node probe, nvidia/nouveau nodes rejected);
     // anything else = an explicit /dev/dri node for VAAPI. Hw setup failure falls back to
     // software with a warning — only a mid-stream download failure is fatal.
-    bool init(quint32 codecId, const QString &hwdec, QString *error);
+    bool init(quint8 codecId, const QString &hwdec, QString *error);
     // Build the hw device context now rather than at the first packet. Optional and idempotent:
     // init() does it itself if this was never called.
     void warmHardware(const QString &hwdec);
@@ -55,8 +55,8 @@ public:
     // Frames come out as the decoder produced them (NV12 in practice) and are NOT converted here.
     // Converting cost 7.4 ms/frame of CPU colour conversion plus a 3.0 ms 30 MiB copy at
     // 3760x1992, measured — and then the result was uploaded to the GPU anyway, at 4 bytes/pixel
-    // instead of 1.5. scrcpy never paid any of it: SDL took the YUV planes and the GPU converted.
-    // The renderer does the same now, so this just hands over a reference (bd remora-28ix.2.1).
+    // instead of 1.5. The renderer takes the YUV planes and converts on the GPU, so this just
+    // hands over a reference (bd remora-28ix.2.1).
     QList<VideoFrame> decode(const QByteArray &payload, QString *error);
 
 private:

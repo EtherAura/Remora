@@ -32,7 +32,7 @@ every other alignment rule, and the padded columns are never addressed because
 the guest is told the real width alongside the reported stride.
 
 Verified end to end at 3760x1992 through `remora up`: Xid 0, no RenderEngine
-abort, and scrcpy reporting "Texture: 3760x1992".
+abort, and the mirror receiving 3760x1992 frames.
 
 ---
  vtest/vtest_gpu_alloc.c | 24 +++++++++++++++++++++++-

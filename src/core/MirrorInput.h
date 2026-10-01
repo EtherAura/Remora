@@ -67,8 +67,8 @@ qint32 slotButton(int slot);
 
 // Key names ---------------------------------------------------------------------------------------
 //
-// `key_bind` spells keys the way SDL does, because the fork's --key-bind did. This table is the
-// ONE place that mapping lives: the Viewer's card writes names through it and the client reads
+// `key_bind` spells keys the way SDL does — the spelling the knob has always used. This table is
+// the ONE place that mapping lives: the Viewer's card writes names through it and the client reads
 // them back through it, so a name the card can produce is always a name the client honours. (A
 // second table in the UI is exactly the drift this project keeps paying for.) Qt Core only — no
 // QKeySequence here, that is QtGui.
@@ -100,12 +100,12 @@ std::optional<BindAction> chordAction(int qtKey);
 // Printable input travels as INJECT_TEXT instead; this map is for everything that isn't text.
 std::optional<qint32> androidKeycode(int qtKey);
 
-// Qt modifiers → AMETA_* state. Like the reference client, both the generic and the -LEFT bit
-// are set (Android's KeyEvent.normalizeMetaState() expects the pairing).
+// Qt modifiers → AMETA_* state. Both the generic and the -LEFT bit are set (Android's
+// KeyEvent.normalizeMetaState() expects the pairing).
 qint32 androidMetaState(Qt::KeyboardModifiers mods);
 
 // Widget coordinates → video-frame coordinates under stretched fit (the mirror always renders
-// --render-fit=stretched semantics: the frame fills the widget on both axes independently).
+// stretched: the frame fills the widget on both axes independently).
 QPoint mapToVideo(QPoint widgetPos, QSize widgetSize, QSize videoSize);
 
 }  // namespace remora::mirror

@@ -401,7 +401,7 @@ static int cmdCheck(const QStringList &a, QTextStream &out) {
     const bool gpu = a.contains(QStringLiteral("--gpu-host")) || rcc.gpuMode == GpuMode::Host;
     const auto results =
         checkReadiness(b, caps, gpu, rcc.networkMode == QLatin1String("macvlan"),
-                       !rcc.sharedInputs.isEmpty());
+                       !rcc.sharedInputs.isEmpty(), releaseNeedsAshmem(rcc.androidVersion));
     // Say WHICH profile this is about. A preflight that names no subject reads as a statement
     // about the machine, so when it did silently report on a different profile there was nothing
     // in the output to contradict that reading (bd remora-4ei.70).
@@ -1063,7 +1063,7 @@ static int cmdApp(const QStringList &a) {
     if (mode.startsWith(QLatin1String("freeform"))) {
         // A phone-shaped popup: its own compact display geometry instead of the inherited mirror
         // window frame, opened small (fixed height, width from the display's aspect). Backing out
-        // of the app closes the window (fork --close-on-app-exit) — a popup IS its app. NB: the
+        // of the app closes the window (close_on_app_exit) — a popup IS its app. NB: the
         // display keeps its system decorations — without a home task, apps that background on
         // back (instead of finishing) have nowhere to go and BACK stops working entirely.
         cfg.mirror.extra << QStringLiteral("--server-param=close_on_app_exit=true");
@@ -1073,8 +1073,8 @@ static int cmdApp(const QStringList &a) {
         const int dpi = ff.section(QLatin1Char('/'), 1, 1).toInt();
         const int h = 800;
         const int w = (dw > 0 && dh > 0) ? qMax(240, dw * h / dh) : 360;
-        // Reflowing popup: the virtual display continuously follows the window (fork
-        // --flex-display), so finishing a resize relayouts the app to the new aspect; the
+        // Reflowing popup: the virtual display continuously follows the window
+        // (flex_display), so finishing a resize relayouts the app to the new aspect; the
         // stretched render only bridges the moment in between. Flex maps window px 1:1 to
         // display px — scale the whole geometry (dpi included) down to the popup size, and
         // leave the window size to it (--window-* is rejected with flex).
@@ -2251,77 +2251,7 @@ static int cmdBuild(const QStringList &a, QTextStream &out) {
     return ok ? 0 : 1;
 }
 
-int main(int argc, char **argv) {
-    // Branch before constructing an app object — GUI needs QApplication, CLI needs QCoreApplication,
-    // and only one may exist. Peek argv directly (QCoreApplication::arguments() isn't up yet).
-    if (argc > 1 && QLatin1String(argv[1]) == QLatin1String("gui")) return runGui(argc, argv);
-
-    // The in-house mirror client (bd remora-28ix.2) — a QApplication of its own, same pattern.
-    if (argc > 1 && QLatin1String(argv[1]) == QLatin1String("mirror")) return runMirror(argc, argv);
-
-    // `reddit-login` with no --cookie opens an embedded reddit.com login window (WebEngine needs a
-    // QApplication); with --cookie it stays headless (handled below under QCoreApplication).
-    if (argc > 1 && QLatin1String(argv[1]) == QLatin1String("reddit-login")) {
-        bool hasCookie = false;
-        for (int i = 2; i < argc; ++i)
-            if (QLatin1String(argv[i]) == QLatin1String("--cookie")) hasCookie = true;
-        if (!hasCookie) return runRedditLoginGui(argc, argv);
-    }
-
-    // `app` may show the first-launch desktop/freeform prompt — give it a QApplication when a
-    // display is reachable (menu launches always have one); everything else stays headless.
-    std::unique_ptr<QCoreApplication> app;
-    if (argc > 1 && QLatin1String(argv[1]) == QLatin1String("app")
-        && (qEnvironmentVariableIsSet("DISPLAY") || qEnvironmentVariableIsSet("WAYLAND_DISPLAY")))
-        app = std::make_unique<QApplication>(argc, argv);
-    else
-        app = std::make_unique<QCoreApplication>(argc, argv);
-    QCoreApplication::setApplicationName(QStringLiteral("remora"));
-    QTextStream out(stdout);
-    const QStringList args = QCoreApplication::arguments();
-    const QString cmd = args.size() > 1 ? args[1] : QString();
-
-    if (cmd == QLatin1String("plan")) return cmdPlan(args, out);
-    if (cmd == QLatin1String("status")) return cmdStatus(args, out);
-    if (cmd == QLatin1String("check")) return cmdCheck(args, out);
-    if (cmd == QLatin1String("certify")) return cmdCertify(args, out);
-    if (cmd == QLatin1String("up")) return cmdUp(args);
-    if (cmd == QLatin1String("sleep")) return cmdSleep(args);
-    if (cmd == QLatin1String("auto-sleep")) return cmdAutoSleep(args);
-    if (cmd == QLatin1String("update-watch")) return cmdUpdateWatch(args);
-    if (cmd == QLatin1String("service")) return cmdService(args, out);
-    if (cmd == QLatin1String("reset-data")) return cmdResetData(args, out);
-    if (cmd == QLatin1String("pip")) return cmdPip(args, out);
-    if (cmd == QLatin1String("reconnect")) return cmdReconnect(args);
-    if (cmd == QLatin1String("app")) return cmdApp(args);
-    if (cmd == QLatin1String("apps")) return cmdApps(args);
-    if (cmd == QLatin1String("desktop")) return cmdDesktop(args);
-    if (cmd == QLatin1String("shell")) return cmdShell(args);
-    if (cmd == QLatin1String("logcat")) return cmdLogcat(args);
-    if (cmd == QLatin1String("prop")) return cmdProp(args);
-    if (cmd == QLatin1String("install")) return cmdInstall(args);
-    if (cmd == QLatin1String("reddit-login")) return cmdRedditLogin(args);
-    if (cmd == QLatin1String("doctor")) return cmdDoctor(args, out);
-    if (cmd == QLatin1String("rotate")) return cmdRotate(args, out);
-    if (cmd == QLatin1String("gboard-reset")) return cmdGboardReset(args, out);
-    if (cmd == QLatin1String("shot")) return cmdShot(args, out);
-    if (cmd == QLatin1String("record")) return cmdRecord(args, out);
-    if (cmd == QLatin1String("watch-boot")) return cmdWatchBoot(args);
-    if (cmd == QLatin1String("push-app")) return cmdPushApp(args, out);
-    if (cmd == QLatin1String("recipe")) return cmdRecipe(args, out);
-    if (cmd == QLatin1String("build"))
-        return args.contains(QStringLiteral("--source")) ? cmdSourceBuild(args, out)
-                                                         : cmdBuild(args, out);
-    if (cmd == QLatin1String("venus-build")) return cmdVenusBuild(args, out);
-    if (cmd == QLatin1String("transfer-apps")) return cmdTransferApps(args, out);
-    if (cmd == QLatin1String("export-apks")) return cmdExportApks(args, out);
-    if (cmd == QLatin1String("import-apks")) return cmdImportApks(args, out);
-
-    // A word that is not a command is an error, and scripts need to see it as one: this used to
-    // print the usage and exit 0 for `remora bogus`, exactly as for a bare `remora`.
-    const bool unknown = !cmd.isEmpty() && cmd != QLatin1String("help") &&
-                         cmd != QLatin1String("--help") && cmd != QLatin1String("-h");
-    if (unknown) QTextStream(stderr) << "remora: unknown command '" << cmd << "'\n\n";
+static void printUsage(QTextStream &out) {
     out << "remora (C++/Qt6) — commands:\n"
         << "  plan      [--backend bare|remote]\n"
         << "  status    [--backend …]\n"
@@ -2366,5 +2296,92 @@ int main(int argc, char **argv) {
         << "  import-apks <to> <dir> [--dry-run]          install APKs from a local dir\n"
            "                            <from>/<to> is a profile name or a raw adb target\n"
         << "  gui                       launch the config workspace\n";
+}
+
+int main(int argc, char **argv) {
+    // Branch before constructing an app object — GUI needs QApplication, CLI needs QCoreApplication,
+    // and only one may exist. Peek argv directly (QCoreApplication::arguments() isn't up yet).
+    if (argc > 1 && QLatin1String(argv[1]) == QLatin1String("gui")) return runGui(argc, argv);
+
+    // The in-house mirror client (bd remora-28ix.2) — a QApplication of its own, same pattern.
+    if (argc > 1 && QLatin1String(argv[1]) == QLatin1String("mirror")) return runMirror(argc, argv);
+
+    // `reddit-login` with no --cookie opens an embedded reddit.com login window (WebEngine needs a
+    // QApplication); with --cookie it stays headless (handled below under QCoreApplication).
+    if (argc > 1 && QLatin1String(argv[1]) == QLatin1String("reddit-login")) {
+        bool hasCookie = false;
+        for (int i = 2; i < argc; ++i)
+            if (QLatin1String(argv[i]) == QLatin1String("--cookie")) hasCookie = true;
+        if (!hasCookie) return runRedditLoginGui(argc, argv);
+    }
+
+    // `app` may show the first-launch desktop/freeform prompt — give it a QApplication when a
+    // display is reachable (menu launches always have one); everything else stays headless.
+    std::unique_ptr<QCoreApplication> app;
+    if (argc > 1 && QLatin1String(argv[1]) == QLatin1String("app")
+        && (qEnvironmentVariableIsSet("DISPLAY") || qEnvironmentVariableIsSet("WAYLAND_DISPLAY")))
+        app = std::make_unique<QApplication>(argc, argv);
+    else
+        app = std::make_unique<QCoreApplication>(argc, argv);
+    QCoreApplication::setApplicationName(QStringLiteral("remora"));
+    QTextStream out(stdout);
+    const QStringList args = QCoreApplication::arguments();
+    const QString cmd = args.size() > 1 ? args[1] : QString();
+
+    // `--help` or `-h` after a command asks for help; it never runs the command. Each command
+    // reads only the flags it knows, so these used to be ignored, and `remora up --help` deployed
+    // the active profile for real. The passthrough commands are exempt: their
+    // arguments belong to the tool they hand them to (`remora shell ls -h`).
+    static const QStringList passthrough{QStringLiteral("shell"), QStringLiteral("logcat"),
+                                         QStringLiteral("install"), QStringLiteral("prop")};
+    const QStringList rest = args.mid(2);
+    if (!passthrough.contains(cmd) &&
+        (rest.contains(QStringLiteral("--help")) || rest.contains(QStringLiteral("-h")))) {
+        printUsage(out);
+        return 0;
+    }
+
+    if (cmd == QLatin1String("plan")) return cmdPlan(args, out);
+    if (cmd == QLatin1String("status")) return cmdStatus(args, out);
+    if (cmd == QLatin1String("check")) return cmdCheck(args, out);
+    if (cmd == QLatin1String("certify")) return cmdCertify(args, out);
+    if (cmd == QLatin1String("up")) return cmdUp(args);
+    if (cmd == QLatin1String("sleep")) return cmdSleep(args);
+    if (cmd == QLatin1String("auto-sleep")) return cmdAutoSleep(args);
+    if (cmd == QLatin1String("update-watch")) return cmdUpdateWatch(args);
+    if (cmd == QLatin1String("service")) return cmdService(args, out);
+    if (cmd == QLatin1String("reset-data")) return cmdResetData(args, out);
+    if (cmd == QLatin1String("pip")) return cmdPip(args, out);
+    if (cmd == QLatin1String("reconnect")) return cmdReconnect(args);
+    if (cmd == QLatin1String("app")) return cmdApp(args);
+    if (cmd == QLatin1String("apps")) return cmdApps(args);
+    if (cmd == QLatin1String("desktop")) return cmdDesktop(args);
+    if (cmd == QLatin1String("shell")) return cmdShell(args);
+    if (cmd == QLatin1String("logcat")) return cmdLogcat(args);
+    if (cmd == QLatin1String("prop")) return cmdProp(args);
+    if (cmd == QLatin1String("install")) return cmdInstall(args);
+    if (cmd == QLatin1String("reddit-login")) return cmdRedditLogin(args);
+    if (cmd == QLatin1String("doctor")) return cmdDoctor(args, out);
+    if (cmd == QLatin1String("rotate")) return cmdRotate(args, out);
+    if (cmd == QLatin1String("gboard-reset")) return cmdGboardReset(args, out);
+    if (cmd == QLatin1String("shot")) return cmdShot(args, out);
+    if (cmd == QLatin1String("record")) return cmdRecord(args, out);
+    if (cmd == QLatin1String("watch-boot")) return cmdWatchBoot(args);
+    if (cmd == QLatin1String("push-app")) return cmdPushApp(args, out);
+    if (cmd == QLatin1String("recipe")) return cmdRecipe(args, out);
+    if (cmd == QLatin1String("build"))
+        return args.contains(QStringLiteral("--source")) ? cmdSourceBuild(args, out)
+                                                         : cmdBuild(args, out);
+    if (cmd == QLatin1String("venus-build")) return cmdVenusBuild(args, out);
+    if (cmd == QLatin1String("transfer-apps")) return cmdTransferApps(args, out);
+    if (cmd == QLatin1String("export-apks")) return cmdExportApks(args, out);
+    if (cmd == QLatin1String("import-apks")) return cmdImportApks(args, out);
+
+    // A word that is not a command is an error, and scripts need to see it as one: this used to
+    // print the usage and exit 0 for `remora bogus`, exactly as for a bare `remora`.
+    const bool unknown = !cmd.isEmpty() && cmd != QLatin1String("help") &&
+                         cmd != QLatin1String("--help") && cmd != QLatin1String("-h");
+    if (unknown) QTextStream(stderr) << "remora: unknown command '" << cmd << "'\n\n";
+    printUsage(out);
     return unknown ? 2 : 0;
 }

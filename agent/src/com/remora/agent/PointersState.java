@@ -7,16 +7,16 @@ import java.util.List;
 
 /**
  * Tracks the live pointers of one control session and materializes them into the parallel
- * PointerProperties/PointerCoords arrays MotionEvent.obtain() wants. The fork's PointersState,
- * ported whole: the wire pointer id (client-chosen, e.g. -1 for the mouse) maps to the lowest
- * free local id, UP pointers are reaped after each update so a 10-finger session never leaks
- * slots.
+ * PointerProperties/PointerCoords arrays MotionEvent.obtain() wants. A pointer's key is the
+ * client's tool and pointer id together (Controller.pointerKey), so a finger and the mouse never
+ * share a slot; each key maps to the lowest free local id, and UP pointers are reaped after each
+ * update so a 10-finger session never leaks slots.
  */
 public final class PointersState {
     public static final int MAX_POINTERS = 10;
 
     static final class Pointer {
-        final long id;      // wire id, as received from the client
+        final long id;      // pointer key: tool and wire id
         final int localId;  // dense id for PointerProperties
         float x, y, pressure;
         boolean up;
@@ -36,7 +36,7 @@ public final class PointersState {
         return false;
     }
 
-    /** Index of the pointer with this wire id, creating it if room remains; -1 when full. */
+    /** Index of the pointer with this key, creating it if room remains; -1 when full. */
     public int getPointerIndex(long id) {
         for (int i = 0; i < pointers.size(); ++i) {
             if (pointers.get(i).id == id) return i;

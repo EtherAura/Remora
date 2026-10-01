@@ -103,8 +103,8 @@ void FramePrefetcher::run() {
 }
 
 
-// The fork's lit heuristic: a compressed screencap of a rendered frame is far bigger than one
-// of a black screen. Threshold and grace are its measured constants.
+// The lit heuristic: a compressed screencap of a rendered frame is far bigger than one of a
+// black screen. Threshold and grace are measured constants.
 static constexpr qint64 kLitScreencapBytes = 100000;
 static constexpr qint64 kLitGraceMs = 60000;
 
@@ -365,11 +365,11 @@ void SplashController::finishAnimation() {
 
 void SplashController::maybeHandOff() {
     if (handedOff_ || aborted_ || !ready_) return;
-    // `ready` is necessary but NOT sufficient (fork boot_anim.c, bd remora-82x): with a status
-    // file, only the engine's REMORA_ATTACH — written when adb is verified and the chain is
-    // about to adopt — permits hand-off. Ready alone would adopt at the FIRST boot_completed,
-    // under which the play-spoof stop/start then collapses the session. Manual launches
-    // (no status file) keep ready-alone semantics.
+    // `ready` is necessary but NOT sufficient (bd remora-82x): with a status file, only the
+    // engine's REMORA_ATTACH — written when adb is verified and the chain is about to adopt —
+    // permits hand-off. Ready alone would adopt at the FIRST boot_completed, under which the
+    // play-spoof stop/start then collapses the session. Manual launches (no status file) keep
+    // ready-alone semantics.
     if (!o_.statusPath.isEmpty() && !attachSeen_) return;
     handedOff_ = true;
     // Boot is done, so let the animation wind up: the repeat-forever part stops at the end of its

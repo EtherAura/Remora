@@ -14,13 +14,12 @@
 namespace remora::mirror {
 
 // The mirror surface: uploads decoded frames to a GPU texture and lets the GPU scale them to the
-// widget (--render-fit=stretched semantics), and translates Qt input into control messages.
+// widget (stretched to fill), and translates Qt input into control messages.
 // Window sizing follows the frame's aspect on first frame; afterwards the desktop owns the frame.
 //
 // GPU rather than QPainter: drawImage() with SmoothPixmapTransform resamples on the CPU, on the
-// GUI thread, for every frame — 7.5 MP per frame at the daily-driver geometry. scrcpy never paid
-// that because SDL scaled with a texture, so the in-house client's cutover moved per-frame
-// rescaling onto the CPU and the mirror got slower for it (bd remora-28ix.2.1).
+// GUI thread, for every frame — 7.5 MP per frame at the daily-driver geometry, which made the
+// mirror measurably slower (bd remora-28ix.2.1).
 class MirrorWindow : public QOpenGLWidget, protected QOpenGLFunctions {
     Q_OBJECT
 public:
@@ -29,7 +28,7 @@ public:
 
     // Splash mode: show immediately at a fixed size (status text, then boot animation), and
     // keep that geometry when the live mirror takes over — the adopted window keeps its
-    // geometry, matching the fork's hand-off behavior.
+    // geometry through the hand-off.
     void showSplash(QSize initialSize);
     void setSplashFrame(const QImage &frame);
     // The animation reached its end (or gave up) before any live frame arrived: drop the splash
@@ -82,7 +81,7 @@ private:
     void sendKey(QKeyEvent *e, quint8 action);
     void sendBindAction(BindAction act, quint8 action);
     std::optional<BindAction> boundAction(QKeyEvent *e) const;
-    Position positionAt(QPointF widgetPos) const;
+    FramePoint positionAt(QPointF widgetPos) const;
 
     MirrorSession *session_;
     QImage frame_;

@@ -9,8 +9,10 @@ namespace remora {
 
 static bool flag(const std::optional<bool> &v) { return v.has_value() && *v; }
 
+bool releaseNeedsAshmem(int androidVersion) { return androidVersion < 17; }
+
 QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &caps, bool gpuHost,
-                                     bool macvlan, bool sharedInputs) {
+                                     bool macvlan, bool sharedInputs, bool needsAshmem) {
     QVector<PrereqResult> out;
     const auto add = [&](const QString &key, const QString &label, bool ok, const QString &remedy,
                          const QString &severity = QStringLiteral("required")) {
@@ -20,9 +22,9 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
     // Every target's connect launches the local adb client — a missing tool otherwise
     // surface only as a confusing late failure inside the connect step.
     add("adb", "adb present on the host", caps.adbPresent, "install android-tools (provides adb)");
-    // No scrcpy prereq since the cutover (bd remora-28ix.2): the mirror client lives inside the
-    // remora binary, and its device half is the agent the image bakes — an image without it gets
-    // the client's own refusal at connect, where the deployed image is known.
+    // No mirror-client prereq: the client lives inside the remora binary, and its device half is
+    // the agent the image bakes — an image without it gets the client's own refusal at connect,
+    // where the deployed image is known.
 
     if (target == Backend::Bare) {
         add("docker_group", "user in the 'docker' group", caps.inDockerGroup,
@@ -32,8 +34,10 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
         // first docker call with a message about a socket, one step after being told all was well.
         add("docker_daemon", "docker daemon reachable", flag(caps.dockerDaemonOk),
             "start the docker service (systemctl start docker) — or unset a stale DOCKER_HOST");
-        add("ashmem", "IBT-fixed ashmem_linux.ko loaded", caps.modAshmem,
-            "modprobe the IBT-fixed ashmem_linux (bare metal only)");
+        // Android 16 only — an Android 17 image runs on memfd and never needs the module.
+        if (needsAshmem)
+            add("ashmem", "IBT-fixed ashmem_linux.ko loaded (Android 16 images)", caps.modAshmem,
+                "modprobe the IBT-fixed ashmem_linux (bare metal only)");
     } else {  // Backend::Remote
         add("ssh_remote", "remote host reachable over ssh", flag(caps.sshReachable),
             "confirm ssh access (key-based) to the remote host");

@@ -15,7 +15,7 @@ HEVC encoder (hardware/remora/c2-va) can drive it end to end:
 - EncodeComponent: skip the gralloc FormatConverter when the encoder
   reports handlesInputFormatConversion() (the VAAPI core VPP-converts).
 - VideoEncoder: add the handlesInputFormatConversion() hook.
-- EncodeHelpers: extract HEVC VPS/SPS/PPS in extractCSDInfo so scrcpy
+- EncodeHelpers: extract HEVC VPS/SPS/PPS in extractCSDInfo so the mirror
   gets a proper codec-config packet for H.265 streams.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
@@ -160,7 +160,7 @@ index 12152e6..9924150 100644
 +        }
 +    }
 +    // The VF handles up to 4K and the encoder writes its own level_idc into the packed SPS, so a
-+    // fixed conservative level here is enough for the framework/scrcpy negotiation.
++    // fixed conservative level here is enough for the framework/mirror negotiation.
 +    if (!info.F(info.v.level).supportsAtAll(info.v.level)) {
 +        info.set().level = C2Config::LEVEL_HEVC_MAIN_5_1;
 +    }

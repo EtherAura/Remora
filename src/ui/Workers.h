@@ -43,7 +43,9 @@ private:
 class ReadinessWorker : public QThread {
     Q_OBJECT
 public:
-    ReadinessWorker(Backend backend, QString sshHost, bool gpuHost, QObject *parent = nullptr);
+    // The checkReadiness() asks, taken from the RESOLVED profile exactly as `remora check` does.
+    ReadinessWorker(Backend backend, QString sshHost, bool gpuHost, bool macvlan, bool sharedInputs,
+                    bool needsAshmem, QObject *parent = nullptr);
 signals:
     void sigReady(bool ready, QStringList lines);
 
@@ -53,7 +55,7 @@ protected:
 private:
     Backend backend_;
     QString sshHost_;
-    bool gpuHost_;
+    bool gpuHost_, macvlan_, sharedInputs_, needsAshmem_;
 };
 
 // Manual desktop app-menu operations from the Integration card: refresh a profile's launcher

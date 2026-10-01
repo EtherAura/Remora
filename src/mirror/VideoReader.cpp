@@ -16,7 +16,7 @@ VideoReader::VideoReader(qintptr fd) : fd_(fd) {
     // unknown fails at CONNECT time with a warning and then silently delivers nothing, which would
     // look exactly like the black mirror this whole area exists to stop.
     qRegisterMetaType<MediaPacket>("MediaPacket");
-    qRegisterMetaType<SessionInfo>("SessionInfo");
+    qRegisterMetaType<FrameFormat>("FrameFormat");
 }
 
 VideoReader::~VideoReader() {
@@ -56,11 +56,11 @@ void VideoReader::onReadyRead() {
         switch (demux_.next()) {
             case StreamDemuxer::Event::NeedMoreData:
                 return;
-            case StreamDemuxer::Event::CodecId:
-                emit codecIdReady(demux_.codecId());
+            case StreamDemuxer::Event::Started:
+                emit codecReady(demux_.codec());
                 break;
-            case StreamDemuxer::Event::Session:
-                emit sessionInfo(demux_.session());
+            case StreamDemuxer::Event::Format:
+                emit formatReady(demux_.format());
                 break;
             case StreamDemuxer::Event::Packet: {
                 MediaPacket pkt = demux_.takePacket();
@@ -86,12 +86,9 @@ void VideoReader::onReadyRead() {
                 emit packetReady(std::move(pkt));
                 break;
             }
-            case StreamDemuxer::Event::StreamDisabled:
-                emit streamFailed(QStringLiteral("the server disabled the video stream"));
-                return;
-            case StreamDemuxer::Event::ConfigError:
-                emit streamFailed(
-                    QStringLiteral("server-side configuration error on the video stream"));
+            case StreamDemuxer::Event::Unavailable:
+            case StreamDemuxer::Event::Failed:
+                emit streamFailed(videoEndMessage(demux_.detail()));
                 return;
             case StreamDemuxer::Event::Error:
                 emit streamFailed(

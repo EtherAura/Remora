@@ -6,11 +6,10 @@ import android.view.Surface;
  * A source of composed frames, behind the smallest interface that lets one encode loop and one
  * compose loop serve both session kinds (bd remora-28ix.3.3).
  *
- * The fork splits this into SurfaceCapture with ScreenCapture / NewDisplayCapture / CameraCapture
- * subclasses carrying crop, orientation locks, rotation angles and a GL filter chain. None of that
- * is in Remora's path — the mirror is the whole display and the only scaling is max_size, which
- * the virtual display applies by itself — so what remains is: work out a size, hand the display a
- * surface, and be pokeable when nothing is composing.
+ * There is no capture hierarchy carrying crop, orientation locks, rotation angles or a GL filter
+ * chain, because none of that is in Remora's path — the mirror is the whole display and the only
+ * scaling is max_size, which the virtual display applies by itself — so what remains is: work out
+ * a size, hand the display a surface, and be pokeable when nothing is composing.
  */
 public interface Capture {
     /**

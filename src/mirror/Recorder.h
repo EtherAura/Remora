@@ -10,9 +10,8 @@ struct AVStream;
 
 namespace remora::mirror {
 
-// Records the received packets into a container without re-encoding (the fork's recorder
-// semantics: config payload becomes stream extradata verbatim, dts = pts, PTS normalized to
-// the first frame). The container finalizes on close — finalize() must run on every exit path,
+// Records the received packets into a container without re-encoding (config payload becomes
+// stream extradata verbatim, dts = pts, PTS normalized to the first frame). The container finalizes on close — finalize() must run on every exit path,
 // which the session's stop() guarantees (including SIGTERM via the signal pipe).
 //
 // Audio rides in the same container (bd remora-28ix.2.5): the session taps the audio demuxer's
@@ -29,10 +28,10 @@ public:
     ~Recorder();
 
     // expectAudio: hold the header for an audio stream (the session passes its --audio flag).
-    bool open(const QString &path, quint32 codecId, bool expectAudio, QString *error);
+    bool open(const QString &path, quint8 codecId, bool expectAudio, QString *error);
     void setSize(QSize size) { size_ = size; }  // from session packets, pre-header
     // The audio stream's codec id arrived — the header can carry an audio stream.
-    void setAudioCodec(quint32 codecId);
+    void setAudioCodec(quint8 codecId);
     // Stop holding the header: audio died, was disabled, or never showed up.
     void audioUnavailable();
     bool push(const MediaPacket &pkt, QString *error);       // video packets
@@ -49,7 +48,7 @@ private:
     AVStream *audioStream_ = nullptr;  // owned by fmt_; null when the container has no audio
     QByteArray extradata_, audioExtradata_;
     QSize size_;
-    quint32 codecId_ = 0, audioCodecId_ = 0;
+    quint8 codecId_ = 0, audioCodecId_ = 0;
     bool audioResolved_ = true;  // false = header held for setAudioCodec/audioUnavailable
     qint64 holdSinceMs_ = -1;    // when the first video packet started waiting (the cap's clock)
     QList<MediaPacket> pendingVideo_, pendingAudio_;  // buffered while the header is held

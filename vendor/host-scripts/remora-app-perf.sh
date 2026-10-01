@@ -26,7 +26,7 @@
 #   Append results to a file to build a comparable history:
 #     remora-app-perf.sh --tag baseline | tee -a docs/app-perf-results.txt
 #
-# DETACH THE MIRROR FIRST. A live scrcpy mirror encodes every frame the compositor produces, which
+# DETACH THE MIRROR FIRST. A live mirror encodes every frame the compositor produces, which
 # both steals CPU and changes the frame pipeline being measured — it is the single largest source
 # of noise here. The script refuses to run if it sees one, because a silently-contaminated number
 # is worse than no number.
@@ -46,8 +46,8 @@ done
 
 adb get-state >/dev/null 2>&1 || { echo "no adb device — try 'adb connect <ip>:5555'" >&2; exit 1; }
 
-if pgrep -f '[a]pp/scrcpy' >/dev/null 2>&1 || pgrep -f '[r]emora mirror' >/dev/null 2>&1; then
-  echo "REFUSING TO RUN: a scrcpy mirror is attached." >&2
+if pgrep -f '[r]emora mirror' >/dev/null 2>&1; then
+  echo "REFUSING TO RUN: a mirror is attached." >&2
   echo "  Detach it first (kill the pid, or stop before benchmarking); reattach with" >&2
   echo "  './build/remora reconnect' afterwards." >&2
   exit 1

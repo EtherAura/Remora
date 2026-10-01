@@ -22,9 +22,9 @@ import java.util.Locale;
  * launch an app onto it, reflow it when the client's window is resized, and watch for the user
  * leaving the app when the session exists only to host it.
  *
- * The fork gates the reflow behind flex_display=true. Here it is simply how a new display
- * behaves: the client window IS the display, so a resized window that stretches pixels instead of
- * reflowing content is never what was wanted. Density is rescaled with the size for the same
+ * The reflow is not opt-in; it is simply how a new display behaves. The client window IS the
+ * display, so a resized window that stretches pixels instead of reflowing content is never what
+ * was wanted. Density is rescaled with the size for the same
  * reason — a fixed initial dpi makes a grown window's UI look tiny.
  */
 public final class NewDisplayCapture implements Capture {

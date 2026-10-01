@@ -13,7 +13,7 @@ renders the capture into a gralloc destination that must be RENDERABLE, so it
 is necessarily block-linear, and the caller then reads it assuming linear.
 Tiled bytes walked linearly are horizontal striped noise — `screencap` and
 the Recents thumbnails, over the whole screen, home screen included. The
-scrcpy mirror is unaffected (it never CPU-reads the buffer), which is what
+mirror is unaffected (it never CPU-reads the buffer), which is what
 narrows this to the capture path.
 
 No flag ranking can fix it: the destination must be NVIDIA-renderable AND

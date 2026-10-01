@@ -168,9 +168,9 @@ RemoraConfig loadInstance(const QString &path, const QString &name) {
         if (has("hw_decode")) c.mirror.hwDecode = s.value("hw_decode").toBool();
         if (has("host_encode")) c.mirror.hostEncode = s.value("host_encode").toBool();
         if (has("host_decode")) c.mirror.hostDecode = s.value("host_decode").toBool();
-        // mirror_server_path / scrcpy_server_path are RETIRED (bd remora-28ix.5): the v1 jar
-        // path is deleted; the device half is the agent the image bakes. Old values are read by
-        // nobody and rewritten by nobody.
+        // mirror_server_path is RETIRED (bd remora-28ix.5): the v1 jar path is deleted; the
+        // device half is the agent the image bakes. Old values are read by nobody and rewritten
+        // by nobody.
         if (has("host_encode_max_size"))
             c.mirror.hostEncodeMaxSize = s.value("host_encode_max_size").toInt();
         if (has("max_size")) c.mirror.maxSize = s.value("max_size").toInt();

@@ -6,8 +6,8 @@ import java.util.Map;
 /**
  * Decompose accented characters into a dead key plus base character, the form
  * KeyCharacterMap.getEvents() actually resolves ('é' returns null, U+0301 + 'e' works — see the
- * AOSP key-character-map "behaviors" documentation). The fork's table, ported verbatim so text
- * injection keeps its coverage across the protocol v2 cutover.
+ * AOSP key-character-map "behaviors" documentation). The table predates the protocol v2 cutover
+ * and is kept verbatim, so text injection keeps its coverage across it.
  */
 public final class KeyComposition {
     private static final String KEY_DEAD_GRAVE = "\u0300";

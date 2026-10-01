@@ -27,7 +27,7 @@ struct VaapiComponentName {
     static const std::string kAV1Decoder;
 
     // Encoder names. Ranked below the c2.android.* software encoders (in
-    // media_codecs_c2_va.xml) so scrcpy prefers the HW VAAPI encoder, which is
+    // media_codecs_c2_va.xml) so the mirror prefers the HW VAAPI encoder, which is
     // not hard-capped to 512x512 like the software HEVC encoder.
     static const std::string kHEVCEncoder;
     static const std::string kH264Encoder;

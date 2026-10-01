@@ -68,7 +68,7 @@ void Decoder::setupHw(const QString &hwdec) {
     if (autoMode || mode == QLatin1String("cuda") || mode == QLatin1String("nvdec"))
         if (tryHwDevice(AV_HWDEVICE_TYPE_CUDA, {})) return;
     if (autoMode || mode == QLatin1String("vaapi")) {
-        // Probe render nodes like the fork: nvidia/nouveau expose no usable VAAPI decode.
+        // Probe the render nodes, skipping nvidia/nouveau: they expose no usable VAAPI decode.
         for (int n = 128; n <= 135; ++n) {
             const QString node = QStringLiteral("/dev/dri/renderD%1").arg(n);
             if (!QFileInfo::exists(node)) continue;
@@ -86,7 +86,7 @@ void Decoder::setupHw(const QString &hwdec) {
              qUtf8Printable(hwdec));
 }
 
-bool Decoder::init(quint32 codecId, const QString &hwdec, QString *error) {
+bool Decoder::init(quint8 codecId, const QString &hwdec, QString *error) {
     if (qEnvironmentVariableIsSet("REMORA_MIRROR_FFDEBUG")) av_log_set_level(AV_LOG_VERBOSE);
     AVCodecID id;
     switch (codecId) {
@@ -94,12 +94,12 @@ bool Decoder::init(quint32 codecId, const QString &hwdec, QString *error) {
         case kCodecH265: id = AV_CODEC_ID_HEVC; break;
         case kCodecAv1: id = AV_CODEC_ID_AV1; break;
         default:
-            if (error) *error = QStringLiteral("unsupported video codec id 0x%1").arg(codecId, 8, 16);
+            if (error) *error = QStringLiteral("unsupported video codec 0x%1").arg(codecId, 2, 16, QLatin1Char('0'));
             return false;
     }
     const AVCodec *codec = avcodec_find_decoder(id);
     if (!codec) {
-        if (error) *error = QStringLiteral("no decoder for codec id 0x%1").arg(codecId, 8, 16);
+        if (error) *error = QStringLiteral("no decoder for codec 0x%1").arg(codecId, 2, 16, QLatin1Char('0'));
         return false;
     }
     ctx_ = avcodec_alloc_context3(codec);

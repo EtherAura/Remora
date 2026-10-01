@@ -18,8 +18,8 @@ namespace remora::mirror {
 // QAudioSink (bd remora-28ix.2.2). The stream is v1's fixed contract — 48 kHz stereo, opus by
 // default — so there is no format negotiation, only decode and play.
 //
-// Latency policy: the sink's buffer is the jitter buffer (REMORA_AUDIO_BUFFER_MS, default 60 ms,
-// near the reference client's 50). A sink that will not take everything right now is normal —
+// Latency policy: the sink's buffer is the jitter buffer (REMORA_AUDIO_BUFFER_MS, default 60 ms).
+// A sink that will not take everything right now is normal —
 // it means its buffer is momentarily full — so the remainder is HELD and retried, not discarded.
 // Dropping only happens when the held audio exceeds kMaxBacklogMs, i.e. a real backlog rather
 // than ordinary buffer pressure, and then the OLDEST audio goes so playback skips to live.
@@ -33,10 +33,10 @@ public:
     explicit AudioPlayer(QObject *parent = nullptr);
     ~AudioPlayer() override;
 
-    // Codec id from the audio stream header (kCodecOpus/kCodecAac/kCodecFlac/kCodecRawAudio).
+    // Codec from the audio stream's START (kCodecOpus/kCodecAac/kCodecFlac/kCodecRawAudio).
     // The decoder opens lazily on the first media packet, because opus/aac/flac carry their
     // codec headers in a CONFIG packet that arrives first and becomes extradata.
-    bool init(quint32 codecId, QString *error);
+    bool init(quint8 codecId, QString *error);
     void submit(const MediaPacket &packet);
     void stop();
 
@@ -55,7 +55,7 @@ private:
     // audio lag, at 80 ms the trims are a few ms each and effectively inaudible.
     static constexpr int kMaxBacklogMs = 80;
 
-    quint32 codecId_ = 0;
+    quint8 codecId_ = 0;
     bool raw_ = false;      // kCodecRawAudio: the payload already is s16le 48 kHz stereo
     bool opened_ = false;
     bool failed_ = false;

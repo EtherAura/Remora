@@ -38,7 +38,7 @@ composited home screen — wallpaper and nav bar, not a window over black.
 
 SF was invisible to earlier instrumentation for two reasons worth remembering:
 every context log sat on the resolved path (circular), and the early lines went
-to a log scrcpy's detached spawn truncates. The per-process announce now fires
+to a log the detached mirror spawn truncates. The per-process announce now fires
 on first submit, before any resolution.
 ---
  src/venus/vkr_command_buffer.c | 33 ++++++++++++

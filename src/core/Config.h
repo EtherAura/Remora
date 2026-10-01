@@ -208,8 +208,8 @@ struct MirrorConfig {
     // one legal value is only a way to ask for a machine that no longer exists — so compose_source=
     // in an existing remorarc is read by nobody and ignored.
     // mirrorServerPath is GONE (bd remora-28ix.5): the v1 jar path is deleted and the device
-    // half is the agent the image bakes. mirror_server_path=/scrcpy_server_path= in remorarc are
-    // retired keys — read by nobody, rewritten by nobody.
+    // half is the agent the image bakes. mirror_server_path= in remorarc is a retired key — read
+    // by nobody, rewritten by nobody.
     // Cap on the ENCODED size for host encode, longest side, 0/unset = the display's own size.
     // Not the same as max_size, which sets the DISPLAY size: this scales only what the host
     // encoder produces, so the device still composes at full resolution. It exists because the
@@ -234,8 +234,7 @@ struct MirrorConfig {
     // No window_borderless: the mirror is an ordinary decorated window and its frame belongs to
     // the desktop, not to Remora (KWin's "No titlebar and frame" rule, or the equivalent
     // elsewhere, is where a borderless mirror is asked for). `--window-borderless` can still be
-    // passed per-profile through mirror_extra; the pre-cutover scrcpy_extra spelling that used to
-    // reach it was dropped with the other read-fallbacks (bd remora-28ix.4 step 4).
+    // passed per-profile through mirror_extra.
     std::optional<bool> windowFullscreen;
     // The "Fullscreen" action. Default = genuine mirrored fullscreen of the main display, always
     // stretched (the client has no other fit) so the mirror fills a monitor whose aspect differs

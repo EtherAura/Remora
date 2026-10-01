@@ -103,7 +103,7 @@ void MirrorWindow::requestDisplayReflow() {
                      qMin(int(height() * devicePixelRatioF()), 0xFFFF)};
     if (phys == live_.size || phys == reflowSent_ || phys.isEmpty()) return;
     reflowSent_ = phys;
-    session_->sendControl(resizeDisplay(quint16(phys.width()), quint16(phys.height())));
+    session_->sendControl(resizeMessage(quint16(phys.width()), quint16(phys.height())));
 }
 
 void MirrorWindow::onFrame(const VideoFrame &frame) {
@@ -465,16 +465,17 @@ bool MirrorWindow::downloadFrame(AVFrame *f) {
     return dlFrame_->format == AV_PIX_FMT_NV12;
 }
 
-Position MirrorWindow::positionAt(QPointF widgetPos) const {
+FramePoint MirrorWindow::positionAt(QPointF widgetPos) const {
     const QSize video = session_->videoSize().isEmpty() ? frame_.size() : session_->videoSize();
-    const QPoint mapped = mapToVideo(widgetPos.toPoint(), size(), video);
-    return {mapped.x(), mapped.y(), quint16(video.width()), quint16(video.height())};
+    return framePoint(mapToVideo(widgetPos.toPoint(), size(), video), video);
 }
 
 void MirrorWindow::sendTouch(quint8 action, QPointF pos, float pressure, qint32 actionButton,
                              qint32 buttons) {
-    session_->sendControl(injectTouch(action, kPointerIdMouse, positionAt(pos), pressure,
-                                      actionButton, buttons));
+    // The one pointer this window has is the mouse. The agent still injects a plain left button
+    // as a finger, so taps behave like touch; only hover and the other buttons make it a mouse.
+    session_->sendControl(pointerMessage(action, PointerTool::Mouse, 0, positionAt(pos), pressure,
+                                         actionButton, buttons));
 }
 
 // Which mouse_bind slot a Qt button occupies, or -1 for one the vector has no row for. Left is
@@ -513,16 +514,16 @@ void MirrorWindow::mousePressEvent(QMouseEvent *e) {
                       buttons_);
             break;
         }
-        case BindAction::Back: session_->sendControl(backOrScreenOn(kKeyActionDown)); break;
+        case BindAction::Back: session_->sendControl(backMessage(kKeyActionDown)); break;
         case BindAction::Home:
-            session_->sendControl(injectKeycode(kKeyActionDown, kKeycodeHome, 0, 0));
+            session_->sendControl(keyMessage(kKeyActionDown, kKeycodeHome, 0, 0));
             break;
         case BindAction::AppSwitch:
-            session_->sendControl(injectKeycode(kKeyActionDown, kKeycodeAppSwitch, 0, 0));
+            session_->sendControl(keyMessage(kKeyActionDown, kKeycodeAppSwitch, 0, 0));
             break;
         case BindAction::Notifications:
             // One-shot: the panel has no press/release pair to mirror.
-            session_->sendControl(expandNotificationPanel());
+            session_->sendControl(panelMessage(Panel::Notifications));
             break;
     }
 }
@@ -551,36 +552,36 @@ void MirrorWindow::mouseReleaseEvent(QMouseEvent *e) {
                       buttons_ ? 1.0f : 0.0f, b, buttons_);
             break;
         }
-        case BindAction::Back: session_->sendControl(backOrScreenOn(kKeyActionUp)); break;
+        case BindAction::Back: session_->sendControl(backMessage(kKeyActionUp)); break;
         case BindAction::Home:
-            session_->sendControl(injectKeycode(kKeyActionUp, kKeycodeHome, 0, 0));
+            session_->sendControl(keyMessage(kKeyActionUp, kKeycodeHome, 0, 0));
             break;
         case BindAction::AppSwitch:
-            session_->sendControl(injectKeycode(kKeyActionUp, kKeycodeAppSwitch, 0, 0));
+            session_->sendControl(keyMessage(kKeyActionUp, kKeycodeAppSwitch, 0, 0));
             break;
         case BindAction::Notifications: break;  // sent on press
     }
 }
 
 void MirrorWindow::wheelEvent(QWheelEvent *e) {
-    session_->sendControl(injectScroll(positionAt(e->position()),
-                                       float(e->angleDelta().x()) / 120.0f,
-                                       float(e->angleDelta().y()) / 120.0f, 0));
+    session_->sendControl(scrollMessage(positionAt(e->position()),
+                                        float(e->angleDelta().x()) / 120.0f,
+                                        float(e->angleDelta().y()) / 120.0f, 0));
 }
 
 void MirrorWindow::sendKey(QKeyEvent *e, quint8 action) {
     if (const auto keycode = androidKeycode(e->key())) {
         session_->sendControl(
-            injectKeycode(action, *keycode, 0, androidMetaState(e->modifiers())));
+            keyMessage(action, *keycode, 0, androidMetaState(e->modifiers())));
     }
 }
 
 void MirrorWindow::toggleDisplayMode() {
-    // Alt+D switches mirror ↔ desktop (fork semantics): launch the OTHER side's command from
-    // the environment — the engine injects both as opaque shell lines — then close this window
-    // so the toggle switches rather than stacks. REMORA_DESKTOP_NEW_WINDOW keeps this window
-    // open (stacking). The launched line backgrounds the real client, and startDetached
-    // reparents it, so it outlives this window.
+    // Alt+D switches mirror ↔ desktop: launch the OTHER side's command from the environment —
+    // the engine injects both as opaque shell lines — then close this window so the toggle
+    // switches rather than stacks. REMORA_DESKTOP_NEW_WINDOW keeps this window open (stacking).
+    // The launched line backgrounds the real client, and startDetached reparents it, so it
+    // outlives this window.
     const bool isDesktop = qEnvironmentVariableIsSet("REMORA_IS_DESKTOP");
     const QString cmd = QString::fromLocal8Bit(
         qgetenv(isDesktop ? "REMORA_MIRROR_CMD" : "REMORA_DESKTOP_CMD"));
@@ -599,15 +600,15 @@ void MirrorWindow::toggleDisplayMode() {
 // Send an action's DOWN half. Notifications is the odd one: a panel has no press/release pair.
 void MirrorWindow::sendBindAction(BindAction act, quint8 action) {
     switch (act) {
-        case BindAction::Back: session_->sendControl(backOrScreenOn(action)); break;
+        case BindAction::Back: session_->sendControl(backMessage(action)); break;
         case BindAction::Home:
-            session_->sendControl(injectKeycode(action, kKeycodeHome, 0, 0));
+            session_->sendControl(keyMessage(action, kKeycodeHome, 0, 0));
             break;
         case BindAction::AppSwitch:
-            session_->sendControl(injectKeycode(action, kKeycodeAppSwitch, 0, 0));
+            session_->sendControl(keyMessage(action, kKeycodeAppSwitch, 0, 0));
             break;
         case BindAction::Notifications:
-            if (action == kKeyActionDown) session_->sendControl(expandNotificationPanel());
+            if (action == kKeyActionDown) session_->sendControl(panelMessage(Panel::Notifications));
             break;
         case BindAction::PassThrough:
         case BindAction::Ignore: break;  // mouse-only; a key never carries these
@@ -653,14 +654,14 @@ void MirrorWindow::keyPressEvent(QKeyEvent *e) {
     }
     // Ctrl+V pastes the host clipboard as a device paste — the whole message, not a key.
     if (e->key() == Qt::Key_V && e->modifiers() == Qt::ControlModifier) {
-        session_->sendControl(setClipboard(0, true, QGuiApplication::clipboard()->text()));
+        session_->sendControl(clipboardMessage(0, true, QGuiApplication::clipboard()->text()));
         return;
     }
     // Plain printable input travels as text (the sdk keyboard's IME path handles layouts far
     // better than per-key mapping); modified or non-printable keys go as keycodes.
     const bool modified = e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
     if (!modified && !e->text().isEmpty() && e->text().at(0).isPrint()) {
-        session_->sendControl(injectText(e->text()));
+        session_->sendControl(textMessage(e->text()));
         return;
     }
     sendKey(e, kKeyActionDown);

@@ -68,9 +68,10 @@ bool VaapiEncodeComponent::initializeEncoder() {
     C2Config::profile_t outputProfile = mInterface->getOutputProfile();
 
     // The VAAPI encoder emits the parameter sets inline in the first keyframe (SPS/PPS for H.264,
-    // VPS/SPS/PPS for HEVC). MediaCodec/scrcpy require them delivered as a separate codec-config
+    // VPS/SPS/PPS for HEVC). MediaCodec clients require them delivered as a separate codec-config
     // buffer, so the framework must split them out for BOTH codecs (extractCSDInfo now handles
-    // HEVC too). Without this the first packet isn't a config packet and scrcpy rejects the stream.
+    // HEVC too). Without this the first packet isn't a config packet and the mirror rejects the
+    // stream.
     mExtractCSD = true;
 
     // The VAAPI encoder core (VaapiVideoEncoder) selects the concrete VA level

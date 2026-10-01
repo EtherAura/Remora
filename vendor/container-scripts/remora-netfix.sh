@@ -45,8 +45,8 @@ fi
 #
 # Why supervision at all: fwd was observed dying on its own after anywhere from four minutes to an
 # hour, and it is the only thing listening on 5556, so everything downstream died with it — adb's
-# :5556 device dropped, and the connect step still reported "scrcpy pid NNNN on ...:5556" (scrcpy
-# is spawned detached and not waited on) while scrcpy had already exited with "Could not find ADB
+# :5556 device dropped, and the connect step still reported the mirror's pid on ...:5556 (it is
+# spawned detached and not waited on) while the mirror had already exited with "Could not find ADB
 # device". The mirror vanished with no error anywhere, and the encoder stayed healthy throughout,
 # so the obvious suspect was the wrong one. The cause is STILL unknown, and it was unknowable
 # while both streams went to /dev/null; they are kept now so the next death names its signal.

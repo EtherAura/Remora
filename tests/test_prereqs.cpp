@@ -32,6 +32,27 @@ private slots:
         c.dockerDaemonOk = true;
         QVERIFY(isReady(checkReadiness(Backend::Bare, c)));
     }
+    // bd remora-oky7. The ashmem row belongs to the release, not the target: an Android 17 image
+    // runs on memfd, so a bare host without the module is READY for it, and the row is not shown
+    // at all — while an Android 16 profile on the same host is blocked on it, by name.
+    void ashmemRowOnlyForReleasesThatNeedIt() {
+        QVERIFY(releaseNeedsAshmem(16));
+        QVERIFY(releaseNeedsAshmem(13));
+        QVERIFY(!releaseNeedsAshmem(17));
+        HostCapabilities c = withTools();
+        c.inDockerGroup = true;
+        c.dockerDaemonOk = true;
+        c.modAshmem = false;
+        const auto a17 = checkReadiness(Backend::Bare, c, false, false, false,
+                                        /*needsAshmem=*/releaseNeedsAshmem(17));
+        QVERIFY(isReady(a17));
+        for (const PrereqResult &r : a17) QVERIFY(r.key != QLatin1String("ashmem"));
+        const auto a16 = checkReadiness(Backend::Bare, c, false, false, false,
+                                        /*needsAshmem=*/releaseNeedsAshmem(16));
+        QVERIFY(!isReady(a16));
+        QCOMPARE(blockers(a16).size(), 1);
+        QCOMPARE(blockers(a16).first().key, QStringLiteral("ashmem"));
+    }
     // bd remora-4ei.36. The bridge script's interpreter, asked only of a profile that shares
     // devices (the macvlan pattern), and never a blocker — the deploy step is advisory, so the
     // check must not block harder than the deploy does. Without this row, a docker host missing
@@ -171,13 +192,6 @@ private slots:
         c.hostRenderDriver = QStringLiteral("amdgpu");
         for (const PrereqResult &r : checkReadiness(Backend::Bare, c, true))
             if (r.key == QLatin1String("va_driver")) QVERIFY(r.ok);
-    }
-
-    // The scrcpy prereq is GONE since the cutover: the client ships inside the remora binary.
-    // Pin its absence so a revert cannot silently resurrect a host dependency.
-    void noScrcpyPrereqExists() {
-        for (const PrereqResult &r : checkReadiness(Backend::Remote, withTools()))
-            QVERIFY(r.key != QLatin1String("scrcpy"));
     }
 
     void remoteReady() {

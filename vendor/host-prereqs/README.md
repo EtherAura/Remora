@@ -14,5 +14,6 @@ but it does not change the host behind your back. The table says which is which.
 | [`nvdec-vaapi/`](nvdec-vaapi/README.md) | the feasibility record, `vaexport-probe.c` and `decode-test-client.c` behind `host_decode=` (in-Android video decoded on the host GPU by `vendor/native/remora-frame-decoder`) | **Operator**, as diagnostics; the feature itself is wired and Remora runs the helper |
 | [`ffmpeg-nvidia/`](ffmpeg-nvidia/README.md) | a host FFmpeg patch that stops `remora-frame-encoder` dying on a null Vulkan image view under the NVIDIA driver | **Operator** (a distro package patch); nothing depends on it being present |
 
-Also a host prerequisite on `bare`, and **not** vendored here: the `ashmem_linux` kernel module,
-in a build that loads on an IBT-enabled kernel. `remora check` reports whether it is loaded.
+Also a host prerequisite on `bare` for **Android 16 images only**, and **not** vendored here: the
+`ashmem_linux` kernel module, in a build that loads on an IBT-enabled kernel. Android 17 images run
+on memfd and need no module. `remora check` reports whether it is loaded when it is needed.

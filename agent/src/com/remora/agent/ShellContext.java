@@ -14,7 +14,7 @@ import android.os.Process;
  * background shell caller read the clipboard at all ("Shell can access the clipboard for
  * testing purposes", ClipboardService).
  *
- * Unlike the fork's FakeContext there is no reflection and no service field-poking: anything
+ * There is no reflection and no service field-poking here: anything
  * needing this attribution is constructed directly against this context (the framework classes
  * are plain API when compiled in-tree, docs/MIRROR_AGENT.md).
  */

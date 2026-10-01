@@ -40,7 +40,7 @@ constexpr const char* kRenderNodes[] = {
 // auto-detect". kRenderNodes is probed in order and the FIRST node that initializes wins. On a
 // hybrid NVIDIA+Intel host renderD128 is NVIDIA, whose VA driver is NVDEC — decode-only, with zero
 // VAEntrypointEnc* — so an auto-detecting probe would bind there and silently lose hardware encode
-// (the scrcpy mirror). Naming iHD makes vaInitialize FAIL on the NVIDIA node and fall through to
+// (the mirror). Naming iHD makes vaInitialize FAIL on the NVIDIA node and fall through to
 // the Intel one, which has the encode entrypoints. Keep that behaviour deliberate, not accidental.
 //
 // androidboot.va_driver -> ro.boot.va_driver is the per-host override (Remora's va_driver= key);

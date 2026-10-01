@@ -82,13 +82,20 @@ void AppMenuWorker::run() {
     emit sigDone(ok, lastDetail_);
 }
 
-ReadinessWorker::ReadinessWorker(Backend backend, QString sshHost, bool gpuHost, QObject *parent)
-    : QThread(parent), backend_(backend), sshHost_(std::move(sshHost)), gpuHost_(gpuHost) {}
+ReadinessWorker::ReadinessWorker(Backend backend, QString sshHost, bool gpuHost, bool macvlan,
+                                 bool sharedInputs, bool needsAshmem, QObject *parent)
+    : QThread(parent),
+      backend_(backend),
+      sshHost_(std::move(sshHost)),
+      gpuHost_(gpuHost),
+      macvlan_(macvlan),
+      sharedInputs_(sharedInputs),
+      needsAshmem_(needsAshmem) {}
 
 void ReadinessWorker::run() {
     RealSpawner sp;
     const HostCapabilities caps = probeCapabilities(backend_, sshHost_, sp);
-    const auto results = checkReadiness(backend_, caps, gpuHost_);
+    const auto results = checkReadiness(backend_, caps, gpuHost_, macvlan_, sharedInputs_, needsAshmem_);
     QStringList lines;
     for (const PrereqResult &r : results) {
         QString line = (r.ok ? QStringLiteral("✓ ") : QStringLiteral("✗ ")) + r.label;

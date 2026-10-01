@@ -18,9 +18,18 @@ struct PrereqResult {
 // macvlan adds the host-LAN row the macvlan network is built from (bd remora-400); sharedInputs
 // adds the python3 row remora-input-share.py runs on (bd remora-4ei.36) — each asked of the
 // RESOLVED config rather than the backend, because the mode is a per-profile choice everywhere.
+// needsAshmem adds the ashmem module row on bare — releaseNeedsAshmem() of the profile's release.
 QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &caps,
                                      bool gpuHost = false, bool macvlan = false,
-                                     bool sharedInputs = false);
+                                     bool sharedInputs = false, bool needsAshmem = true);
+
+// Does an image of this Android release need the host's ashmem module (bd remora-oky7)? Android 17
+// does not: with every /dev/ashmem* removed before init it boots, renders WebView, decodes AVC and
+// HEVC in hardware and mirrors, on guest, Intel and NVIDIA/Venus alike — libcutils falls back to
+// memfd. Android 16 does not survive it: system_server crash-loops on "Failed to create ashmem".
+// Each result was measured against an identical control with the module loaded. Older releases
+// are treated like 16, so a profile that never says which release it is still asks for the module.
+bool releaseNeedsAshmem(int androidVersion);
 
 bool isReady(const QVector<PrereqResult> &results);   // every REQUIRED prereq satisfied
 QVector<PrereqResult> blockers(const QVector<PrereqResult> &results);

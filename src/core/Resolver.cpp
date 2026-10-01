@@ -421,6 +421,7 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
     // Image tag: explicit override wins; else the requested features (or a non-A16 version)
     // select a tag via gating; else the per-backend A16 default.
     const int androidVersion = im.androidVersion.value_or(16);
+    r.androidVersion = androidVersion;
     // A CPU-tuned source build lands under a variant-suffixed tag — sourceBuiltTag() appends
     // "-<variant>" before "-src", and Promote drops only the "-src". The deploy side has to follow
     // it there or the tuned image is built and then never run: `up` silently keeps the portable
@@ -578,6 +579,18 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
             QStringLiteral("h265 needs the VAAPI HEVC encoder and '%1' has no VA-API encode "
                            "entrypoint (the image ships no software HEVC encoder) — using h264")
                 .arg(*caps->hostRenderDriver);
+        r.videoCodec = QStringLiteral("h264");
+    }
+    // Guest rendering is the same dead end from the other side (bd remora-hsdz): its gralloc cannot
+    // allocate the YUV buffers the VAAPI encoders take, and the image ships no software HEVC
+    // encoder. Measured on a guest-mode A17 container,: c2.remora.vaapi.hevc.encoder was
+    // created, then three GraphicBufferAllocator failures and the mirror ended within 15 s; the
+    // software c2.android.avc.encoder — which the hwc2 vector pins for h264 — streamed with none.
+    if (!r.hostEncode && r.gpuMode == GpuMode::Guest && r.videoCodec == QLatin1String("h265")) {
+        r.videoCodecFallback =
+            QStringLiteral("h265 needs the VAAPI HEVC encoder, and gpu_mode=guest renders with no "
+                           "host GPU to run it on (the image ships no software HEVC encoder) — "
+                           "using h264");
         r.videoCodec = QStringLiteral("h264");
     }
 

@@ -4,13 +4,24 @@
 #include "core/MirrorProto.h"
 #include "core/SplashFormats.h"
 
-// Byte-exact goldens for the mirror wire protocol (docs/MIRROR_PROTOCOL.md). Every vector here
-// was cross-checked against the reference implementation's serialization code (scrcpy v4.0) — a
-// failing golden means the wire contract changed, not the test.
+// Byte-exact goldens for the mirror wire protocol (docs/MIRROR_PROTOCOL.md) — a failing golden
+// means the wire contract changed, not the test.
 
 using namespace remora::mirror;
 
 static QByteArray hex(const char *s) { return QByteArray::fromHex(s); }
+
+using E = StreamDemuxer::Event;
+
+// The happy-path video stream, every record spelled out in hex so the goldens pin the wire, not
+// record(): START h265, FORMAT 1920x1080, CONFIG, a key FRAME at 1000 us, a delta FRAME at 2000.
+static QByteArray happyVideo() {
+    return hex("00000002" "01" "02"
+               "0000000a" "02" "00000780" "00000438" "00"
+               "00000003" "03" "abcd"
+               "0000000c" "04" "00000000000003e8" "01" "eeff"
+               "0000000b" "04" "00000000000007d0" "00" "11");
+}
 
 // Drain every ready event, pairing packets with their payloads for compact assertions.
 struct Drained {
@@ -24,7 +35,7 @@ static Drained drain(StreamDemuxer &d) {
         if (e == StreamDemuxer::Event::NeedMoreData) return out;
         out.events << e;
         if (e == StreamDemuxer::Event::Packet) out.packets << d.takePacket();
-        if (e == StreamDemuxer::Event::StreamDisabled || e == StreamDemuxer::Event::ConfigError ||
+        if (e == StreamDemuxer::Event::Unavailable || e == StreamDemuxer::Event::Failed ||
             e == StreamDemuxer::Event::Error)
             return out;
     }
@@ -33,172 +44,200 @@ static Drained drain(StreamDemuxer &d) {
 class TestMirrorProto : public QObject {
     Q_OBJECT
 private slots:
-    void fixedPoint() {
-        QCOMPARE(pressureToU16(1.0f), quint16(0xFFFF));
-        QCOMPARE(pressureToU16(0.5f), quint16(0x8000));
-        QCOMPARE(pressureToU16(0.0f), quint16(0));
-        QCOMPARE(pressureToU16(-1.0f), quint16(0));
-        // The wire value is value/16 in [-1,1] fixed-point; ±16 saturates, beyond clamps.
-        QCOMPARE(scrollToI16(16.0f), qint16(0x7FFF));
-        QCOMPARE(scrollToI16(-16.0f), qint16(-0x8000));
-        QCOMPARE(scrollToI16(32.0f), qint16(0x7FFF));
-        QCOMPARE(scrollToI16(-32.0f), qint16(-0x8000));
-        QCOMPARE(scrollToI16(0.0f), qint16(0));
+    // Records ---------------------------------------------------------------------------------
+
+    void recordFramingGolden() {
+        // u32 size counts the type byte and the body, never itself.
+        QCOMPARE(record(0x07, "ab"), hex("00000003" "07" "6162"));
+        QCOMPARE(record(0x05), hex("00000001" "05"));
     }
 
-    void keycodeGolden() {
-        QCOMPARE(injectKeycode(0, 3 /* AKEYCODE_HOME */, 0, 0),
-                 hex("00" "00" "00000003" "00000000" "00000000"));
+    void recordReaderLimits() {
+        RecordReader r(16);
+        r.feed(hex("00000003" "07"));
+        QVERIFY(!r.next().has_value());  // size known, body short: wait
+        r.feed(hex("6162" "00000001" "05"));
+        auto a = r.next();
+        QCOMPARE(a->type, quint8(0x07));
+        QCOMPARE(a->body, QByteArray("ab"));
+        auto b = r.next();
+        QCOMPARE(b->type, quint8(0x05));
+        QVERIFY(b->body.isEmpty());
+        QVERIFY(!r.error());
+
+        // A size of 0 has no type byte, and one over the limit is not worth buffering: both leave
+        // no way to find the next record, so the reader latches rather than guess.
+        RecordReader zero(16);
+        zero.feed(hex("00000000" "00000001" "05"));
+        QVERIFY(!zero.next().has_value());
+        QVERIFY(zero.error());
+        QVERIFY(!zero.next().has_value());
+        RecordReader big(16);
+        big.feed(hex("00000011"));
+        QVERIFY(!big.next().has_value());
+        QVERIFY(big.error());
+        QVERIFY(big.errorString().contains(QStringLiteral("limit")));
+    }
+
+    // Control messages ----------------------------------------------------------------------
+
+    void keyGolden() {
+        QCOMPARE(keyMessage(0, 66, 1, 0x3000),
+                 hex("0000000e" "01" "00" "00000042" "00000001" "00003000"));
     }
 
     void textGolden() {
-        QCOMPARE(injectText(QStringLiteral("hé")), hex("01" "00000003" "68c3a9"));
-        // Cap is 300 UTF-8 bytes...
-        QCOMPARE(injectText(QString(301, QLatin1Char('a'))).size(), 5 + 300);
-        // ...and never splits a codepoint: 299 ASCII + 'é' (2 bytes) cuts before the 'é'.
-        const QByteArray b = injectText(QString(299, QLatin1Char('a')) + QChar(0xe9));
-        QCOMPARE(b.size(), 5 + 299);
-        QCOMPARE(b.mid(1, 4), hex("0000012b"));  // 299
+        QCOMPARE(textMessage(QStringLiteral("hé")), hex("00000004" "02" "68c3a9"));
     }
 
-    void touchGolden() {
-        QCOMPARE(injectTouch(2 /* MOVE */, kPointerIdMouse, {100, -200, 1920, 1080}, 1.0f, 1, 1),
-                 hex("02" "02" "ffffffffffffffff" "00000064" "ffffff38" "0780" "0438" "ffff"
+    void pointerGolden() {
+        // Fractions and pressure are plain big-endian binary32: 0.5, 0.25, 1.0.
+        QCOMPARE(pointerMessage(0, PointerTool::Mouse, 0, {0.5f, 0.25f}, 1.0f, 1, 1),
+                 hex("0000001b" "03" "00" "01" "00000000" "3f000000" "3e800000" "3f800000"
                      "00000001" "00000001"));
+        QCOMPARE(pointerMessage(1, PointerTool::Finger, 7, {0, 0}, 0, 0, 0).mid(6, 6),
+                 hex("00" "00000007" "00"));  // tool 0, pointer id 7, then x
     }
 
     void scrollGolden() {
-        QCOMPARE(injectScroll({1, 2, 3, 4}, 16.0f, -16.0f, 0),
-                 hex("03" "00000001" "00000002" "0003" "0004" "7fff" "8000" "00000000"));
+        // Notches go over as they are — no fixed point, no scale factor.
+        QCOMPARE(scrollMessage({1.0f, 0.0f}, -1.0f, 2.5f, 0),
+                 hex("00000015" "04" "3f800000" "00000000" "bf800000" "40200000" "00000000"));
     }
 
     void simpleMessagesGolden() {
-        QCOMPARE(backOrScreenOn(0), hex("0400"));
-        QCOMPARE(expandNotificationPanel(), hex("05"));
-        QCOMPARE(expandSettingsPanel(), hex("06"));
-        QCOMPARE(collapsePanels(), hex("07"));
-        QCOMPARE(getClipboard(1 /* COPY */), hex("0801"));
-        QCOMPARE(setDisplayPower(false), hex("0a00"));
-        QCOMPARE(rotateDevice(), hex("0b"));
-        QCOMPARE(openHardKeyboardSettings(), hex("0f"));
-        QCOMPARE(resetVideo(), hex("11"));
-        QCOMPARE(resizeDisplay(1080, 2340), hex("15" "0438" "0924"));
+        QCOMPARE(backMessage(1), hex("00000002" "05" "01"));
+        QCOMPARE(panelMessage(Panel::Collapse), hex("00000002" "06" "00"));
+        QCOMPARE(panelMessage(Panel::Notifications), hex("00000002" "06" "01"));
+        QCOMPARE(panelMessage(Panel::QuickSettings), hex("00000002" "06" "02"));
+        QCOMPARE(resizeMessage(1920, 1080), hex("00000005" "08" "0780" "0438"));
     }
 
     void clipboardGolden() {
-        QCOMPARE(setClipboard(Q_UINT64_C(0x0102030405060708), true, QStringLiteral("hi")),
-                 hex("09" "0102030405060708" "01" "00000002" "6869"));
+        QCOMPARE(clipboardMessage(7, true, QStringLiteral("ab")),
+                 hex("0000000c" "07" "0000000000000007" "01" "6162"));
+        // Cut to fit the 1 MiB record, never mid-codepoint: one ASCII byte then two-byte
+        // characters puts the raw cut inside one, and it must back off to a boundary.
+        const QString big = QStringLiteral("a") + QString(600000, QChar(0xe9));
+        const QByteArray m = clipboardMessage(0, false, big);
+        QVERIFY(quint32(m.size() - 4) <= kControlRecordMax);
+        const QByteArray text = m.mid(4 + 1 + 9);
+        QCOMPARE(QString::fromUtf8(text).toUtf8(), text);  // round-trips: valid UTF-8
+        QVERIFY(text.size() > int(kControlRecordMax) - 16);
     }
 
-    void uhidGolden() {
-        QCOMPARE(uhidCreate(1, 0x046d, 0xc52b, QStringLiteral("kbd"), hex("05010906")),
-                 hex("0c" "0001" "046d" "c52b" "03" "6b6264" "0004" "05010906"));
-        QCOMPARE(uhidInput(1, hex("0102")), hex("0d" "0001" "0002" "0102"));
-        QCOMPARE(uhidDestroy(1), hex("0e" "0001"));
+    void framePointMapping() {
+        const FramePoint mid = framePoint({960, 540}, {1920, 1080});
+        QCOMPARE(mid.x, 0.5f);
+        QCOMPARE(mid.y, 0.5f);
+        const FramePoint none = framePoint({10, 10}, {0, 0});  // degenerate frame
+        QCOMPARE(none.x, 0.0f);
+        QCOMPARE(none.y, 0.0f);
     }
+
+    // Media streams ---------------------------------------------------------------------------
 
     void videoStreamHappyPath() {
         StreamDemuxer d(StreamDemuxer::Kind::Video);
-        d.feed(hex("68323635"                                       // h265
-                   "80000001" "00000780" "00000438"                 // session, client-resized
-                   "4000000000000000" "00000002" "0102"             // config packet, no PTS
-                   "2000000000000005" "00000003" "aabbcc"));        // keyframe, pts=5
-        auto r = drain(d);
-        QCOMPARE(r.events, (QList<StreamDemuxer::Event>{
-                               StreamDemuxer::Event::CodecId, StreamDemuxer::Event::Session,
-                               StreamDemuxer::Event::Packet, StreamDemuxer::Event::Packet}));
-        QCOMPARE(d.codecId(), kCodecH265);
-        QCOMPARE(d.session().width, quint32(1920));
-        QCOMPARE(d.session().height, quint32(1080));
-        QVERIFY(d.session().clientResized);
-        QVERIFY(r.packets[0].config);
-        QVERIFY(!r.packets[0].ptsUs.has_value());
-        QCOMPARE(r.packets[0].payload, hex("0102"));
-        QVERIFY(r.packets[1].keyFrame);
-        QVERIFY(!r.packets[1].config);
-        QCOMPARE(r.packets[1].ptsUs.value(), Q_UINT64_C(5));
-        QCOMPARE(r.packets[1].payload, hex("aabbcc"));
+        d.feed(happyVideo());
+        const auto [events, packets] = drain(d);
+        QCOMPARE(events, (QList<E>{E::Started, E::Format, E::Packet, E::Packet, E::Packet}));
+        QCOMPARE(d.codec(), kCodecH265);
+        QCOMPARE(d.format().width, quint32(1920));
+        QCOMPARE(d.format().height, quint32(1080));
+        QVERIFY(!d.format().clientResized);
+        QVERIFY(packets[0].config);
+        QVERIFY(!packets[0].ptsUs.has_value());  // CONFIG carries no timestamp
+        QCOMPARE(packets[0].payload, hex("abcd"));
+        QCOMPARE(packets[1].ptsUs, std::optional<quint64>(1000));
+        QVERIFY(packets[1].keyFrame);
+        QCOMPARE(packets[1].payload, hex("eeff"));
+        QVERIFY(!packets[2].keyFrame);
+        QCOMPARE(packets[2].payload, hex("11"));
     }
 
-    void videoRequiresSessionFirst() {
-        StreamDemuxer d(StreamDemuxer::Kind::Video);
-        d.feed(hex("68323634" "2000000000000005" "00000001" "aa"));
-        auto r = drain(d);
-        QCOMPARE(r.events.last(), StreamDemuxer::Event::Error);
-        QVERIFY(!d.errorString().isEmpty());
-        QCOMPARE(d.next(), StreamDemuxer::Event::Error);  // latches
-    }
-
-    void sentinelCodecIds() {
-        StreamDemuxer off(StreamDemuxer::Kind::Audio);
-        off.feed(hex("00000000"));
-        QCOMPARE(off.next(), StreamDemuxer::Event::StreamDisabled);
-        QCOMPARE(off.next(), StreamDemuxer::Event::NeedMoreData);  // terminal, not an error
-
-        StreamDemuxer bad(StreamDemuxer::Kind::Video);
-        bad.feed(hex("00000001"));
-        QCOMPARE(bad.next(), StreamDemuxer::Event::ConfigError);
-    }
-
-    void zeroLengthPacketIsFatal() {
-        StreamDemuxer d(StreamDemuxer::Kind::Audio);
-        d.feed(hex("6f707573" "0000000000000001" "00000000"));
-        auto r = drain(d);
-        QCOMPARE(r.events.last(), StreamDemuxer::Event::Error);
-    }
-
-    void ptsIs61Bits() {
-        StreamDemuxer d(StreamDemuxer::Kind::Audio);
-        d.feed(hex("6f707573" "3fffffffffffffff" "00000001" "aa"));
-        auto r = drain(d);
-        QVERIFY(r.packets[0].keyFrame);
-        QCOMPARE(r.packets[0].ptsUs.value(), Q_UINT64_C(0x1FFFFFFFFFFFFFFF));
-    }
-
-    void sessionCanReappearMidStream() {
-        StreamDemuxer d(StreamDemuxer::Kind::Video);
-        d.feed(hex("68323634"
-                   "80000000" "00000780" "00000438"
-                   "2000000000000001" "00000001" "aa"
-                   "80000000" "00000438" "00000780"));  // rotation
-        auto r = drain(d);
-        QCOMPARE(r.events, (QList<StreamDemuxer::Event>{
-                               StreamDemuxer::Event::CodecId, StreamDemuxer::Event::Session,
-                               StreamDemuxer::Event::Packet, StreamDemuxer::Event::Session}));
-        QCOMPARE(d.session().width, quint32(1080));
-        QVERIFY(!d.session().clientResized);
-    }
-
-    void audioHasNoSessionPacket() {
-        StreamDemuxer d(StreamDemuxer::Kind::Audio);
-        d.feed(hex("6f707573" "0000000000000005" "00000001" "aa"));
-        auto r = drain(d);
-        QCOMPARE(r.events, (QList<StreamDemuxer::Event>{StreamDemuxer::Event::CodecId,
-                                                        StreamDemuxer::Event::Packet}));
-    }
-
-    // Fragmentation must not change the event stream: same bytes, fed one at a time.
     void byteAtATimeFeeding() {
-        const QByteArray stream = hex("68323635"
-                                      "80000001" "00000780" "00000438"
-                                      "4000000000000000" "00000002" "0102"
-                                      "2000000000000005" "00000003" "aabbcc");
         StreamDemuxer d(StreamDemuxer::Kind::Video);
-        QList<StreamDemuxer::Event> events;
-        QList<MediaPacket> packets;
-        for (char c : stream) {
+        QList<E> events;
+        for (char c : happyVideo()) {
             d.feed(QByteArray(1, c));
-            for (;;) {
-                auto e = d.next();
-                if (e == StreamDemuxer::Event::NeedMoreData) break;
-                events << e;
-                if (e == StreamDemuxer::Event::Packet) packets << d.takePacket();
-            }
+            events << drain(d).events;
         }
-        QCOMPARE(events, (QList<StreamDemuxer::Event>{
-                             StreamDemuxer::Event::CodecId, StreamDemuxer::Event::Session,
-                             StreamDemuxer::Event::Packet, StreamDemuxer::Event::Packet}));
-        QCOMPARE(packets[1].payload, hex("aabbcc"));
+        QCOMPARE(events, (QList<E>{E::Started, E::Format, E::Packet, E::Packet, E::Packet}));
+    }
+
+    void videoNeedsFormatFirst() {
+        StreamDemuxer d(StreamDemuxer::Kind::Video);
+        d.feed(hex("00000002" "01" "01" "0000000b" "04" "0000000000000001" "01" "aa"));
+        QCOMPARE(drain(d).events, (QList<E>{E::Started, E::Error}));
+    }
+
+    void formatCanReappearMidStream() {
+        StreamDemuxer d(StreamDemuxer::Kind::Video);
+        d.feed(happyVideo());
+        drain(d);
+        d.feed(hex("0000000a" "02" "00000438" "00000780" "01"));  // rotated, client-resized
+        QCOMPARE(drain(d).events, (QList<E>{E::Format}));
+        QCOMPARE(d.format().width, quint32(1080));
+        QVERIFY(d.format().clientResized);
+    }
+
+    void audioHasNoFormat() {
+        StreamDemuxer d(StreamDemuxer::Kind::Audio);
+        d.feed(hex("00000002" "01" "81"
+                   "00000002" "03" "4f"
+                   "0000000b" "04" "0000000000000014" "00" "aa"));
+        const auto [events, packets] = drain(d);
+        QCOMPARE(events, (QList<E>{E::Started, E::Packet, E::Packet}));
+        QCOMPARE(d.codec(), kCodecOpus);
+        QVERIFY(packets[0].config);
+        QCOMPARE(packets[1].ptsUs, std::optional<quint64>(20));
+    }
+
+    void endCarriesItsReason() {
+        // In place of START: the agent has no such stream, and says why.
+        StreamDemuxer none(StreamDemuxer::Kind::Audio);
+        none.feed(hex("0000000b" "05" "00" "6e6f20646576"));  // reason 0, "no dev"
+        none.feed(hex("6963"));                                // …split mid-record: "ice"
+        QCOMPARE(drain(none).events, (QList<E>{}));
+        none.feed(hex("65"));
+        QCOMPARE(drain(none).events, (QList<E>{E::Unavailable}));
+        QCOMPARE(none.detail(), QStringLiteral("no device"));
+        // Mid-stream: a failure ends a stream that was working, with its own words.
+        StreamDemuxer late(StreamDemuxer::Kind::Video);
+        late.feed(happyVideo() + hex("00000005" "05" "01" "6f6f6d"));
+        const auto drained = drain(late);
+        QCOMPARE(drained.events.last(), E::Failed);
+        QCOMPARE(late.detail(), QStringLiteral("oom"));
+        QCOMPARE(late.next(), E::NeedMoreData);  // terminal
+        QCOMPARE(videoEndMessage(QString()),
+                 QStringLiteral("the agent ended the video stream: no reason given"));
+    }
+
+    void unknownStreamRecordsAreSkipped() {
+        // A newer agent's additions must not break an older client: the size says where the next
+        // record starts, so an unknown type costs nothing but its bytes.
+        StreamDemuxer d(StreamDemuxer::Kind::Video);
+        d.feed(hex("00000002" "01" "01"
+                   "00000003" "7f" "7a7a"
+                   "0000000a" "02" "00000010" "00000010" "00"));
+        QCOMPARE(drain(d).events, (QList<E>{E::Started, E::Format}));
+    }
+
+    void streamFramingViolations() {
+        const auto events = [](const QByteArray &bytes) {
+            StreamDemuxer d(StreamDemuxer::Kind::Video);
+            d.feed(bytes);
+            return drain(d).events;
+        };
+        QCOMPARE(events(hex("00000000")), (QList<E>{E::Error}));             // size 0
+        QCOMPARE(events(hex("02000001")), (QList<E>{E::Error}));             // over 32 MiB
+        QCOMPARE(events(hex("00000003" "03" "abcd")), (QList<E>{E::Error})); // media before START
+        QCOMPARE(events(hex("00000002" "01" "01" "00000002" "01" "01")),
+                 (QList<E>{E::Started, E::Error}));                         // a second START
+        QCOMPARE(events(hex("00000002" "01" "01" "0000000a" "02" "00000010" "00000010" "00"
+                            "00000009" "04" "0000000000000001")),
+                 (QList<E>{E::Started, E::Format, E::Error}));              // FRAME with no data
     }
 
     void configMerging() {
@@ -212,31 +251,29 @@ private slots:
         QCOMPARE(m.merge(std::move(next))->payload, hex("cc"));  // merger cleared
     }
 
+    // Device messages -------------------------------------------------------------------------
+
     void deviceMessages() {
         DeviceMessageParser p;
-        p.feed(hex("00" "00000002" "6869"
-                   "01" "0000000000000042"
-                   "02" "0001" "0002" "aabb"));
+        p.feed(hex("00000003" "01" "6869"
+                   "00000003" "7e" "0000"  // unknown: skipped
+                   "00000009" "02" "0000000000000042"));
         auto clip = p.next();
-        QCOMPARE(clip->type, DeviceMessage::Type::Clipboard);
+        QCOMPARE(clip->type, DeviceRecord::Clipboard);
         QCOMPARE(clip->clipboardText, QStringLiteral("hi"));
         auto ack = p.next();
-        QCOMPARE(ack->type, DeviceMessage::Type::AckClipboard);
+        QCOMPARE(ack->type, DeviceRecord::ClipboardAck);
         QCOMPARE(ack->sequence, Q_UINT64_C(0x42));
-        auto uhid = p.next();
-        QCOMPARE(uhid->type, DeviceMessage::Type::UhidOutput);
-        QCOMPARE(uhid->uhidId, quint16(1));
-        QCOMPARE(uhid->uhidData, hex("aabb"));
         QVERIFY(!p.next().has_value());
         QVERIFY(!p.error());
     }
 
     void deviceMessagesIncremental() {
         DeviceMessageParser p;
-        p.feed(hex("00"));
+        p.feed(hex("000000"));
         QVERIFY(!p.next().has_value());
-        p.feed(hex("00000002" "68"));
-        QVERIFY(!p.next().has_value());  // length known, payload short
+        p.feed(hex("03" "01" "68"));
+        QVERIFY(!p.next().has_value());  // size known, body short
         p.feed(hex("69"));
         QCOMPARE(p.next()->clipboardText, QStringLiteral("hi"));
     }
@@ -245,15 +282,12 @@ private slots:
         QCOMPARE(adbForwardListArgv("adb"), (QStringList{"adb", "forward", "--list"}));
         // The observed leak (bd remora-6f92): agent forwards from crashed sessions. Rows for other
         // serials and non-mirror targets in one listing — only this serial's agent entries are
-        // candidates. The scrcpy_<hex> row is KEPT IN THE FIXTURE ON PURPOSE and is now expected to
-        // be IGNORED (bd remora-28ix.4 step 4): nothing can create such a tunnel any
-        // more, since an image without the agent bake is refused rather than falling back, so a row
-        // like this can only be a fossil. Asserting it is skipped is a stronger claim than deleting
-        // the row would be — deleting it would stop testing the discrimination entirely.
+        // candidates. The 27183 row sits in the tunnel port range under another socket name: it
+        // is not a session's, so it must be IGNORED — port range alone is not ownership.
         const QString list = QStringLiteral(
             "192.168.0.78:5556 tcp:27184 localabstract:remora_agent\n"
             "192.168.0.78:5556 tcp:27185 localabstract:remora_agent\n"
-            "192.168.0.78:5556 tcp:27183 localabstract:scrcpy_49271e25\n"
+            "192.168.0.78:5556 tcp:27183 localabstract:mirror_49271e25\n"
             "192.168.0.78:5556 tcp:9222 localabstract:chrome_devtools_remote\n"
             "emulator-5554 tcp:27186 localabstract:remora_agent\n");
         QCOMPARE(mirrorForwardPorts(list, QStringLiteral("192.168.0.78:5556")),
@@ -264,17 +298,29 @@ private slots:
     }
 
     void agentHelloGolden() {
-        QCOMPARE(agentHello(), hex("524d5241" "0002" "0000"));  // "RMRA", v2, flags 0
+        QCOMPARE(agentHello(), hex("524d5241" "0003" "0000"));  // "RMRA", v3, flags 0
 
-        const auto ok = parseAgentHello(hex("524d5241" "0002" "0003"));
+        const auto ok = parseAgentHello(hex("524d5241" "0003" "0003"));
         QVERIFY(ok.has_value());
-        QCOMPARE(ok->version, quint16(2));
+        QCOMPARE(ok->version, quint16(3));
         QCOMPARE(ok->capabilities, quint16(3));
+        QVERIFY(agentVersionRefusal(*ok).isEmpty());
         // Short reply: keep waiting, do not guess.
-        QVERIFY(!parseAgentHello(hex("524d5241" "0002")).has_value());
-        // Wrong magic is how the probe recognises a device with no agent — the v1 server's first
-        // bytes are its 64-byte device-name field, which cannot begin with "RMRA" by accident.
+        QVERIFY(!parseAgentHello(hex("524d5241" "0003")).has_value());
+        // Wrong magic is how the probe recognises something that is not an agent at all.
         QVERIFY(!parseAgentHello(QByteArray(kAgentHelloSize, '\0')).has_value());
+    }
+
+    // bd remora-c79i. Another version is an agent that speaks another format: refused, naming the
+    // side to update — and never in the "no in-image agent" words, because there is one.
+    void agentVersionRefusals() {
+        const QString older = agentVersionRefusal({2, 0});
+        QVERIFY(older.startsWith(QLatin1String(kAgentVersionRefusalPrefix)));
+        QVERIFY(older.contains(QStringLiteral("v2")));
+        QVERIFY(older.contains(QStringLiteral("rebuild the image")));
+        const QString newer = agentVersionRefusal({4, 0});
+        QVERIFY(newer.startsWith(QLatin1String(kAgentVersionRefusalPrefix)));
+        QVERIFY(newer.contains(QStringLiteral("update Remora")));
     }
 
     void agentSessionRequestGolden() {
@@ -289,8 +335,8 @@ private slots:
         QCOMPARE(agentVideoAttach(42), hex("01" "0000002a"));
         QVERIFY(agentSessionRequest(SessionKind::Mirror, {}).at(0)
                 != agentVideoAttach(1).at(0));
-        // Audio is role 2 — same attach shape, so a session with no video does not renumber it
-        // the way v1's positional ordering did (bd remora-28ix.3.6).
+        // Audio is role 2 — same attach shape, so a session with no video never renumbers it
+        // (bd remora-28ix.3.6).
         QCOMPARE(agentAudioAttach(42), hex("02" "0000002a"));
         QVERIFY(agentAudioAttach(1).at(0) != agentVideoAttach(1).at(0));
         QVERIFY(agentAudioAttach(1).at(0) != agentSessionRequest(SessionKind::Mirror, {}).at(0));
@@ -301,9 +347,9 @@ private slots:
         o.startApp = QStringLiteral("?settings");
         o.extraParams << QStringLiteral("x=y");
         const QStringList p = agentSessionParams(o);
-        // v1's param vocabulary verbatim — minus scid/log_level/tunnel_forward, which describe
-        // the v1 launch and have no meaning for a persistent agent — plus start_app, which the
-        // agent takes at session creation where v1 sent a TYPE_START_APP control message.
+        // The option spellings Session.java parses, start_app among them: an app launch is part
+        // of creating the session, not a control message. Nothing about launching a process —
+        // a persistent agent has no scid and no tunnel direction to be told.
         QCOMPARE(p, (QStringList{"audio=false", "video_codec=h265", "max_size=1920",
                                  "start_app=?settings", "x=y"}));
         QVERIFY(!p.filter(QStringLiteral("scid")).size());
@@ -441,7 +487,7 @@ private slots:
     }
 
     void shortcutModParsing() {
-        // Unset = the fork's lalt,lsuper, which is what the built-in Alt+D/Alt+F already used.
+        // Unset = lalt,lsuper (Alt or Super), which is what the built-in Alt+D/Alt+F already used.
         const auto def = parseShortcutMod(QString());
         QVERIFY(def.has_value());
         QVERIFY(def->contains(Qt::AltModifier));
@@ -460,7 +506,7 @@ private slots:
         QCOMPARE(parseShortcutMod(QStringLiteral("lalt,ralt"))->size(), 1);
 
         QVERIFY(!parseShortcutMod(QStringLiteral("shift")).has_value());  // never a shortcut mod
-        QVERIFY(!parseShortcutMod(QStringLiteral("lmeta")).has_value());  // not scrcpy's spelling
+        QVERIFY(!parseShortcutMod(QStringLiteral("lmeta")).has_value());  // super is lsuper
     }
 
     void chordActions() {
@@ -548,13 +594,18 @@ private slots:
         QVERIFY(!s.booting && !s.attach && !s.abort && s.text.isEmpty());
     }
 
-    void unknownDeviceMessageIsUnrecoverable() {
+    void deviceFramingErrorLatches() {
         DeviceMessageParser p;
-        p.feed(hex("63"));
+        p.feed(hex("00000000"));  // size 0: no type, no way to find the next record
         QVERIFY(!p.next().has_value());
         QVERIFY(p.error());
-        p.feed(hex("00" "00000001" "61"));  // a valid message after the poison byte
-        QVERIFY(!p.next().has_value());     // stays latched: no resync point exists
+        p.feed(hex("00000003" "01" "6869"));  // a valid message after the poison
+        QVERIFY(!p.next().has_value());       // stays latched
+        // A known type whose body is too short for its fields is a violation too.
+        DeviceMessageParser shortAck;
+        shortAck.feed(hex("00000003" "02" "0000"));
+        QVERIFY(!shortAck.next().has_value());
+        QVERIFY(shortAck.error());
     }
 };
 

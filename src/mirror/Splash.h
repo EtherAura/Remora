@@ -20,11 +20,10 @@ struct SplashOptions {
     QString statusPath;   // --boot-animation-status: the engine's append-only status file
 };
 
-// The boot-splash phase machine (port of the fork's boot_anim.c, minus the SDL window-adoption
-// contortions — in-process, the mirror simply takes over the same widget). Runs three
-// concerns on the event loop: the status-file tail (300 ms), the boot probe (2 s,
-// getprop + screencap-lit check, async so animation never stalls), and frame playback paced
-// to desc.txt. Hand-off fires once, on REMORA_ATTACH or on the probe's own booted+lit signal;
+// The boot-splash phase machine (in-process, so there is no window adoption — the mirror
+// simply takes over the same widget). Runs three concerns on the event loop: the status-file
+// tail (300 ms), the boot probe (2 s, getprop + screencap-lit check, async so animation never
+// stalls), and frame playback paced to desc.txt. Hand-off fires once, on REMORA_ATTACH or on the probe's own booted+lit signal;
 // the animation keeps painting until the first live frame replaces it.
 // Decodes animation PNGs OFF the GUI thread into a small ring. Playback used to decode inline on
 // every 16 ms tick, which on a loaded machine starved the event loop badly enough that an 8 s

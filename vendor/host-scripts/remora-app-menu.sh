@@ -142,9 +142,7 @@ EXEC_DESKTOP="${5:-}"
 EXEC_PIP="${6:-}"
 SLUG=$(slugify "$PROFILE")
 [ -n "$SLUG" ] || { echo "profile name '$PROFILE' yields an empty slug"; exit 1; }
-# The app list comes from the in-house client (remora mirror --list-apps) since the cutover
-# (bd remora-28ix.2); the agent answers it. The SCRCPY= override went with the identity pass
-# (bd remora-28ix.4) — the fork is an archive and nothing stock speaks the agent protocol.
+# The app list comes from the mirror client (remora mirror --list-apps); the agent answers it.
 REMORA_BIN="${REMORA_BIN:-remora}"
 SELFDIR="$(cd "$(dirname "$0")" && pwd)"
 ICONDUMP_DEX="${ICONDUMP_DEX:-$SELFDIR/icondump.dex}"

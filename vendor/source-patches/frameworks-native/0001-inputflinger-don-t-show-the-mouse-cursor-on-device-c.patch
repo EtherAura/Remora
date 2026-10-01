@@ -4,7 +4,7 @@ Date: Sat, 18 Jul 2026 14:19:39 -0400
 Subject: [PATCH] inputflinger: don't show the mouse cursor on device connect
 
 Every mouse in the Android container is virtual (Sunshine passthrough
-uinput devices, QEMU/VMware/spice console tablets, mirrored scrcpy uhid)
+uinput devices, QEMU/VMware/spice console tablets, the mirror's uhid)
 and several register at boot without ever producing an event. The stock
 connect-time unfade in updatePointerControllersLocked() painted a stray,
 motionless pointer at screen center during boot that lingered until the
@@ -12,7 +12,7 @@ inactivity fade.
 
 Show the cursor only on actual motion: processMouseEventLocked() and
 processTouchpadEventLocked() already unfade on every event, so a mouse
-that is really being used (a Moonlight session, scrcpy --mouse=uhid)
+that is really being used (a Moonlight session, a uhid mirror mouse)
 still draws and moves the cursor exactly as before.
 
 Change-Id: I193e35766106683864b1b7322377f2389a875370
@@ -34,7 +34,7 @@ index 98f0f346df..a6a8a72134 100644
 -                    mMousePointersByDisplay.try_emplace(displayId,
 -                                                        getMouseControllerConstructor(displayId));
 +            // Do NOT show the cursor just because a mouse connected. In this container every
-+            // mouse is virtual (Sunshine passthrough uinput, console tablets, scrcpy uhid) and
++            // mouse is virtual (Sunshine passthrough uinput, console tablets, mirror uhid) and
 +            // several register at boot without ever moving — the stock connect-time unfade
 +            // painted a stray center-screen pointer over boot until the inactivity fade. A mouse
 +            // that is actually used still shows the cursor: processMouseEventLocked and

@@ -1,4 +1,4 @@
-# The Remora agent (protocol v2)
+# The Remora agent (protocol v3)
 
 The device-side half of the mirror. It is a **persistent agent living in the image**: started by
 Android init at boot, supervised by init, and speaking a versioned protocol to the desktop client,
@@ -86,12 +86,12 @@ probe: an image with no agent refuses the connection, and the hello reply proves
 Running out of tunnel ports is reported as a host-side problem (`could not open an adb tunnel to the
 device`), not as a missing agent.
 
-## Wire protocol v2
+## Session setup
 
-Every connection opens with a hello, then a role byte saying what the connection is for. Control
-messages, device messages and the media stream framing keep the byte layouts specified in
-[MIRROR_PROTOCOL.md](MIRROR_PROTOCOL.md); only the handshake and session setup are new. All
-integers are big-endian.
+Every connection opens with a hello, then a role byte saying what the connection is for, then the
+session request (control) or the attach (video, audio). After that the connection carries the
+records specified in [MIRROR_PROTOCOL.md](MIRROR_PROTOCOL.md) — stream records on video and audio,
+control and device messages on control. All integers are big-endian.
 
 ### Connection hello (every connection)
 
@@ -100,8 +100,12 @@ client → agent:  "RMRA"  u16 protoVersion  u16 flags(reserved=0)
 agent  → client: "RMRA"  u16 protoVersion  u16 capabilities
 ```
 
-The current version is 2. A version mismatch is a negotiation (lowest common), not an error.
-Capability bits announce optional features so the client never guesses; none are defined yet.
+The current version is 3. Each side states its own version and there is no negotiating down: a
+version is a record format, and a peer that speaks another one is refused. The agent drops a
+client that does not state 3; the client refuses an agent that does not, naming the side to update
+— an older agent means rebuilding the image, a newer one means updating Remora. Records skip
+unknown types, so additions that fit the format need no new version. Capability bits announce
+optional features so the client never guesses; none are defined yet.
 
 ### Connection role
 
@@ -134,17 +138,17 @@ limits of a command line.
 
 The agent replies `u8 status  u32 sessionId`; a non-zero status is followed by a u16-prefixed UTF-8
 reason. On success the connection then *is* the session's control socket: control messages flow
-client → agent and device messages agent → client, exactly as specified in MIRROR_PROTOCOL.md.
+client → agent and device messages agent → client, as records (MIRROR_PROTOCOL.md §3–4).
 
 `list-apps` is a request/response on its own control connection: the ok reply, then one
 u32-prefixed UTF-8 blob of `" * Name  pkg"` lines. The connection is done once it is written.
 
 ### Video connection
 
-Hello, role `1`, then `u32 sessionId` to attach to that session's video. The stream that follows is
-the framing in MIRROR_PROTOCOL.md §3: a `u32` codec id, a 12-byte session packet, then 12-byte
-headers and payloads. There is no device-name preamble and no dummy byte — the hello supersedes
-both.
+Hello, role `1`, then `u32 sessionId` to attach to that session's video. The video stream of
+MIRROR_PROTOCOL.md §2 follows: START, FORMAT, then CONFIG and FRAME records. An agent that cannot
+serve it — no such session, an encoder that will not configure — sends END with the reason
+instead of just closing.
 
 A video connection closing takes the video down and leaves the session alive, so a client can
 reattach without renegotiating; the *control* connection closing ends the session and stops the
@@ -154,18 +158,17 @@ everything it owned goes with it, with no host-side reaping.
 ### Audio connection
 
 Hello, role `2`, then `u32 sessionId`. The agent captures Android's remote submix and encodes opus
-(48 kHz stereo); the stream is a codec id followed by media packets, with no session packet. An
-unknown session id gets the configuration-error sentinel in place of a codec id. The client treats
-a failed audio connection as "no audio", never as a failed mirror.
+(48 kHz stereo); the stream is START, then CONFIG and FRAME records — audio never carries FORMAT.
+An unknown session id gets END in place of START. The client treats a failed audio connection as
+"no audio", never as a failed mirror.
 
 ### Coordinates
 
-Positional control messages carry a point in the client's video coordinate space plus that
-space's size. The agent **scales** rather than rejecting a mismatch: client point × display size ÷
-client's declared size, read live from `DisplayInfo`. That is correct for the common case (a
-`max_size`-capped video is permanently a different size from the display), it tracks a mid-session
-resize with no capture-side handshake, and it lets input work on a session that has no video
-connection at all.
+Positional control messages carry a point as a **fraction of the frame** the client is showing.
+The agent multiplies it by the display's size, read live from `DisplayInfo`. That is correct for
+the common case (a `max_size`-capped video is permanently a different size from the display), it
+tracks a mid-session resize with no capture-side handshake, and it lets input work on a session
+that has no video connection at all — neither side ever needs the other's resolution.
 
 ### Session kinds
 

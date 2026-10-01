@@ -15,7 +15,7 @@ stalls SurfaceFlinger globally.
 
 The cap arrives two ways: the vendor tuning "vendor.remora-max-fps.value"
 (C2Int32Value-based C2StreamRemoraMaxFpsTuning, set per-session by the
-scrcpy fork alongside the stock key) or the vendor.remora.encoder_max_fps
+mirror agent alongside the stock key) or the vendor.remora.encoder_max_fps
 property (ops fallback, read at component construction). queueTask drops a
 frame by completing its work immediately with no output — the empty-CSD
 discard contract — when the input-timestamp gap is under 0.95/maxFps (5%
@@ -148,7 +148,7 @@ index 796bd3c..04637ca 100644
  
 +// Vendor tuning: encoder-side max-fps cap (bd remora-rjh). The SDK's KEY_MAX_FPS_TO_ENCODER
 +// only ever configures the framework's InputSurface — no standard C2 param delivers it to a
-+// component — so clients (the scrcpy fork) set the SDK-visible "vendor.remora-max-fps.value"
++// component — so clients (the mirror agent) set the SDK-visible "vendor.remora-max-fps.value"
 +// instead and EncodeComponent drops frames at its input queue. 0 disables the cap.
 +// C2Int32Value (not a custom struct): its templated FieldList() lives in the header, so no
 +// __C2_GENERATE_GLOBAL_VARS__ translation unit is needed.

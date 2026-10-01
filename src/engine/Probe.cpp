@@ -587,7 +587,10 @@ QString doctorReport(Spawner &sp, const RemoraConfig &cfg, Backend backend,
     ts << "\n## readiness\n";
     const HostCapabilities caps =
         probeCapabilities(backend, ctx.rc.sshHost.value_or(QString()), sp);
-    for (const PrereqResult &r : checkReadiness(backend, caps, ctx.rc.gpuMode == GpuMode::Host)) {
+    for (const PrereqResult &r :
+         checkReadiness(backend, caps, ctx.rc.gpuMode == GpuMode::Host,
+                        ctx.rc.networkMode == QLatin1String("macvlan"),
+                        !ctx.rc.sharedInputs.isEmpty(), releaseNeedsAshmem(ctx.rc.androidVersion))) {
         ts << (r.ok ? "[  ok   ] " : "[MISSING] ") << r.label;
         if (!r.ok) ts << "  → " << r.remedy;
         ts << "\n";

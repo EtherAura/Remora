@@ -4,8 +4,8 @@
 
 // Pure parsers for the boot-splash: Android's bootanimation desc.txt and the append-only
 // status file the engine writes (Orchestrator truncates it at splash start; Chain appends
-// progress lines and control markers). Ported from the fork's boot_anim.c — the file formats
-// are the contract, pinned in test_mirrorproto.cpp.
+// progress lines and control markers). The file formats are the contract, pinned in
+// test_mirrorproto.cpp.
 
 namespace remora::mirror {
 

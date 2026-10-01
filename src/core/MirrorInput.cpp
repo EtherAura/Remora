@@ -154,7 +154,7 @@ std::optional<QHash<int, BindAction>> parseKeyBind(const QString &spec) {
 }
 
 QList<Qt::KeyboardModifiers> defaultShortcutMods() {
-    return {Qt::AltModifier, Qt::MetaModifier};  // the fork's lalt,lsuper
+    return {Qt::AltModifier, Qt::MetaModifier};  // lalt,lsuper: Alt or Super
 }
 
 std::optional<QList<Qt::KeyboardModifiers>> parseShortcutMod(const QString &spec) {

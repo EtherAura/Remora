@@ -3,7 +3,7 @@
  * (the VM's persist-kbd trick, restored for the container — bd remora-gf7).
  *
  * Static-compiled on the host, bind-mounted into the container, run there detached. It is a
- * DECOY: it never delivers a keystroke. Real keys still arrive through scrcpy's --keyboard=sdk
+ * DECOY: it never delivers a keystroke. Real keys still arrive through the mirror's SDK key
  * injection; this device exists only so Android's Configuration reports a hardware qwerty
  * keyboard instead of `nokeys`.
  *

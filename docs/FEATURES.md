@@ -73,7 +73,7 @@ passes; the others are informational.
 | `adb` present | all | required | install android-tools |
 | user in the `docker` group | bare | required | `usermod -aG docker $USER`, re-login |
 | docker daemon reachable | bare | required | start docker, or unset a stale `DOCKER_HOST` |
-| IBT-fixed `ashmem_linux.ko` loaded | bare | required | load the module |
+| IBT-fixed `ashmem_linux.ko` loaded | bare, Android 16 only | required | load the module — Android 17 runs on memfd and needs none |
 | remote reachable over ssh | remote | required | key-based ssh to `ssh_host` |
 | docker usable on the remote | remote | required | install docker, add the remote user to its group |
 | host LAN readable | `network_mode=macvlan` | required | set `macvlan_parent/subnet/gateway`, or use `bridge` |
@@ -334,7 +334,7 @@ keys are space-separated unless noted. Deleting a key returns it to its default.
 
 | key | default | meaning |
 |---|---|---|
-| `video_codec` | `h265` | `h264`, `h265` or `av1`; falls back to h264, with the reason logged, on a host GPU with no VA-API encode |
+| `video_codec` | `h265` | `h264`, `h265` or `av1`; falls back to h264, with the reason logged, in `gpu_mode=guest` or on a host GPU with no VA-API encode |
 | `video_bit_rate` | `30M` | mirror bit rate |
 | `max_size` | 0 | longest side of the mirrored video; 0 = the display's full size |
 | `audio` | off | mirror audio (opus, captured inside Android) |

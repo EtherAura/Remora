@@ -14,14 +14,16 @@ import java.util.Map;
 
 /**
  * The video half of any session that encodes on the device: it drives a {@link Capture} into a
- * MediaCodec encoder and writes v1's stream framing to the video connection. Which display that
- * is belongs to the capture — a mirror of an existing one (kind=mirror, bd remora-28ix.3.2) or
- * one this session created (kind=new-display, bd remora-28ix.3.3) — and the encode loop cannot
- * tell the difference.
+ * MediaCodec encoder and writes protocol v3's stream records to the video connection
+ * (docs/MIRROR_PROTOCOL.md §2). Which display that is belongs to the capture — a mirror of an
+ * existing one (kind=mirror, bd remora-28ix.3.2) or one this session created (kind=new-display,
+ * bd remora-28ix.3.3) — and the encode loop cannot tell the difference.
  *
- * The SurfaceEncoder essentials, ported: encoder selection by name or type, codec-capability size
- * constraints, downsize-on-error before the first frame, and the bounded first-output wait after
- * an error recovery.
+ * The encode essentials: encoder selection by name or type, codec-capability size constraints,
+ * downsize-on-error before the first frame, the bounded first-output wait after an error
+ * recovery, and a pinned encoder that produces nothing replaced once by the platform default
+ * (bd remora-hsdz). Whatever stops the stream other than the client leaving or the session
+ * closing is reported to the client as END with the reason, never as a bare close.
  */
 public final class ScreenEncoder {
     private static final int DEFAULT_I_FRAME_INTERVAL = 10;      // seconds
@@ -32,24 +34,33 @@ public final class ScreenEncoder {
     private static final int[] MAX_SIZE_FALLBACK = {2560, 1920, 1600, 1280, 1024, 800};
     private static final int MAX_CONSECUTIVE_ERRORS = 3;
     // After an error recovery the restarted codec owes an immediate config packet, so silence
-    // past this deadline means it is wedged rather than idle (see encode()).
-    private static final int RECOVERY_FIRST_OUTPUT_TIMEOUT_MS = 5000;
+    // past this deadline means it is wedged rather than idle (see encode()). A pinned encoder's
+    // first output gets the same bound: a component that cannot run here — VA-API on a
+    // guest-rendered container with no VA device — takes input and never answers (bd remora-hsdz).
+    private static final int FIRST_OUTPUT_TIMEOUT_MS = 5000;
+    // Halfway through a bounded wait the capture is made to compose once more, so a timeout
+    // measures the encoder and never a display that simply had nothing new to show.
+    private static final int FIRST_OUTPUT_NUDGE_MS = FIRST_OUTPUT_TIMEOUT_MS / 2;
 
     private final Session session;
     private final int sessionId;
     private final Capture capture;
     private final String codecName;      // "h264" | "h265" | "av1"
     private final String mimeType;
-    private final int codecId;           // the u32 on the wire
+    private final int codecId;           // the u8 in START
     private final String encoderName;    // pinned component, or null for auto
     private final int videoBitRate;
     private final float maxFps;
+    private final int requestedMaxSize;
     private final VideoStreamer streamer;
 
     private int maxSize;
     private boolean firstFrameSent;
     private int consecutiveErrors;
     private boolean recovering;
+    private String activeEncoder;        // the component the current codec is
+    private boolean codecProducedOutput; // the current codec has emitted any buffer at all
+    private boolean fellBack;            // the pinned encoder was replaced by the default
     private volatile boolean clientResized;
     private volatile boolean stopped;
     private volatile MediaCodec runningCodec;  // signalled with an EOS to interrupt encode()
@@ -64,15 +75,15 @@ public final class ScreenEncoder {
         switch (codecName) {
             case "h264":
                 mimeType = MediaFormat.MIMETYPE_VIDEO_AVC;
-                codecId = 0x68_32_36_34;
+                codecId = VideoStreamer.CODEC_H264;
                 break;
             case "h265":
                 mimeType = MediaFormat.MIMETYPE_VIDEO_HEVC;
-                codecId = 0x68_32_36_35;
+                codecId = VideoStreamer.CODEC_H265;
                 break;
             case "av1":
                 mimeType = MediaFormat.MIMETYPE_VIDEO_AV1;
-                codecId = 0x00_61_76_31;
+                codecId = VideoStreamer.CODEC_AV1;
                 break;
             default:
                 throw new ConfigurationException("unknown video codec: " + codecName);
@@ -80,7 +91,8 @@ public final class ScreenEncoder {
         final String enc = opts.get("video_encoder");
         this.encoderName = enc != null && !enc.isEmpty() ? enc : null;
         this.videoBitRate = intOpt(opts, "video_bit_rate", 8_000_000);
-        this.maxSize = intOpt(opts, "max_size", 0);
+        this.requestedMaxSize = intOpt(opts, "max_size", 0);
+        this.maxSize = requestedMaxSize;
         this.maxFps = floatOpt(opts, "max_fps", 0);
     }
 
@@ -109,6 +121,13 @@ public final class ScreenEncoder {
         }
     }
 
+    /** A bounded wait for output ran out: the codec took input and produced nothing. */
+    private static final class NoOutputException extends IOException {
+        NoOutputException(String message) {
+            super(message);
+        }
+    }
+
     public void stop() {
         stopped = true;
         MediaCodec codec = runningCodec;
@@ -121,37 +140,55 @@ public final class ScreenEncoder {
         }
     }
 
-    /** Blocks until the stream ends (client disconnect, stop(), or a definitive encode failure). */
+    /**
+     * Blocks until the stream ends (client disconnect, stop(), or a definitive encode failure).
+     * Never throws: a runtime exception escaping here would reach the connection thread, and an
+     * uncaught one there kills the agent and every other session with it (bd remora-hsdz).
+     */
     public void run() {
-        // Some devices deadlock if the encoding thread has no Looper (upstream scrcpy 4143).
+        // Some devices deadlock if the encoding thread has no Looper.
         if (Looper.myLooper() == null) Looper.prepare();
         try {
             streamCapture();
         } catch (ConfigurationException e) {
             Ln.w("session " + sessionId + " video: " + e.getMessage());
-            try {
-                streamer.writeDisabled(true);  // config error: the client stops
-            } catch (IOException io) {
-                // the client already left
+            end(e.getMessage());
+        } catch (IOException | RuntimeException e) {
+            if (stopped || VideoStreamer.isBrokenPipe(e)) {
+                // The normal ends: the client closed the socket, or the session closed under a
+                // running codec — stop() can cancel a pending dequeue, which surfaces as an
+                // IllegalStateException ("Pending dequeue output buffer request cancelled").
+                Ln.i("session " + sessionId + " video stream ended: " + e);
+            } else {
+                Ln.e("session " + sessionId + " video failed", e);
+                final String what = e.getMessage() != null ? e.getMessage()
+                                                           : e.getClass().getSimpleName();
+                end(activeEncoder != null ? "video encoder " + activeEncoder + ": " + what : what);
             }
-        } catch (IOException e) {
-            // A broken pipe is the normal end: the client closed the socket.
-            Ln.i("session " + sessionId + " video stream ended: " + e);
         } finally {
             Ln.i("session " + sessionId + " video stopped");
+        }
+    }
+
+    /** END reason 1: tell the client why, rather than leave it to guess from a closed socket. */
+    private void end(String detail) {
+        try {
+            streamer.writeEnd(VideoStreamer.END_FAILED, detail);
+        } catch (IOException io) {
+            // the client already left
         }
     }
 
     private void streamCapture() throws IOException, ConfigurationException {
         MediaCodec codec = createMediaCodec();
         MediaFormat format = createFormat();
-        MediaCodecInfo.VideoCapabilities caps =
-                codec.getCodecInfo().getCapabilitiesForType(mimeType).getVideoCapabilities();
-        streamer.writeCodecId(codecId);
+        streamer.writeStart(codecId);
 
         try {
             boolean alive;
             do {
+                final MediaCodecInfo.VideoCapabilities caps =
+                        codec.getCodecInfo().getCapabilitiesForType(mimeType).getVideoCapabilities();
                 final int[] size = capture.prepare(alignment(caps), maxSize);
                 clampToCodec(size, caps);
                 format.setInteger(MediaFormat.KEY_WIDTH, size[0]);
@@ -160,6 +197,7 @@ public final class ScreenEncoder {
                 Surface surface = null;
                 boolean codecStarted = false;
                 boolean captureStarted = false;
+                String fallBackBecause = null;
                 try {
                     codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
                     surface = codec.createInputSurface();
@@ -174,21 +212,47 @@ public final class ScreenEncoder {
                     if (stopped) {
                         alive = false;
                     } else {
-                        // The session packet's resize bit tells the client "you asked for this
-                        // size" apart from "the device changed size under you" — it resizes its
-                        // window only for the latter.
+                        // FORMAT's resize bit tells the client "you asked for this size" apart
+                        // from "the device changed size under you" — it resizes its window only
+                        // for the latter.
                         final boolean wasClientResize = clientResized;
                         clientResized = false;
-                        streamer.writeSessionMeta(size[0], size[1], wasClientResize);
+                        streamer.writeFormat(size[0], size[1], wasClientResize);
                         encode(codec);
                         alive = !stopped;
                     }
                 } catch (IllegalStateException | IllegalArgumentException | IOException e) {
-                    if (isBrokenPipe(e)) throw e;  // the client left; retrying encodes into a void
-                    Ln.w("session " + sessionId + " capture/encoding error: " + e);
-                    if (!prepareRetry(size[0], size[1])) throw e;
-                    recovering = true;
-                    alive = true;
+                    if (stopped) {
+                        // stop() landed mid-call and cancelled it. The session is over; there is
+                        // nothing to recover and nobody to tell.
+                        alive = false;
+                    } else {
+                        // The client left; retrying would encode into a void.
+                        if (VideoStreamer.isBrokenPipe(e)) throw e;
+                        Ln.w("session " + sessionId + " capture/encoding error: " + e);
+                        // A pinned encoder that has produced nothing at all cannot run here if
+                        // it took input and stayed silent, and never could if it errored at
+                        // every size the ladder tries. Either way the platform's default for the
+                        // type gets one attempt before the stream is failed.
+                        final boolean pinnedSilent = encoderName != null && !codecProducedOutput;
+                        if (pinnedSilent && e instanceof NoOutputException) {
+                            if (fellBack) {
+                                throw new ConfigurationException(
+                                        "video encoder " + encoderName + " produced no output, nor"
+                                        + " did the default " + activeEncoder + " (" + e.getMessage()
+                                        + ")");
+                            }
+                            fallBackBecause = "produced no output within "
+                                              + FIRST_OUTPUT_TIMEOUT_MS + " ms";
+                        } else if (prepareRetry(size[0], size[1])) {
+                            recovering = true;
+                        } else if (pinnedSilent && !fellBack) {
+                            fallBackBecause = "failed at every size (" + e + ")";
+                        } else {
+                            throw e;
+                        }
+                        alive = true;
+                    }
                 } finally {
                     runningCodec = null;
                     if (captureStarted) capture.stop();
@@ -202,9 +266,15 @@ public final class ScreenEncoder {
                     codec.reset();
                     if (surface != null) surface.release();
                 }
+                if (fallBackBecause != null) {
+                    final MediaCodec failed = codec;
+                    codec = null;
+                    failed.release();
+                    codec = createFallbackCodec(fallBackBecause);
+                }
             } while (alive);
         } finally {
-            codec.release();
+            if (codec != null) codec.release();
         }
     }
 
@@ -257,28 +327,40 @@ public final class ScreenEncoder {
      * but not straight after an error recovery, where the restarted codec owes a config packet
      * immediately and REPEAT_PREVIOUS_FRAME_AFTER guarantees it input. Silence there means a
      * wedged codec (a dead media engine, say), and without a deadline the socket stays open and
-     * the client freezes on its last frame, indistinguishable from working.
+     * the client freezes on its last frame, indistinguishable from working. A pinned encoder
+     * that has not produced anything yet is held to the same deadline, for the same reason.
      */
     private void encode(MediaCodec codec) throws IOException {
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        boolean requireOutput = recovering;
-        long deadline = requireOutput
-                ? SystemClock.elapsedRealtime() + RECOVERY_FIRST_OUTPUT_TIMEOUT_MS : 0;
+        boolean requireOutput = recovering || (encoderName != null && !codecProducedOutput);
+        final long start = SystemClock.elapsedRealtime();
+        boolean nudged = false;
         boolean eos;
         do {
             int id;
             if (requireOutput) {
                 id = codec.dequeueOutputBuffer(info, 100_000);  // µs
-                if (id == MediaCodec.INFO_TRY_AGAIN_LATER
-                        && SystemClock.elapsedRealtime() >= deadline) {
-                    throw new IOException("no encoder output within "
-                                          + RECOVERY_FIRST_OUTPUT_TIMEOUT_MS + "ms after recovery");
+                if (id == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    if (stopped) return;
+                    final long waited = SystemClock.elapsedRealtime() - start;
+                    if (waited >= FIRST_OUTPUT_TIMEOUT_MS) {
+                        throw new NoOutputException("no output within " + FIRST_OUTPUT_TIMEOUT_MS
+                                                    + " ms" + (recovering ? " after recovery" : ""));
+                    }
+                    if (!nudged && waited >= FIRST_OUTPUT_NUDGE_MS) {
+                        nudged = true;
+                        capture.requestRecompose(true);
+                    }
                 }
             } else {
                 id = codec.dequeueOutputBuffer(info, -1);
             }
             try {
                 if (id >= 0) {
+                    if (!codecProducedOutput) {
+                        codecProducedOutput = true;
+                        Ln.i("session " + sessionId + " video encoder in use: " + activeEncoder);
+                    }
                     recovering = false;  // producing output again — back to blocking waits
                     requireOutput = false;
                 }
@@ -329,13 +411,40 @@ public final class ScreenEncoder {
                                                      + codecName + " encoder");
                 }
                 Ln.i("session " + sessionId + " video encoder (pinned): " + encoderName);
+                activeEncoder = encoderName;
                 return codec;
             } catch (IllegalArgumentException e) {
                 throw new ConfigurationException("unknown encoder: " + encoderName);
             }
         }
         MediaCodec codec = MediaCodec.createEncoderByType(mimeType);
-        Ln.i("session " + sessionId + " video encoder (auto): " + codec.getName());
+        activeEncoder = codec.getName();
+        Ln.i("session " + sessionId + " video encoder (auto): " + activeEncoder);
+        return codec;
+    }
+
+    /**
+     * The pinned encoder cannot run here: try the platform's default for the same type, once.
+     * Starts over as the first attempt did — full size, error budget reset — because nothing the
+     * pinned encoder taught us about sizes applies to a different component.
+     */
+    private MediaCodec createFallbackCodec(String why) throws IOException, ConfigurationException {
+        MediaCodec codec = MediaCodec.createEncoderByType(mimeType);
+        final String name = codec.getName();
+        if (name.equals(encoderName)) {
+            codec.release();
+            throw new ConfigurationException("video encoder " + encoderName + " " + why
+                                             + ", and it is the default " + codecName
+                                             + " encoder too");
+        }
+        Ln.w("session " + sessionId + " video encoder " + encoderName + " " + why
+             + " — retrying once with the default " + codecName + " encoder, " + name);
+        fellBack = true;
+        activeEncoder = name;
+        codecProducedOutput = false;
+        recovering = false;
+        consecutiveErrors = 0;
+        maxSize = requestedMaxSize;
         return codec;
     }
 
@@ -362,15 +471,5 @@ public final class ScreenEncoder {
             format.setInteger("vendor.remora-max-fps.value", Math.round(maxFps));
         }
         return format;
-    }
-
-    private static boolean isBrokenPipe(Exception e) {
-        Throwable t = e;
-        while (t != null) {
-            String m = t.getMessage();
-            if (m != null && (m.contains("Broken pipe") || m.contains("EPIPE"))) return true;
-            t = t.getCause();
-        }
-        return false;
     }
 }

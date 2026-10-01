@@ -15,16 +15,16 @@ import java.util.Map;
 
 /**
  * The audio half of a session (bd remora-28ix.3.6): REMOTE_SUBMIX capture, opus via MediaCodec,
- * written with the SAME framing as video (VideoStreamer) minus the session packet — audio has no
- * geometry, so the client's StreamDemuxer reads an audio stream as codec id then packets.
+ * written as the same v3 stream records as video (VideoStreamer, docs/MIRROR_PROTOCOL.md §2)
+ * minus FORMAT — audio has no geometry, so the stream is START, CONFIG (the OpusHead), FRAMEs.
  *
- * It rides its own connection ROLE (2) rather than a positional third socket. v1 made audio a
- * socket-ORDERING convention — video, then audio, then control — which is exactly the fragility
- * the role byte exists to remove: with roles, "no video" no longer renumbers everything after it.
+ * It rides its own connection ROLE (2) rather than a positional third socket. Making audio a
+ * socket-ORDERING convention — video, then audio, then control — is exactly the fragility the
+ * role byte exists to remove: with roles, "no video" no longer renumbers everything after it.
  *
- * Capture is REMOTE_SUBMIX rather than the fork's AudioPlaybackCapture: the latter builds an
- * AudioPolicy mix through three layers of reflection to capture per-app or per-usage, and Remora
- * mirrors the whole device — the submix IS the whole device's output. Compiled against the real
+ * Capture is REMOTE_SUBMIX rather than AudioPlaybackCapture: the latter builds an AudioPolicy
+ * mix through three layers of reflection to capture per-app or per-usage, and Remora mirrors the
+ * whole device — the submix IS the whole device's output. Compiled against the real
  * framework, so these are plain calls (docs/MIRROR_AGENT.md).
  */
 public final class AudioEncoder {
@@ -33,9 +33,8 @@ public final class AudioEncoder {
     private static final int CHANNELS = 2;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_STEREO;
     private static final int ENCODING = AudioFormat.ENCODING_PCM_16BIT;
-    private static final int CODEC_ID_OPUS = 0x6f_70_75_73;  // "opus"
     private static final int DEFAULT_BIT_RATE = 128_000;
-    // One read of 1024 frames, the fork's size: small enough that a read is not a latency floor.
+    // One read of 1024 frames: small enough that a read is not a latency floor.
     private static final int MAX_READ_SIZE = 1024 * CHANNELS * 2;
     private static final int DEQUEUE_TIMEOUT_US = 100_000;
     private static final byte[] OPUS_HEADER_ID = {'A', 'O', 'P', 'U', 'S', 'H', 'D', 'R'};
@@ -91,8 +90,8 @@ public final class AudioEncoder {
         // over it rather than through getSystemService().
         builder.setContext(Main.context());
         int min = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, ENCODING);
-        // 8x the minimum, the fork's figure: headroom against a scheduling hiccup, and it does
-        // not add latency — latency is set by how fast we drain, not by how deep the buffer is.
+        // 8x the minimum: headroom against a scheduling hiccup, and it does not add latency —
+        // latency is set by how fast we drain, not by how deep the buffer is.
         if (min > 0) builder.setBufferSizeInBytes(8 * min);
         return builder.build();
     }
@@ -106,11 +105,17 @@ public final class AudioEncoder {
         return format;
     }
 
-    /** Blocks until stop() or the peer disconnects. */
+    /**
+     * Blocks until stop() or the peer disconnects. Never throws (bd remora-hsdz): what goes wrong
+     * is told to the client as END — reason 0 when setting up capture failed, which is this image
+     * or this moment having no audio to give and the client carries on without; reason 1 when a
+     * running stream broke.
+     */
     public void run() {
         AudioRecord record = null;
         MediaCodec codec = null;
         boolean codecStarted = false;
+        boolean streaming = false;
         try {
             record = createRecord();
             runningRecord = record;
@@ -126,18 +131,24 @@ public final class AudioEncoder {
             runningCodec = codec;
             Ln.i("session " + sessionId + " audio: opus " + SAMPLE_RATE + " Hz stereo via "
                  + codec.getName());
-            streamer.writeCodecId(CODEC_ID_OPUS);
+            streaming = true;
+            streamer.writeStart(VideoStreamer.CODEC_OPUS);
             pump(record, codec);
-        } catch (IOException e) {
-            // A broken pipe is the client leaving, which is not an error worth a stack trace.
-            Ln.i("session " + sessionId + " audio stopped: " + e);
         } catch (Exception e) {
-            Ln.e("session " + sessionId + " audio failed", e);
-            try {
-                // The stream has no other way to say "this failed after the session was accepted".
-                if (!stopped) streamer.writeDisabled(true);
-            } catch (IOException ignored) {
-                // the peer is gone too; nothing left to tell
+            if (stopped || VideoStreamer.isBrokenPipe(e)) {
+                // The session closed, or the client left: neither is an error worth a trace.
+                Ln.i("session " + sessionId + " audio stopped: " + e);
+            } else {
+                Ln.e("session " + sessionId + " audio " + (streaming ? "failed" : "unavailable"), e);
+                final String what = e.getMessage() != null ? e.getMessage()
+                                                           : e.getClass().getSimpleName();
+                try {
+                    streamer.writeEnd(streaming ? VideoStreamer.END_FAILED
+                                                : VideoStreamer.END_UNAVAILABLE,
+                                      (streaming ? "audio failed: " : "no audio capture: ") + what);
+                } catch (IOException ignored) {
+                    // the peer is gone too; nothing left to tell
+                }
             }
         } finally {
             runningCodec = null;
@@ -172,8 +183,8 @@ public final class AudioEncoder {
      *   AOPUSPRL <u64 len> …           <- seek pre-roll
      *
      * Handing the whole 83-byte blob over as extradata makes avcodec_open2 fail, which is exactly
-     * what "audio decoder open failed" was. Narrow the buffer to the OpusHead slice, the same fix
-     * the fork's Streamer applies (docs: developer.android.com/reference/android/media/MediaCodec#CSD).
+     * what "audio decoder open failed" was. Narrow the buffer to the OpusHead slice
+     * (docs: developer.android.com/reference/android/media/MediaCodec#CSD).
      */
     private static void trimOpusConfig(ByteBuffer buffer) throws IOException {
         if (buffer.remaining() < 16) throw new IOException("opus config packet too short");
@@ -192,9 +203,9 @@ public final class AudioEncoder {
     }
 
     /**
-     * PCM in, packets out, on this one thread. The fork splits input and output across two
-     * threads; here a single loop alternates, which is enough because the encoder's output is
-     * tiny next to video and the read is the only blocking call.
+     * PCM in, packets out, on this one thread. Input and output need not be split across two
+     * threads: a single loop alternates, which is enough because the encoder's output is tiny
+     * next to video and the read is the only blocking call.
      */
     private void pump(AudioRecord record, MediaCodec codec) throws IOException {
         final MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
@@ -207,10 +218,10 @@ public final class AudioEncoder {
                 in.limit(limit);
                 final int read = record.read(in, limit, AudioRecord.READ_BLOCKING);
                 if (read < 0) {
-                    // stop() races us here; a negative read after it is the expected exit.
-                    if (!stopped) Ln.w("session " + sessionId + " audio read failed: " + read);
-                    codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-                    return;
+                    // stop() races us here; a negative read after it is the expected exit, and
+                    // one without it is a broken capture the client is told about (run()).
+                    if (stopped) return;
+                    throw new IOException("submix read failed: " + read);
                 }
                 // The encoder wants a monotonic timestamp; the record has no clock of its own.
                 codec.queueInputBuffer(inIndex, 0, read, SystemClock.elapsedRealtimeNanos() / 1000,

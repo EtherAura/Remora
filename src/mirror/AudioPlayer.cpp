@@ -28,7 +28,7 @@ AudioPlayer::~AudioPlayer() {
     stop();
 }
 
-bool AudioPlayer::init(quint32 codecId, QString *error) {
+bool AudioPlayer::init(quint8 codecId, QString *error) {
     codecId_ = codecId;
     raw_ = codecId == kCodecRawAudio;
 
@@ -78,7 +78,7 @@ bool AudioPlayer::openCodec(QString *error) {
         case kCodecAac: id = AV_CODEC_ID_AAC; break;
         case kCodecFlac: id = AV_CODEC_ID_FLAC; break;
         default:
-            if (error) *error = QStringLiteral("unknown audio codec id 0x%1").arg(codecId_, 8, 16);
+            if (error) *error = QStringLiteral("unknown audio codec 0x%1").arg(codecId_, 2, 16, QLatin1Char('0'));
             return false;
     }
     const AVCodec *codec = avcodec_find_decoder(id);

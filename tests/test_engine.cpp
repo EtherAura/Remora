@@ -123,8 +123,7 @@ public:
     bool shimConfigureOk = true;   // the privileged host-netns container succeeds
     bool shimUnitInstalled = false;  // a boot-time unit is also managing the shim
     QStringList shimRuns;          // every shim-configuring command issued, in order
-    QString detachedTail;           // what connect reads back from the detached scrcpy log
-    bool adbTool = true, scrcpyTool = true;  // preflight's local-tools check
+    bool adbTool = true;                     // preflight's local-tools check
     bool screencapOk = true;                 // captureScreenshot's exec-out redirect
     bool litProbeTimesOut = false;           // waitLit gate: screencap wedges (rc 124 from timeout)
     // Venus render-server health, as the two probes see it. Defaults describe a healthy stack.
@@ -169,11 +168,6 @@ public:
     // above — this one extracts pids.
     QString orphanEncoderPids;
     int mirrorClients = 0;                   // countMirrorClients' pgrep answer
-    // liveLocalSessions' scan of the CLIENT process trees. Format is what the script emits: a
-    // "CLIENT" line per live local scrcpy for this target, followed by that client's children's
-    // cmdlines — the adb-shell child is where the session's scid lives. Clients with no scid-
-    // bearing child are the case that must NOT license a device-wide reap (bd remora-8d7).
-    QString localScrcpyServers;
     // probeMirrorFlow / probeEncoderRate: the endpoint scan's labelled output, then one answer per
     // `tail` of a counter log, popped in order so a two-sample rate can be staged.
     QString mirrorEndpoints;
@@ -209,7 +203,6 @@ public:
         if (cmd.contains("/proc/$e/cgroup")) return R(0, mirrorEndpoints);
         if (cmd.contains("ss -tnHp")) return R(0, huskScanOut);
         if (cmd.contains("command -v adb")) return R(adbTool ? 0 : 1);
-        if (cmd.contains("command -v scrcpy")) return R(scrcpyTool ? 0 : 1);
         if (cmd.contains("lsmod | grep -q ashmem")) return R(ashmem ? 0 : 1);
         // The /data shape probe (bd remora-4ei.89). Matched on its discriminator so one rule
         // answers both backends — bare runs it as a local `sh -c`, remote as an ssh payload.
@@ -456,7 +449,7 @@ public:
             if (firstPacketCounts.size() > 1) return R(0, firstPacketCounts.takeFirst() + "\n");
             return R(0, firstPacketCounts.value(0, QStringLiteral("1")) + "\n");
         }
-        // The serve gate's evidence tail — matched apart from the scrcpy said-tail (n 8) and the
+        // The serve gate's evidence tail — matched apart from the mirror's said-tail (n 8) and the
         // flow-probe counters (n 400).
         if (argv.value(0) == "sh" && cmd.contains("tail -n 12"))
             return R(0, hostEncoderLogTail);
@@ -474,8 +467,6 @@ public:
             return R(0, pop(mirrorPidLists, QString()));
         if (argv.value(0) == "sh" && cmd.contains("pgrep -fc"))
             return R(0, QString::number(mirrorClients) + "\n");
-        if (argv.value(0) == "sh" && cmd.contains("pgrep -x remora"))
-            return R(0, localScrcpyServers);
         if (argv.value(0) == "sh" && cmd.contains("exec-out screencap")) {
             if (!screencapOk) return R(1, {}, "adb: device offline");
             // mimic the shell redirect: write a stub PNG at the > target so the size check passes
@@ -485,7 +476,6 @@ public:
             return R(0);
         }
         if (argv.mid(0, 2) == QStringList{"adb", "disconnect"}) return R(0);
-        if (cmd.contains("remora-detached.log")) return R(0, detachedTail);
         if (argv.value(0) == "ssh") {
             // sshArgv now sends `/bin/sh -c '<payload>'` so a non-POSIX login shell cannot swallow
             // it (bd remora-4ei.68). Recover the payload the way the remote shell would, so these
@@ -691,14 +681,9 @@ private slots:
     // is registryHoldsOnlyRemoraBuiltTags in test_gating, which fails if any registry tag is not
     // a Remora build.
 
-    // THE THREE killStaleServer TESTS WENT WITH THE FUNCTION (bd remora-28ix.4 step
-    // 4). They pinned hard-won behaviour — spare a live PIP's session, refuse to reap when a live
-    // client cannot be attributed (bd remora-4ei.43, remora-8d7), and survive ssh requoting — and
-    // that behaviour is not being relaxed, it has no subject left. The reaper existed for scrcpy's
-    // per-session guest server; the agent is one init service for the container's lifetime, so no
-    // such process can exist. Deleted rather than inverted: asserting that a removed function
-    // reaps nothing is not a regression guard. The host-side reap it was paired with keeps its own
-    // coverage under reapSessionOrphans.
+    // There is no guest-side server reap to test: the agent is one init service for the
+    // container's lifetime, so no per-session server process can leak. The host-side reap keeps
+    // its own coverage under reapSessionOrphans.
 
     void aFailingStepStopsTheBuildChain() {
         // Step 2 fails; step 3 carries the bare ';' that used to split the list.
@@ -934,8 +919,36 @@ private slots:
         QVERIFY(hasCall(sp, "/dev/ashmem"));
     }
 
-    // A container with no ashmem at all must still deploy: only WebView content suffers, so a hard
-    // failure here would cost more than it saves.
+    // bd remora-oky7 — the host module is asked of the RELEASE. An Android 17 profile deploys on a
+    // host with no ashmem_linux at all (it runs on memfd); an Android 16 one is refused in
+    // preflight, before anything is created, because its system_server crash-loops without it.
+    void barePreflightAsksAshmemOnlyOfAndroid16() {
+        {
+            FakeSpawner sp;
+            sp.ashmem = false;
+            RemoraConfig c;
+            c.image.androidVersion = 17;
+            auto ctx = makeContext(c, Backend::Bare);
+            RecordingSink sink;
+            QVERIFY(runChain(makeDeployer(Backend::Bare, sp, 24, 0)->steps(ctx), sink));
+            QCOMPARE(sink.of("preflight"), StepState::Ok);
+            QVERIFY(!hasCall(sp, "lsmod | grep -q ashmem"));  // not even asked
+        }
+        {
+            FakeSpawner sp;
+            sp.ashmem = false;
+            RemoraConfig c;
+            c.image.androidVersion = 16;
+            auto ctx = makeContext(c, Backend::Bare);
+            RecordingSink sink;
+            QVERIFY(!runChain(makeDeployer(Backend::Bare, sp, 24, 0)->steps(ctx), sink));
+            QCOMPARE(sink.of("preflight"), StepState::Failed);
+            QVERIFY(!hasCall(sp, "docker run"));
+        }
+    }
+
+    // A container with no ashmem at all must still deploy: an Android 17 image runs on memfd, and
+    // an Android 16 one never gets this far without the module.
     void bareDeploySurvivesMissingAshmem() {
         FakeSpawner sp;
         sp.ashmemNodeMissing = true;  // the in-container probe reports NO_ASHMEM
@@ -1873,7 +1886,7 @@ private slots:
     void connectRunSpawnsOneWindowSplash() {
         // connectRun (a full deploy) launches the boot splash IMMEDIATELY — the mirror argv plus
         // the --boot-animation flags — writes step titles into its status file, and doConnect
-        // ADOPTS that process instead of spawning a second scrcpy: one window, one process.
+        // ADOPTS that process instead of spawning a second mirror: one window, one process.
         FakeSpawner sp;
         sp.containerRunning = true;  // for connect's container-up preflight
         RemoraConfig cfg;
@@ -1881,8 +1894,8 @@ private slots:
         RecordingSink sink;
         QVERIFY(connectRun(Backend::Remote, withGuest(cfg), sink, sp, std::nullopt,
                            QStringLiteral("Remora:test"), nullptr));
-        // exactly ONE scrcpy: the splash IS the mirror — no second spawn (the other detached
-        // process is the KWin centering helper, not a scrcpy)
+        // exactly ONE mirror: the splash IS the mirror — no second spawn (the other detached
+        // process is the KWin centering helper, not a mirror)
         QCOMPARE(countCalls(sp, "mirror -s"), 1);
         QCOMPARE(countCalls(sp, "DETACH"), 2);  // splash + centering helper
         QVERIFY(hasCall(sp, "--boot-animation-status="));
@@ -1976,35 +1989,29 @@ private slots:
                            QStringLiteral("Remora:test"), nullptr));
         // startSplash's OWN pre-spawn pkill is legitimate and must stay — at that point no splash
         // exists yet and it is what reaps a genuinely stale mirror. The invariant is narrower: no
-        // scrcpy pkill after the splash has been spawned.
+        // mirror pkill after the splash has been spawned.
         int splashAt = -1;
         for (int i = 0; i < sp.calls.size(); ++i)
             if (sp.calls[i].contains(QStringLiteral("mirror -s"))) { splashAt = i; break; }
         QVERIFY2(splashAt >= 0, "no splash was spawned — test cannot check the invariant");
-        for (int i = splashAt + 1; i < sp.calls.size(); ++i) {
+        for (int i = splashAt + 1; i < sp.calls.size(); ++i)
             QVERIFY2(!(sp.calls[i].startsWith(QStringLiteral("pkill"))
-                       && sp.calls[i].contains(QStringLiteral("scrcpy"))),
-                     qPrintable(QStringLiteral("deploy pkilled a scrcpy after spawning its own "
+                       && sp.calls[i].contains(QStringLiteral("remora mirror"))),
+                     qPrintable(QStringLiteral("deploy pkilled a mirror after spawning its own "
                                                "splash: %1").arg(sp.calls[i])));
-            // The GUEST-side reap is the one that actually caused the drop: on a cold path the
-            // splash has already handed off and owns a live server, so killing
-            // '[c]om.genymobile.scrcpy' disconnects our own mirror.
-            QVERIFY2(!sp.calls[i].contains(QStringLiteral("genymobile")),
-                     qPrintable(QStringLiteral("deploy killed the guest scrcpy server after "
-                                               "spawning its own splash: %1").arg(sp.calls[i])));
+        // No guest-side kill at ANY point in a deploy: on a cold path the splash already owns a
+        // live session, and the agent is the one init service serving it — stopping or killing it
+        // is the same eoy.10 drop from the other end.
+        for (const QString &c : sp.calls) {
+            const bool namesAgent = c.contains(QStringLiteral("com.remora.agent"))
+                                    || c.contains(QStringLiteral("remora_agent"));
+            const bool stops = c.contains(QStringLiteral("kill"))
+                               || c.contains(QStringLiteral("ctl.stop"))
+                               || c.contains(QStringLiteral("ctl.restart"))
+                               || c.contains(QStringLiteral("stop remora_agent"));
+            QVERIFY2(!(namesAgent && stops),
+                     qPrintable(QStringLiteral("deploy stopped the guest agent: %1").arg(c)));
         }
-        // THE OTHER HALF OF THIS TEST IS GONE (bd remora-28ix.4 step 4). It used to
-        // require that the guest reap still HAPPEN, just earlier than the splash — otherwise a
-        // leaked VF encoder context survived into the new session. There is no guest reap any
-        // more and no context to leak: killStaleServer existed for scrcpy's per-session server,
-        // and the agent is one init service for the container's lifetime.
-        // What is asserted instead is stronger than the old pair: no guest-side kill happens at
-        // ANY point in a deploy, not merely after the splash. If one is ever reintroduced, the
-        // eoy.10 drop it caused is one gating mistake away from returning.
-        for (const QString &c : sp.calls)
-            QVERIFY2(!c.contains(QStringLiteral("genymobile"))
-                         && !c.contains(QStringLiteral("scrcpy-server")),
-                     qPrintable(QStringLiteral("deploy issued a guest-side scrcpy kill: %1").arg(c)));
         // The LOCAL pre-spawn pkill is legitimate and must survive: at that point no splash
         // exists and it is what reaps a genuinely stale mirror window.
         bool localReapBeforeSplash = false;
@@ -2034,8 +2041,8 @@ private slots:
     }
 
     void sleepFreezesRunningContainer() {
-        // Sleep = docker pause, with both mirror ends closed FIRST (while the container can
-        // still respond): the local scrcpy and the guest-side server.
+        // Sleep = docker pause, with the local mirror closed FIRST so its window is not left on a
+        // dead frame. The guest-side agent pauses and resumes with the container.
         FakeSpawner sp;
         RemoraConfig cfg;
         cfg.network.macvlanIp = QStringLiteral("192.0.2.77");
@@ -2067,14 +2074,14 @@ private slots:
 
     void macvlanAutoIpDiscoveryConnects() {
         // no pinned macvlan IP: the resolved target is deferred; connect discovers the
-        // docker-assigned address and both adb and scrcpy use it
+        // docker-assigned address and both adb and the mirror use it
         FakeSpawner sp;
         auto ctx = makeContext(withMacvlan(), Backend::Remote);
         QVERIFY(ctx.rc.target.isEmpty());
         RecordingSink sink;
         QVERIFY(runChain(makeDeployer(Backend::Remote, sp, 24, 0)->steps(ctx), sink));
         QVERIFY(hasCall(sp, "adb connect 192.168.0.90:5556"));
-        QVERIFY(hasCall(sp, "-s 192.168.0.90:5556"));  // scrcpy argv re-targeted too
+        QVERIFY(hasCall(sp, "-s 192.168.0.90:5556"));  // mirror argv re-targeted too
     }
 
     void resolveAdbTargetPinnedNeedsNoDiscovery() {
@@ -2126,12 +2133,20 @@ private slots:
         QVERIFY(!rc.macvlanSubnet.has_value());
     }
 
-    // Full-hardware H.265 is always the default and top priority (user directive):
-    // an empty profile resolves to h265, and — because a non-h264 codec is what triggers the
-    // bump — to the -hwc2 image that carries the hardware encoder. An explicit pin still wins.
+    // Full-hardware H.265 is always the default and top priority (user directive),
+    // wherever hardware HEVC can run: a host-mode profile resolves to h265, and — because a
+    // non-h264 codec is what triggers the bump — to the -hwc2 image that carries the hardware
+    // encoder. Guest mode, the empty profile's, has no hardware HEVC path (measured, bd
+    // remora-hsdz), so it resolves h264 and records why — still on the -hwc2 image, whose h264
+    // vector pins the software encoder. An explicit h264 pin still wins.
     void h265IsTheDefaultCodec() {
+        RemoraConfig host;
+        host.gpu.mode = GpuMode::Host;
+        QCOMPARE(resolve(host, Backend::Bare).videoCodec, QStringLiteral("h265"));
         const ResolvedConfig rc = resolve(RemoraConfig{}, Backend::Bare);
-        QCOMPARE(rc.videoCodec, QStringLiteral("h265"));
+        QCOMPARE(rc.videoCodec, QStringLiteral("h264"));
+        QVERIFY(rc.videoCodecFallback.has_value());
+        QVERIFY(rc.imageTag.contains(QLatin1String("hwc2")));
         RemoraConfig pinned;
         pinned.mirror.videoCodec = QStringLiteral("h264");
         QCOMPARE(resolve(pinned, Backend::Bare).videoCodec, QStringLiteral("h264"));
@@ -2518,7 +2533,7 @@ private slots:
 
     // remora record: the --record extra flows through reconnect into the spawned mirror argv —
     // the recorded session REPLACES the mirror (a second client would degrade the encoder).
-    void recordExtraReachesScrcpySpawn() {
+    void recordExtraReachesMirrorSpawn() {
         FakeSpawner sp;
         RemoraConfig cfg;
         cfg.mirror.extra << QStringLiteral("--record=/tmp/r.mp4");
@@ -2734,9 +2749,9 @@ private slots:
         QVERIFY(hasCall(sp, "androidboot.remora_fps=240"));
     }
 
-    // scrcpy frequently dies on its first launch (transient guest codec/buffer-setup race);
-    // connect must relaunch it rather than fail outright.
-    void connectRelaunchesScrcpyThenSucceeds() {
+    // The mirror can die on its first launch (a transient guest codec/buffer-setup race); connect
+    // must relaunch it rather than fail outright.
+    void connectRelaunchesMirrorThenSucceeds() {
         FakeSpawner sp;
         sp.detachedDiesFirst = 2;  // first two launches die immediately, third stays up
         auto ctx = makeContext(withGuest(), Backend::Remote);
@@ -3162,12 +3177,12 @@ private slots:
     }
 
     // bd remora-e5x.14 — A STARVED MIRROR IS ALIVE, so liveness alone cannot judge it. When the
-    // video comes from the host encoder, a scrcpy that connected but was never SERVED sits blocked
+    // video comes from the host encoder, a mirror that connected but was never SERVED sits blocked
     // waiting for a stream header: it passes every liveness check, logs nothing, and the connect
-    // reported "ok · scrcpy pid N" while no window ever appeared. Observed exactly that.
+    // reported success with its pid while no window ever appeared. Observed exactly that.
     // bd remora-82x, and the bd remora-e5x.19 flickering it turned out to cause. A REJECTED attempt
     // must actually go away, and `kill det.pid` missed twice over: det.pid is spawnDetached's pid —
-    // systemd-run's, not scrcpy's — and a starved scrcpy does not service SIGTERM anyway (observed
+    // systemd-run's, not the mirror's — and a starved client ignored SIGTERM anyway (observed
     // live: alive in futex_wait 84 SECONDS after a TERM, gone instantly on a KILL). The survivor
     // became a SECOND client on the one host encoder — the heavy black flickering — while the
     // connect step reported only the replacement's pid, so nothing admitted a second window existed.
@@ -3289,7 +3304,7 @@ private slots:
     //
     // The incident: reconnect's predecessor teardown SIGSEGV'd the encoder; the fresh client had
     // an ESTAB on the video socket (connection-level health), so connect printed ✓ — and seconds
-    // later the fork's no-first-frame guard took the unserved client down, leaving NO mirror and
+    // later the mirror's no-first-frame guard took the unserved client down, leaving NO mirror and
     // NO encoder behind a green step. The gate demands DATA-level proof: a new 'first decodable
     // packet' line in the encoder's own log, or a named failure carrying that log's tail.
 
@@ -3304,7 +3319,7 @@ private slots:
         ctx.rc.hostEncodeDrivesMirror = true;
         RecordingSink sink;
         const StepResult r = doConnect(sp, ctx, sink, 5, 0, 0, 2);
-        QVERIFY(!r.ok);  // the old bug: this combination reported '✓ connect — scrcpy pid N'
+        QVERIFY(!r.ok);  // the old bug: this combination reported a successful connect
         QVERIFY2(r.detail.contains(QStringLiteral("host encoder DIED")), qPrintable(r.detail));
         // the encoder's log rides along as evidence — it is the only place the death explains itself
         QVERIFY2(r.stderrTail.contains(QStringLiteral("SIGSEGV was here")),
@@ -3697,7 +3712,7 @@ private slots:
         QCOMPARE(countCalls(sp, "mirror -s"), 0);  // adopted splash held — no fresh spawn
     }
 
-    void connectFailsWhenScrcpyKeepsDying() {
+    void connectFailsWhenMirrorKeepsDying() {
         FakeSpawner sp;
         sp.detachedDead = true;  // every launch dies immediately
         auto ctx = makeContext(withGuest(), Backend::Remote);
@@ -3844,8 +3859,9 @@ private slots:
         QVERIFY(hasCall(sp, "docker rm -f"));
     }
 
-    // A running container booted WITHOUT the c2 boot arg has no working HEVC/opus encoder — scrcpy
-    // dies NAME_NOT_FOUND every time. When the profile wants c2, don't reconnect to it; redeploy.
+    // A running container booted WITHOUT the c2 boot arg has no working HEVC/opus encoder — the
+    // mirror session dies NAME_NOT_FOUND every time. When the profile wants c2, don't reconnect to
+    // it; redeploy.
     void smartConnectRedeploysWhenC2Missing() {
         FakeSpawner sp;
         sp.probeGpuMode = QStringLiteral("guest");  // remote resolves guest
@@ -4096,8 +4112,8 @@ private slots:
     }
 
     // adb answering ≠ Android booted: connect must gate on sys.boot_completed and never hand a
-    // half-booted system to scrcpy (its server dies with "Can't find service: settings").
-    void connectWaitsForBootBeforeScrcpy() {
+    // half-booted system to the mirror (the device half needs services that are not up yet).
+    void connectWaitsForBootBeforeMirror() {
         FakeSpawner sp;
         sp.bootStates = QStringList{"", "1"};  // first probe: still booting; second: done
         auto ctx = makeContext(withGuest(), Backend::Remote);
@@ -4116,17 +4132,7 @@ private slots:
         const StepResult r = doConnect(sp, ctx, sink, 5, 0, 0, 1, /*bootWaitMs=*/0);
         QVERIFY(!r.ok);
         QVERIFY(r.detail.contains(QStringLiteral("did not finish booting")));
-        QVERIFY(!hasCall(sp, "mirror -s"));  // scrcpy never launched into a half-booted system
-    }
-
-    // The mirror client lives inside the remora binary since the cutover (bd remora-28ix.2):
-    // a host without scrcpy is fully functional, and preflight must not say otherwise.
-    void preflightIgnoresMissingScrcpy() {
-        FakeSpawner sp;
-        sp.scrcpyTool = false;
-        auto ctx = makeContext(withGuest(), Backend::Remote);
-        RecordingSink sink;
-        QVERIFY(runChain(makeDeployer(Backend::Remote, sp, 24, 0)->steps(ctx), sink));
+        QVERIFY(!hasCall(sp, "mirror -s"));  // mirror never launched into a half-booted system
     }
 
     void reconnectReappliesNetfixOnAdbFailure() {
@@ -4384,26 +4390,26 @@ private slots:
         QVERIFY(!cfg.integration.armGuard.value_or(true));  // pins kept as a record, repairs off
     }
 
-    // bd remora-4ei.29: startDetached detaches the process but not the cgroup, so scrcpy launched
+    // bd remora-4ei.29: startDetached detaches the process but not the cgroup, so a mirror launched
     // from a desktop-launcher GUI stayed inside that app unit and died with it. The wrap is what
     // lifts it out.
     void scopedArgvWrapsInATransientScope() {
-        const QStringList argv{"scrcpy", "-s", "192.0.2.77:5555", "--stay-awake"};
+        const QStringList argv{"remora", "mirror", "-s", "192.0.2.77:5555", "--stay-awake"};
         const QStringList got = Spawner::scopedArgv(argv, true, QStringLiteral("remora-detached-7-0"));
         QCOMPARE(got.mid(0, 6),
                  (QStringList{"systemd-run", "--user", "--scope", "--quiet", "--collect",
                               "--unit=remora-detached-7-0"}));
         // the original command must survive intact and in order, right after the wrapper
         QCOMPARE(got.mid(6), argv);
-        // --quiet is not cosmetic: Chain.cpp tails /tmp/remora-detached.log for scrcpy's dying
-        // words, and systemd-run's unit announcement would land in exactly that file.
+        // --quiet is not cosmetic: Chain.cpp tails the newest /tmp/remora-detached-*.log for the
+        // mirror's dying words, and systemd-run's unit announcement would land in that very file.
         QVERIFY(got.contains(QStringLiteral("--quiet")));
     }
 
     // No systemd user manager (or no unit name) must leave the command completely untouched, so a
     // non-systemd host keeps the old behaviour rather than failing to launch at all.
     void scopedArgvIsIdentityWithoutSystemd() {
-        const QStringList argv{"scrcpy", "-s", "dev"};
+        const QStringList argv{"remora", "mirror", "-s", "dev"};
         QCOMPARE(Spawner::scopedArgv(argv, false, QStringLiteral("u")), argv);
         QCOMPARE(Spawner::scopedArgv(argv, true, QString()), argv);
         QCOMPARE(Spawner::scopedArgv({}, true, QStringLiteral("u")), QStringList());
@@ -5749,7 +5755,7 @@ private slots:
     // ─────────── teardown reap (bd remora-e5x.19.1) ───────────
     // The mirror is detached into its own scope so Remora's exit cannot kill it — which meant
     // nothing killed it when its CONTAINER died either. Observed live after a full destroy: the
-    // scrcpy client and the frame encoder both still running against a device that no longer
+    // mirror client and the frame encoder both still running against a device that no longer
     // existed, flickering over the next session's encoder at ~0.5 GiB each.
 
     void teardownReapsClientsEncoderAndSockets() {

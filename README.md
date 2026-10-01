@@ -6,11 +6,38 @@ mirror it — *with every knob actually exposed.*
 Remora is **configure-first**: compose your Android image à-la-carte, pick **where** to run it
 (this machine, or any docker host over ssh), check the target is ready, then **deploy + connect**
 — with a real staged-progress checklist and captured errors instead of a 200-line shell alias.
-The mirror is Remora's own: a Qt/FFmpeg client and an agent baked into the image, no scrcpy.
 
 ![The Remora config workspace](docs/workspace.png)
 
 Written in **C++20 / Qt 6** — a headless CLI and a QtWidgets workspace over one shared, unit-tested core.
+
+---
+
+## Highlights
+
+- **Real NVIDIA acceleration.** Android renders on the proprietary NVIDIA driver: ANGLE → Vulkan →
+  Venus → a vtest render server on the host → your GPU. One command (`remora venus-build`) builds
+  and installs the host half, and deploys turn it on automatically. Measured at 3760×1992, frame
+  times stay at 5 ms from p50 to p99 with 1 ms of GPU time — the same as at 720p — and zero jank.
+  Intel and AMD render nodes work directly, and a GPU-less host falls back to SwiftShader.
+- **Its own mirror, end to end.** A Remora agent is baked into the image as an init service, and
+  a Qt/FFmpeg client talks to it over Remora's own wire protocol: video, audio, input, clipboard,
+  desktop-mode displays and app listing. Frames can go straight from Remora's own hwcomposer to a
+  hardware encoder on the host GPU, and the client decodes on NVDEC or VA-API. The mirror runs in
+  its own systemd scope, so it outlives the workspace.
+- **Hardware video inside Android.** A VA-API Codec2 component in the image decodes AVC, HEVC, VP9
+  and AV1 and encodes AVC and HEVC on the GPU; on NVIDIA hosts decoding can be handed to the
+  host. Widevine L3 is available for DRM apps.
+- **Android apps on your desktop.** Every installed app gets a launcher entry with its real icon,
+  grouped per profile, and opens in a window of its own (`remora app`), alongside a desktop-mode
+  display, a picture-in-picture mirror, and sleep/wake that freezes the whole device and resumes
+  it in about a second — automatically when no window is open, if you like.
+- **Build exactly the Android you want.** Android 16 or 17 (LineageOS 23 / 24), built from source
+  with the features you pick: Google apps or microG, arm64 app translation, Magisk root, Play
+  integrity spoofing, a host camera, a host microphone, sensors, CPU-tuned builds. No kernel
+  module is needed for Android 17: shared memory runs on memfd.
+- **Run it anywhere.** The same deployment runs on this machine or on any docker host over ssh,
+  and several instances can run side by side, each with its own data.
 
 ---
 
@@ -24,7 +51,7 @@ Written in **C++20 / Qt 6** — a headless CLI and a QtWidgets workspace over on
 - **Pick a deploy target** — `bare` (local docker) or `remote` (any docker host over ssh). Both
   reach a real GPU: the host's render node directly, or NVIDIA via a Venus/vtest render server.
 - **Check readiness** — a read-only, per-target probe tells you exactly what's missing (docker
-  group, ashmem module, render node, ssh reachability, …) with remedies.
+  group, render node, ssh reachability, …) with remedies.
 - **Deploy + connect** — runs the proven bring-up chain (`preflight → ensure-image → host-prereqs →
   provision → boot-wait → netfix → connect`), streams per-step progress + captured stderr, and
   launches an external **mirror** window that survives Remora exiting. **Reconnect** attaches to an
@@ -70,8 +97,9 @@ sudo apt install build-essential cmake qt6-base-dev qt6-multimedia-dev qt6-weben
 `android-tools` (adb).
 
 **Host prerequisites to actually run Android in a container** (Remora *probes* these read-only; it
-does not install them — see `remora check`): the IBT-fixed `ashmem_linux.ko`, a usable DRM render
-node, and `docker` group membership. For NVIDIA acceleration, the Venus render server
+does not install them — see `remora check`): a usable DRM render node and `docker` group membership.
+Android 17 needs no kernel module; an Android 16 image additionally needs the IBT-fixed
+`ashmem_linux.ko`. For NVIDIA acceleration, the Venus render server
 (`remora venus-build`, see `vendor/host-prereqs/venus-nvidia/`). Details in
 [docs/FEATURES.md](docs/FEATURES.md).
 

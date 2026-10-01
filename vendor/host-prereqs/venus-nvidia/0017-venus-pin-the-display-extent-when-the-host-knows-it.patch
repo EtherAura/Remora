@@ -10,7 +10,7 @@ The label is chosen by EXTENT — largest render target wins, and after 240
 submits with nothing at that size it follows whatever else is rendering. Both
 rules assume ONE display.
 
-scrcpy --new-display gives Android a second one, and it is the active one: the
+The mirror's --new-display gives Android a second one, and it is the active one: the
 app renders continuously while the main display sits on a still launcher
 compositing nothing. So the shrink rule handed the label to the app, the host
 encoder published it, and the MIRROR showed the app. Measured, three times in
@@ -49,7 +49,7 @@ index 40d34bc3..e73ec303 100644
 +
 +/* Both rules above reason about ONE display, and neither survives a second one.
 + * Android gets a second display whenever an app is opened in its own window
-+ * (scrcpy --new-display), and then: it renders continuously while the first sits
++ * (mirror --new-display), and then: it renders continuously while the first sits
 + * on a still launcher, nothing composites at the labelled size for 240 submits,
 + * and the shrink rule hands the label to the app. The host encoder publishes it,
 + * and the MIRROR shows the app — measured, "relabelled 3760x1992 -> 736x1600

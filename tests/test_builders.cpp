@@ -35,7 +35,8 @@ struct FakeVendor {
 // source-tree guard scans along with everything else — does not carry them itself.
 static const QStringList &forbiddenNames() {
     static const QStringList names{QStringLiteral("red") + QStringLiteral("roid"),
-                                   QStringLiteral("way") + QStringLiteral("droid")};
+                                   QStringLiteral("way") + QStringLiteral("droid"),
+                                   QStringLiteral("scr") + QStringLiteral("cpy")};
     return names;
 }
 
@@ -100,10 +101,10 @@ private slots:
         QCOMPARE(buildDockerRunArgv(bareCfg()), expected);
     }
 
-    // With the host encoder driving the mirror, scrcpy reads the stream from a socket and the
+    // With the host encoder driving the mirror, the mirror reads the stream from a socket and the
     // device-encoder options must NOT be emitted — they would configure a codec2 encoder this
     // session never starts.
-    void hostEncodeScrcpyTakesTheSocket() {
+    void hostEncodeMirrorTakesTheSocket() {
         ResolvedConfig c = bareCfg();
         c.videoCodec = QStringLiteral("h265");
         c.imageTag = QStringLiteral("remora24:x86_64-gapps-wv-hwc2");
@@ -151,8 +152,8 @@ private slots:
         QVERIFY(argv.contains(QStringLiteral("--key-bind=Escape:b")));
         QVERIFY(argv.contains(QStringLiteral("--shortcut-mod=lctrl+lalt")));
 
-        // Unset stays unset: an empty shortcut_mod means the fork's default, which the client
-        // already runs, so saying it would only add noise to every argv golden.
+        // Unset stays unset: an empty shortcut_mod means the default (lalt,lsuper), which the
+        // client already runs, so saying it would only add noise to every argv golden.
         ResolvedConfig d = bareCfg();
         d.keyBind.clear();
         d.shortcutMod.clear();
@@ -163,8 +164,8 @@ private slots:
     }
 
     // host_encode alone must NOT change the mirror: without a server that can compose, pointing
-    // scrcpy at the encoder yields a black window. The device path stays exactly as it was.
-    void hostEncodeWithoutForkServerLeavesTheMirrorAlone() {
+    // the mirror at the encoder yields a black window. The device path stays exactly as it was.
+    void hostEncodeWithoutComposeLeavesTheMirrorAlone() {
         ResolvedConfig c = bareCfg();
         c.videoCodec = QStringLiteral("h265");
         c.imageTag = QStringLiteral("remora24:x86_64-gapps-wv-hwc2");
@@ -255,7 +256,7 @@ private slots:
         QVERIFY(a.at(i + 1).toInt() >= 240);
     }
 
-    // scrcpy spells bit rates "30M"; ffmpeg wants an integer, so the conversion is part of the
+    // video_bit_rate is spelled "30M"; ffmpeg wants an integer, so the conversion is part of the
     // contract rather than something the caller is expected to do.
     void hostEncoderBitRateSuffixes() {
         ResolvedConfig c;
@@ -1047,11 +1048,13 @@ private slots:
     }
 
     // Remora is its own project and does not describe itself relative to another one: no source,
-    // test, fixture or build file may carry forbiddenNames(), in code, data or comments alike.
+    // test, fixture or build file — the device agent's included — may carry forbiddenNames(), in
+    // code, data or comments alike.
     void sourceTreeCarriesNoForbiddenNames() {
         const QString root = QDir(QStringLiteral(REMORA_SOURCE_VENDOR_DIR "/..")).absolutePath();
         QStringList files{root + QStringLiteral("/CMakeLists.txt")};
-        for (const QString &sub : {QStringLiteral("src"), QStringLiteral("tests")}) {
+        for (const QString &sub :
+             {QStringLiteral("src"), QStringLiteral("tests"), QStringLiteral("agent/src")}) {
             QDirIterator it(root + QLatin1Char('/') + sub, QDir::Files,
                             QDirIterator::Subdirectories);
             while (it.hasNext()) files << it.next();
@@ -1261,26 +1264,26 @@ private slots:
         QCOMPARE(argv, expected);
     }
 
-    void scrcpyMaxFpsCapWiring() {
+    void mirrorMaxFpsCapWiring() {
         // Unset (the ≤60fps proven default) → no flag; the default vector stays stable.
         ResolvedConfig c = bareCfg();
         auto [e0, a0] = buildMirrorArgv(c, "localhost:5555");
         for (const QString &t : a0) QVERIFY(!t.startsWith("--max-fps"));
-        // Resolved cap → emitted (the fork forwards it to the c2-va drop, remora-rjh).
+        // Resolved cap → emitted (the agent forwards it to the c2-va drop, remora-rjh).
         c.maxFps = 60;
         auto [e1, a1] = buildMirrorArgv(c, "localhost:5555");
         QVERIFY(a1.contains("--max-fps=60"));
     }
 
-    // The Viewer's Navigation card is an ACTION-first view of two button/letter-indexed scrcpy
+    // The Viewer's Navigation card is an ACTION-first view of two button/letter-indexed mirror
     // knobs, so the resolved default has to give every action a distinct trigger — the old bhbn
     // put Back on both right-click and the 4th button and left Recents unreachable, which the card
     // cannot even display, let alone edit back.
     void resolverBakesNavigationDefaults() {
         // The resolver bakes the navigation knobs (the GUI's Navigation card edits them) and the
         // client now HONOURS them: mouse_bind, key_bind and shortcut_mod all reach it as flags
-        // (bd remora-28ix.2.6, which is what made the card's settings real). scrcpy_keyboard has
-        // no flag — sdk-style typing is built in and has no alternative to select.
+        // (bd remora-28ix.2.6, which is what made the card's settings real). There is no keyboard
+        // mode flag — sdk-style typing is built in and has no alternative to select.
         RemoraConfig c;
         QCOMPARE(resolve(c, Backend::Bare).mouseBind, QStringLiteral("bhsn:++++"));
         QCOMPARE(resolve(c, Backend::Remote).mouseBind, QStringLiteral("bhsn:++++"));
@@ -1578,14 +1581,15 @@ private slots:
         }
     }
 
-    void scrcpyH264PinsSoftwareEncoderOnHwc2() {
+    void mirrorH264PinsSoftwareEncoderOnHwc2() {
         // the hwc2 image's vendor AVC c2 entry can't start — h264 must pin the sw encoder there
         ResolvedConfig c = macvlanCfg();
         c.imageTag = "remora23:x86_64-gapps-wv-hwc2";
         const auto [e, a] = buildMirrorArgv(c, "192.168.0.77:5555");
         QVERIFY(a.contains("--video-encoder=c2.android.avc.encoder"));
-        // h265 on hwc2 pins the VAAPI HW HEVC encoder (scrcpy's auto-select intermittently probes it,
-        // fails the capability config, and falls back to software AVC — pinning forces the HW VDENC)
+        // h265 on hwc2 pins the VAAPI HW HEVC encoder (encoder auto-select intermittently probes
+        // it, fails the capability config, and falls back to software AVC — pinning forces the HW
+        // VDENC)
         c.videoCodec = "h265";
         const auto [e2, a2] = buildMirrorArgv(c, "192.168.0.77:5555");
         QVERIFY(a2.contains("--video-codec=h265"));
@@ -1595,7 +1599,7 @@ private slots:
         for (const QString &t : a3) QVERIFY(!t.startsWith("--video-encoder"));
     }
 
-    void scrcpyVideoCodecOptIn() {
+    void mirrorVideoCodecOptIn() {
         // default (h264 / empty) emits no --video-codec token…
         const auto [e0, a0] = buildMirrorArgv(bareCfg(), "localhost:5555");
         for (const QString &t : a0) QVERIFY(!t.startsWith("--video-codec"));
@@ -1613,7 +1617,7 @@ private slots:
         QVERIFY(buildDockerRunArgv(c).contains("androidboot.use_remora_c2=1"));
     }
 
-    void scrcpyWindowGeometryOptIn() {
+    void mirrorWindowGeometryOptIn() {
         // default: no window-geometry tokens
         const auto [e0, a0] = buildMirrorArgv(bareCfg(), "localhost:5555");
         for (const QString &t : a0) QVERIFY(!t.startsWith("--window-"));
@@ -3598,7 +3602,7 @@ private slots:
 
     // bd remora-4ei.38. PIP is a SECOND mirror beside the main one, so the two things that make it
     // work at all are a distinct window class and staying off the hardware encoder.
-    void pipScrcpyArgvIsADistinctSecondMirror() {
+    void pipMirrorArgvIsADistinctSecondMirror() {
         RemoraConfig cfg;
         cfg.mirror.windowWidth = 1880;   // main-mirror geometry that PIP must NOT inherit
         cfg.mirror.windowHeight = 996;
@@ -3656,10 +3660,30 @@ private slots:
         QCOMPARE(pipWindowTitle(QString()), QStringLiteral("Remora PIP"));
     }
 
+    // bd remora-hsdz. Guest mode has no host GPU in the container, so the VAAPI HEVC encoder has
+    // nothing to open and the session never produces a frame. The default h265 must resolve to
+    // h264 there — and say why — so the hwc2 vector pins the software AVC encoder instead.
+    void guestModeResolvesH264() {
+        RemoraConfig cfg;
+        cfg.gpu.mode = GpuMode::Guest;
+        cfg.image.imageTag = QStringLiteral("remora24:x86_64-gapps-wv-hwc2");
+        const ResolvedConfig g = resolve(cfg, Backend::Bare);
+        QCOMPARE(g.videoCodec, QStringLiteral("h264"));
+        QVERIFY(g.videoCodecFallback.has_value());
+        QVERIFY(g.videoCodecFallback->contains(QStringLiteral("gpu_mode=guest")));
+        const auto [env, argv] = buildMirrorArgv(g, QStringLiteral("dev:5555"), false);
+        QVERIFY(argv.contains(QStringLiteral("--video-encoder=c2.android.avc.encoder")));
+        for (const QString &a : argv) QVERIFY2(!a.startsWith(QStringLiteral("--video-codec")), qPrintable(a));
+        Q_UNUSED(env);
+        // Host mode keeps the h265 default.
+        cfg.gpu.mode = GpuMode::Host;
+        QCOMPARE(resolve(cfg, Backend::Bare).videoCodec, QStringLiteral("h265"));
+    }
+
     // bd remora-e5x.4. h265 resolves to c2.remora.vaapi.hevc.encoder, the image's ONLY HEVC
     // encoder (it ships no software one), so on a host with no VA encode entrypoint that component
-    // cannot start and the mirror never connects — the symptom being a bare "scrcpy exited
-    // immediately". A host whose only GPU is NVIDIA is exactly that: its VA driver is NVDEC,
+    // cannot start and the mirror never connects — the symptom being a mirror that exits
+    // immediately. A host whose only GPU is NVIDIA is exactly that: its VA driver is NVDEC,
     // decode-only. Downgrade to h264, which the image can always encode.
     void h265FallsBackToH264WithoutVaEncode() {
         // The predicate itself: NVIDIA is the case that matters, and it is NOT merely "no VA
@@ -3680,7 +3704,7 @@ private slots:
         const ResolvedConfig nv = resolve(cfg, Backend::Bare, nvidiaOnly);
         QCOMPARE(nv.videoCodec, QStringLiteral("h264"));
         QVERIFY(nv.videoCodecFallback.has_value());  // and it says why
-        // The whole point: no VAAPI encoder is pinned, so scrcpy can actually start.
+        // The whole point: no VAAPI encoder is pinned, so the mirror can actually start.
         const auto [nenv, nargv] = buildMirrorArgv(nv, QStringLiteral("dev:5555"), false);
         QVERIFY(!nargv.contains(QStringLiteral("--video-encoder=c2.remora.vaapi.hevc.encoder")));
 
@@ -3702,9 +3726,10 @@ private slots:
     // A16 instance, a second VAAPI HEVC session alongside the full-res mirror initialises and runs
     // (the component is created, "vaInitialize() OK on renderD129",
     // "VaapiVideoEncoder ready: coded=960x512") — two HEVC sessions plus a software one at once.
-    void pipScrcpyArgvInheritsTheSelectedCodec() {
+    void pipMirrorArgvInheritsTheSelectedCodec() {
         RemoraConfig cfg;
         cfg.mirror.videoCodec = QStringLiteral("h265");
+        cfg.gpu.mode = GpuMode::Host;  // guest mode resolves h264 (bd remora-hsdz)
         const ResolvedConfig rc = resolve(cfg, Backend::Remote);
         const auto [menv, m] = buildMirrorArgv(rc, QStringLiteral("dev:5555"), false);
         const auto [penv, p] = buildPipMirrorArgv(rc, QStringLiteral("dev:5555"));

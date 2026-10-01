@@ -3,6 +3,7 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QtEndian>
+#include <cstring>
 
 namespace remora::mirror {
 
@@ -23,11 +24,11 @@ static void putU64(QByteArray &b, quint64 v) {
     qToBigEndian(v, raw);
     b.append(raw, 8);
 }
-static void putPosition(QByteArray &b, Position p) {
-    putU32(b, quint32(p.x));
-    putU32(b, quint32(p.y));
-    putU16(b, p.screenWidth);
-    putU16(b, p.screenHeight);
+static void putF32(QByteArray &b, float v) {
+    quint32 bits;
+    static_assert(sizeof bits == sizeof v);
+    std::memcpy(&bits, &v, sizeof bits);
+    putU32(b, bits);
 }
 
 // UTF-8 bytes cut to at most `limit`, never splitting a codepoint: back off over continuation
@@ -41,71 +42,105 @@ static QByteArray utf8Truncated(const QString &text, int limit) {
     return utf8;
 }
 
-// Stream demuxer ---------------------------------------------------------------------------------
+// Records ----------------------------------------------------------------------------------------
+
+QByteArray record(quint8 type, const QByteArray &body) {
+    QByteArray b;
+    b.reserve(5 + body.size());
+    putU32(b, quint32(1 + body.size()));
+    putU8(b, type);
+    b.append(body);
+    return b;
+}
+
+std::optional<Record> RecordReader::next() {
+    if (!error_.isEmpty() || buf_.size() < 4) return std::nullopt;
+    const quint32 size = qFromBigEndian<quint32>(buf_.constData());
+    if (size == 0) {
+        error_ = QStringLiteral("record of size 0");
+        return std::nullopt;
+    }
+    if (size > limit_) {
+        error_ = QStringLiteral("record of %1 bytes is over the %2-byte limit").arg(size).arg(limit_);
+        return std::nullopt;
+    }
+    if (quint64(buf_.size()) < 4 + quint64(size)) return std::nullopt;
+    Record r;
+    r.type = quint8(buf_.at(4));
+    r.body = buf_.mid(5, int(size) - 1);
+    buf_.remove(0, 4 + int(size));
+    return r;
+}
+
+// Media streams ----------------------------------------------------------------------------------
 
 StreamDemuxer::Event StreamDemuxer::fail(const QString &why) {
     error_ = why;
-    state_ = State::Done;
+    done_ = true;
     return Event::Error;
 }
 
 StreamDemuxer::Event StreamDemuxer::next() {
-    if (state_ == State::Done) return error_.isEmpty() ? Event::NeedMoreData : Event::Error;
+    if (done_) return error_.isEmpty() ? Event::NeedMoreData : Event::Error;
+    for (;;) {
+        const std::optional<Record> r = records_.next();
+        if (!r) return records_.error() ? fail(records_.errorString()) : Event::NeedMoreData;
+        const uchar *d = reinterpret_cast<const uchar *>(r->body.constData());
+        const int n = r->body.size();
 
-    if (state_ == State::AwaitCodecId) {
-        if (buf_.size() < 4) return Event::NeedMoreData;
-        codecId_ = qFromBigEndian<quint32>(buf_.constData());
-        buf_.remove(0, 4);
-        if (codecId_ == kStreamDisabled) {
-            state_ = State::Done;
-            return Event::StreamDisabled;
+        if (r->type == quint8(StreamRecord::End)) {
+            done_ = true;
+            if (n < 1) return fail(QStringLiteral("END without a reason"));
+            detail_ = QString::fromUtf8(r->body.constData() + 1, n - 1);
+            return d[0] == kEndUnavailable ? Event::Unavailable : Event::Failed;
         }
-        if (codecId_ == kStreamConfigError) {
-            state_ = State::Done;
-            return Event::ConfigError;
+        if (!started_) {
+            if (r->type != quint8(StreamRecord::Start))
+                return fail(QStringLiteral("record type %1 before START").arg(r->type));
+            if (n < 1) return fail(QStringLiteral("START without a codec"));
+            codec_ = d[0];
+            started_ = true;
+            return Event::Started;
         }
-        // A video stream's first packet must be the session header; audio has none (the format
-        // is fixed 48 kHz stereo) and goes straight to media packets.
-        state_ = kind_ == Kind::Video ? State::AwaitFirstHeader : State::AwaitHeader;
-        return Event::CodecId;
-    }
-
-    if (state_ == State::AwaitFirstHeader || state_ == State::AwaitHeader) {
-        if (buf_.size() < kPacketHeaderSize) return Event::NeedMoreData;
-        const uchar *h = reinterpret_cast<const uchar *>(buf_.constData());
-        const bool isSession = h[0] & 0x80;
-        if (state_ == State::AwaitFirstHeader && !isSession)
-            return fail(QStringLiteral("expected a session header as the first video packet"));
-        if (isSession) {
-            session_.clientResized = h[3] & 1;
-            session_.width = qFromBigEndian<quint32>(h + 4);
-            session_.height = qFromBigEndian<quint32>(h + 8);
-            buf_.remove(0, kPacketHeaderSize);
-            state_ = State::AwaitHeader;
-            return Event::Session;
+        switch (StreamRecord(r->type)) {
+            case StreamRecord::Start:
+                return fail(QStringLiteral("a second START"));
+            case StreamRecord::Format:
+                if (n < 9) return fail(QStringLiteral("FORMAT body of %1 bytes").arg(n));
+                format_.width = qFromBigEndian<quint32>(d);
+                format_.height = qFromBigEndian<quint32>(d + 4);
+                format_.clientResized = d[8] & 1;
+                formatSeen_ = true;
+                return Event::Format;
+            case StreamRecord::Config:
+            case StreamRecord::Frame: {
+                // A video frame means nothing without its size, so FORMAT must have come first;
+                // audio's format is fixed and it never sends one.
+                if (kind_ == Kind::Video && !formatSeen_)
+                    return fail(QStringLiteral("media before the first FORMAT"));
+                MediaPacket p;
+                if (r->type == quint8(StreamRecord::Config)) {
+                    p.config = true;
+                    p.payload = r->body;
+                } else {
+                    if (n < 10) return fail(QStringLiteral("FRAME body of %1 bytes").arg(n));
+                    p.ptsUs = qFromBigEndian<quint64>(d);
+                    p.keyFrame = d[8] & 1;
+                    p.payload = r->body.mid(9);
+                }
+                packet_ = std::move(p);
+                return Event::Packet;
+            }
+            case StreamRecord::End:
+                break;  // handled above
         }
-        pendingHeader_ = qFromBigEndian<quint64>(h);
-        pendingSize_ = qFromBigEndian<quint32>(h + 8);
-        if (pendingSize_ == 0) return fail(QStringLiteral("invalid packet length: 0"));
-        buf_.remove(0, kPacketHeaderSize);
-        state_ = State::AwaitPayload;
-        // fall through to the payload check below
+        // Unknown type: skipped — the size already said where the next record starts.
     }
+}
 
-    if (state_ == State::AwaitPayload) {
-        if (quint32(buf_.size()) < pendingSize_) return Event::NeedMoreData;
-        packet_.config = pendingHeader_ & kFlagConfig;
-        packet_.keyFrame = pendingHeader_ & kFlagKeyFrame;
-        // A config packet's header discards the PTS entirely (it is exactly kFlagConfig).
-        packet_.ptsUs = packet_.config ? std::nullopt
-                                       : std::optional<quint64>(pendingHeader_ & kPtsMask);
-        packet_.payload = buf_.left(pendingSize_);
-        buf_.remove(0, pendingSize_);
-        state_ = State::AwaitHeader;
-        return Event::Packet;
-    }
-
-    return Event::NeedMoreData;
+QString videoEndMessage(const QString &detail) {
+    return QStringLiteral("the agent ended the video stream: %1")
+        .arg(detail.isEmpty() ? QStringLiteral("no reason given") : detail);
 }
 
 std::optional<MediaPacket> PacketMerger::merge(MediaPacket packet) {
@@ -120,146 +155,75 @@ std::optional<MediaPacket> PacketMerger::merge(MediaPacket packet) {
     return packet;
 }
 
-// Control messages, client → server --------------------------------------------------------------
+// Control messages, client → agent ---------------------------------------------------------------
 
-quint16 pressureToU16(float pressure) {
-    if (pressure <= 0.0f) return 0;
-    const quint32 u = quint32(pressure * 65536.0f);  // 2^16; 1.0f lands on 65536, clamped below
-    return u >= 0xFFFF ? 0xFFFF : quint16(u);
+FramePoint framePoint(QPoint videoPoint, QSize videoSize) {
+    if (videoSize.width() <= 0 || videoSize.height() <= 0) return {};
+    return {float(videoPoint.x()) / float(videoSize.width()),
+            float(videoPoint.y()) / float(videoSize.height())};
 }
 
-qint16 scrollToI16(float value) {
-    // The wire carries value/16 as [-1,1] fixed-point; the server multiplies by 16 back.
-    float f = value / 16.0f;
-    if (f > 1.0f) f = 1.0f;
-    if (f < -1.0f) f = -1.0f;
-    const qint32 i = qint32(f * 32768.0f);  // 2^15
-    if (i >= 0x7FFF) return 0x7FFF;
-    if (i < -0x8000) return -0x8000;
-    return qint16(i);
+static QByteArray control(ControlRecord type, const QByteArray &body = {}) {
+    return record(quint8(type), body);
 }
 
-QByteArray injectKeycode(quint8 action, qint32 keycode, quint32 repeat, qint32 metaState) {
+QByteArray keyMessage(quint8 action, qint32 keycode, quint32 repeat, qint32 metaState) {
     QByteArray b;
-    putU8(b, 0);
     putU8(b, action);
     putU32(b, quint32(keycode));
     putU32(b, repeat);
     putU32(b, quint32(metaState));
-    return b;
+    return control(ControlRecord::Key, b);
 }
 
-QByteArray injectText(const QString &text) {
-    const QByteArray utf8 = utf8Truncated(text, kInjectTextMaxLength);
-    QByteArray b;
-    putU8(b, 1);
-    putU32(b, quint32(utf8.size()));
-    b.append(utf8);
-    return b;
+QByteArray textMessage(const QString &text) {
+    return control(ControlRecord::Text, utf8Truncated(text, int(kControlRecordMax) - 1));
 }
 
-QByteArray injectTouch(quint8 action, quint64 pointerId, Position pos, float pressure,
-                       qint32 actionButton, qint32 buttons) {
+QByteArray pointerMessage(quint8 action, PointerTool tool, quint32 pointerId, FramePoint at,
+                          float pressure, qint32 actionButton, qint32 buttons) {
     QByteArray b;
-    putU8(b, 2);
     putU8(b, action);
-    putU64(b, pointerId);
-    putPosition(b, pos);
-    putU16(b, pressureToU16(pressure));
+    putU8(b, quint8(tool));
+    putU32(b, pointerId);
+    putF32(b, at.x);
+    putF32(b, at.y);
+    putF32(b, pressure);
     putU32(b, quint32(actionButton));
     putU32(b, quint32(buttons));
-    return b;
+    return control(ControlRecord::Pointer, b);
 }
 
-QByteArray injectScroll(Position pos, float hScroll, float vScroll, qint32 buttons) {
+QByteArray scrollMessage(FramePoint at, float hScroll, float vScroll, qint32 buttons) {
     QByteArray b;
-    putU8(b, 3);
-    putPosition(b, pos);
-    putU16(b, quint16(scrollToI16(hScroll)));
-    putU16(b, quint16(scrollToI16(vScroll)));
+    putF32(b, at.x);
+    putF32(b, at.y);
+    putF32(b, hScroll);
+    putF32(b, vScroll);
     putU32(b, quint32(buttons));
-    return b;
+    return control(ControlRecord::Scroll, b);
 }
 
-QByteArray backOrScreenOn(quint8 action) {
-    QByteArray b;
-    putU8(b, 4);
-    putU8(b, action);
-    return b;
+QByteArray backMessage(quint8 action) { return control(ControlRecord::Back, QByteArray(1, char(action))); }
+
+QByteArray panelMessage(Panel panel) {
+    return control(ControlRecord::Panel, QByteArray(1, char(quint8(panel))));
 }
 
-QByteArray expandNotificationPanel() { return QByteArray(1, char(5)); }
-QByteArray expandSettingsPanel() { return QByteArray(1, char(6)); }
-QByteArray collapsePanels() { return QByteArray(1, char(7)); }
-
-QByteArray getClipboard(quint8 copyKey) {
+QByteArray clipboardMessage(quint64 sequence, bool paste, const QString &text) {
     QByteArray b;
-    putU8(b, 8);
-    putU8(b, copyKey);
-    return b;
-}
-
-QByteArray setClipboard(quint64 sequence, bool paste, const QString &text) {
-    const QByteArray utf8 = utf8Truncated(text, kSetClipboardMaxLength);
-    QByteArray b;
-    putU8(b, 9);
     putU64(b, sequence);
     putU8(b, paste ? 1 : 0);
-    putU32(b, quint32(utf8.size()));
-    b.append(utf8);
-    return b;
+    // The record's type byte and these nine bytes come out of the same 1 MiB.
+    b.append(utf8Truncated(text, int(kControlRecordMax) - 1 - 9));
+    return control(ControlRecord::Clipboard, b);
 }
 
-QByteArray setDisplayPower(bool on) {
+QByteArray resizeMessage(quint16 width, quint16 height) {
     QByteArray b;
-    putU8(b, 10);
-    putU8(b, on ? 1 : 0);
-    return b;
-}
-
-QByteArray rotateDevice() { return QByteArray(1, char(11)); }
-
-QByteArray uhidCreate(quint16 id, quint16 vendorId, quint16 productId, const QString &name,
-                      const QByteArray &reportDesc) {
-    const QByteArray nameUtf8 = utf8Truncated(name, 127);  // 1-byte-length string
-    QByteArray b;
-    putU8(b, 12);
-    putU16(b, id);
-    putU16(b, vendorId);
-    putU16(b, productId);
-    putU8(b, quint8(nameUtf8.size()));
-    b.append(nameUtf8);
-    putU16(b, quint16(reportDesc.size()));
-    b.append(reportDesc);
-    return b;
-}
-
-QByteArray uhidInput(quint16 id, const QByteArray &data) {
-    QByteArray b;
-    putU8(b, 13);
-    putU16(b, id);
-    putU16(b, quint16(data.size()));
-    b.append(data);
-    return b;
-}
-
-QByteArray uhidDestroy(quint16 id) {
-    QByteArray b;
-    putU8(b, 14);
-    putU16(b, id);
-    return b;
-}
-
-QByteArray openHardKeyboardSettings() { return QByteArray(1, char(15)); }
-
-QByteArray resetVideo() { return QByteArray(1, char(17)); }
-
-QByteArray resizeDisplay(quint16 width, quint16 height) {
-    QByteArray b;
-    putU8(b, 21);
     putU16(b, width);
     putU16(b, height);
-    return b;
+    return control(ControlRecord::Resize, b);
 }
 
 // Tunnels ----------------------------------------------------------------------------------------
@@ -273,14 +237,8 @@ QStringList adbForwardListArgv(const QString &adb) {
 QList<quint16> mirrorForwardPorts(const QString &forwardList, const QString &serial) {
     // Rows look like '<serial> tcp:<port> localabstract:<name>'. Only this serial's rows, and only
     // the socket a mirror session creates — the agent's — is a candidate; whether one is actually
-    // stale is the caller's question (the lock file answers it).
-    // THE scrcpy_<hex> TUNNEL ALTERNATIVE IS GONE (bd remora-28ix.4 step 4). It matched
-    // the jar tunnel a pre-cutover session opened, so such a forward could still be counted and
-    // cleaned. Nothing can create one now: the device half is the in-image agent, and an image old
-    // enough to lack the bake is REFUSED outright rather than falling back (see
-    // docs/MIRROR_AGENT.md), so there is no path that opens a scrcpy tunnel. A stale forward
-    // left by such a session is now ignored rather than reaped — `adb forward --remove-all` clears
-    // it, and it costs a port entry until then.
+    // stale is the caller's question (the lock file answers it). Any other socket name is not a
+    // mirror session's and is left alone.
     QList<quint16> out;
     static const QRegularExpression rx(QStringLiteral(
         "^(\\S+)\\s+tcp:(\\d+)\\s+localabstract:(remora_agent)\\s*$"));
@@ -293,7 +251,7 @@ QList<quint16> mirrorForwardPorts(const QString &forwardList, const QString &ser
     return out;
 }
 
-// Protocol v2: the Remora agent ------------------------------------------------------------------
+// Session setup ----------------------------------------------------------------------------------
 
 QByteArray agentHello() {
     QByteArray b(kAgentMagic, 4);
@@ -310,6 +268,18 @@ std::optional<AgentHello> parseAgentHello(const QByteArray &reply) {
     h.version = qFromBigEndian<quint16>(d + 4);
     h.capabilities = qFromBigEndian<quint16>(d + 6);
     return h;
+}
+
+QString agentVersionRefusal(const AgentHello &hello) {
+    if (hello.version == kAgentProtoVersion) return {};
+    const QString which = hello.version < kAgentProtoVersion
+                              ? QStringLiteral("rebuild the image to update its agent")
+                              : QStringLiteral("update Remora on this host");
+    return QStringLiteral("%1 v%2, and this client speaks v%3 — %4")
+        .arg(QString::fromLatin1(kAgentVersionRefusalPrefix))
+        .arg(hello.version)
+        .arg(kAgentProtoVersion)
+        .arg(which);
 }
 
 QByteArray agentSessionRequest(SessionKind kind, const QStringList &params) {
@@ -383,45 +353,30 @@ QStringList adbAgentTunnelArgv(const QString &adb, const QString &serial, quint1
              << QStringLiteral("localabstract:") + QString::fromLatin1(kAgentSocketName);
 }
 
-// Device messages, server → client ---------------------------------------------------------------
+// Device messages, agent → client ----------------------------------------------------------------
 
 std::optional<DeviceMessage> DeviceMessageParser::next() {
-    if (error_ || buf_.isEmpty()) return std::nullopt;
-    const uchar *d = reinterpret_cast<const uchar *>(buf_.constData());
-    const quint8 type = d[0];
-
-    if (type == quint8(DeviceMessage::Type::Clipboard)) {
-        if (buf_.size() < 5) return std::nullopt;
-        const quint32 len = qFromBigEndian<quint32>(d + 1);
-        if (quint32(buf_.size()) < 5 + len) return std::nullopt;
-        DeviceMessage m;
-        m.type = DeviceMessage::Type::Clipboard;
-        m.clipboardText = QString::fromUtf8(buf_.constData() + 5, len);
-        buf_.remove(0, 5 + int(len));
-        return m;
+    while (!error_) {
+        const std::optional<Record> r = records_.next();
+        if (!r) return std::nullopt;
+        if (r->type == quint8(DeviceRecord::Clipboard)) {
+            DeviceMessage m;
+            m.type = DeviceRecord::Clipboard;
+            m.clipboardText = QString::fromUtf8(r->body);
+            return m;
+        }
+        if (r->type == quint8(DeviceRecord::ClipboardAck)) {
+            if (r->body.size() < 8) {
+                error_ = true;
+                return std::nullopt;
+            }
+            DeviceMessage m;
+            m.type = DeviceRecord::ClipboardAck;
+            m.sequence = qFromBigEndian<quint64>(r->body.constData());
+            return m;
+        }
+        // Unknown type: skipped.
     }
-    if (type == quint8(DeviceMessage::Type::AckClipboard)) {
-        if (buf_.size() < 9) return std::nullopt;
-        DeviceMessage m;
-        m.type = DeviceMessage::Type::AckClipboard;
-        m.sequence = qFromBigEndian<quint64>(d + 1);
-        buf_.remove(0, 9);
-        return m;
-    }
-    if (type == quint8(DeviceMessage::Type::UhidOutput)) {
-        if (buf_.size() < 5) return std::nullopt;
-        const quint16 size = qFromBigEndian<quint16>(d + 3);
-        if (buf_.size() < 5 + int(size)) return std::nullopt;
-        DeviceMessage m;
-        m.type = DeviceMessage::Type::UhidOutput;
-        m.uhidId = qFromBigEndian<quint16>(d + 1);
-        m.uhidData = buf_.mid(5, size);
-        buf_.remove(0, 5 + int(size));
-        return m;
-    }
-
-    // Unknown type: unrecoverable by contract — no length prefix means no resync point.
-    error_ = true;
     return std::nullopt;
 }
 

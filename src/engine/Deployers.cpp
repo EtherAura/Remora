@@ -49,7 +49,9 @@ static LineSink mkLog(LogSink &sink, const QString &step) {
 //
 // No Android-version gate is needed: A16's libcutils uses a fixed path and simply ignores the extra
 // link, and the guard below makes the step a no-op wherever the suffixed node already exists (a
-// future ashmem module that names it correctly, or a rerun).
+// future ashmem module that names it correctly, or a rerun). Nor is the module itself needed on
+// A17 (bd remora-oky7): with no /dev/ashmem at all it runs on memfd. The link matters only on a
+// host that HAS the module — there, without it, WebView renders black as measured above.
 static StepResult ensureAshmemNode(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     auto log = mkLog(sink, "ashmem-node");
     const QString c = ctx.rc.containerName;
@@ -63,16 +65,16 @@ static StepResult ensureAshmemNode(Spawner &sp, const RunContext &ctx, LogSink &
         "ln -sf /dev/ashmem \"/dev/ashmem$b\" && echo LINKED || echo FAILED");
     const QString out =
         sp.run({"docker", "exec", c, "sh", "-c", script}, {}, log).out.trimmed();
-    // Never fail the deploy on this. A device without ashmem at all still boots and mirrors — it is
-    // only WebView content that suffers — so a hard failure here would cost more than it saves.
+    // Never fail the deploy on this. Without ashmem at all an Android 17 image runs on memfd, and
+    // preflight has already refused an Android 16 one, so there is nothing left here to refuse.
     if (out.contains(QLatin1String("LINKED")))
         return StepResult::good(QStringLiteral("boot-id ashmem node linked"));
     if (out.contains(QLatin1String("ALREADY")))
         return StepResult::good(QStringLiteral("boot-id ashmem node already present"));
     if (out.contains(QLatin1String("NO_ASHMEM")))
         return StepResult::good(
-            QStringLiteral("no /dev/ashmem in the container — nothing to link (WebViews may be "
-                           "black on A17; see vendor/host-prereqs/README.md for the module)"));
+            QStringLiteral("no /dev/ashmem in the container — nothing to link (shared memory "
+                           "runs on memfd)"));
     return StepResult::good(QStringLiteral("could not link the boot-id ashmem node (%1)").arg(out));
 }
 
@@ -944,13 +946,21 @@ private:
         if (!groups(sp_, log).contains("docker"))
             return StepResult::fail(
                 "not in the 'docker' group — sudo usermod -aG docker $USER, then re-login");
-        if (sp_.run({"sh", "-c", "lsmod | grep -q ashmem"}, {}, log).rc != 0)
-            return StepResult::fail(
-                "ashmem_linux.ko not loaded — bare metal needs the IBT-fixed ashmem module");
+        // Asked only of a release that needs it (bd remora-oky7): Android 17 runs on memfd, so a
+        // host without the module is refused only for an Android 16 image, which crash-loops
+        // without it.
+        const bool needsAshmem = releaseNeedsAshmem(ctx.rc.androidVersion);
+        if (needsAshmem && sp_.run({"sh", "-c", "lsmod | grep -q ashmem"}, {}, log).rc != 0)
+            return StepResult::fail(QStringLiteral(
+                "ashmem_linux.ko not loaded — an Android %1 image needs the IBT-fixed ashmem "
+                "module (Android 17 does not)").arg(ctx.rc.androidVersion));
         if (auto shape = dataShapeMismatch(sp_, ctx)) return *shape;
         if (auto arch = archVariantMismatch(sp_, ctx)) return *arch;
-        return StepResult::good("adb present, docker group ok, ashmem loaded, /data shape "
-                                "matches, image runs on this CPU");
+        return StepResult::good(
+            QStringLiteral("adb present, docker group ok, %1, /data shape matches, image runs on "
+                           "this CPU")
+                .arg(needsAshmem ? QStringLiteral("ashmem loaded")
+                                 : QStringLiteral("no ashmem needed (memfd)")));
     }
     StepResult ensureImage(const RunContext &ctx, LogSink &sink) {
         auto log = mkLog(sink, "ensure-image");

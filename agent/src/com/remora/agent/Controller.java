@@ -19,33 +19,33 @@ import android.view.MotionEvent;
 
 import com.android.internal.statusbar.IStatusBarService;
 
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * The control half of a kind=mirror session (bd remora-28ix.3.1): decodes v1 control messages
- * from the connection, injects input through the real framework — InputManagerGlobal, no
- * reflection — and keeps the clipboard synchronized both ways. Runs on its connection's thread
- * until the peer disconnects; the clipboard listener is the only cross-thread visitor and only
- * touches the synchronized device-message writer.
+ * The control half of a session (bd remora-28ix.3.1): decodes protocol v3 control messages from
+ * the connection (docs/MIRROR_PROTOCOL.md §3), injects input through the real framework —
+ * InputManagerGlobal, no reflection — and keeps the clipboard synchronized both ways. Runs on its
+ * connection's thread until the peer disconnects; the clipboard listener is the only cross-thread
+ * visitor and only touches the synchronized device-message writer.
  *
- * The injection semantics are the fork Controller's, ported where this phase implements them:
- * touch (multi-pointer state, the mouse ACTION_BUTTON_PRESS/RELEASE sequence Chrome needs),
- * scroll, keycode, text (dead-key decomposition), back-or-screen-on, panels, clipboard
- * get/set/listen, and the flex reflow (RESIZE_DISPLAY, bd remora-28ix.3.3). The rest of types
- * 0–21 decode — the stream has no resync point, so everything must parse — but only log until a
- * session kind that wants them exists.
+ * Every v3 type is acted on: key, text (dead-key decomposition), pointer (multi-pointer state,
+ * the mouse ACTION_BUTTON_PRESS/RELEASE sequence Chrome needs), scroll, back-or-screen-on, the
+ * status-bar panels, clipboard set with paste and acknowledgement, and the flex reflow (RESIZE,
+ * bd remora-28ix.3.3). Types the agent does not know never reach here — the reader skips them.
  */
 public final class Controller {
-    private static final int MAX_CLIPBOARD_BYTES = (1 << 18) - 5;  // writer cap: type + u32 len
+    // A device CLIPBOARD record's body is the text alone, so it gets the whole record but the
+    // type byte.
+    private static final int MAX_CLIPBOARD_BYTES = Records.CONTROL_LIMIT - 1;
 
-    // Device→client message types (v1, mirrored by the client's DeviceMessageParser).
-    private static final int DEVICE_MSG_CLIPBOARD = 0;
-    private static final int DEVICE_MSG_ACK_CLIPBOARD = 1;
+    // Device→client message types (docs/MIRROR_PROTOCOL.md §4).
+    private static final int DEVICE_MSG_CLIPBOARD = 0x01;
+    private static final int DEVICE_MSG_CLIPBOARD_ACK = 0x02;
 
     // How long the first event waits for a new display to exist before giving up on it.
     private static final int DISPLAY_WAIT_MS = 5000;
@@ -53,7 +53,7 @@ public final class Controller {
     private final int sessionId;
     private final Session session;
     private final ControlReader reader;
-    private final DataOutputStream out;  // device messages; all writes synchronized on it
+    private final Records.Writer out;    // device messages; every write is one synchronized record
     private int displayId = -1;          // resolved on first use — see inputDisplay()
     private boolean warnedNoDisplay;
 
@@ -76,13 +76,11 @@ public final class Controller {
     private final ClipboardManager.OnPrimaryClipChangedListener clipListener =
             this::onDeviceClipboardChanged;
 
-    private final boolean[] warnedUnimplemented = new boolean[22];
-
     public Controller(Context context, Session session, InputStream in, OutputStream rawOut) {
         this.sessionId = session.id;
         this.session = session;
         this.reader = new ControlReader(in);
-        this.out = new DataOutputStream(rawOut);
+        this.out = new Records.Writer(rawOut, Records.CONTROL_LIMIT);
         for (int i = 0; i < PointersState.MAX_POINTERS; ++i) {
             MotionEvent.PointerProperties props = new MotionEvent.PointerProperties();
             props.toolType = MotionEvent.TOOL_TYPE_FINGER;
@@ -129,7 +127,7 @@ public final class Controller {
                 handle(reader.next());
             }
         } catch (IOException e) {
-            // EOF or protocol violation — either way the session is over; the message says which.
+            // EOF or a framing error — either way the session is over; the message says which.
             Ln.i("session " + sessionId + " control connection closed: " + e);
         } finally {
             if (clipboard != null) clipboard.removePrimaryClipChangedListener(clipListener);
@@ -138,48 +136,32 @@ public final class Controller {
 
     private void handle(ControlMessage m) {
         switch (m.type) {
-            case ControlMessage.TYPE_INJECT_KEYCODE:
+            case ControlMessage.TYPE_KEY:
                 injectKeyEvent(m.action, m.keycode, m.repeat, m.metaState,
                                InputManager.INJECT_INPUT_EVENT_MODE_ASYNC);
                 break;
-            case ControlMessage.TYPE_INJECT_TEXT:
+            case ControlMessage.TYPE_TEXT:
                 injectText(m.text);
                 break;
-            case ControlMessage.TYPE_INJECT_TOUCH_EVENT:
-                injectTouch(m);
+            case ControlMessage.TYPE_POINTER:
+                injectPointer(m);
                 break;
-            case ControlMessage.TYPE_INJECT_SCROLL_EVENT:
+            case ControlMessage.TYPE_SCROLL:
                 injectScroll(m);
                 break;
-            case ControlMessage.TYPE_BACK_OR_SCREEN_ON:
+            case ControlMessage.TYPE_BACK:
                 pressBackOrTurnScreenOn(m.action);
                 break;
-            case ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL:
-                statusBar("expandNotificationsPanel");
+            case ControlMessage.TYPE_PANEL:
+                panel(m.panel);
                 break;
-            case ControlMessage.TYPE_EXPAND_SETTINGS_PANEL:
-                statusBar("expandSettingsPanel");
-                break;
-            case ControlMessage.TYPE_COLLAPSE_PANELS:
-                statusBar("collapsePanels");
-                break;
-            case ControlMessage.TYPE_GET_CLIPBOARD:
-                getClipboard(m.copyKey);
-                break;
-            case ControlMessage.TYPE_SET_CLIPBOARD:
+            case ControlMessage.TYPE_CLIPBOARD:
                 setClipboard(m.text, m.paste, m.sequence);
                 break;
-            case ControlMessage.TYPE_RESIZE_DISPLAY:
+            case ControlMessage.TYPE_RESIZE:
                 // The client's window was resized; reflow a new display to match (a mirror
                 // ignores this — its size follows its source).
                 session.requestResize(m.width, m.height);
-                break;
-            default:
-                // Decoded so the stream stays in sync; acting on it belongs to a later phase.
-                if (!warnedUnimplemented[m.type]) {
-                    warnedUnimplemented[m.type] = true;
-                    Ln.w("control message type " + m.type + " decoded but not implemented yet");
-                }
                 break;
         }
     }
@@ -230,14 +212,15 @@ public final class Controller {
     }
 
     /**
-     * Client coordinates arrive in the video space the client is looking at; the display is the
-     * space events land in. Pure scaling between the two — where v1 dropped events whose declared
-     * size mismatched the current video size, scaling stays correct against max_size caps and
-     * needs no capture-side handshake. The DisplayInfo lookup is cheap (client-side cached in
-     * DisplayManagerGlobal), so it tracks a mid-session resize without extra wiring.
+     * Client coordinates arrive as fractions of the frame the client is showing; the display is
+     * the space events land in, so the point is the fraction times the display's current size.
+     * The client never needs to know that size — a max_size-capped video, a mid-session resize and
+     * a session with no video connection all map the same way. The DisplayInfo lookup is cheap
+     * (client-side cached in DisplayManagerGlobal), so it tracks a resize without extra wiring.
+     * Values past [0, 1] are a drag beyond the edge and pass through.
      */
     private float[] mapToDisplay(ControlMessage m) {
-        if (m.screenWidth <= 0 || m.screenHeight <= 0) return null;
+        if (!Float.isFinite(m.x) || !Float.isFinite(m.y)) return null;
         final int display = inputDisplay();
         if (display < 0) return null;
         DisplayInfo info = DisplayManagerGlobal.getInstance().getDisplayInfo(display);
@@ -245,18 +228,22 @@ public final class Controller {
             Ln.w("no display info for display " + display + " — dropping positional event");
             return null;
         }
-        return new float[]{m.x * (float) info.logicalWidth / m.screenWidth,
-                           m.y * (float) info.logicalHeight / m.screenHeight};
+        return new float[]{m.x * info.logicalWidth, m.y * info.logicalHeight};
     }
 
-    private void injectTouch(ControlMessage m) {
+    /** The PointersState key: the tool in the high half, so a finger and the mouse never collide. */
+    private static long pointerKey(ControlMessage m) {
+        return ((long) m.tool << 32) | (m.pointerId & 0xffffffffL);
+    }
+
+    private void injectPointer(ControlMessage m) {
         long now = SystemClock.uptimeMillis();
         float[] point = mapToDisplay(m);
         if (point == null) return;
 
         int action = m.action;
         int buttons = m.buttons;
-        int pointerIndex = pointersState.getPointerIndex(m.pointerId);
+        int pointerIndex = pointersState.getPointerIndex(pointerKey(m));
         if (pointerIndex == -1) {
             Ln.w("too many pointers for touch event");
             return;
@@ -269,7 +256,7 @@ public final class Controller {
         int source;
         boolean activeSecondaryButtons =
                 ((m.actionButton | buttons) & ~MotionEvent.BUTTON_PRIMARY) != 0;
-        if (m.pointerId == -1
+        if (m.tool == ControlMessage.TOOL_MOUSE
                 && (action == MotionEvent.ACTION_HOVER_MOVE || activeSecondaryButtons)) {
             // A real mouse event, or one a finger cannot express.
             pointerProperties[pointerIndex].toolType = MotionEvent.TOOL_TYPE_MOUSE;
@@ -296,9 +283,9 @@ public final class Controller {
             }
         }
 
-        /* Mouse buttons need the full sequence or Chrome misbehaves (fork Controller, upstream
-         * issue 3635): the first press is ACTION_DOWN, every press ACTION_BUTTON_PRESS, every
-         * release ACTION_BUTTON_RELEASE, the last release ACTION_UP. */
+        /* Mouse buttons need the full sequence or Chrome misbehaves: the first press is
+         * ACTION_DOWN, every press ACTION_BUTTON_PRESS, every release ACTION_BUTTON_RELEASE, the
+         * last release ACTION_UP. */
         if (source == InputDevice.SOURCE_MOUSE) {
             if (action == MotionEvent.ACTION_DOWN) {
                 if (m.actionButton == buttons
@@ -367,17 +354,18 @@ public final class Controller {
         }
     }
 
-    private void statusBar(String what) {
+    private void panel(int which) {
         try {
             IStatusBarService svc = IStatusBarService.Stub.asInterface(
                     ServiceManager.getService(Context.STATUS_BAR_SERVICE));
-            switch (what) {
-                case "expandNotificationsPanel": svc.expandNotificationsPanel(); break;
-                case "expandSettingsPanel": svc.expandSettingsPanel(null); break;
-                case "collapsePanels": svc.collapsePanels(); break;
+            switch (which) {
+                case ControlMessage.PANEL_COLLAPSE: svc.collapsePanels(); break;
+                case ControlMessage.PANEL_NOTIFICATIONS: svc.expandNotificationsPanel(); break;
+                case ControlMessage.PANEL_SETTINGS: svc.expandSettingsPanel(null); break;
+                default: Ln.w("unknown panel " + which + " — ignored"); break;
             }
         } catch (Exception e) {
-            Ln.e("status bar " + what + " failed", e);
+            Ln.e("status bar panel " + which + " failed", e);
         }
     }
 
@@ -396,24 +384,10 @@ public final class Controller {
         }
     }
 
-    private void getClipboard(int copyKey) {
-        // COPY/CUT are injected synchronously so the read that follows sees their result.
-        if (copyKey != ControlMessage.COPY_KEY_NONE) {
-            int key = copyKey == ControlMessage.COPY_KEY_COPY ? KeyEvent.KEYCODE_COPY
-                                                              : KeyEvent.KEYCODE_CUT;
-            pressReleaseKeycode(key, InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH);
-        }
-        // An explicit GET always gets an explicit answer, even though the change listener will
-        // usually have sent the same text already — the duplicate is idempotent client-side, and
-        // a request that can go unanswered is untestable.
-        String text = readClipboardText();
-        if (text != null) sendClipboard(text);
-    }
-
     private void setClipboard(String text, boolean paste, long sequence) {
         lastClipboardSync = text;
         if (clipboard != null && !text.equals(readClipboardText())) {
-            // The equality guard mirrors the fork: pasting sets the clipboard, and setting the
+            // The equality guard is load-bearing: pasting sets the clipboard, and setting the
             // same text twice would notify listeners twice, flooding keyboard clipboard history.
             settingClipboard.set(true);
             try {
@@ -428,13 +402,9 @@ public final class Controller {
             pressReleaseKeycode(KeyEvent.KEYCODE_PASTE,
                                 InputManager.INJECT_INPUT_EVENT_MODE_ASYNC);
         }
-        if (sequence != ControlMessage.SEQUENCE_INVALID) {
+        if (sequence != ControlMessage.SEQUENCE_NONE) {
             try {
-                synchronized (out) {
-                    out.writeByte(DEVICE_MSG_ACK_CLIPBOARD);
-                    out.writeLong(sequence);
-                    out.flush();
-                }
+                out.write(DEVICE_MSG_CLIPBOARD_ACK, ByteBuffer.allocate(8).putLong(sequence).array());
             } catch (IOException e) {
                 Ln.e("clipboard ack write failed", e);
             }
@@ -458,12 +428,7 @@ public final class Controller {
             while (len > 0 && (raw[len] & 0xC0) == 0x80) --len;  // never split a codepoint
         }
         try {
-            synchronized (out) {
-                out.writeByte(DEVICE_MSG_CLIPBOARD);
-                out.writeInt(len);
-                out.write(raw, 0, len);
-                out.flush();
-            }
+            out.write(DEVICE_MSG_CLIPBOARD, null, 0, raw, 0, len);
         } catch (IOException e) {
             Ln.e("clipboard device message write failed", e);
         }

@@ -8,8 +8,8 @@ SurfaceFlinger's screenshot path CPU-maps exactly such a bo: the capture
 destination must be RENDERABLE, so it is necessarily block-linear, and the
 caller then reads it assuming linear. Tiled bytes walked linearly are
 horizontal striped noise -- screencap and the Recents thumbnails, the whole
-screen, home screen included. The scrcpy mirror never CPU-reads the buffer
-and is unaffected.
+screen, home screen included. The mirror never CPU-reads the buffer and is
+unaffected.
 
 No usage-bit ranking can fix this: the bo must be NVIDIA-renderable AND
 CPU-readable-linear, and no single layout is both. So a SW_READ lock of a
