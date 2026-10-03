@@ -225,7 +225,7 @@ void applyVendorPaths(ResolvedConfig &rc, Backend backend) {
     // The phantom keyboard travels the same road. Always mounted, whatever kbd_identity says:
     // "none" is the picker's "Generic — no Gboard toolbar", which still wants a keyboard (a
     // generic one), not the on-screen keyboard back.
-    // Only when it has actually been built, though (`make -C vendor/native`): docker answers a
+    // Only when it has actually been built, though (the Remora build compiles it): docker answers a
     // -v whose SOURCE does not exist by creating a directory there, so an unbuilt helper would
     // both silently do nothing and leave a stray dir in the vendor tree. Absent means the deploy
     // step says so and the on-screen keyboard stays — which is the old behaviour, not a failure.
@@ -1392,9 +1392,9 @@ StepResult ensureHostDecoder(Spawner &sp, const ResolvedConfig &rc, const LineSi
     const QString bin = vendorNativeBinary(QStringLiteral("remora-frame-decoder"));
     if (sp.run({"sh", "-c", QStringLiteral("[ -x %1 ]").arg(bin)}, {}, log).rc != 0)
         return StepResult::fail(
-            QStringLiteral("host_decode is on but %1 is not built — run "
-                           "`make -C vendor/native host-decoder` (it needs the ffmpeg "
-                           "development headers), or set host_decode=false")
+            QStringLiteral("host_decode is on but %1 is not built — the Remora build compiles "
+                           "it when it finds libva and FFmpeg's development files; install those "
+                           "and rebuild, or set host_decode=false")
                 .arg(bin));
 
     // GATE ON THE HELPER'S OWN --probe, not on our idea of what the host can do (bd remora-4ei.79's
@@ -1477,9 +1477,9 @@ StepResult ensureHostEncoder(Spawner &sp, const ResolvedConfig &rc, const LineSi
     const QString bin = vendorNativeBinary(QStringLiteral("remora-frame-encoder"));
     if (sp.run({"sh", "-c", QStringLiteral("[ -x %1 ]").arg(bin)}, {}, log).rc != 0)
         return StepResult::fail(
-            QStringLiteral("host_encode is on but %1 is not built — run "
-                           "`make -C vendor/native host-encoder` (it needs the ffmpeg "
-                           "development headers), or set host_encode=false")
+            QStringLiteral("host_encode is on but %1 is not built — the Remora build compiles "
+                           "it when it finds FFmpeg 7 or newer (libavfilter) and the Vulkan "
+                           "headers; install those and rebuild, or set host_encode=false")
                 .arg(bin));
 
     // Health is the socket plus a live process, for the same reason as the render server: a killed

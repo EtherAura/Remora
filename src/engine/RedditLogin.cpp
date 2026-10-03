@@ -1,5 +1,6 @@
 #include "engine/RedditLogin.h"
 
+#include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
 
@@ -23,19 +24,25 @@ static ProcResult csh(Spawner &sp, const RunContext &ctx, const QString &inner,
 // stream the bytes through `docker exec … cat`, redirecting into a file on the side where the
 // daemon runs (locally for bare; on the docker host, then scp back, for remote) — the redirect
 // keeps binary intact.
+//
+// Everything this file moves carries the session cookie, so every copy of it is owner-only: umask
+// 077 on both sides, and on a remote docker host a fresh mktemp name rather than a fixed path in a
+// shared /tmp, which another user could read while it existed — or pre-create as a symlink.
 static bool cpOut(Spawner &sp, const RunContext &ctx, const QString &containerPath,
                   const QString &local) {
     if (ctx.backend == Backend::Bare) {
-        const QString inner = QStringLiteral("docker exec %1 cat '%2' > '%3'")
+        const QString inner = QStringLiteral("umask 077; docker exec %1 cat '%2' > '%3'")
                                   .arg(ctx.rc.containerName, containerPath, local);
         return sp.run({QStringLiteral("sh"), QStringLiteral("-c"), inner}).rc == 0
                && QFileInfo(local).size() > 0;
     }
-    const QString rtmp = QStringLiteral("/tmp/remora-rl-") + QFileInfo(containerPath).fileName();
-    if (sp.run(Spawner::sshArgv(ctx.guest, QStringLiteral("docker exec %1 cat '%2' > '%3'")
-                                               .arg(ctx.rc.containerName, containerPath, rtmp)))
-            .rc != 0)
-        return false;
+    const ProcResult made = sp.run(Spawner::sshArgv(
+        ctx.guest, QStringLiteral("umask 077; f=$(mktemp /tmp/remora-rl.XXXXXX) || exit 1; "
+                                  "docker exec %1 cat '%2' > \"$f\" || { rm -f \"$f\"; exit 1; }; "
+                                  "echo \"$f\"")
+                       .arg(ctx.rc.containerName, containerPath)));
+    const QString rtmp = made.out.trimmed().section(QLatin1Char('\n'), -1);
+    if (made.rc != 0 || !rtmp.startsWith(QLatin1String("/tmp/remora-rl."))) return false;
     const bool ok = sp.run({QStringLiteral("scp"), QStringLiteral("-q"),
                             ctx.guest + QLatin1Char(':') + rtmp, local})
                             .rc == 0
@@ -54,24 +61,45 @@ static bool cpIn(Spawner &sp, const RunContext &ctx, const QString &local,
                                   .arg(ctx.rc.containerName, containerPath, local);
         return sp.run({QStringLiteral("sh"), QStringLiteral("-c"), inner}).rc == 0;
     }
-    const QString rtmp = QStringLiteral("/tmp/remora-rl-") + QFileInfo(containerPath).fileName();
-    if (sp.run({QStringLiteral("scp"), QStringLiteral("-q"), local,
+    // scp gives the copy the SOURCE's mode, so the source is made owner-only first.
+    QFile::setPermissions(local, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    const ProcResult made = sp.run(
+        Spawner::sshArgv(ctx.guest, QStringLiteral("umask 077; mktemp /tmp/remora-rl.XXXXXX")));
+    const QString rtmp = made.out.trimmed().section(QLatin1Char('\n'), -1);
+    if (made.rc != 0 || !rtmp.startsWith(QLatin1String("/tmp/remora-rl."))) return false;
+    const bool ok =
+        sp.run({QStringLiteral("scp"), QStringLiteral("-q"), local,
                 ctx.guest + QLatin1Char(':') + rtmp})
-            .rc != 0)
-        return false;
-    const bool ok = sp.run(Spawner::sshArgv(ctx.guest,
-                                            QStringLiteral("docker exec -i %1 sh -c 'cat > %2' < %3")
-                                                .arg(ctx.rc.containerName, containerPath, rtmp)))
-                        .rc == 0;
+                .rc == 0
+        && sp.run(Spawner::sshArgv(ctx.guest,
+                                   QStringLiteral("docker exec -i %1 sh -c 'cat > %2' < '%3'")
+                                       .arg(ctx.rc.containerName, containerPath, rtmp)))
+                   .rc == 0;
     sp.run(Spawner::sshArgv(ctx.guest, QStringLiteral("rm -f %1").arg(rtmp)));
     return ok;
 }
 
-// echo <base64> | base64 -d > <path>, then own it to the app uid. Safe to embed: base64 has no
-// shell-special characters and the paths are literal.
-static QString writeFileInner(const RedditFile &f, const QString &dsdir, const QString &uid) {
-    return QStringLiteral("echo %1 | base64 -d > '%2/%3'; chown %4:%4 '%2/%3'; chmod 600 '%2/%3'")
-        .arg(QString::fromLatin1(f.bytes.toBase64()), dsdir, f.name, uid);
+// A new owner-only file, created that way rather than tightened after the write.
+static bool writePrivate(const QString &path, const QByteArray &bytes) {
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate,
+                QFileDevice::ReadOwner | QFileDevice::WriteOwner))
+        return false;
+    return f.write(bytes) == bytes.size();
+}
+
+// One DataStore file into the app's private dir, owned by the app uid. Staged as a local file and
+// streamed in rather than embedded in the command: these bytes are the session cookie, and a
+// command line — even base64'd, as this once was — is readable by every user on the host through
+// ps and /proc for as long as the process runs.
+static bool pushSessionFile(Spawner &sp, const RunContext &ctx, const QTemporaryDir &tmp,
+                            const RedditFile &f, const QString &dsdir, const QString &uid,
+                            const LineSink &log) {
+    const QString local = tmp.filePath(f.name);
+    const QString dest = dsdir + QLatin1Char('/') + f.name;
+    return writePrivate(local, f.bytes) && cpIn(sp, ctx, local, dest)
+           && csh(sp, ctx, QStringLiteral("chown %1:%1 '%2'; chmod 600 '%2'").arg(uid, dest), log)
+                      .rc == 0;
 }
 
 bool injectRedditSession(Spawner &sp, const RunContext &ctx, const QString &username,
@@ -112,9 +140,16 @@ bool injectRedditSession(Spawner &sp, const RunContext &ctx, const QString &user
         return false;
     }
 
+    // Mode 0700, from QTemporaryDir: everything staged in it is, or carries, the cookie.
+    QTemporaryDir tmp;
+    if (!tmp.isValid()) {
+        note(QStringLiteral("Could not create a private temporary directory."));
+        return false;
+    }
+
     note(QStringLiteral("Writing %1 DataStore session file(s)…").arg(art.datastoreFiles.size()));
     for (const RedditFile &f : art.datastoreFiles)
-        if (csh(sp, ctx, writeFileInner(f, dsdir, uid), log).rc != 0) {
+        if (!pushSessionFile(sp, ctx, tmp, f, dsdir, uid, log)) {
             note(QStringLiteral("Failed writing %1").arg(f.name));
             return false;
         }
@@ -126,7 +161,6 @@ bool injectRedditSession(Spawner &sp, const RunContext &ctx, const QString &user
     csh(sp, ctx, QStringLiteral("stop"));
     sp.waitMs(4000);
 
-    QTemporaryDir tmp;
     const QString ce = tmp.filePath(QStringLiteral("accounts_ce.db"));
     const QString de = tmp.filePath(QStringLiteral("accounts_de.db"));
     const auto resume = [&]() { csh(sp, ctx, QStringLiteral("start")); };
@@ -151,13 +185,23 @@ bool injectRedditSession(Spawner &sp, const RunContext &ctx, const QString &user
         resume();
         return false;
     }
-    sp.run({QStringLiteral("sqlite3"), ce,
-            QStringLiteral("INSERT OR IGNORE INTO accounts(_id,name,type,password) VALUES(%1,'%2','%3','');"
-                           "INSERT OR REPLACE INTO extras(accounts_id,key,value) VALUES(%1,'%4','%5');"
-                           "UPDATE sqlite_sequence SET seq=MAX(seq,%1) WHERE name='accounts';"
-                           "PRAGMA wal_checkpoint(TRUNCATE);")
-                .arg(nid, sqlq(art.accountName), sqlq(art.accountType), sqlq(art.cookieExtraKey),
-                     sqlq(art.cookieExtraValue))});
+    // The cookie goes in as an extras row, so this SQL is read from a private file rather than
+    // passed as an argument, for the same ps reason as the DataStore files above.
+    const QString ceSql = tmp.filePath(QStringLiteral("accounts_ce.sql"));
+    if (!writePrivate(ceSql,
+                      QStringLiteral(
+                          "INSERT OR IGNORE INTO accounts(_id,name,type,password) VALUES(%1,'%2','%3','');"
+                          "INSERT OR REPLACE INTO extras(accounts_id,key,value) VALUES(%1,'%4','%5');"
+                          "UPDATE sqlite_sequence SET seq=MAX(seq,%1) WHERE name='accounts';"
+                          "PRAGMA wal_checkpoint(TRUNCATE);\n")
+                          .arg(nid, sqlq(art.accountName), sqlq(art.accountType),
+                               sqlq(art.cookieExtraKey), sqlq(art.cookieExtraValue))
+                          .toUtf8())
+        || sp.run({QStringLiteral("sqlite3"), ce, QStringLiteral(".read ") + ceSql}).rc != 0) {
+        note(QStringLiteral("Could not add the account to the database."));
+        resume();
+        return false;
+    }
     sp.run({QStringLiteral("sqlite3"), de,
             QStringLiteral("INSERT OR IGNORE INTO accounts(_id,name,type,previous_name,"
                            "last_password_entry_time_millis_epoch) VALUES(%1,'%2','%3',NULL,0);"
@@ -190,7 +234,7 @@ bool injectRedditSession(Spawner &sp, const RunContext &ctx, const QString &user
     csh(sp, ctx, QStringLiteral("am force-stop ") + kPkg);
     for (const RedditFile &f : art.datastoreFiles)
         if (f.name == QStringLiteral("com.reddit.auth_active.preferences_pb"))
-            csh(sp, ctx, writeFileInner(f, dsdir, uid));
+            pushSessionFile(sp, ctx, tmp, f, dsdir, uid, log);
     csh(sp, ctx, QStringLiteral("am start -n %1/com.reddit.launch.main.MainActivity").arg(kPkg));
 
     note(QStringLiteral("Done — Reddit should now be logged in as %1.").arg(username));

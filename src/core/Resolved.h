@@ -103,6 +103,8 @@ struct ResolvedConfig {
     bool macvlanHostRoute = false;
     std::optional<QString> macvlanShimIp;
     int hostAdbPort, containerAdbPort;  // container: 5556, the in-container fwd shim
+    // Where the bridge-mode adb port is published: an address, or empty for every interface.
+    QString adbBindAddress;
     QString mouseBind, videoBitRate, videoCodec;
     // The mirror's shortcut modifier (MOD+b/h/s/n = back/home/recents/notifications). Empty = leave
     // the inherited lalt,lsuper alone and emit nothing, so the default argv stays stable.

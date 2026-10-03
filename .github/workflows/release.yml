@@ -1,0 +1,296 @@
+name: Release
+
+# Runs on a version tag (v*). Checks the tag against every place the version is written, builds the
+# source tarball with `git archive` and the .deb with CPack, stamps the tarball's sha256 into a copy
+# of the PKGBUILD, generates an SBOM, attests provenance for what this run built, and publishes the
+# GitHub release with CHANGELOG.md's section for the version as its notes.
+#
+# Nothing is committed back. The PKGBUILD in the tree keeps sha256sums=('SKIP') and the release
+# carries the stamped copy, so a tag never needs a follow-up bot commit on main.
+#
+# To cut a release: tools/bump-version.sh <YYYY.MM.PATCH>, write the CHANGELOG section, commit,
+# then push the tag v<YYYY.MM.PATCH>.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Read-only by default; the one job that publishes opts in to what it needs, so a job added here
+# later does not silently inherit write access to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release (tarball, .deb, PKGBUILD)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # contents: write creates the release and uploads its assets. id-token: write mints the
+    # short-lived OIDC token that proves to Sigstore which workflow, at which commit, produced these
+    # bytes; attestations: write stores the resulting attestation against the repository. Neither of
+    # the last two grants write access to the repository itself.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The tag is the only input here a person typed, so it is checked against the version format
+      # before anything else uses it — every later step can then interpolate it safely.
+      - name: Read the version from the tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+$ ]]; then
+            echo "::error::tag '$TAG' is not v<YYYY.MM.PATCH>"
+            exit 1
+          fi
+          {
+            echo "version=$VERSION"
+            echo "tarball=Remora-$VERSION.tar.gz"
+            echo "sbom=Remora-$VERSION-linux-x64.cdx.json"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify the tag matches every version in the tree
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          METAINFO: packaging/io.github.EtherAura.Remora.metainfo.xml
+        run: |
+          set -euo pipefail
+          fail=0
+          err() { echo "::error file=$1::$2"; fail=1; }
+
+          # VERSION is the single source: CMakeLists.txt reads it for project() and CPack, so
+          # checking it is checking the .deb's version too.
+          v=$(tr -d '[:space:]' < VERSION)
+          [ "$v" = "$VERSION" ] || err VERSION "VERSION holds '$v', the tag is v$VERSION"
+
+          v=$(sed -n 's/^pkgver=//p' packaging/PKGBUILD)
+          [ "$v" = "$VERSION" ] || err packaging/PKGBUILD "pkgver is '$v', expected '$VERSION'"
+
+          # The metainfo's FIRST <release> is the newest — what software centres show.
+          mi=$(python3 -c 'import sys, xml.etree.ElementTree as ET
+          r = ET.parse(sys.argv[1]).getroot().find("releases/release")
+          print("" if r is None else r.get("version", ""), "" if r is None else r.get("date", ""))' "$METAINFO")
+          mi_version=${mi% *}
+          mi_date=${mi#* }
+          [ "$mi_version" = "$VERSION" ] \
+            || err "$METAINFO" "the newest <release> is '$mi_version', expected '$VERSION'"
+          # The date need not be the tag's day (bumping a few days early is normal), but it must be
+          # a real calendar date and not in the future: software centres show it, and appstreamcli
+          # warns on a bad one.
+          if ! [[ "$mi_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            err "$METAINFO" "the newest <release> has no date=\"YYYY-MM-DD\" (got '$mi_date')"
+          elif ! rel_epoch=$(date -u -d "$mi_date" +%s 2>/dev/null); then
+            err "$METAINFO" "the newest <release> date '$mi_date' is not a calendar date"
+          elif [ "$rel_epoch" -gt "$(date -u +%s)" ]; then
+            err "$METAINFO" "the newest <release> date '$mi_date' is in the future (today UTC is $(date -u +%Y-%m-%d))"
+          fi
+
+          # CHANGELOG.md: the section the release notes come from, dated as the metainfo is —
+          # tools/bump-version.sh writes both on the same day, so a mismatch is a hand edit gone astray.
+          heading=$(grep -m1 -E "^## \[${VERSION//./\\.}\]" CHANGELOG.md || true)
+          if [ -z "$heading" ]; then
+            err CHANGELOG.md "no '## [$VERSION] - <date>' section"
+          else
+            cl_date=$(printf '%s\n' "$heading" | sed -n -E 's/^## \[[^]]+\] - ([0-9]{4}-[0-9]{2}-[0-9]{2})$/\1/p')
+            [ "$cl_date" = "$mi_date" ] \
+              || err CHANGELOG.md "'$heading' — expected '## [$VERSION] - $mi_date', the metainfo's date"
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::v$VERSION does not match the version metadata. Fix the files above (tools/bump-version.sh writes them all) and re-tag."
+            exit 1
+          fi
+          echo "All version metadata agrees on v$VERSION"
+
+      - name: Extract the release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - "$VERSION" CHANGELOG.md release-notes.md <<'PY'
+          import re
+          import sys
+
+          version, src, dst = sys.argv[1:]
+          head = re.compile(r"^## \[" + re.escape(version) + r"\]")
+          found, out = False, []
+          with open(src, encoding="utf-8") as f:
+              for line in f.read().splitlines():
+                  if not found:
+                      found = bool(head.match(line))
+                      continue
+                  # The section ends at the next release heading or at the link definitions.
+                  if line.startswith("## ") or re.match(r"^\[[^\]]+\]: ", line):
+                      break
+                  out.append(line)
+          body = "\n".join(out).strip()
+          if not found:
+              print(f"::error file=CHANGELOG.md::no '## [{version}]' section to publish as the release notes")
+              sys.exit(1)
+          if not body:
+              print(f"::error file=CHANGELOG.md::the '## [{version}]' section is empty — write the release notes")
+              sys.exit(1)
+          with open(dst, "w", encoding="utf-8") as f:
+              f.write(body + "\n")
+          PY
+          cat release-notes.md
+
+      - name: Create the source tarball
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TARBALL: ${{ steps.version.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --prefix="Remora-$VERSION/" -o "$TARBALL" HEAD
+          sha256sum "$TARBALL" | tee "$TARBALL.sha256"
+
+      # The PKGBUILD's source= is this release's tarball asset, whose sum only exists now. The copy
+      # attached to the release carries it; the tree's copy stays 'SKIP'.
+      - name: Stamp the tarball's sha256 into the release PKGBUILD
+        env:
+          TARBALL: ${{ steps.version.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          sha=$(cut -d' ' -f1 "$TARBALL.sha256")
+          sed -E "s/^sha256sums=\('SKIP'\)$/sha256sums=('$sha')/" packaging/PKGBUILD > PKGBUILD
+          if ! grep -qx "sha256sums=('$sha')" PKGBUILD; then
+            echo "::error file=packaging/PKGBUILD::expected a sha256sums=('SKIP') line to stamp"
+            exit 1
+          fi
+          # shellcheck disable=SC2016  # the literal ${pkgver} text of the PKGBUILD's source= line
+          if ! grep -qF 'releases/download/v${pkgver}/Remora-${pkgver}.tar.gz' PKGBUILD; then
+            echo "::error file=packaging/PKGBUILD::source= does not name this release's tarball asset"
+            exit 1
+          fi
+          diff -u packaging/PKGBUILD PKGBUILD || true
+
+      # The same packages ci.yml builds and tests with.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build extra-cmake-modules \
+            qt6-base-dev qt6-multimedia-dev qt6-webengine-dev \
+            libgl1-mesa-dev libffmpeg-nvenc-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+            libva-dev
+
+      # The suites run from a development tree, not from the packaged one below: they read the vendor
+      # tree their build was configured against, and the packaged build points at
+      # /usr/share/remora/vendor, which only exists once the .deb is installed. ci.yml has tested this
+      # commit already; testing it again here means no release is cut from a commit that fails.
+      - name: Build and test (development tree)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/test --parallel
+          ctest --test-dir build/test --output-on-failure
+
+      # A packaged build: the binary reads its scripts from /usr/share/remora/vendor, not from this
+      # checkout. The optional helpers are probed, not required, so the configure transcript is
+      # checked for the ones this .deb is meant to carry — a package dropped from the list above
+      # then fails the release here instead of shipping a .deb quietly missing a feature. The host
+      # encoder is NOT among them: it needs FFmpeg 7, and Ubuntu 24.04 ships 6.1.
+      - name: Configure
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DREMORA_INSTALLED_VENDOR=ON \
+            2>&1 | tee configure.log
+          want="remora-frame-decoder: building"
+          if ! grep -qF "$want" configure.log; then
+            echo "::error::configure did not report '$want' — the .deb would ship without it. Check the apt list above."
+            exit 1
+          fi
+          grep -F 'remora-frame-encoder:' configure.log | sed 's/^-- /::notice::/'
+
+      - name: Build
+        run: cmake --build build/release --parallel
+
+      - name: Package the .deb
+        id: deb
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          (cd build/release && cpack -G DEB)
+          built=$(find build/release -maxdepth 1 -name 'remora_*.deb' -print -quit)
+          if [ -z "$built" ]; then
+            echo "::error::cpack -G DEB produced no .deb under build/release/"
+            exit 1
+          fi
+          # A predictable asset name, so direct-download links follow the same pattern every release.
+          deb="remora_${VERSION}_amd64.deb"
+          mv "$built" "$deb"
+          v=$(dpkg-deb -f "$deb" Version)
+          [ "$v" = "$VERSION" ] || { echo "::error::the .deb says Version: $v, expected $VERSION"; exit 1; }
+          # fwd is bind-mounted into every container, and nothing builds it after install. The
+          # listing is captured first: `dpkg-deb -c | grep -q` under pipefail fails on a MATCH, when
+          # grep's early exit kills dpkg-deb with SIGPIPE.
+          listing=$(dpkg-deb -c "$deb")
+          for f in fwd uinput-kbd remora-frame-decoder; do
+            grep -qE "\./usr/share/remora/vendor/native/$f\$" <<<"$listing" \
+              || { echo "::error::the .deb is missing /usr/share/remora/vendor/native/$f"; exit 1; }
+          done
+          dpkg-deb -I "$deb"
+          sha256sum "$deb" | tee "$deb.sha256"
+          echo "deb=$deb" >> "$GITHUB_OUTPUT"
+
+      # CycloneDX over the .deb. One scan covers the tarball as well: both are the same source at
+      # the same commit, and the .deb is the one carrying resolved dependency data (its Depends and
+      # the ELF linkage of what it installs). Both upload switches are off — this workflow publishes
+      # through action-gh-release, and a second upload path could disagree about what shipped.
+      - name: Generate the SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          file: ${{ steps.deb.outputs.deb }}
+          format: cyclonedx-json
+          output-file: ${{ steps.version.outputs.sbom }}
+          upload-artifact: false
+          upload-release-assets: false
+
+      # A Sigstore-backed record that these exact bytes came from this workflow at this commit:
+      #
+      #     gh attestation verify remora_<version>_amd64.deb --repo EtherAura/Remora
+      #
+      # Provenance, not code signing. Only what this run BUILT is attested: the .sha256 files derive
+      # from the files beside them, and the PKGBUILD is a source file with one line stamped. Runs
+      # before publishing on purpose — a release without its attestation is a claim with no evidence.
+      - name: Attest build provenance (tarball, .deb, SBOM)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ steps.version.outputs.tarball }}
+            ${{ steps.deb.outputs.deb }}
+            ${{ steps.version.outputs.sbom }}
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          name: Remora ${{ steps.version.outputs.version }}
+          body_path: release-notes.md
+          files: |
+            ${{ steps.version.outputs.tarball }}
+            ${{ steps.version.outputs.tarball }}.sha256
+            ${{ steps.deb.outputs.deb }}
+            ${{ steps.deb.outputs.deb }}.sha256
+            PKGBUILD
+            ${{ steps.version.outputs.sbom }}
+          fail_on_unmatched_files: true

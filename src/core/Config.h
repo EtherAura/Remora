@@ -262,6 +262,10 @@ struct BackendConfig {
     // plain /data bind. Unset → a per-backend default shared by all profiles on that host.
     std::optional<QString> dataBaseDir;
     std::optional<int> hostAdbPort;
+    // Host address the bridge-mode adb port is published on (adb_bind=). Unset → the resolver's
+    // per-backend default: loopback on bare, every interface on remote. "0.0.0.0" publishes on
+    // every interface explicitly.
+    std::optional<QString> adbBindAddress;
     std::optional<QString> sshHost;
     // Set by the loader when the profile on disk still says backend=vm. Not a config knob and never
     // written back — it exists so preflight can refuse with migration instructions (bd remora-d5v).

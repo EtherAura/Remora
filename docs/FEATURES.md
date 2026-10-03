@@ -54,6 +54,7 @@ NVIDIA card through the Venus render server. The default is `gpu_mode=guest`, so
 | `data_dir` | `~/.remora-bm-data` | `~/remora-data` (on the remote host) |
 | `data_base_dir` | `~/.remora-data-base` | `~/remora-data-base` (on the remote host) |
 | `host_adb_port` | 5555 | 5555 |
+| `adb_bind` | `127.0.0.1` | every interface |
 | `network_mode` | `bridge` | `bridge` |
 
 With `network_mode=macvlan` the adb target is the container's own LAN address on port 5556 (the
@@ -82,7 +83,7 @@ passes; the others are informational.
 | VA-API driver for the GPU | `gpu_mode=host` | gpu | set `va_driver=` if one exists; otherwise video is software |
 | NVIDIA render node / module matches userspace | `gpu_mode=host` | gpu | load the proprietary driver; reboot after a driver update |
 | Venus render server / guest libraries | `gpu_mode=host` | gpu | `remora venus-build` |
-| host frame encoder, ffmpeg `hevc_vulkan`, render-server frame publisher | `gpu_mode=host` | gpu | `make -C vendor/native host-encoder`; an ffmpeg with Vulkan encode; `remora venus-build` |
+| host frame encoder, ffmpeg `hevc_vulkan`, render-server frame publisher | `gpu_mode=host` | gpu | rebuild Remora with FFmpeg 7+ and the Vulkan headers (it builds the encoder when it finds them); an ffmpeg with Vulkan encode; `remora venus-build` |
 
 The host kernel must also provide binder (binderfs), which `remora check` does not probe.
 
@@ -302,6 +303,7 @@ keys are space-separated unless noted. Deleting a key returns it to its default.
 | `data_dir` | §1 | host directory holding the device's `/data` (its private overlay layer by default) |
 | `data_base_dir` | §1 | shared read-mostly base layer that profiles on one host stand on |
 | `host_adb_port` | 5555 | host port published for adb |
+| `adb_bind` | per backend | address the bridge-mode adb port is published on: loopback on `bare`, every interface on `remote` (where the client connects from another machine); `0.0.0.0` publishes everywhere |
 
 ### Display and system
 

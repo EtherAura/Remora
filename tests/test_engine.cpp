@@ -15,6 +15,7 @@
 #include "core/Resolver.h"
 #include "core/SourcePatches.h"
 #include "engine/AppTransfer.h"
+#include "engine/RedditLogin.h"
 #include "engine/Engine.h"
 #include "store/Store.h"
 #include "engine/SourceBuild.h"
@@ -659,6 +660,38 @@ static RemoraConfig withMacvlan(RemoraConfig c = {}) {
     c.network.networkMode = QStringLiteral("macvlan");
     return c;
 }
+
+// Plays just enough of a device for injectRedditSession, and records every argv it is handed — the
+// point being what those argv contain, since any other user on the host can read them through ps.
+class RedditFakeSpawner : public Spawner {
+public:
+    QList<QStringList> calls;
+    ProcResult run(const QStringList &argv, const QMap<QString, QString> &,
+                   const LineSink &) override {
+        calls << argv;
+        const QString cmd = argv.join(QLatin1Char(' '));
+        ProcResult r;
+        if (cmd.contains(QLatin1String("stat -c %u"))) r.out = QStringLiteral("10123\n");
+        if (argv.value(0) == QLatin1String("sqlite3") && cmd.contains(QLatin1String("SELECT")))
+            r.out = QStringLiteral("7\n");
+        if (cmd.contains(QLatin1String("mktemp"))) r.out = QStringLiteral("/tmp/remora-rl.AbC123\n");
+        // A pull lands in a local file: `… cat '<container path>' > '<local>'` on bare, scp on remote.
+        static const QRegularExpression pull(QStringLiteral("cat '[^']+' > '([^']+)'"));
+        QString landed = pull.match(cmd).captured(1);
+        if (argv.value(0) == QLatin1String("scp") && argv.value(2).contains(QLatin1Char(':')))
+            landed = argv.value(3);
+        if (!landed.isEmpty()) {
+            QFile f(landed);
+            if (f.open(QIODevice::WriteOnly)) f.write("db");
+        }
+        return r;
+    }
+    Detached spawnDetached(const QStringList &, const QMap<QString, QString> &) override {
+        return {};
+    }
+    bool detachedAlive(const Detached &) override { return false; }
+    void waitMs(int) override {}
+};
 
 class TestEngine : public QObject {
     Q_OBJECT
@@ -1560,6 +1593,31 @@ private slots:
         }
     }
 
+    // The Reddit session cookie is a credential, and a command line is readable by every user on
+    // the host for as long as the process runs. It used to ride in argv twice — base64'd in a
+    // `docker exec … echo <b64> | base64 -d` and in plain text in the sqlite3 INSERT. It must reach
+    // the device through files and stdin only, on both backends, and the remote side must stage in
+    // a private mktemp name rather than a fixed path in a shared /tmp.
+    void redditSessionCookieNeverInArgv() {
+        const QString cookie = QStringLiteral("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0Ml9hYmMifQ.c2VjcmV0");
+        for (const Backend b : {Backend::Bare, Backend::Remote}) {
+            RemoraConfig cfg;
+            if (b == Backend::Remote) cfg.backend.sshHost = QStringLiteral("me@dockerhost");
+            RedditFakeSpawner sp;
+            QVERIFY(injectRedditSession(sp, makeContext(cfg, b), QStringLiteral("someone"), cookie, {}));
+            bool readSql = false;
+            for (const QStringList &argv : sp.calls) {
+                const QString cmd = argv.join(QLatin1Char(' '));
+                QVERIFY2(!cmd.contains(cookie), qPrintable(cmd));
+                QVERIFY2(!cmd.contains(QLatin1String("base64")), qPrintable(cmd));
+                QVERIFY2(!cmd.contains(QLatin1String("/tmp/remora-rl-")), qPrintable(cmd));
+                if (argv.value(0) == QLatin1String("sqlite3") && cmd.contains(QLatin1String(".read ")))
+                    readSql = true;
+            }
+            QVERIFY(readSql);
+        }
+    }
+
     // bd remora-4ei.84. Reading the identity is the ONLY moment Remora ever sees it, so it is the
     // only moment it can keep a copy. A probe that saw a healthy pair and did not save it is the
     // whole bug: after a /data rebuild there is nothing left to restore from.
@@ -1580,6 +1638,14 @@ private slots:
         QCOMPARE(c.identityPair(),
                  QStringLiteral("3648232585666691482:2914131252766307936"));
         QCOMPARE(loadCheckinSnapshot(inst).value(), c.identityPair());
+        // Owner-only, file and directory: a checkin can be made in this device's name with it.
+        const auto others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup |
+                            QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
+        QCOMPARE(QFileInfo(checkinSnapshotPath(inst)).permissions() & others,
+                 QFileDevice::Permissions());
+        QCOMPARE(QFileInfo(QFileInfo(checkinSnapshotPath(inst)).absolutePath()).permissions() &
+                     others,
+                 QFileDevice::Permissions());
 
         // An UNCERTIFIED identity is snapshotted too — it is still this instance's, the user may be
         // about to register it, and losing it between reading and registering is the sequence that

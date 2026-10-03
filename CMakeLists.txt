@@ -1,5 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
-project(remora VERSION 0.1.0 LANGUAGES CXX)
+
+# The release version lives in VERSION and nowhere else that a human edits: tools/bump-version.sh
+# writes it, the PKGBUILD, the AppStream metainfo and CHANGELOG.md together, and release.yml refuses
+# a tag they disagree with. CalVer, YYYY.MM.PATCH.
+#
+# REMORA_VERSION, not PROJECT_VERSION, is the string to use: project() parses each component as an
+# integer and re-prints it, so a September release's "2026.09.0" would come back as "2026.9.0" —
+# a different version to dpkg's eyes than the one on the tag.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" REMORA_VERSION)
+string(STRIP "${REMORA_VERSION}" REMORA_VERSION)
+if(NOT REMORA_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "VERSION holds '${REMORA_VERSION}' — expected YYYY.MM.PATCH")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+
+# C is for the vendored native helpers (vendor/native), which are plain C; everything else is C++.
+project(remora VERSION ${REMORA_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -109,6 +125,81 @@ target_compile_definitions(remora_gui PRIVATE REMORA_VENDOR_DIR="${REMORA_VENDOR
 # --- binary: CLI (QCoreApplication) + `gui` subcommand (QApplication) ---
 add_executable(remora src/main.cpp)
 target_link_libraries(remora PRIVATE remora_gui remora_mirror remora_engine remora_store remora_core Qt6::Widgets)
+target_compile_definitions(remora PRIVATE REMORA_VERSION_STRING="${REMORA_VERSION}")
+
+# --- vendored native helpers (vendor/native) ---
+# Built IN PLACE, into vendor/native/, because that is where both kinds of build look for them: a
+# dev build reads the source vendor dir directly, and install(DIRECTORY vendor/) below carries the
+# binaries into the share dir with everything else. Before this, only a hand-run
+# `make -C vendor/native` built them, so a fresh build-and-install shipped no fwd — and fwd is
+# bind-mounted into every container. The commands are the Makefile's, flag for flag (the Makefile
+# stays, for rebuilding one helper by hand); the binaries are gitignored there.
+#
+# fwd and uinput-kbd run INSIDE the container, which has no host libc to link against, so they are
+# static and required: no static libc is a configure error here, not a link error halfway through.
+set(REMORA_NATIVE_DIR "${CMAKE_SOURCE_DIR}/vendor/native")
+include(CheckCSourceCompiles)
+include(CheckIncludeFile)
+set(CMAKE_REQUIRED_LINK_OPTIONS -static)
+check_c_source_compiles("int main(void) { return 0; }" REMORA_HAVE_STATIC_LIBC)
+unset(CMAKE_REQUIRED_LINK_OPTIONS)
+if(NOT REMORA_HAVE_STATIC_LIBC)
+    message(FATAL_ERROR "vendor/native/fwd and uinput-kbd are linked statically (they run inside "
+        "the container) and the C compiler cannot link a static binary. Install the static C "
+        "library: libc6-dev on Debian/Ubuntu, glibc-static on Fedora; Arch and Gentoo ship it "
+        "with glibc.")
+endif()
+set(REMORA_NATIVE_OUTPUTS)
+foreach(helper fwd uinput-kbd)
+    add_custom_command(OUTPUT "${REMORA_NATIVE_DIR}/${helper}"
+        COMMAND "${CMAKE_C_COMPILER}" -static -O2 ${helper}.c -o ${helper}
+        WORKING_DIRECTORY "${REMORA_NATIVE_DIR}"
+        DEPENDS "${REMORA_NATIVE_DIR}/${helper}.c"
+        COMMENT "Building vendor/native/${helper} (static)"
+        VERBATIM)
+    list(APPEND REMORA_NATIVE_OUTPUTS "${REMORA_NATIVE_DIR}/${helper}")
+endforeach()
+
+# The host-side frame encoder (host_encode) and decoder (host_decode) are optional, exactly as in the
+# Makefile: they link the host's own FFmpeg, and a missing FFmpeg must not break the ordinary build.
+# `remora up` reports either one as a clear prerequisite when a profile asks for it and it is absent.
+# Configure says which of them it is building, and why it skipped one.
+#
+# The encoder's floor is the first libavfilter with AVBufferSrcParameters.color_space, which it sets;
+# FFmpeg 6.1 (Ubuntu 24.04) predates it and fails to compile. libavutil's hwcontext_vulkan.h
+# includes vulkan/vulkan.h, and FFmpeg's .pc files do not say so — hence the separate header check.
+pkg_check_modules(REMORA_ENCODER_DEPS QUIET libavcodec "libavfilter>=9.16.100" libavutil)
+check_include_file(vulkan/vulkan.h REMORA_HAVE_VULKAN_H)
+if(REMORA_ENCODER_DEPS_FOUND AND REMORA_HAVE_VULKAN_H)
+    add_custom_command(OUTPUT "${REMORA_NATIVE_DIR}/remora-frame-encoder"
+        COMMAND "${CMAKE_C_COMPILER}" -O2 -Wall -Wextra -o remora-frame-encoder
+                remora-frame-encoder.c ${REMORA_ENCODER_DEPS_CFLAGS} ${REMORA_ENCODER_DEPS_LDFLAGS}
+        WORKING_DIRECTORY "${REMORA_NATIVE_DIR}"
+        DEPENDS "${REMORA_NATIVE_DIR}/remora-frame-encoder.c"
+        COMMENT "Building vendor/native/remora-frame-encoder"
+        VERBATIM)
+    list(APPEND REMORA_NATIVE_OUTPUTS "${REMORA_NATIVE_DIR}/remora-frame-encoder")
+    message(STATUS "remora-frame-encoder: building (host_encode)")
+else()
+    message(STATUS "remora-frame-encoder: NOT built (host_encode unavailable) — needs libavcodec, "
+        "libavfilter >= 9.16.100 (FFmpeg 7 or newer), libavutil and the Vulkan headers")
+endif()
+pkg_check_modules(REMORA_DECODER_DEPS QUIET libavcodec libavutil libva)
+if(REMORA_DECODER_DEPS_FOUND)
+    add_custom_command(OUTPUT "${REMORA_NATIVE_DIR}/remora-frame-decoder"
+        COMMAND "${CMAKE_C_COMPILER}" -O2 -Wall -Wextra -o remora-frame-decoder
+                remora-frame-decoder.c ${REMORA_DECODER_DEPS_CFLAGS} ${REMORA_DECODER_DEPS_LDFLAGS}
+        WORKING_DIRECTORY "${REMORA_NATIVE_DIR}"
+        DEPENDS "${REMORA_NATIVE_DIR}/remora-frame-decoder.c"
+        COMMENT "Building vendor/native/remora-frame-decoder"
+        VERBATIM)
+    list(APPEND REMORA_NATIVE_OUTPUTS "${REMORA_NATIVE_DIR}/remora-frame-decoder")
+    message(STATUS "remora-frame-decoder: building (host_decode)")
+else()
+    message(STATUS "remora-frame-decoder: NOT built (host_decode unavailable) — needs libavcodec, "
+        "libavutil and libva")
+endif()
+add_custom_target(remora_native ALL DEPENDS ${REMORA_NATIVE_OUTPUTS})
 
 # --- tests ---
 add_executable(test_builders tests/test_builders.cpp)
@@ -209,3 +300,44 @@ install(FILES packaging/io.github.EtherAura.Remora.light-scheme.svg
         RENAME io.github.EtherAura.Remora.svg)
 install(FILES packaging/io.github.EtherAura.Remora.metainfo.xml
         DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+# GPL-3.0 travels with the binary, and NOTICE with it: it credits the third-party work Remora builds
+# on, which redistribution has to carry along.
+install(FILES LICENSE NOTICE DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
+# --- .deb via CPack (`cpack -G DEB` in a build tree) ---
+# Configure a packaged build with -DREMORA_INSTALLED_VENDOR=ON -DCMAKE_INSTALL_PREFIX=/usr, or the
+# binary will look for its scripts in the source tree it was built from. release.yml builds the
+# released .deb this way on ubuntu-24.04. SHLIBDEPS walks the installed ELF files with
+# dpkg-shlibdeps for the exact runtime package names (Qt, FFmpeg, libva), so none are hand-kept
+# here. docker and adb are tools Remora drives rather than libraries it links, hence Recommends:
+# a `remote` target needs no docker on this machine at all.
+set(CPACK_PACKAGE_NAME remora)
+set(CPACK_PACKAGE_VERSION "${REMORA_VERSION}")
+set(CPACK_PACKAGE_VENDOR "Remora")
+set(CPACK_PACKAGE_CONTACT "Remora <noreply@localhost>")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/EtherAura/Remora")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Build, deploy and mirror Android running in Docker")
+# Pre-wrapped: CPackDeb indents each line of the extended description but does not wrap it.
+set(CPACK_PACKAGE_DESCRIPTION
+    "Remora is a desktop control plane for Android in Docker. Compose an\n\
+Android image feature by feature and build it from source, deploy it to\n\
+this machine or to any docker host over ssh, and connect with Remora's\n\
+own hardware-accelerated mirror: a Qt client talking to an agent baked\n\
+into the image. A headless CLI and a Qt workspace share one unit-tested\n\
+core.")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
+set(CPACK_GENERATOR DEB)
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Remora <noreply@localhost>")
+set(CPACK_DEBIAN_PACKAGE_SECTION utils)
+set(CPACK_DEBIAN_PACKAGE_PRIORITY optional)
+set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${CPACK_PACKAGE_HOMEPAGE_URL}")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "docker.io | docker-ce, adb")
+set(CPACK_DEBIAN_PACKAGE_SUGGESTS "openssh-client, python3, unzip, pkexec")
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+# Stated rather than asked of dpkg, which a non-Debian host does not have (CPack then guesses
+# i386). The static helpers and the images are x86_64-only, so amd64 is the only honest label.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE amd64)
+endif()
+include(CPack)

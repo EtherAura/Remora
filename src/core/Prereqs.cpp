@@ -154,10 +154,10 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
         // as a non-fatal log line the CLI summarises away — the encoder simply never started and
         // nothing said why.
         add("host_encoder_built", "Host frame encoder built", caps.hostEncoderPath.has_value(),
-            "run `make -C vendor/native host-encoder` (it needs the ffmpeg development headers). "
-            "NB the engine looks for it under REMORA_VENDOR_DIR, which is the SOURCE tree for a "
-            "plain build and /usr/share/remora/vendor when built with REMORA_INSTALLED_VENDOR=ON "
-            "— so an installed Remora needs the binary installed too, not just built",
+            "the Remora build compiles it when it finds FFmpeg 7 or newer (libavfilter) and the "
+            "Vulkan headers — install those and rebuild (cmake --build, then cmake --install for "
+            "an installed Remora). A package built against an older FFmpeg, such as the Ubuntu "
+            "24.04 .deb, does not include it",
             "gpu");
         add("host_encode_ffmpeg", "ffmpeg can encode HEVC on Vulkan", caps.ffmpegHevcVulkan,
             "this ffmpeg lists no hevc_vulkan encoder — host encode needs a build with Vulkan "

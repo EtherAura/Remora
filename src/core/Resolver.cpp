@@ -465,6 +465,11 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
         applyHostGpu(r, resolveHostGpu(g, caps, r.gpuMode));
         applyNetwork(r, n, caps, QStringLiteral("bridge"));
         r.containerAdbPort = 5556;  // in-container fwd shim (A16 adbd is IPv6-only)
+        // LOOPBACK BY DEFAULT. A bare instance is reached from this machine only, and a plain
+        // `-p 5555:5556` publishes adb — a root shell into the device — on every interface the
+        // host has, so anyone on the same network could connect to it. adb_bind=0.0.0.0 restores
+        // the old reach for a profile that wants it; macvlan publishes nothing either way.
+        r.adbBindAddress = pick(bk.adbBindAddress, QStringLiteral("127.0.0.1"));
         r.target = QStringLiteral("localhost:%1").arg(r.hostAdbPort);
     } else {  // Backend::Remote — generic docker host over ssh, bare-style bringup
         r.imageTag = imageTag(QStringLiteral("remora23:x86_64-gapps"));
@@ -477,6 +482,9 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
         applyHostGpu(r, resolveHostGpu(g, caps, r.gpuMode));
         applyNetwork(r, n, caps, QStringLiteral("bridge"));
         r.containerAdbPort = 5556;
+        // Every interface by default: the client connects from ANOTHER machine, so loopback would
+        // be unreachable. Narrow it with adb_bind= to the interface the client comes in on.
+        r.adbBindAddress = pick(bk.adbBindAddress, QString());
         r.sshHost = pick(bk.sshHost, QString());
         const QString host = r.sshHost->contains('@') ? r.sshHost->section('@', -1)
                              : (r.sshHost->isEmpty() ? QStringLiteral("localhost") : *r.sshHost);

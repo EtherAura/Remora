@@ -213,7 +213,15 @@ QStringList buildDockerRunArgv(const ResolvedConfig &cfg) {
         // no pinned IP → omit --ip so docker IPAM assigns a free one from the pool
         if (cfg.macvlanIp.has_value()) a << "--ip" << *cfg.macvlanIp;
     } else {
-        a << "-p" << QStringLiteral("%1:%2").arg(cfg.hostAdbPort).arg(cfg.containerAdbPort);
+        // An empty bind or 0.0.0.0 publishes on every interface; anything else is an address.
+        const bool everywhere = cfg.adbBindAddress.isEmpty() ||
+                                cfg.adbBindAddress == QLatin1String("0.0.0.0");
+        a << "-p"
+          << (everywhere ? QStringLiteral("%1:%2").arg(cfg.hostAdbPort).arg(cfg.containerAdbPort)
+                         : QStringLiteral("%1:%2:%3")
+                               .arg(cfg.adbBindAddress)
+                               .arg(cfg.hostAdbPort)
+                               .arg(cfg.containerAdbPort));
     }
 
     // host GPU mode: pass the ONE resolved node, not all of /dev/dri. The container also sees the

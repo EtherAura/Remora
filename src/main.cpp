@@ -1476,12 +1476,21 @@ static int cmdRedditLogin(const QStringList &a) {
     QStringList tail = positional(a);
     const QString inst = takeProfile(tail);
     const QString user = strArg(a, QStringLiteral("--user"));
-    const QString cookie = strArg(a, QStringLiteral("--cookie"));
+    QString cookie = strArg(a, QStringLiteral("--cookie"));
+    // `--cookie -` reads it from stdin. A value on the command line is readable by every user on
+    // the host through ps for as long as this runs, and lands in shell history; stdin is neither.
+    if (cookie == QLatin1String("-")) {
+        QTextStream in(stdin);
+        cookie = in.readLine().trimmed();
+    } else if (!cookie.isEmpty()) {
+        QTextStream(stderr) << "note: a cookie on the command line is visible to other users "
+                               "through ps — prefer `--cookie -` and pipe it in.\n";
+    }
     if (user.isEmpty() || cookie.isEmpty()) {
         QTextStream(stderr)
-            << "usage: remora reddit-login [<profile>] --user <username> --cookie <reddit_session>\n"
-            << "  <reddit_session> is the cookie value from a reddit.com web login (treat it like a "
-               "password).\n";
+            << "usage: remora reddit-login [<profile>] --user <username> --cookie -\n"
+            << "  then paste the reddit_session cookie value from a reddit.com web login on stdin\n"
+            << "  (treat it like a password; `--cookie <value>` also works but shows it to ps).\n";
         return 2;
     }
     RemoraConfig cfg = loadInstance(defaultRemorarcPath(), inst);
@@ -2275,7 +2284,7 @@ static void printUsage(QTextStream &out) {
         << "  prop      [<profile>] [get <k> | set <k> <v>]  read/write Android properties\n"
         << "  install   [<profile>] [-r|-g|…] <apk>  push+install an APK (no Play-Protect hang)\n"
         << "  reddit-login [<profile>]  log the Reddit app in via an embedded reddit.com login window\n"
-        << "               [--user <name> --cookie <reddit_session>]  …or headless from a captured cookie\n"
+        << "               [--user <name> --cookie -]  …or headless, the captured cookie on stdin\n"
         << "  doctor    [<profile>] [--stdout]  diagnostics bundle: probes+versions+logcat, one file\n"
         << "  rotate    [<profile>] [portrait|landscape|…|auto]  rotate the device display\n"
         << "  gboard-reset [<p>] [--wipe] un-pin Gboard's on-screen keyboard (surgical; --wipe\n"
@@ -2295,20 +2304,28 @@ static void printUsage(QTextStream &out) {
         << "  export-apks <from> <dir> [--packages a,b]   save installed APKs to a local dir\n"
         << "  import-apks <to> <dir> [--dry-run]          install APKs from a local dir\n"
            "                            <from>/<to> is a profile name or a raw adb target\n"
-        << "  gui                       launch the config workspace\n";
+        << "  gui                       launch the config workspace\n"
+        << "  --version                 print Remora's version\n";
 }
 
 int main(int argc, char **argv) {
     // Branch before constructing an app object — GUI needs QApplication, CLI needs QCoreApplication,
     // and only one may exist. Peek argv directly (QCoreApplication::arguments() isn't up yet).
-    if (argc > 1 && QLatin1String(argv[1]) == QLatin1String("gui")) return runGui(argc, argv);
+    // `--help` / `-h` skips these window-opening branches and reaches the usage guard below instead.
+    bool helpAsked = false;
+    for (int i = 2; i < argc; ++i)
+        if (QLatin1String(argv[i]) == QLatin1String("--help") ||
+            QLatin1String(argv[i]) == QLatin1String("-h"))
+            helpAsked = true;
+    if (argc > 1 && !helpAsked && QLatin1String(argv[1]) == QLatin1String("gui"))
+        return runGui(argc, argv);
 
     // The in-house mirror client (bd remora-28ix.2) — a QApplication of its own, same pattern.
     if (argc > 1 && QLatin1String(argv[1]) == QLatin1String("mirror")) return runMirror(argc, argv);
 
     // `reddit-login` with no --cookie opens an embedded reddit.com login window (WebEngine needs a
     // QApplication); with --cookie it stays headless (handled below under QCoreApplication).
-    if (argc > 1 && QLatin1String(argv[1]) == QLatin1String("reddit-login")) {
+    if (argc > 1 && !helpAsked && QLatin1String(argv[1]) == QLatin1String("reddit-login")) {
         bool hasCookie = false;
         for (int i = 2; i < argc; ++i)
             if (QLatin1String(argv[i]) == QLatin1String("--cookie")) hasCookie = true;
@@ -2324,9 +2341,15 @@ int main(int argc, char **argv) {
     else
         app = std::make_unique<QCoreApplication>(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("remora"));
+    QCoreApplication::setApplicationVersion(QStringLiteral(REMORA_VERSION_STRING));
     QTextStream out(stdout);
     const QStringList args = QCoreApplication::arguments();
     const QString cmd = args.size() > 1 ? args[1] : QString();
+
+    if (cmd == QLatin1String("--version") || cmd == QLatin1String("version")) {
+        out << "remora " << QCoreApplication::applicationVersion() << '\n';
+        return 0;
+    }
 
     // `--help` or `-h` after a command asks for help; it never runs the command. Each command
     // reads only the flags it knows, so these used to be ignored, and `remora up --help` deployed

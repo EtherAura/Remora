@@ -1,0 +1,72 @@
+# Maintainer: Remora <noreply@localhost>
+#
+# This copy keeps sha256sums=('SKIP'): the tarball it names does not exist until the tag is pushed.
+# Every GitHub release carries a copy of this file with the real sum stamped in by release.yml —
+# build from that one. pkgver is kept in step with VERSION by tools/bump-version.sh, and release.yml
+# refuses a tag it disagrees with.
+
+pkgname=remora
+pkgver=2026.10.0
+pkgrel=1
+pkgdesc='Build, deploy and mirror Android running in Docker'
+arch=('x86_64')
+url='https://github.com/EtherAura/Remora'
+license=('GPL-3.0-only')
+depends=(
+  'gcc-libs'
+  'glibc'
+  'qt6-base'
+  'qt6-multimedia'
+  'qt6-webengine'
+  # The mirror decodes and records with FFmpeg; the host frame encoder and decoder link it too.
+  'ffmpeg'
+  # remora-frame-decoder (host_decode) exports VA surfaces itself.
+  'libva'
+  # adb is how Remora reaches every device it deploys, local or remote.
+  'android-tools'
+)
+makedepends=(
+  'cmake'
+  'ninja'
+  # The mirror's CUDA interop includes FFmpeg's NVIDIA headers; the driver is loaded at runtime.
+  'ffnvcodec-headers'
+  # libavutil's hwcontext_vulkan.h, which remora-frame-encoder includes, includes vulkan/vulkan.h.
+  'vulkan-headers'
+)
+optdepends=(
+  'docker: run Android on this machine (the bare target)'
+  'openssh: deploy to a docker host over ssh (the remote target)'
+  'nvidia-utils: NVIDIA acceleration through the Venus render server'
+  'python: share host input devices with the container'
+  'unzip: show the boot animation in the mirror while Android starts'
+  "polkit: open a device's storage from the workspace (the access grant runs under pkexec)"
+)
+# The test suites build throwaway git repositories to apply patch series against.
+checkdepends=('git')
+source=("${url}/releases/download/v${pkgver}/Remora-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  # REMORA_INSTALLED_VENDOR points the binary at /usr/share/remora/vendor, where package() puts the
+  # scripts and native helpers, instead of at the extracted source tree it was built from.
+  cmake -S "Remora-${pkgver}" -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DREMORA_INSTALLED_VENDOR=ON
+  cmake --build build
+}
+
+check() {
+  # The suites read the vendor tree their build was configured against, and build/ points at
+  # /usr/share/remora/vendor, which does not exist until this package is installed. So they run from
+  # a development tree of the same source, which reads Remora-${pkgver}/vendor directly. Offline by
+  # design (no docker, device or Android image); Qt still wants a platform plugin.
+  cmake -S "Remora-${pkgver}" -B build-check -G Ninja -DCMAKE_BUILD_TYPE=Release
+  cmake --build build-check
+  QT_QPA_PLATFORM=offscreen ctest --test-dir build-check --output-on-failure
+}
+
+package() {
+  DESTDIR="${pkgdir}" cmake --install build
+  install -Dm644 "Remora-${pkgver}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

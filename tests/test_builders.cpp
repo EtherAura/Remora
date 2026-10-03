@@ -3660,6 +3660,33 @@ private slots:
         QCOMPARE(pipWindowTitle(QString()), QStringLiteral("Remora PIP"));
     }
 
+    // adb is a root shell into the device, so where its port is published is a security decision.
+    // A bare instance is only ever reached from this machine: publish on loopback, not on every
+    // interface the host has. Remote is reached from another machine, so it keeps publishing
+    // everywhere; adb_bind= overrides either, and macvlan publishes nothing at all.
+    void adbPublishedOnLoopbackForBare() {
+        const auto publish = [](const ResolvedConfig &rc) {
+            const QStringList a = buildDockerRunArgv(rc);
+            const int i = a.indexOf(QStringLiteral("-p"));
+            return i < 0 ? QString() : a.value(i + 1);
+        };
+        RemoraConfig cfg;
+        QCOMPARE(publish(resolve(cfg, Backend::Bare)), QStringLiteral("127.0.0.1:5555:5556"));
+        QCOMPARE(resolve(cfg, Backend::Bare).target, QStringLiteral("localhost:5555"));
+        cfg.backend.sshHost = QStringLiteral("me@dockerhost");
+        QCOMPARE(publish(resolve(cfg, Backend::Remote)), QStringLiteral("5555:5556"));
+        RemoraConfig open;
+        open.backend.adbBindAddress = QStringLiteral("0.0.0.0");
+        QCOMPARE(publish(resolve(open, Backend::Bare)), QStringLiteral("5555:5556"));
+        RemoraConfig narrow;
+        narrow.backend.sshHost = QStringLiteral("me@dockerhost");
+        narrow.backend.adbBindAddress = QStringLiteral("10.0.0.2");
+        QCOMPARE(publish(resolve(narrow, Backend::Remote)), QStringLiteral("10.0.0.2:5555:5556"));
+        RemoraConfig mv;
+        mv.network.networkMode = QStringLiteral("macvlan");
+        QVERIFY(publish(resolve(mv, Backend::Bare)).isEmpty());
+    }
+
     // bd remora-hsdz. Guest mode has no host GPU in the container, so the VAAPI HEVC encoder has
     // nothing to open and the session never produces a frame. The default h265 must resolve to
     // h264 there — and say why — so the hwc2 vector pins the software AVC encoder instead.

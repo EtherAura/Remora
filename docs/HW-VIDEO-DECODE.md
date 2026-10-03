@@ -67,8 +67,9 @@ routes around that by decoding on the host instead:
 - If the helper is missing or its socket does not answer, c2-va falls back to its local VA-API
   decoder. A problem here costs the optimisation, never the video.
 
-It needs `gpu_mode=host` and the helper built on the docker host:
-`make -C vendor/native host-decoder` (requires the ffmpeg development headers). The helper is
+It needs `gpu_mode=host` and the helper on the docker host. The Remora build compiles it when it
+finds libva and FFmpeg's development files; on another docker host,
+`make -C vendor/native host-decoder` builds it on its own. The helper is
 driver-agnostic — it uses whatever VA-API driver the host has — so it works on Intel and AMD hosts
 as well as NVIDIA. Background and the host-side verification tools are in
 [vendor/host-prereqs/nvdec-vaapi/README.md](../vendor/host-prereqs/nvdec-vaapi/README.md).

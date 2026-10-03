@@ -1,0 +1,59 @@
+name: Bug report
+description: Something did not work — a deploy, the mirror, an image build, the workspace
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Security problems go to a [private advisory](https://github.com/EtherAura/Remora/security/advisories/new), not here.**
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. remora check
+        2. remora up "My profile"
+        3. …
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Deploy / bring-up (remora up, check, reconnect)
+        - Mirror (video, audio, input, clipboard, app windows)
+        - Image build (remora build --source)
+        - Workspace GUI
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Hardware matters a lot here.
+      placeholder: |
+        - Remora version (release or commit):
+        - Distribution and kernel:
+        - GPU and driver (e.g. Intel xe, AMD amdgpu, NVIDIA 580.x proprietary):
+        - Android version of the image (16 / 17) and target (bare / remote):
+        - Desktop (e.g. KDE Plasma 6 on Wayland):
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: |
+        The failing step's output, or the `remora doctor <profile>` bundle. **Read it first** — it contains your profile settings and the device log; redact anything private.
+      render: shell
+    validations:
+      required: false

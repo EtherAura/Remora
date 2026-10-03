@@ -18,6 +18,9 @@
     </p>
   </description>
   <launchable type="desktop-id">io.github.EtherAura.Remora.desktop</launchable>
+  <url type="homepage">https://github.com/EtherAura/Remora</url>
+  <url type="bugtracker">https://github.com/EtherAura/Remora/issues</url>
+  <url type="vcs-browser">https://github.com/EtherAura/Remora</url>
   <provides>
     <binary>remora</binary>
   </provides>
@@ -26,4 +29,45 @@
     <category>Utility</category>
     <category>System</category>
   </categories>
+  <keywords>
+    <keyword>Android</keyword>
+    <keyword>Android apps</keyword>
+    <keyword>emulator</keyword>
+    <keyword>container</keyword>
+    <keyword>Docker</keyword>
+    <keyword>LineageOS</keyword>
+    <keyword>AOSP</keyword>
+    <keyword>GPU acceleration</keyword>
+    <keyword>NVIDIA</keyword>
+    <keyword>Vulkan</keyword>
+    <keyword>VA-API</keyword>
+    <keyword>screen mirroring</keyword>
+    <keyword>virtual device</keyword>
+  </keywords>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The workspace: each profile's image, docker host, status and actions</caption>
+      <image>https://raw.githubusercontent.com/EtherAura/Remora/main/docs/workspace.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="2026.10.0" date="2026-10-02">
+      <description>
+        <p>Remora's own mirror protocol, Android 17 without the ashmem module, and release packages:</p>
+        <ul>
+          <li>The mirror speaks protocol v3, Remora's own wire format. Images built before this release need a rebuild for the new agent</li>
+          <li>Android 17 images no longer need the host ashmem kernel module; only Android 16 images do</li>
+          <li>The device agent survives a mirror session stopped mid-frame, and a video encoder that produces nothing gets one fallback and then a stated error</li>
+          <li>Profiles rendering on the guest GPU stream H.264, since there is no hardware HEVC encoder there</li>
+          <li>--help after any command prints the usage instead of running the command</li>
+          <li>Releases ship a source tarball, a .deb and an Arch PKGBUILD, and the native helpers are built along with Remora</li>
+        </ul>
+      </description>
+    </release>
+    <release version="2026.09" date="2026-09-28">
+      <description>
+        <p>First public release: compose an Android 16 or 17 image feature by feature and build it from source, deploy it to this machine or to a docker host over ssh, and mirror it with Remora's own client and in-image agent.</p>
+      </description>
+    </release>
+  </releases>
 </component>

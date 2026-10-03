@@ -225,14 +225,24 @@ bool saveCheckinSnapshot(const QString &instance, const QString &pair) {
     if (path.isEmpty() || pair.isEmpty()) return false;
     // Never rewrite an unchanged file: this runs off every status probe, and a snapshot whose mtime
     // churned on every GUI refresh would be unreadable as history.
+    // A checkin can be made in this device's name with these two numbers, so they are owner-only
+    // FROM THE FIRST BYTE: the file is created 0600 rather than tightened after writing, which left
+    // a window where it existed with the umask's 0644 — and the directory is 0700, because on a
+    // home that others can traverse the listing alone says which devices have an identity here.
+    // Tightened before the unchanged-file early return, so an existing install is fixed too.
+    const QString dir = QFileInfo(path).absolutePath();
+    QDir().mkpath(dir);
+    QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                   QFileDevice::ExeOwner);
     if (loadCheckinSnapshot(instance) == pair) return true;
-    QDir().mkpath(QFileInfo(path).absolutePath());
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate,
+                QFileDevice::ReadOwner | QFileDevice::WriteOwner))
+        return false;
+    // open(…, permissions) only applies on creation; a snapshot from before this is tightened too.
+    f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     const bool ok = f.write(pair.toUtf8()) == pair.toUtf8().size();
     f.close();
-    // A checkin can be made in this device's name with these two numbers. Owner-only.
-    f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     return ok;
 }
 

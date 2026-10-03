@@ -1,0 +1,25 @@
+name: Feature request
+description: Something Remora could do, or do better
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The goal, in your own terms — the problem matters more than a proposed design.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you imagine it working, if you have an idea.
+    validations:
+      required: false
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware and setup
+      description: If it depends on your GPU, distribution or deploy target, say what you run.
+    validations:
+      required: false

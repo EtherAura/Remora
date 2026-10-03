@@ -1,13 +1,28 @@
 # Remora
 
-A desktop control plane for Android in Docker: one place to compose the image, deploy it and
-mirror it — *with every knob actually exposed.*
+**Run Android apps on your Linux desktop.** Android 16 and 17 (LineageOS 23 / 24) in a Docker
+container, GPU-accelerated on NVIDIA, Intel and AMD, with every app in a window of its own.
+
+[![CI](https://github.com/EtherAura/Remora/actions/workflows/ci.yml/badge.svg)](https://github.com/EtherAura/Remora/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/EtherAura/Remora)](https://github.com/EtherAura/Remora/releases/latest)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
+![Platform: Linux x86_64](https://img.shields.io/badge/platform-Linux%20x86__64-informational)
+
+Remora is a desktop control plane for Android in Docker: one place to compose the image, deploy it
+and mirror it — *with every knob actually exposed.* It is **not an emulator**: Android runs
+natively in a container on your own kernel, with no virtual machine and no CPU emulation, and
+arm64-only apps run through ARM translation.
 
 Remora is **configure-first**: compose your Android image à-la-carte, pick **where** to run it
 (this machine, or any docker host over ssh), check the target is ready, then **deploy + connect**
 — with a real staged-progress checklist and captured errors instead of a 200-line shell alias.
 
 ![The Remora config workspace](docs/workspace.png)
+
+> **You build your own Android image.** Remora does not download one: it compiles LineageOS from
+> source with exactly the features you pick. Plan on **about 450 GB of free disk**, **32 GB of RAM
+> (64 GB recommended)** and an afternoon for the first build — see
+> [What you need](#what-you-need).
 
 Written in **C++20 / Qt 6** — a headless CLI and a QtWidgets workspace over one shared, unit-tested core.
 
@@ -63,14 +78,55 @@ Written in **C++20 / Qt 6** — a headless CLI and a QtWidgets workspace over on
 
 ---
 
-## Requirements
+## What you need
 
-**Build:** a C++20 compiler, **CMake ≥ 3.20**, **Qt 6** (`Core`, `Widgets`, `Test`, `Network`,
+**To run Android:** Linux on x86_64 with Docker, a kernel that provides binder (binderfs — most
+desktop kernels do), `adb`, and membership of the `docker` group. A GPU is optional: Intel and AMD
+render nodes are used directly, NVIDIA's proprietary driver through the Venus render server, and
+with no GPU Android renders in software. Android 17 needs no kernel module; an Android 16 image
+also needs the IBT-fixed `ashmem_linux.ko`. For NVIDIA, `remora venus-build` builds and installs the
+render server (see `vendor/host-prereqs/venus-nvidia/`). A `remote` target needs the same on the
+docker host. Each image takes about 3 GB in Docker, and each instance's Android data grows with the
+apps you install. `remora check` probes all of this read-only and names what is missing; the full
+table is in [docs/FEATURES.md](docs/FEATURES.md).
+
+**To build the Android image** — needed once per Android release and feature set, because Remora
+ships no prebuilt images. Two inputs come from you rather than from the download: the Mesa graphics
+stack, built on the host once by `vendor/host-prereqs/mesa-android/build-mesa.sh`, and the
+third-party payloads behind features like Google apps, ARM translation and Widevine, which Remora
+does not redistribute — [vendor/PAYLOADS.md](vendor/PAYLOADS.md) says what each one is and where it
+comes from. A build that is missing either stops and says so before it starts compiling.
+
+| | |
+|---|---|
+| **Disk** | About **450 GB** free, on an SSD if you can. One release's source tree and build output measured 470 GB here after many rebuilds (99 GB source mirror, ~100 GB checkout, 269 GB of build output); add ~20 GB for the Mesa toolchain built on the host and ~3 GB per finished image. |
+| **Memory** | **32 GB** of RAM at minimum, **64 GB** recommended, plus swap. The build's executor alone peaks around 21 GB, and every Java/metalava step running beside it takes about 4 GB more. |
+| **Time** | The first build downloads about **100 GB** of source, then compiles for **3½ to 13 hours** on a 24-thread i9-12900K, depending on how many jobs you give it. Later rebuilds take under an hour (47 minutes here, 29 of them compiling). |
+
+The image build also needs two host settings, and both fail in ways that
+point at the wrong thing:
+
+```sh
+# soong opens a lot of files; too low and it dies with "newosproc", which is NOT an OOM
+sudo sysctl -w vm.max_map_count=1048576
+
+# systemd-oomd kills the build container at exit 137 and logs to the JOURNAL, not dmesg —
+# so `dmesg | grep oom-kill` shows nothing while your builds keep dying
+systemctl is-active systemd-oomd && journalctl -u systemd-oomd --since -1h
+```
+
+Raise `SwapUsedLimit` in `/etc/systemd/oomd.conf`, or set `ManagedOOMPreference=avoid` on the
+slice the build runs in. Remora's build preflight warns about both before it starts.
+
+**To build Remora itself:** a C++20 compiler, **CMake ≥ 3.20**, **Qt 6** (`Core`, `Widgets`, `Test`, `Network`,
 `DBus`, `OpenGLWidgets`, `Multimedia`, `WebEngineWidgets`), FFmpeg's development libraries
 (`libavcodec`, `libavformat`, `libavutil`, `libswscale`, `libswresample`) and FFmpeg's NVIDIA
 codec headers (`ffnvcodec` — headers only; the mirror loads the driver at runtime, so no NVIDIA
-GPU is needed to build). A C compiler (`cc`) is used to build the vendored native helpers from
-source at deploy time.
+GPU is needed to build). The build also compiles the small native helpers in `vendor/native`; two
+of them are static, so they need your C library's static archive (`libc.a`, part of glibc's
+development files on most distributions). Two more are optional and built when their libraries are
+found: the host frame encoder (`host_encode`) needs FFmpeg 7 or newer (`libavfilter`) and the Vulkan
+headers, and the host frame decoder (`host_decode`) needs `libva`. CMake says which it built.
 
 Gentoo:
 
@@ -93,30 +149,53 @@ sudo apt install build-essential cmake qt6-base-dev qt6-multimedia-dev qt6-weben
     libswresample-dev libffmpeg-nvenc-dev adb
 ```
 
-**Runtime tools** (on this machine, and on the docker host for `remote`): `docker` and
-`android-tools` (adb).
+---
 
-**Host prerequisites to actually run Android in a container** (Remora *probes* these read-only; it
-does not install them — see `remora check`): a usable DRM render node and `docker` group membership.
-Android 17 needs no kernel module; an Android 16 image additionally needs the IBT-fixed
-`ashmem_linux.ko`. For NVIDIA acceleration, the Venus render server
-(`remora venus-build`, see `vendor/host-prereqs/venus-nvidia/`). Details in
-[docs/FEATURES.md](docs/FEATURES.md).
+## Install
 
-**Building the Android image from source** needs two more host settings, and both fail in ways that
-point at the wrong thing:
+Every [release](https://github.com/EtherAura/Remora/releases/latest) carries a source tarball, a
+`.deb` for Ubuntu 24.04+ / Debian and a `PKGBUILD` for Arch, with SHA-256 sums, an SBOM and a
+Sigstore build-provenance attestation.
+
+**Ubuntu 24.04+ / Debian**
 
 ```sh
-# soong opens a lot of files; too low and it dies with "newosproc", which is NOT an OOM
-sudo sysctl -w vm.max_map_count=1048576
-
-# systemd-oomd kills the build container at exit 137 and logs to the JOURNAL, not dmesg —
-# so `dmesg | grep oom-kill` shows nothing while your builds keep dying
-systemctl is-active systemd-oomd && journalctl -u systemd-oomd --since -1h
+ver=$(curl -fsSL https://api.github.com/repos/EtherAura/Remora/releases/latest \
+      | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+curl -fLO "https://github.com/EtherAura/Remora/releases/download/v$ver/remora_${ver}_amd64.deb"
+gh attestation verify "remora_${ver}_amd64.deb" --repo EtherAura/Remora   # optional, needs gh
+sudo apt install "./remora_${ver}_amd64.deb"
 ```
 
-Raise `SwapUsedLimit` in `/etc/systemd/oomd.conf`, or set `ManagedOOMPreference=avoid` on the
-slice the build runs in. Remora's build preflight warns about both before it starts.
+The `.deb` is built against Ubuntu 24.04's FFmpeg 6.1, which is too old for the host frame encoder,
+so `host_encode` is not available from it; mirroring encodes on the device instead.
+
+**Arch**
+
+```sh
+mkdir remora && cd remora
+curl -fLO https://github.com/EtherAura/Remora/releases/latest/download/PKGBUILD
+makepkg -si
+```
+
+**Any other distribution (Gentoo, Fedora, …), from source** — install the build dependencies listed
+in [What you need](#what-you-need), then:
+
+```sh
+git clone https://github.com/EtherAura/Remora.git
+cd Remora
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DREMORA_INSTALLED_VENDOR=ON
+cmake --build build
+sudo cmake --install build
+```
+
+**Then, whichever way you installed it:**
+
+```sh
+sudo usermod -aG docker "$USER"   # then log out and back in
+remora check                      # what this machine still needs, with the fix for each
+remora gui
+```
 
 ---
 
@@ -127,7 +206,8 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-This produces a single `build/remora` binary (CLI + `gui` subcommand) and the test executables.
+This produces a single `build/remora` binary (CLI + `gui` subcommand), the native helpers it
+deploys, and the test executables. `remora --version` prints the version.
 
 ---
 
@@ -163,12 +243,15 @@ diagnostics bundle, APK transfer between profiles, …).
 Config is stored per-instance in `~/.config/remorarc` (standard INI; hand-editable, layered
 `[Defaults]` < `[Instance-<name>]`).
 
-### Typical flow
+### Getting started
 
-1. `remora check` → confirm the target is READY.
+1. `remora check` → confirm the target is READY, and fix what it names.
 2. `remora gui` → pick the Android version, tick the image features you want, choose the target, tune
    runtime/mirror.
-3. **Deploy & Connect** (or `remora up`) → watch the checklist, get a mirror window.
+3. **Build the image** (the Image page, or `remora build --source`) — the long step. Build the Mesa
+   payload and supply any third-party payloads first; see [What you need](#what-you-need).
+4. **Deploy & Connect** (or `remora up`) → watch the checklist, get a mirror window. Installed apps
+   appear in your desktop's application menu, grouped per profile.
 
 ---
 
@@ -183,7 +266,7 @@ Config is stored per-instance in `~/.config/remorarc` (standard INI; hand-editab
 | `src/mirror/` | the mirror client (`remora mirror`): FFmpeg decode, audio, input, Remora's wire protocol |
 | `src/main.cpp` | the CLI dispatcher + `gui` subcommand |
 | `agent/` | the in-image mirror agent (Java, baked into the image by the `mirror_agent` feature) |
-| `vendor/` | container/host scripts, native `.c` helpers built at deploy time, and the Android source-build tree (`device/remora`, `vendor/remora`, the c2-va codec, patch series, feature wiring). Third-party payloads are fetched, not committed — see `vendor/PAYLOADS.md` |
+| `vendor/` | container/host scripts, the native `.c` helpers the build compiles, and the Android source-build tree (`device/remora`, `vendor/remora`, the c2-va codec, patch series, feature wiring). Third-party payloads are fetched, not committed — see `vendor/PAYLOADS.md` |
 | `tests/` | offline Qt Test suites: golden argv vectors, parsers (against real captured fixtures), gating, readiness, and the backend chains (with a `FakeSpawner`) |
 
 ## Testing
@@ -209,9 +292,15 @@ Remora is **GPL v3** (see [LICENSE](LICENSE)). It builds on AOSP, LineageOS, Qt 
 redistributable: enabling Google Apps, Widevine or the ARM native-bridge means the result is
 yours to run, not yours to share.
 
+### Contributing and security
+
+Bug reports and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Report
+vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes. Release notes are in
+[CHANGELOG.md](CHANGELOG.md).
+
 ### Not built (deferred)
 
-- **Prebuilt image distribution** — building from source works end to end; a published image
-  mirror does not exist yet. [docs/IMAGE_MIRROR.md](docs/IMAGE_MIRROR.md) records what each tag
-  would carry and what that means for redistribution.
+- **Prebuilt images** — there are none to download: building from source works end to end, and a
+  published image mirror does not exist yet. [docs/IMAGE_MIRROR.md](docs/IMAGE_MIRROR.md) records
+  what each tag would carry and what that means for redistribution.
 - The **Android companion app** (a phone client) — future.

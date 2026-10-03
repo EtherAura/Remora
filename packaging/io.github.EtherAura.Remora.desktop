@@ -6,5 +6,5 @@ Icon=io.github.EtherAura.Remora
 Terminal=false
 Type=Application
 Categories=System;Emulator;Qt;
-Keywords=android;docker;container;mirror;emulator;
+Keywords=Android;Android apps;emulator;container;Docker;LineageOS;AOSP;GPU acceleration;NVIDIA;Vulkan;VA-API;screen mirroring;virtual device;
 StartupWMClass=remora

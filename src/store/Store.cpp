@@ -67,6 +67,7 @@ RemoraConfig loadInstance(const QString &path, const QString &name) {
         if (has("data_dir")) c.backend.dataDir = s.value("data_dir").toString();
         if (has("data_base_dir")) c.backend.dataBaseDir = s.value("data_base_dir").toString();
         if (has("host_adb_port")) c.backend.hostAdbPort = s.value("host_adb_port").toInt();
+        if (has("adb_bind")) c.backend.adbBindAddress = s.value("adb_bind").toString().trimmed();
         if (has("width")) c.display.width = s.value("width").toInt();
         if (has("height")) c.display.height = s.value("height").toInt();
         if (has("dpi")) c.display.dpi = s.value("dpi").toInt();
@@ -268,6 +269,7 @@ void saveInstance(const QString &path, const QString &name, const RemoraConfig &
     wStr("data_dir", c.backend.dataDir);
     wStr("data_base_dir", c.backend.dataBaseDir);
     wInt("host_adb_port", c.backend.hostAdbPort);
+    wStr("adb_bind", c.backend.adbBindAddress);
     wInt("width", c.display.width);
     wInt("height", c.display.height);
     wInt("dpi", c.display.dpi);

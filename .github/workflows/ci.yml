@@ -19,12 +19,16 @@ jobs:
     name: build + test (Qt 6, Ubuntu)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Qt WebEngine is the heavy one and it is genuinely required (CMakeLists asks for
       # WebEngineWidgets); FFmpeg's dev headers are what the mirror decodes with, and
       # libffmpeg-nvenc-dev is FFmpeg's NVIDIA loader (ffnvcodec), which the mirror's CUDA interop
       # includes — it loads the driver at runtime, so no NVIDIA driver or CUDA toolkit is needed.
+      # The build also compiles the native helpers in vendor/native: fwd and uinput-kbd statically
+      # (libc.a comes with build-essential's libc6-dev), and the host frame decoder against libva.
+      # The host frame encoder needs FFmpeg 7 and is skipped here — this runner has 6.1.
+      # release.yml installs the same list for the .deb; keep the two in step.
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -32,7 +36,8 @@ jobs:
             build-essential cmake ninja-build extra-cmake-modules \
             qt6-base-dev qt6-multimedia-dev qt6-webengine-dev \
             libgl1-mesa-dev libffmpeg-nvenc-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+            libva-dev
 
       - name: Configure
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -50,7 +55,7 @@ jobs:
     name: shell scripts
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
       # The deploy chain and the image build are shell, and a mistake there surfaces halfway
@@ -80,11 +85,28 @@ jobs:
           done
           exit $rc
 
+  # What software centres and launchers read: the AppStream metainfo (releases, screenshot,
+  # keywords) and the desktop entry. --no-net because the screenshot URL points at main, which a
+  # pull request may be the one adding it to.
+  metadata:
+    name: desktop metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install validators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends appstream desktop-file-utils
+      - name: appstreamcli validate
+        run: appstreamcli validate --no-net packaging/io.github.EtherAura.Remora.metainfo.xml
+      - name: desktop-file-validate
+        run: desktop-file-validate packaging/io.github.EtherAura.Remora.desktop
+
   payloads:
     name: no third-party binaries
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The release rule, enforced instead of remembered: this repository ships no third-party
       # binaries (vendor/PAYLOADS.md). Detect by CONTENT — the
       # payloads that matter here (magisk, magiskboot, busybox, linker64, zygiskd64) carry no
