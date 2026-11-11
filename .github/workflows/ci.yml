@@ -10,6 +10,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only: no job here writes to the repository, comments on anything or publishes anything, so
+# none of them gets the token's default rights. A job added later that needs more asks for it by
+# name, in its own permissions block.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
