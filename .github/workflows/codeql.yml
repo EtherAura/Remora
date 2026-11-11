@@ -1,0 +1,98 @@
+name: CodeQL
+
+# Security analysis with data-flow tracking, which the compiler warnings and shellcheck in ci.yml
+# do not have. What it reads:
+#
+#   c-cpp        the desktop side and the native helpers, as this workflow builds them. Remora
+#                assembles docker, ssh and adb command lines from a profile, parses what a device
+#                and a docker host print back, and decodes a byte stream sent by an Android
+#                instance: input from outside reaching a command or a buffer is exactly the class
+#                of bug these queries follow. The Android source-build tree under
+#                vendor/source-build/ is NOT analysed: it compiles only inside an Android checkout.
+#   java-kotlin  the in-image mirror agent (agent/), read without a build: it compiles against an
+#                Android framework jar this runner does not have.
+#   python       the helper scripts.
+#   actions      these workflows.
+#
+# It runs on pushes to main and once a week, not on pull requests: a finding shows up as a code
+# scanning alert after the merge rather than as a red check before it. The weekly run re-reads an
+# unchanged main against the query packs GitHub has updated since.
+on:
+  push:
+    branches: [main]
+    # A change to prose cannot change the analysed code; the weekly run covers everything anyway.
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', 'NOTICE', '.gitignore']
+  schedule:
+    # Tuesdays 05:37 UTC: off the hour, when the hosted runners are less contended.
+    - cron: '37 5 * * 2'
+  workflow_dispatch:
+
+# Read-only by default; the analysis job opts in to what uploading its results takes.
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancelled: an analysis cut off mid-upload leaves the alerts describing an older main.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # security-events: write uploads the results as code scanning alerts; actions: read lets the
+    # action report its own run's status.
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      # One language failing must not cancel the others' analysis and upload.
+      fail-fast: false
+      matrix:
+        include:
+          - language: c-cpp
+            build-mode: manual
+          - language: java-kotlin
+            build-mode: none
+          - language: python
+            build-mode: none
+          - language: actions
+            build-mode: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Only the C++ leg builds. The same list as ci.yml's build job; keep the two in step.
+      - name: Install dependencies
+        if: matrix.language == 'c-cpp'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build extra-cmake-modules \
+            qt6-base-dev qt6-multimedia-dev qt6-webengine-dev \
+            libgl1-mesa-dev libffmpeg-nvenc-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+            libva-dev
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      # The build CodeQL watches is the one ci.yml runs, spelled out rather than left to
+      # autobuild's guess. No compiler cache: a cache hit skips the compiler, and what the
+      # compiler never ran on is not analysed.
+      - name: Build (traced)
+        if: matrix.language == 'c-cpp'
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          category: '/language:${{ matrix.language }}'

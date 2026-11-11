@@ -10,3 +10,6 @@
 - [ ] `ctest --test-dir build` passes
 - [ ] Golden argv tests updated if `remora plan` output changed
 - [ ] Shell scripts pass `shellcheck --severity=warning`
+- [ ] `CHANGELOG.md` has an entry under `[Unreleased]`, or nobody outside can notice the change
+      (`no-changelog`)
+- [ ] The user guide (`docs/user/`) says what the change makes true

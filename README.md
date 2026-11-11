@@ -4,6 +4,7 @@
 container, GPU-accelerated on NVIDIA, Intel and AMD, with every app in a window of its own.
 
 [![CI](https://github.com/EtherAura/Remora/actions/workflows/ci.yml/badge.svg)](https://github.com/EtherAura/Remora/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml/badge.svg)](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml)
 [![Latest release](https://img.shields.io/github/v/release/EtherAura/Remora)](https://github.com/EtherAura/Remora/releases/latest)
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 ![Platform: Linux x86_64](https://img.shields.io/badge/platform-Linux%20x86__64-informational)
@@ -26,6 +27,10 @@ Remora is **configure-first**: compose your Android image à-la-carte, pick **wh
 
 Written in **C++20 / Qt 6** — a headless CLI and a QtWidgets workspace over one shared, unit-tested core.
 
+**[User guide](https://github.com/EtherAura/Remora/wiki)** ·
+**[Questions and setups](https://github.com/EtherAura/Remora/discussions)** ·
+**[Releases](https://github.com/EtherAura/Remora/releases)**
+
 ---
 
 ## Highlights
@@ -41,8 +46,8 @@ Written in **C++20 / Qt 6** — a headless CLI and a QtWidgets workspace over on
   hardware encoder on the host GPU, and the client decodes on NVDEC or VA-API. The mirror runs in
   its own systemd scope, so it outlives the workspace.
 - **Hardware video inside Android.** A VA-API Codec2 component in the image decodes AVC, HEVC, VP9
-  and AV1 and encodes AVC and HEVC on the GPU; on NVIDIA hosts decoding can be handed to the
-  host. Widevine L3 is available for DRM apps.
+  and AV1 and encodes HEVC on the GPU (AVC is encoded in software); on NVIDIA hosts decoding can
+  be handed to the host. Widevine L3 is available for DRM apps.
 - **Android apps on your desktop.** Every installed app gets a launcher entry with its real icon,
   grouped per profile, and opens in a window of its own (`remora app`), alongside a desktop-mode
   display, a picture-in-picture mirror, and sleep/wake that freezes the whole device and resumes
@@ -276,10 +281,15 @@ ctest --test-dir build
 ```
 
 Eight suites, green with **no hardware**: the subprocess/ssh layer is injectable, so nothing touches
-Docker or a device.
+Docker or a device. CI runs them three ways on every pull request: as built for release, under
+AddressSanitizer and UndefinedBehaviorSanitizer, and instrumented for coverage, with a floor for
+each tested layer (`tools/coverage.sh` is the same measurement, locally).
 
 ## More
 
+- **[The user guide](https://github.com/EtherAura/Remora/wiki)** — installing, building an image,
+  deploying, mirroring, every command and every setting. It is written in
+  [docs/user/](docs/user/Home.md) and published to the wiki from there.
 - **[docs/FEATURES.md](docs/FEATURES.md)** — the à-la-carte catalog (build-time vs runtime, defaults,
   deps, status), with each entry's honest status and what it actually delivers.
 - **[docs/MIRROR_AGENT.md](docs/MIRROR_AGENT.md)** — the device half: what the in-image agent does,

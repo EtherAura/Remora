@@ -1,0 +1,91 @@
+name: Wiki
+
+# The user guide is written in docs/user/ and published to the GitHub wiki from there, one way:
+# every push to main that touches it replaces the wiki's pages with the repository's. An edit made
+# in the wiki's own editor is overwritten by the next run, and a page deleted here is deleted
+# there, the sidebar and footer included, so the wiki never says something the repository does not.
+#
+# The pages keep relative links in the repository, where they work as they are;
+# tools/wiki-rewrite-links.py turns them into wiki links in the copy, and fails the run on a link
+# whose target does not exist rather than publishing a dead one.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/user/**'
+      - 'tools/wiki-rewrite-links.py'
+      - '.github/workflows/wiki.yml'
+  workflow_dispatch:
+
+# Read-only by default; the job that pushes the wiki opts in to the one permission that takes.
+permissions:
+  contents: read
+
+concurrency:
+  # Two runs would race on the wiki's single branch and the loser's push would be refused.
+  group: wiki
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish docs/user to the wiki
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The wiki is a second git repository beside this one, and the workflow token may push to it
+    # only with contents: write.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # An empty docs/user would delete every page of the wiki, so it stops here instead.
+      - name: The guide is there
+        run: |
+          set -euo pipefail
+          test -f docs/user/Home.md || { echo "::error::docs/user/Home.md is missing: refusing to empty the wiki"; exit 1; }
+
+      # A wiki has no git repository until its first page exists, and only the web editor can
+      # create that one: Wiki tab, "Create the first page", save. This run replaces it.
+      - name: Clone the wiki
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          if ! git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+              clone --quiet "https://github.com/${REPOSITORY}.wiki.git" wiki; then
+            echo "::error::the wiki cannot be cloned. Is it enabled, and does its first page exist? (Wiki tab, Create the first page.)"
+            exit 1
+          fi
+
+      - name: Replace its pages
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          find wiki -maxdepth 1 -type f -name '*.md' -delete
+          cp docs/user/*.md wiki/
+          python3 tools/wiki-rewrite-links.py wiki "$REPOSITORY" .
+
+      - name: Commit and push
+        working-directory: wiki
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ github.repository }}@${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo "The wiki already matches docs/user."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit --quiet -m "Guide from docs/user" -m "Source: $SOURCE"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push --quiet

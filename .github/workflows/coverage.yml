@@ -1,0 +1,70 @@
+name: Coverage
+
+# How much of src/ the offline suites execute, on every pull request and every push to main.
+#
+# The number that means something here is per layer. src/core is the pure domain and the project's
+# test surface; src/engine and src/store are tested through the injectable Spawner. The workspace
+# (src/ui), the mirror client (src/mirror) and the command dispatcher need a display, a device or a
+# container, and no suite runs them. One percentage over all of src/ would mostly follow how much of
+# that code exists, so each tested layer has its own floor and the total is reported, not enforced.
+#
+# Code that no suite runs counts as zero. gcov writes data only for code that was executed, so a
+# file no test links simply would not be in the report; a baseline taken before the suites run and
+# merged with the result puts it there at 0 %.
+#
+# The floors sit a few points under what the suites reach, so they catch a layer losing its tests
+# and not a compiler counting lines differently. Raise them when coverage has risen and stayed.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', 'NOTICE', '.gitignore']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', 'NOTICE', '.gitignore']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  coverage:
+    name: coverage (offline suites)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # percent of lines, per tested layer
+      FLOOR_CORE: '90'
+      FLOOR_ENGINE: '70'
+      FLOOR_STORE: '85'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # ci.yml's list, plus lcov; keep the two in step.
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build extra-cmake-modules \
+            qt6-base-dev qt6-multimedia-dev qt6-webengine-dev \
+            libgl1-mesa-dev libffmpeg-nvenc-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+            libva-dev lcov
+
+      # Debug, so lines map to the source as written, and instrumented through the compiler flags
+      # alone: the build files stay free of a coverage mode nobody else uses.
+      - name: Configure (Debug, instrumented)
+        run: |
+          cmake -B build/coverage -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=--coverage
+
+      - name: Build
+        run: cmake --build build/coverage
+
+      - name: Measure
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: tools/coverage.sh build/coverage

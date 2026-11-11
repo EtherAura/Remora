@@ -1,0 +1,59 @@
+name: Changelog
+
+# A change that users can notice comes with its CHANGELOG.md entry. tools/check-changelog.sh
+# decides what that means and how a change that nobody outside can notice says so (the
+# `no-changelog` label on a pull request, a [no-changelog] line in a commit message); it runs the
+# same way by hand: tools/check-changelog.sh origin/main
+#
+# On a pull request this is a gate. On a push to main it comes after the fact and cannot stop
+# anything, but it turns an entry that was forgotten into a red run while the change is still
+# fresh, which is the only check a change pushed straight to main ever gets for this.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changelog:
+    name: changelog entry
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # The pull request's own head, not the merge commit GitHub prepares for it: that commit
+      # carries every change of the pull request and no marker, so it would answer for all of them.
+      # Full history, because the check reads every commit since the branch left main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BEFORE: ${{ github.event.before }}
+          CHANGELOG_EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "pull_request" ]; then
+            base="origin/$BASE_REF"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+              && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            base="$BEFORE"
+          elif git rev-parse -q --verify "HEAD~1" >/dev/null; then
+            # A new branch or a forced push: the tip before this push is not there to compare with.
+            base="HEAD~1"
+          else
+            echo "A first commit has nothing to be compared with."
+            exit 0
+          fi
+          tools/check-changelog.sh "$base"

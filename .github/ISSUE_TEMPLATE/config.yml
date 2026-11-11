@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Ask a question, or share a setup that works
+    url: https://github.com/EtherAura/Remora/discussions
+    about: Discussions, for everything that is not a bug or a feature request.
+  - name: Read the user guide
+    url: https://github.com/EtherAura/Remora/wiki
+    about: Installing, building an image, deploying, mirroring, every command and setting.
   - name: Report a security vulnerability
     url: https://github.com/EtherAura/Remora/security/advisories/new
     about: Privately — please do not open a public issue for it.

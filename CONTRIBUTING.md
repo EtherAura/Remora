@@ -19,6 +19,12 @@ can include things you would rather not publish. Redact freely.
 Hardware matters a great deal here (GPU vendor and driver, kernel, distribution), so please say
 what you run on — especially if it is something other than Intel, AMD or NVIDIA on a recent kernel.
 
+## Asking a question
+
+Questions, setups that work and ideas that are not yet a bug or a feature request go to
+[Discussions](https://github.com/EtherAura/Remora/discussions). The
+[user guide](https://github.com/EtherAura/Remora/wiki) may already have the answer.
+
 ## Development setup
 
 The README's [What you need](README.md#what-you-need) lists the build dependencies per
@@ -62,8 +68,30 @@ and comments that explain *why* at the density of the file you are in.
    tested offline.
 3. Shell scripts are linted in CI with `shellcheck --severity=warning` and parsed with the shell
    their shebang names; run both before pushing.
-4. Open a pull request describing what changed and how you verified it. For anything that needs
+4. A change users can notice (anything under `src/`, `agent/` or `vendor/`) adds its entry under
+   `[Unreleased]` in `CHANGELOG.md`, written for the people who use Remora. A change nobody
+   outside can notice says so instead: ask for the `no-changelog` label on the pull request, or
+   put `[no-changelog]` alone on a line of the commit message. `tools/check-changelog.sh
+   origin/main` is the check CI runs.
+5. The user guide is `docs/user/`, one page per file, published to the wiki on every push to
+   `main`. A change to what a command or a setting does changes its page in the same pull request.
+6. Open a pull request describing what changed and how you verified it. For anything that needs
    hardware to verify, say what you ran it on.
+
+## What CI checks
+
+| check | what it is |
+|---|---|
+| build + test | a Release build and the eight suites |
+| sanitizers | the same suites under AddressSanitizer and UndefinedBehaviorSanitizer |
+| coverage | how much of each tested layer the suites execute, against a floor (`tools/coverage.sh`) |
+| shell scripts | `shellcheck --severity=warning`, and every script parsed by the shell it names |
+| desktop metadata | the AppStream metainfo and the desktop entry validate |
+| no third-party binaries | nothing binary is committed (see `vendor/PAYLOADS.md`) |
+| changelog entry | the rule in step 4 |
+
+CodeQL reads the C++, the agent's Java, the Python helpers and the workflows on every push to
+`main` and once a week; what it finds appears as a code scanning alert, not as a failed check.
 
 ## Licence
 
