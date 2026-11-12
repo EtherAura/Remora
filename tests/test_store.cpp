@@ -92,6 +92,28 @@ private slots:
         QVERIFY(!s.contains("camera_devices"));
     }
 
+    // An engaged-but-empty camera list means "cameras off", unset means auto-detect, so the
+    // empty list must persist as a present, empty camera_devices= rather than a removed key —
+    // the remove-on-empty list writer would silently turn "off" back into "auto".
+    void explicitlyEmptyCameraDevicesRoundTrip() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        RemoraConfig c;
+        c.input.cameraDevices = QStringList{};
+        saveInstance(path, QStringLiteral("x"), c);
+
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.beginGroup(QStringLiteral("Instance-x"));
+            QVERIFY(s.contains(QStringLiteral("camera_devices")));
+            QVERIFY(s.value(QStringLiteral("camera_devices")).toString().isEmpty());
+        }
+
+        const RemoraConfig loaded = loadInstance(path, QStringLiteral("x"));
+        QVERIFY(loaded.input.cameraDevices.has_value());
+        QVERIFY(loaded.input.cameraDevices->isEmpty());
+    }
+
     void saveInstanceTouchesOnlyItsOwnGroup() {
         QTemporaryDir dir;
         const QString path = rc(dir);
