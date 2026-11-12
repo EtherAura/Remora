@@ -179,6 +179,81 @@ private slots:
         QCOMPARE(s.value("Deployment-a/profile").toString(), QStringLiteral("p"));
         QVERIFY(!s.childGroups().contains(QStringLiteral("Deployment-b")));
     }
+
+    // The Run table is seeded from listInstances, so every other section sharing the file must
+    // stay out of it: a filter regression would offer Defaults or a deployment as a profile.
+    void listInstancesReturnsOnlyProfilesSorted() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Instance-b/width", 800);
+            s.setValue("Remora/active_instance", QStringLiteral("b"));
+            s.setValue("Source-s/enabled", true);
+            s.setValue("Instance-a/width", 1024);
+            s.setValue("Deployment-d/profile", QStringLiteral("a"));
+            s.setValue("Defaults/fps", 60);
+            s.sync();
+        }
+        QCOMPARE(listInstances(path), (QStringList{QStringLiteral("a"), QStringLiteral("b")}));
+    }
+
+    void activeInstanceFallsBackWhenUnset() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        QCOMPARE(activeInstance(path), QStringLiteral("default"));
+        QCOMPARE(activeInstance(path, QStringLiteral("other")), QStringLiteral("other"));
+
+        // A top-level key lands in QSettings' reserved [General] section; it is not the setting.
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("active_instance", QStringLiteral("c"));
+            s.sync();
+        }
+        QCOMPARE(activeInstance(path), QStringLiteral("default"));
+    }
+
+    // The selection lives in [Remora], not [General]: QSettings reserves [General] for top-level
+    // keys, so a hand-written [General] group would never be read back.
+    void setActiveInstanceRoundTripsThroughRemoraGroup() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        setActiveInstance(path, QStringLiteral("b"));
+        QCOMPARE(activeInstance(path), QStringLiteral("b"));
+
+        QSettings s(path, QSettings::IniFormat);
+        QCOMPARE(s.value("Remora/active_instance").toString(), QStringLiteral("b"));
+        QVERIFY(!s.contains(QStringLiteral("active_instance")));
+        QCOMPARE(s.childGroups(), QStringList{QStringLiteral("Remora")});
+    }
+
+    void deleteInstanceRemovesOnlyItsOwnGroup() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Instance-a/width", 1024);
+            s.setValue("Instance-a/fps", 30);
+            s.setValue("Instance-b/width", 800);
+            s.setValue("Instance-b/from_the_future", QStringLiteral("keep me"));
+            s.setValue("Defaults/fps", 60);
+            s.sync();
+        }
+        deleteInstance(path, QStringLiteral("a"));
+
+        QCOMPARE(listInstances(path), QStringList{QStringLiteral("b")});
+        QSettings s(path, QSettings::IniFormat);
+        QVERIFY(!s.childGroups().contains(QStringLiteral("Instance-a")));
+        QVERIFY(!s.contains(QStringLiteral("Instance-a/width")));
+        QCOMPARE(s.value("Instance-b/width").toInt(), 800);
+        QCOMPARE(s.value("Instance-b/from_the_future").toString(), QStringLiteral("keep me"));
+        QCOMPARE(s.value("Defaults/fps").toInt(), 60);
+        s.beginGroup(QStringLiteral("Instance-b"));
+        QCOMPARE(s.childKeys().size(), 2);
+        s.endGroup();
+        s.beginGroup(QStringLiteral("Defaults"));
+        QCOMPARE(s.childKeys(), QStringList{QStringLiteral("fps")});
+    }
 };
 
 QTEST_MAIN(TestStore)
