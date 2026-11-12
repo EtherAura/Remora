@@ -204,6 +204,45 @@ private slots:
         QVERIFY(!s.childGroups().contains(QStringLiteral("Deployment-b")));
     }
 
+    // An explicit save — even of nothing — marks the list initialised, so a user who deleted
+    // every runner is not re-seeded. Host and image are optional: a blank one is removed from the
+    // file, not written as an empty value that a reader could mistake for an override.
+    void saveDeploymentsFlagsEmptySaveAndRoundTripsHostImage() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        saveDeployments(path, {});
+        {
+            QSettings s(path, QSettings::IniFormat);
+            QCOMPARE(s.value("Remora/deployments_initialized").toBool(), true);
+        }
+        QVERIFY(loadDeployments(path).isEmpty());
+
+        Deployment d;
+        d.name = QStringLiteral("a");
+        d.profile = QStringLiteral("p");
+        d.host = QStringLiteral("h");
+        d.image = QStringLiteral("i");
+        saveDeployments(path, {d});
+        QList<Deployment> deps = loadDeployments(path);
+        QCOMPARE(deps.size(), 1);
+        QCOMPARE(deps[0].name, QStringLiteral("a"));
+        QCOMPARE(deps[0].profile, QStringLiteral("p"));
+        QCOMPARE(deps[0].host, QStringLiteral("h"));
+        QCOMPARE(deps[0].image, QStringLiteral("i"));
+
+        d.host.clear();
+        d.image.clear();
+        saveDeployments(path, {d});
+        QSettings s(path, QSettings::IniFormat);
+        QVERIFY(!s.contains(QStringLiteral("Deployment-a/host")));
+        QVERIFY(!s.contains(QStringLiteral("Deployment-a/image")));
+        QCOMPARE(s.value("Deployment-a/profile").toString(), QStringLiteral("p"));
+        s.beginGroup(QStringLiteral("Deployment-a"));
+        QCOMPARE(s.childKeys(), QStringList{QStringLiteral("profile")});
+        s.endGroup();
+        QCOMPARE(s.value("Remora/deployments_initialized").toBool(), true);
+    }
+
     // The Run table is seeded from listInstances, so every other section sharing the file must
     // stay out of it: a filter regression would offer Defaults or a deployment as a profile.
     void listInstancesReturnsOnlyProfilesSorted() {
