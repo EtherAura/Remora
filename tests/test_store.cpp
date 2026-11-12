@@ -130,6 +130,30 @@ private slots:
         QCOMPARE(s.value("Defaults/fps").toInt(), 60);
     }
 
+    // loadInstance reads [Defaults] then [Instance-<name>]: an instance scalar overrides the
+    // default, a key only [Defaults] sets fills in, and the retired-vm marker is sticky — a
+    // profile that says vm in either place stays a vm profile, so preflight still refuses it when
+    // the instance layer names a live backend.
+    void loadInstanceLayersDefaultsUnderInstance() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Defaults/fps", 60);
+            s.setValue("Defaults/dns", QStringLiteral("1.1.1.1 9.9.9.9"));
+            s.setValue("Defaults/backend", QStringLiteral("vm"));
+            s.setValue("Instance-x/fps", 30);
+            s.setValue("Instance-x/backend", QStringLiteral("remote"));
+            s.sync();
+        }
+        const RemoraConfig c = loadInstance(path, QStringLiteral("x"));
+        QCOMPARE(c.display.fps, std::optional<int>(30));
+        QCOMPARE(c.network.dns,
+                 (QStringList{QStringLiteral("1.1.1.1"), QStringLiteral("9.9.9.9")}));
+        QCOMPARE(c.backend.backend, std::optional<Backend>(Backend::Remote));
+        QVERIFY(c.backend.retiredVmBackend);
+    }
+
     void saveImageSourcesPreservesUnknownKeysAndDeletes() {
         QTemporaryDir dir;
         const QString path = rc(dir);
