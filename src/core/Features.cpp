@@ -45,8 +45,9 @@ QString featureStatusToString(FeatureStatus s) {
 const QVector<Feature> &buildFeatures() {
     static const QVector<Feature> f = {
         {"gapps", "Google Apps (Play Store/Services)", "apps", Stage::Build, true,
-         {"arm_translate"}, {"microg"}, FeatureStatus::Ok,
-         "No x86_64 A16 GApps exist — arm64 GApps need the native bridge."},
+         {}, {"microg"}, FeatureStatus::Ok,
+         "The audited Google APKs support x86_64; ARM translation is separate app compatibility. "
+         "The optional direct-download installer supports Android 17 Google-free bases."},
         {"microg", "microG (de-Googled Play services)", "apps", Stage::Build, false, {},
          {"gapps"}, FeatureStatus::Caveat,
          "GmsCore + Companion (priv-app) + Aurora Store storefront — the Play-free alternative "
@@ -230,6 +231,28 @@ const QVector<Feature> &buildFeatures() {
          "list, so an image without it cannot be mirrored at all. Default-on for Android 17, "
          "where every source-built tag carries it.",
          {}, {17}},
+        // A PROFILE, NOT A PAYLOAD (bd remora-phvx). Every payload feature above is opt-in by its
+        // presence on disk somewhere along the chain — assemble-image.sh used to overlay the ARM
+        // bridge whenever its guest dir existed, WITH_NDK or not, and the device tree advertised
+        // arm64-v8a unconditionally. A redistributable image cannot be "a build that happened not
+        // to tick the boxes": this key is what tells staging, assembly and the post-build audit
+        // that the result is meant for publication, and each of them refuses a proprietary,
+        // root or spoofing payload outright instead of skipping it quietly. The conflicts are
+        // the payloads docs/IMAGE_MIRROR.md excludes from every published image; magisk_root is
+        // there for the policy (no root in the public base), not for its licence.
+        {"public_release", "Public release profile (redistributable)", "base", Stage::Build,
+         false, {"mirror_agent", "mesa_source"},
+         {"gapps", "microg", "arm_translate", "webview_pairip_fix", "widevine_l3", "magisk_root",
+          "play_spoof", "shamiko"},
+         FeatureStatus::Caveat,
+         "Builds the publishable Android 17 base: x86_64 only, with no Google apps, ARM "
+         "translation, Widevine, root or Play spoofing, and the native-bridge ABI no longer "
+         "advertised. ARM-only apps refuse to install on it. The build quarantines the previous "
+         "installed partitions so files from a private build cannot carry over, and assembly "
+         "ends with the release audit (vendor/release/audit-image.py), which fails the build "
+         "on any excluded payload. Google Play can be added afterwards with play-install, as a "
+         "private local overlay.",
+         {}, {}},
     };
     return f;
 }
@@ -408,6 +431,18 @@ const QVector<ImageTag> &imageTags() {
                    "hw_video_decode", "sensors", "system_updater", "play_spoof", "mirror_agent"},
                   "+ VAAPI HW video decode (c2.remora.vaapi.*) + host-injectable sensors HAL. "
                   "Deploys with use_remora_c2=1."});
+        // The one tag Remora publishes (bd remora-phvx/qksj): the public_release profile, which is
+        // the proven A17 profile minus every payload the public register excludes. It is what an
+        // official download imports, so a fresh install resolves to it without any source build.
+        // One name whatever the media/hw features: the profile, not the feature ladder, is what a
+        // downloader chooses, and the signed catalog pins exactly what this build carries.
+        v.append({"remora24:x86_64-public", 17, "x86_64",
+                  {"public_release", "lineage_frameworks", "container_compat_patches",
+                   "mirror_agent", "mesa_source", "hw_video_decode", "sensors", "camera_v4l2",
+                   "usb_audio", "system_updater"},
+                  "Public, redistributable A17 base: x86_64 only, no Google apps, ARM "
+                  "translation, Widevine, root or spoofing. Add Google Play locally with "
+                  "play-install."});
         // ONLY IMAGES THIS PROJECT BUILDS ARE REGISTERED. No pre-rename A17 spelling is recognised
         // (bd remora-28ix.4 step 4): an image old enough to carry one predates the agent bake, so
         // it cannot be mirrored at all and has to be rebuilt regardless. Registering it would only

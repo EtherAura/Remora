@@ -13,6 +13,23 @@ FEATDIR="$2"
 PRODUCT_MK="$TREE/device/remora/remora_x86_64.mk"
 [ -f "$PRODUCT_MK" ] || { echo "stage-features: $PRODUCT_MK not found (wrong tree?)"; exit 1; }
 
+# Public builds are an explicit profile, never inferred from a payload's absence.
+# Reject contradictory requests even if their directories happen to be empty.
+if [ "${WITH_PUBLIC_RELEASE:-false}" = true ]; then
+    for value in "${WITH_GAPPS:-false}" "${WITH_MICROG:-false}" "${WITH_NDK:-false}" \
+                 "${WITH_MAGISK:-false}" "${WITH_PLAY_SPOOF:-false}" "${WITH_SHAMIKO:-false}" \
+                 "${WITH_WIDEVINE:-false}"; do
+        [ "$value" != true ] || { echo "public release forbids proprietary/root/spoof features" >&2; exit 1; }
+    done
+    [ "${WITH_AGENT:-false}" = true ] && [ "${WITH_MESA_SOURCE:-false}" = true ] || {
+        echo "public release requires the source-built agent and Mesa" >&2; exit 1;
+    }
+fi
+{
+    printf 'REMORA_NATIVE_BRIDGE_ENABLED := %s\n' "${WITH_NDK:-false}"
+    printf 'REMORA_PUBLIC_RELEASE := %s\n' "${WITH_PUBLIC_RELEASE:-false}"
+} > "$TREE/device/remora/remora-features.mk"
+
 # A feature was asked for and its payload is not here. The public repo ships the .mk files and
 # READMEs but NOT the third-party binaries beside them (vendor/PAYLOADS.md), so this is
 # the normal state of a fresh clone — and it must FAIL, loudly, naming the fix. Staging without

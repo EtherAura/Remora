@@ -26,6 +26,8 @@
 #include "core/Resolver.h"
 #include "core/SourcePatches.h"
 #include "engine/AppTransfer.h"
+#include "engine/PlayInstall.h"
+#include "engine/PublicImages.h"
 #include "engine/Engine.h"
 #include <csignal>
 #include <unistd.h>
@@ -1916,6 +1918,24 @@ static int cmdSourceBuild(const QStringList &a, QTextStream &out) {
         QTextStream(stderr) << "# NOT APPLIED (not enabled in this profile): " << k << "\n";
     warnFeaturePatchGaps(cfg, enabled, androidVer);
     warnStalePifProfile(cfg);
+    // THE PUBLIC PROFILE'S CONFLICTS ARE REFUSED HERE, before anything is staged (bd remora-phvx).
+    // featureGates() already calls them "block", but nothing on this path read the gates, and the
+    // next line of defence (stage-features.sh) only speaks after the repo bring-up and the patch
+    // pass have run. A public build that also asks for GApps is a contradiction, not a preference.
+    if (feats.contains(QStringLiteral("public_release"))) {
+        QStringList clash;
+        for (const Gate &g : featureGates(feats))
+            if (g.key == QLatin1String("public_release") && g.severity == QLatin1String("block"))
+                clash << g.reason;
+        if (!clash.isEmpty()) {
+            QTextStream(stderr)
+                << "build --source: the public_release profile " << clash.join(QStringLiteral(", "))
+                << ".\n  A public image carries no proprietary, root or spoofing payload "
+                   "(docs/IMAGE_MIRROR.md). Remove those features from the profile, or drop "
+                   "public_release for a private build.\n";
+            return 2;
+        }
+    }
     // MESA IS THE ONLY GPU STACK THE REMORA PRODUCT HAS (bd remora-28ix.4). Dropping the
     // prebuilt GPU-driver project from the manifests removed the second source of every GL driver
     // and Vulkan ICD, so a source build of remora_x86_64 without mesa_source does not degrade to
@@ -2055,12 +2075,13 @@ static int cmdSourceBuild(const QStringList &a, QTextStream &out) {
     plan.withUsbAudio = feats.contains(QStringLiteral("usb_audio"));
     plan.withMesaSource = feats.contains(QStringLiteral("mesa_source"));
     plan.withAgent = feats.contains(QStringLiteral("mirror_agent"));
+    plan.publicRelease = feats.contains(QStringLiteral("public_release"));
     plan.archVariant = cfg.image.archVariant.value_or(QString());
     plan.requiredPatchOwners = featureRequiredPatchOwners(feats);
     plan.builtTag = sourceBuiltTag(androidVer, lineage, plan.withGapps, plan.withMicrog,
                                    feats.contains(QStringLiteral("widevine_l3")),
                                    feats.contains(QStringLiteral("hw_video_decode")),
-                                   plan.archVariant);
+                                   plan.archVariant, plan.publicRelease);
 
     const QString cmd = sourceBuildCommand(sourceBuildSteps(plan, readVendorPath));
     out << "instance=" << inst << "  tree=" << tree
@@ -2260,6 +2281,67 @@ static int cmdBuild(const QStringList &a, QTextStream &out) {
     return ok ? 0 : 1;
 }
 
+static int cmdImages(const QStringList &args) {
+    const QString action = args.value(2);
+    if (action != "list" && action != "fetch" && action != "rollback") {
+        QTextStream(stderr) << "Usage: remora images list|fetch|rollback [--tag tag] [--source URL] [--host user@host]\n";
+        return 2;
+    }
+    QStringList helper{action};
+    QString host;
+    QSet<QString> seen;
+    for (int i = 3; i < args.size(); ++i) {
+        const QString key = args[i];
+        if (seen.contains(key) || (key != "--tag" && key != "--source" && key != "--host") ||
+            i + 1 >= args.size() || args[i + 1].startsWith("--")) {
+            QTextStream(stderr) << "Invalid images argument: " << key << '\n';
+            return 2;
+        }
+        seen << key;
+        if (key == "--host") host = args[++i];
+        else helper << key << args[++i];
+    }
+    RealSpawner sp;
+    bool stderrSeen = false;
+    const auto r = runPublicImages(sp, helper, host, [&stderrSeen](const QString &stream, const QString &line) {
+        if (stream == "stderr") stderrSeen = true;
+        QTextStream(stream == "stderr" ? stderr : stdout) << line << Qt::endl;
+    });
+    if (r.rc && !stderrSeen) QTextStream(stderr) << r.stderrTail << '\n';
+    return r.rc;
+}
+
+static int cmdPlayInstall(const QStringList &args) {
+    QStringList helper;
+    QString host;
+    QSet<QString> seen;
+    const QSet<QString> values{"--base", "--tag", "--archive", "--accept-terms", "--rollback", "--host"};
+    for (int i = 2; i < args.size(); ++i) {
+        const QString key = args[i];
+        if (seen.contains(key) || (!values.contains(key) && key != "--show-terms")) {
+            QTextStream(stderr) << "Unknown/duplicate play-install argument: " << key << '\n';
+            return 2;
+        }
+        seen.insert(key);
+        if (values.contains(key)) {
+            if (++i >= args.size() || args[i].startsWith("--")) {
+                QTextStream(stderr) << "Missing value for " << key << '\n';
+                return 2;
+            }
+            if (key == "--host") host = args[i];
+            else helper << key << args[i];
+        } else helper << key;
+    }
+    RealSpawner sp;
+    bool hadStderr = false;
+    const auto result = runPlayInstall(sp, helper, host, [&hadStderr](const QString &stream, const QString &line) {
+        if (stream == "stderr") hadStderr = true;
+        QTextStream(stream == "stderr" ? stderr : stdout) << line << Qt::endl;
+    });
+    if (result.rc && !hadStderr && !result.stderrTail.isEmpty()) QTextStream(stderr) << result.stderrTail << '\n';
+    return result.rc;
+}
+
 static void printUsage(QTextStream &out) {
     out << "remora (C++/Qt6) — commands:\n"
         << "  plan      [--backend bare|remote]\n"
@@ -2298,6 +2380,11 @@ static void printUsage(QTextStream &out) {
            "                            registry tag — how GApps goes onto a clean mirrored image\n"
         << "  build     [--tag t] [--base tag]  build the recipe (docker/source hosts + dirs in remorarc)\n"
         "  build --source [<p>]    FULL AOSP source rebuild — the same chain the GUI runs\n"
+        << "  images list|fetch|rollback [--tag tag] [--source HTTPS_URL] [--host user@host]\n"
+           "                            authenticated public images; verify before import/promotion\n"
+        << "  play-install --show-terms  view the optional Google Play provider and terms\n"
+           "  play-install --base tag --accept-terms VERSION [--host user@host] [--tag remora-local:tag]\n"
+           "                            verified direct download, COPY-only local overlay; --rollback tag removes it\n"
         << "  venus-build [--dir d] [--tag v|latest]  build+install the NVIDIA Venus host renderer\n"
         << "  transfer-apps <from> <to> [--dry-run] [--packages a,b] [--with-data]\n"
            "                            move installed APKs between profiles (not app data)\n"
@@ -2392,6 +2479,8 @@ int main(int argc, char **argv) {
     if (cmd == QLatin1String("watch-boot")) return cmdWatchBoot(args);
     if (cmd == QLatin1String("push-app")) return cmdPushApp(args, out);
     if (cmd == QLatin1String("recipe")) return cmdRecipe(args, out);
+    if (cmd == QLatin1String("play-install")) return cmdPlayInstall(args);
+    if (cmd == QLatin1String("images")) return cmdImages(args);
     if (cmd == QLatin1String("build"))
         return args.contains(QStringLiteral("--source")) ? cmdSourceBuild(args, out)
                                                          : cmdBuild(args, out);

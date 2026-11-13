@@ -591,7 +591,7 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
     }
     // Guest rendering is the same dead end from the other side (bd remora-hsdz): its gralloc cannot
     // allocate the YUV buffers the VAAPI encoders take, and the image ships no software HEVC
-    // encoder. Measured on a guest-mode A17 container,: c2.remora.vaapi.hevc.encoder was
+    // encoder. Measured on a guest-mode A17 container: c2.remora.vaapi.hevc.encoder was
     // created, then three GraphicBufferAllocator failures and the mirror ended within 15 s; the
     // software c2.android.avc.encoder — which the hwc2 vector pins for h264 — streamed with none.
     if (!r.hostEncode && r.gpuMode == GpuMode::Guest && r.videoCodec == QLatin1String("h265")) {
@@ -601,6 +601,13 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
                            "using h264");
         r.videoCodec = QStringLiteral("h264");
     }
+    // The same two conditions, recorded whatever codec was asked for: h264 on such a host is just
+    // as unable to use the VAAPI AVC encoder, and nothing above says so when h264 was the choice.
+    r.vaEncodeUnusable =
+        !r.hostEncode &&
+        (r.gpuMode == GpuMode::Guest ||
+         (hostGpuBackend && !g.vaDriver.has_value() && caps.has_value() &&
+          caps->hostRenderDriver.has_value() && !driverHasVaEncode(*caps->hostRenderDriver)));
 
     return r;
 }

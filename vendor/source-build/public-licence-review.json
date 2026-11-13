@@ -1,0 +1,12 @@
+{
+  "_comment": "Licence modules whose AOSP conditions include by_exception_only or not_allowed, reviewed for the public image (bd remora-phvx). In AOSP's vocabulary those conditions mean 'needs a licence review', not 'cannot be redistributed'; every module here ships in stock AOSP and LineageOS builds. public-audit.py fails any by_exception_only/not_allowed licence that is NOT listed here, and any proprietary licence whether listed or not. Each reason is taken from the licence text in the A17 tree; add an entry only after reading that text.",
+  "adobe_hdr_gain_map_license": "external/libultrahdr/adobe-hdr-gain-map-license/NOTICE is an attribution requirement only ('This product includes Gain Map technology under license by Adobe.'); it is carried in the image NOTICE.",
+  "external_dng_sdk_license": "external/dng_sdk/LICENSE grants a licence to 'reproduce, ... publicly perform, distribute and sublicense the Software for any purpose', subject to keeping its notice, which the image NOTICE carries.",
+  "external_expat_license": "The library is MIT (external/expat/COPYING); the GFDL kind covers documentation, which the image does not ship.",
+  "external_google-fonts_source-sans-pro_license": "SIL Open Font License 1.1 (external/google-fonts/source-sans-pro/LICENSE), which permits redistribution of the fonts with the licence; carried in the image NOTICE.",
+  "external_libcups_license": "external/libcups/LICENSE: Apache-2.0 for CUPS with the listed BSD/ISC/MIT/Zlib components; its GPL/LGPL kinds make it a source obligation, so its source is published with the release.",
+  "external_libxml2_license": "The library is MIT (external/libxml2/Copyright); GFDL and CC-BY-SA cover documentation the image does not ship, and its GPL kinds make it a source obligation, so its source is published with the release.",
+  "frameworks_av_license": "frameworks/av/NOTICE: Apache-2.0, BSD, MIT and Unicode-DFS; the legacy_by_exception_only kind marks individual files for Google's internal review, and the project is the AOSP media framework itself.",
+  "frameworks_opt_telephony_license": "legacy_not_a_contribution marks Code Aurora files carrying 'Not a Contribution.' headers (e.g. PhoneSubInfoController.java), which remain under the Apache-2.0 licence stated in those headers.",
+  "system_ca-certificates_license": "system/ca-certificates is the public root certificate set (README.cacerts); AOSP declares no licence text for it and classifies it by_exception_only, and it ships in every AOSP build."
+}

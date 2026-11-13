@@ -81,7 +81,20 @@ stage_project() {
     fi
 
     echo "=== staging $_rel (Remora-owned) ==="
-    rm -rf "$_dest"
+    # THE REMOVAL MUST SUCCEED, or the copy below lands INSIDE the leftover: `cp -a src dest` into a
+    # dest that still exists makes dest/<basename src>, and the stamp then marks that malformed
+    # tree current, so every later build skips staging and builds from it. Measured: a
+    # root-owned .git (left by a staging run inside the builder container) survived the rm, the
+    # device tree landed at device/remora/device-remora, and only a patch failing on the missing
+    # files stopped the build. Refuse instead, naming the fix.
+    rm -rf "$_dest" 2>/dev/null
+    if [ -e "$_dest" ]; then
+        echo "stage-device-tree: cannot remove $_dest to re-stage it — files there are not" >&2
+        echo "  writable by $(id -un) (a staging step run as root, e.g. inside the builder?)." >&2
+        echo "  Fix their ownership, then build again:" >&2
+        echo "  docker run --rm -v $_dest:/d ubuntu:22.04 chown -R $(id -u):$(id -g) /d" >&2
+        exit 1
+    fi
     mkdir -p "$(dirname "$_dest")"
     cp -a "$_src" "$_dest"
     printf '%s\n' "$_want" > "$_stamp"

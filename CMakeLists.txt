@@ -58,6 +58,8 @@ target_link_libraries(remora_core PUBLIC Qt6::Core)
 
 # --- engine (impure: QProcess subprocess/ssh, backends, orchestrator) ---
 add_library(remora_engine STATIC
+    src/engine/PublicImages.cpp
+    src/engine/PlayInstall.cpp
     src/engine/SourceBuild.cpp
     src/engine/Spawner.cpp
     src/engine/Chain.cpp
@@ -202,6 +204,13 @@ endif()
 add_custom_target(remora_native ALL DEPENDS ${REMORA_NATIVE_OUTPUTS})
 
 # --- tests ---
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME play_install COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_play_install.py)
+add_test(NAME public_images COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_public_images.py)
+add_test(NAME public_audit COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_public_audit.py)
+add_executable(test_play_engine tests/test_play_engine.cpp)
+target_link_libraries(test_play_engine PRIVATE remora_engine Qt6::Test)
+add_test(NAME play_engine COMMAND test_play_engine)
 add_executable(test_builders tests/test_builders.cpp)
 target_link_libraries(test_builders PRIVATE remora_core Qt6::Test)
 target_compile_definitions(test_builders PRIVATE REMORA_VENDOR_DIR="${REMORA_VENDOR_PATH}" REMORA_SOURCE_VENDOR_DIR="${CMAKE_SOURCE_DIR}/vendor")

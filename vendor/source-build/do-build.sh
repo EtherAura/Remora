@@ -142,10 +142,28 @@ if [ -z "${BUILD_NUMBER:-}" ]; then
     fi
 fi
 export BUILD_NUMBER
+# A PUBLIC RELEASE STARTS FROM EMPTY PARTITIONS (bd remora-phvx). The images are packaged from the
+# installed staging dirs under $PRODUCT_OUT, and a file a previous build installed stays there
+# until something deletes it — so a public build over a tree that last built GApps, the bridge or
+# Magisk would package those files too. AOSP clears the staging dirs itself only when the product
+# or variant changes (installCleanIfNecessary compares "<product>-<variant>"), and a public build
+# lunches the SAME remora_x86_64-userdebug. `m installclean` is that clean on demand: soong_ui
+# handles it before analysis and returns, deleting images and staging dirs but no intermediates,
+# so the build that follows re-installs from what is already compiled rather than recompiling.
+if [ "${WITH_PUBLIC_RELEASE:-false}" = true ] && [ -z "$MODULE" ]; then
+    echo "=== public release: clearing the previous build's installed partitions ==="
+    m installclean || { echo "public release: installclean failed — refusing to package a rootfs that may hold a private build's files" >&2; exit 1; }
+fi
 echo "=== BUILD START $(date '+%F %T') ($cfg) BUILD_NUMBER=$BUILD_NUMBER ==="
+# A public release also builds the product SBOM (out/soong/sbom/<product>/sbom.spdx.json) and with it
+# a fresh compliance-metadata db + modules.csv, which the release audit maps installed files to
+# licence conditions from. Named alongside droid, the default goal, because naming any goal
+# replaces the default rather than adding to it.
+GOALS="$MODULE"
+[ "${WITH_PUBLIC_RELEASE:-false}" = true ] && [ -z "$MODULE" ] && GOALS="droid sbom"
 # BUILD_NICE: CPU priority (0 = normal .. 19 = maximum politeness), default 15.
 # BUILD_JOBS: parallel jobs for m/ninja; unset = all cores.
-nice -n "${BUILD_NICE:-15}" m $MODULE ${BUILD_JOBS:+-j"${BUILD_JOBS}"}
+nice -n "${BUILD_NICE:-15}" m $GOALS ${BUILD_JOBS:+-j"${BUILD_JOBS}"}
 rc=$?
 echo "=== BUILD EXIT $rc at $(date '+%F %T') ==="
 exit $rc

@@ -33,6 +33,7 @@ class QGridLayout;
 class QFormLayout;
 class QTreeWidgetItem;
 class QTimer;
+class QProcess;
 
 namespace remora {
 
@@ -62,6 +63,7 @@ private slots:
     void onRenameArchive();
     void onDeleteArchive();
     void onPromoteImage();
+    void runPlayOverlay(bool rollback);
     void onActiveImageChanged();
     void onPushImage();
     void onFetchSourceImage();
@@ -114,6 +116,8 @@ private:
     Backend currentBackend() const;
     void applyToConfig();
     void setRunning(bool running);
+    void runImageCommand(const QStringList &args, const QString &title, bool rollback, bool play);
+    QProcess *imageProcess_ = nullptr;
 
     QLineEdit *dataDirEdit_ = nullptr;
     // The other two thirds of the per-profile identity (bd remora-4u4.8). Pinned at creation

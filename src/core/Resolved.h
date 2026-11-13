@@ -116,6 +116,12 @@ struct ResolvedConfig {
     // entrypoint (bd remora-e5x.4). Carries the reason so `check`/`plan` can state the trade rather
     // than let it look like the user asked for h264. Absent = the requested codec was kept.
     std::optional<QString> videoCodecFallback;
+    // No VA-API encoder can run for this deploy: guest rendering, or a host GPU whose driver has no
+    // encode entrypoint (the two dead ends above). Builders then pins the software AVC encoder on
+    // an image the registry does not know — a Play overlay, a derived build — because such an
+    // image may carry c2-va, whose VAAPI AVC encoder outranks the software one and cannot start
+    // here (bd remora-wzaa.3). Never set when host encode drives the mirror.
+    bool vaEncodeUnusable = false;
     // Encode the mirror on the host GPU rather than inside Android (bd remora-e5x.6). When set,
     // `up` starts remora-frame-encoder alongside the container; frameSocket is where the patched
     // Venus renderer publishes composed frames, videoSocket is where the encoded h265 is served.

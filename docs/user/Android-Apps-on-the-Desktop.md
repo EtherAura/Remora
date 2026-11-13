@@ -134,9 +134,14 @@ Changing `shared_folders` recreates the container on the next connect.
 
 ## Google sign-in and Play certification
 
-An uncertified device blocks Google sign-in, which also shows up as the Play Store refusing to log
-in. `remora certify [<profile>]` prints the device's Play Protect state and the `android_id` to
-register with Google, and tells you the next step. Registration happens on Google's site under
+An uncertified device may be refused Google sign-in. `remora certify` reports state; it does not
+certify a device. Android ID registration and identity spoofing do not grant a Google licence or
+establish permission to run GApps on Remora. The selected optional add-on design uses a separate
+third-party download and local installation with explicit user acceptance of its terms and
+limitations; see the [feasibility evaluation](../WINDOWS_AND_IMAGE_FEASIBILITY.md).
+
+For an existing locally configured instance, `remora certify [<profile>]` prints its Play Protect
+state and the `android_id` to register with Google, and tells you the next step. Registration happens on Google's site under
 your own login, so Remora cannot do it for you. After registering, run
 `remora certify --recheck`.
 

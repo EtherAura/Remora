@@ -1,0 +1,138 @@
+{
+  "android_sdk": 37,
+  "apks": [
+    {
+      "certificate_lineage_sha256": [
+        "f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83",
+        "7ce83c1b71f3d572fed04c8d40c5cb10ff75e6d87d9df6fbd53f0468c2905053"
+      ],
+      "package": "com.google.android.gsf",
+      "sha256": "61e2a4863d51a9281c8212118a13a940edc519e40120a28fc097319d649b865d"
+    },
+    {
+      "certificate_lineage_sha256": [
+        "f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83"
+      ],
+      "package": "com.google.android.syncadapters.contacts",
+      "sha256": "ac9a40ac64a82629e5e5bc6063efe064c679bb549999dd06d1c517e4620b662d"
+    },
+    {
+      "certificate_lineage_sha256": [
+        "f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83",
+        "7ce83c1b71f3d572fed04c8d40c5cb10ff75e6d87d9df6fbd53f0468c2905053"
+      ],
+      "package": "com.google.android.syncadapters.calendar",
+      "sha256": "767e4c9a2c6a57cf92e0518947481cd99da78321d81b83fa07813c0665d29c74"
+    },
+    {
+      "certificate_lineage_sha256": [
+        "f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83",
+        "7ce83c1b71f3d572fed04c8d40c5cb10ff75e6d87d9df6fbd53f0468c2905053",
+        "5f2391277b1dbd489000467e4c2fa6af802430080457dce2f618992e9dfb5402"
+      ],
+      "package": "com.google.android.gms",
+      "sha256": "5e95132d959131a9aac64319394f0521d4ff8d006a4aa196ac77be476c8ed2a9"
+    },
+    {
+      "certificate_lineage_sha256": [
+        "f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83"
+      ],
+      "package": "com.android.vending",
+      "sha256": "e20ddb09df1a7ebc9a10be977ee89657096c80758688be0d4ae7c0da96885693"
+    }
+  ],
+  "architecture": "amd64",
+  "archive_bytes": 149104693,
+  "archive_sha256": "975501feb5f0a68cf023847291155eaa33e76fe6db8dae3c588e12af61d4bba0",
+  "files": {
+    "system/product/app/GoogleCalendarSyncAdapter/GoogleCalendarSyncAdapter.apk": {
+      "bytes": 3000164,
+      "sha256": "767e4c9a2c6a57cf92e0518947481cd99da78321d81b83fa07813c0665d29c74"
+    },
+    "system/product/app/GoogleContactsSyncAdapter/GoogleContactsSyncAdapter.apk": {
+      "bytes": 2816688,
+      "sha256": "ac9a40ac64a82629e5e5bc6063efe064c679bb549999dd06d1c517e4620b662d"
+    },
+    "system/product/etc/default-permissions/default-permissions.xml": {
+      "bytes": 8557,
+      "sha256": "e24f1253ddba10d22e1938943bcd1e40361782d05f0767d4af8994fbfd6a6909"
+    },
+    "system/product/etc/permissions/com.android.vending.xml": {
+      "bytes": 12199,
+      "sha256": "ca1844ae98a8f123c31a3cfc30b005d0a06f92cf2600f53dd41f670d569090cd"
+    },
+    "system/product/etc/permissions/com.google.android.dialer.support.xml": {
+      "bytes": 564,
+      "sha256": "42c0ad27676d0b7d21150d6586672b2567ac272f5f24657110914b090631bdb7"
+    },
+    "system/product/etc/permissions/com.google.android.gms.xml": {
+      "bytes": 37056,
+      "sha256": "5c62b3c09c2ec317ec021d011b0d4cb13b694a873808d30d67086275f269803c"
+    },
+    "system/product/etc/permissions/com.google.android.gsf.xml": {
+      "bytes": 10778,
+      "sha256": "f90db4cba663a8d67525d8904e312ffc93c292c36272cf51b53f9a3cf6c419a7"
+    },
+    "system/product/etc/permissions/privapp-permissions-google-p.xml": {
+      "bytes": 72076,
+      "sha256": "5312adec4c45639f2b01d5bca946a9af14d594a5c6acd30c68b4d642d275f85d"
+    },
+    "system/product/etc/permissions/privapp-permissions-google-pearl.xml": {
+      "bytes": 1091,
+      "sha256": "5bbdc4590b0cb1217bff23c69dbe1aae96ce3ada4dc885e3f528fe01f989d4ca"
+    },
+    "system/product/etc/permissions/privapp-permissions-google-se.xml": {
+      "bytes": 17297,
+      "sha256": "6cf2ef71c52a4749a81e614ea65f5675d0fe487ddf1300060fe2e600a98c4ef5"
+    },
+    "system/product/etc/permissions/privapp-permissions-google.xml": {
+      "bytes": 3511,
+      "sha256": "641eb5aa55a4bc9cf0d8eb6d5faaafe464d85d53be445797655dcd0606992ea7"
+    },
+    "system/product/etc/permissions/split-permissions-google.xml": {
+      "bytes": 919,
+      "sha256": "73a160b4ec5ee9fd7ebb3ad8947d37c699302732584a90cc6a03956005cada12"
+    },
+    "system/product/etc/permissions/velvet_app-privapp-permissions.xml": {
+      "bytes": 308,
+      "sha256": "c3e2cfd8572dec9edc898ce6918a2fd60920300c52aa7aec6c052ab7a63558f9"
+    },
+    "system/product/etc/sysconfig/google.xml": {
+      "bytes": 10272,
+      "sha256": "e0bcd2ad32388987a7fe868d42d64d376cb107ef362aa261af94677402b82a3c"
+    },
+    "system/product/framework/com.google.android.dialer.support.jar": {
+      "bytes": 942,
+      "sha256": "58e0e8dc8d81a5d8e299492894b1da9ab3c785a031e3aed3782b3f3c4c63a0fd"
+    },
+    "system/product/priv-app/GmsCore/GmsCore.apk": {
+      "bytes": 238614536,
+      "sha256": "5e95132d959131a9aac64319394f0521d4ff8d006a4aa196ac77be476c8ed2a9"
+    },
+    "system/product/priv-app/Phonesky/Phonesky.apk": {
+      "bytes": 110829682,
+      "sha256": "e20ddb09df1a7ebc9a10be977ee89657096c80758688be0d4ae7c0da96885693"
+    },
+    "system/system_ext/etc/permissions/com.google.android.gsf.xml": {
+      "bytes": 10778,
+      "sha256": "f90db4cba663a8d67525d8904e312ffc93c292c36272cf51b53f9a3cf6c419a7"
+    },
+    "system/system_ext/etc/permissions/privapp-permissions-google-se.xml": {
+      "bytes": 17297,
+      "sha256": "6cf2ef71c52a4749a81e614ea65f5675d0fe487ddf1300060fe2e600a98c4ef5"
+    },
+    "system/system_ext/priv-app/GoogleServicesFramework/GoogleServicesFramework.apk": {
+      "bytes": 1124332,
+      "sha256": "61e2a4863d51a9281c8212118a13a940edc519e40120a28fc097319d649b865d"
+    }
+  },
+  "google_terms_url": "https://policies.google.com/terms",
+  "provider": "LiteGapps",
+  "release": "Core x86_64 Android 17 v5.0 (2026-10-01)",
+  "schema": 1,
+  "source_url": "https://downloads.sourceforge.net/project/litegapps/litegapps/x86_64/37/core/2026-10-01/LiteGapps-core-x86_64-17.0-20261001-official.zip",
+  "tar_entry": "files/files.tar.xz",
+  "tar_prefix": "x86_64/37/",
+  "terms_url": "https://github.com/litegapps/litegapps/blob/e4837bd35784b64c081b396f2a4c4cdac01e5c89/installer/LICENSE",
+  "terms_version": "litegapps-a17-20261001-v1"
+}

@@ -7,12 +7,46 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Added
+
+- Optional Google Play installation from the Image library or `remora play-install`. Downloads
+  a pinned LiteGapps Android 17 x86_64 package directly on the Docker host after explicit terms
+  acceptance, verifies archive/APK hashes against the signature audit, and creates a separate
+  COPY-only `remora-local:` image. Rejects incompatible or Google/microG-containing bases, retains
+  receipts and the original image/data, and can remove unused overlays. Public base-image
+  redistribution remains subject to the separate image audit.
+- A `public_release` build profile that produces the redistributable Android 17 image,
+  `remora24:x86_64-public`: x86_64 only, with no Google apps, ARM translation, Widevine, root or Play
+  spoofing. The profile refuses those features. The build clears the previous build's installed
+  partitions and generates an SBOM, and assembly ends with a release audit
+  (`vendor/source-build/public-audit.py`). The audit walks the built image's files, ELF
+  architectures, APK packages, ABI properties and licences, and fails the build on any excluded
+  payload.
+- `remora images list|fetch|rollback` and the Image library's **Official downloads** source.
+  Official images come from a signed catalog: the signature, validity window, archive SHA-256,
+  Docker identity and tags are all checked before `docker load`, and the previously active image
+  is kept for rollback. `vendor/release/package-release.py` packages an audited image with its
+  SBOM, notices, audit, provenance and corresponding source, and signs the catalog.
+
 ### Fixed
 
 - The host frame encoder now runs on the GPU that rendered the frames. It used to open the first
   render node, so on a boot that enumerated the Intel GPU before the NVIDIA one, NVENC failed with
   "opening the encoder: Bad address" and the mirror reported "exited immediately after 5 attempts".
   A mirror or encoder that dies is now reported with its own last log line, not another process's.
+- Removed the incorrect mandatory ARM-translation dependency from `gapps`, after verifying the
+  x86_64 APKs and a fresh bridge-free Android 17 boot with the Play Store's unauthenticated screen.
+- Images built without `arm_translate` no longer carry the ARM bridge, and no longer advertise
+  `arm64-v8a`. Assembly used to overlay the bridge whenever its payload was present, and the device
+  config advertised the ABI regardless, so ARM-only apps installed and then crashed.
+- Re-staging `device/remora` over a copy it could not fully remove (for example, root-owned files
+  left by a staging run inside the builder) now refuses and names the fix. Previously it nested the
+  new copy inside the old one and marked the broken result as current.
+- The source-built Mesa now carries licence metadata, so the image's NOTICE and SBOM include Mesa,
+  LLVM, expat and the Rust runtime that are linked into it.
+- The mirror on a Google Play overlay (or any image Remora does not have registered) no longer
+  dies on the VAAPI H.264 encoder where none can run, in guest rendering or on a GPU without VA-API
+  encode: it now uses the software encoder there, as the registered `-hwc2` images already did.
 
 ## [2026.10.0] - 2026-10-02
 

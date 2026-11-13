@@ -43,6 +43,16 @@ LOCAL_PROPRIETARY_MODULE := true
 LOCAL_MODULE_SYMLINKS := $(4)
 LOCAL_CHECK_ELF_FILES := false
 LOCAL_PREBUILT_STRIP_COMPS := false
+# LICENCE METADATA, or the image's NOTICE and SBOM say nothing about Mesa (bd remora-phvx): a
+# prebuilt with none is silently absent from both, which for a published image means shipping
+# Mesa, LLVM, expat and the Rust runtime without their notices. The kinds are external/mesa3d's
+# own (external_mesa3d_license — the payload is built from that project at its pin, so it is that
+# licence that applies), and NOTICE beside this file carries every text that ends up linked in.
+LOCAL_LICENSE_KINDS := SPDX-license-identifier-MIT SPDX-license-identifier-Apache-2.0 \
+    SPDX-license-identifier-GPL-1.0-or-later SPDX-license-identifier-GPL-2.0-only
+LOCAL_LICENSE_CONDITIONS := notice restricted
+LOCAL_LICENSE_PACKAGE_NAME := Mesa
+LOCAL_NOTICE_FILE := $$(LOCAL_PATH)/NOTICE
 include $$(BUILD_PREBUILT)
 endef
 

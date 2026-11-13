@@ -105,7 +105,7 @@ The log of the last source build is `/tmp/remora-build.log`. More in
 
 | what you see | cause | fix |
 |---|---|---|
-| the Play Store refuses to sign in | the device is not Play Protect certified | `remora certify`, then register the `android_id` it prints and run `remora certify --recheck` |
+| the Play Store refuses to sign in | the device may not be certified, or have another account/service issue | `remora certify` reports state. Registration does not grant certification or a Google licence; see [Google sign-in](Android-Apps-on-the-Desktop.md#google-sign-in-and-play-certification) |
 | an APK install hangs for minutes | Play Protect's verifier for adb installs | install with `remora install`, which switches it off first |
 | the microphone records silence | the image has no USB audio HAL | build with the `usb_audio` feature and its patch |
 | Android sees no camera | no provider in the image, or no camera node in the container | build with `camera_v4l2`. A camera plugged in later needs the container recreated |

@@ -5127,6 +5127,52 @@ private slots:
                      .contains(QLatin1String("WITH_AGENT")));
     }
 
+    // bd remora-phvx — the public_release profile is a refusal contract held by THREE steps
+    // (staging, the in-container build, assembly), and the dead-toggle history above is why each
+    // is pinned separately: a flag that reaches two of them builds an image that looks public and
+    // is not. A contradictory plan must never reach any of them.
+    void publicReleaseReachesEveryGateAndRefusesPayloads() {
+        auto noVendor = [](const QString &) { return QList<QPair<QString, QByteArray>>(); };
+        SourceBuildPlan p;
+        p.tree = QStringLiteral("/src/tree");
+        p.sourceBuildDir = QStringLiteral("/root/source-build");
+        p.builtTag = QStringLiteral("remora24:x86_64-public-src");
+        p.androidVersion = 17;
+        p.withAgent = p.withMesaSource = true;
+        p.publicRelease = true;
+        const QStringList steps = sourceBuildSteps(p, noVendor);
+        auto step = [](const QStringList &all, const char *needle) {
+            for (const QString &s : all)
+                if (s.contains(QLatin1String(needle))) return s;
+            return QString();
+        };
+        QVERIFY(step(steps, "stage-features.sh").contains(QLatin1String("WITH_PUBLIC_RELEASE=true")));
+        // do-build.sh runs installclean on it — the stale-partition half of the contract
+        QVERIFY(step(steps, "--cgroup-parent=remorabuild.slice")
+                    .contains(QLatin1String("-e WITH_PUBLIC_RELEASE=true")));
+        const QString assemble = step(steps, "assemble-image.sh");
+        QVERIFY(assemble.contains(QLatin1String("WITH_PUBLIC_RELEASE=true")));
+        QVERIFY(assemble.contains(QLatin1String("WITH_NDK=false")));
+        // a private plan carries none of it
+        p.publicRelease = false;
+        for (const QString &s : sourceBuildSteps(p, noVendor))
+            QVERIFY2(!s.contains(QLatin1String("WITH_PUBLIC_RELEASE")), qPrintable(s));
+        // contradictory: the whole chain is one refusing step, naming what it refused
+        p.publicRelease = true;
+        p.withGapps = p.withNdk = true;
+        const QStringList bad = sourceBuildSteps(p, noVendor);
+        QCOMPARE(bad.size(), 1);
+        QVERIFY(bad.first().contains(QLatin1String("gapps, arm_translate")));
+        QVERIFY(bad.first().contains(QLatin1String("false")));
+        QCOMPARE(publicReleaseConflicts(p), QStringList({"gapps", "arm_translate"}));
+        // one public name, whatever the media features; the CPU variant still marks a tuned build
+        QCOMPARE(sourceBuiltTag(17, true, false, false, false, true, {}, true),
+                 QStringLiteral("remora24:x86_64-public-src"));
+        QCOMPARE(sourceBuiltTag(17, true, false, false, false, true, QStringLiteral("broadwell"),
+                                true),
+                 QStringLiteral("remora24:x86_64-public-broadwell-src"));
+    }
+
     // bd remora-ykhz R3 — the dead-toggle shape a fourth time, pinned before it can happen rather
     // than after. mesa_source is the feature whose silent failure would be worst of the four: it
     // replaces every GL and Vulkan driver in the image, so a flag that never reaches

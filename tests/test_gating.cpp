@@ -18,7 +18,7 @@ class TestGating : public QObject {
     Q_OBJECT
 private slots:
     void normalizePullsDeps() {
-        QCOMPARE(normalize({"gapps"}), QSet<QString>({"gapps", "arm_translate"}));
+        QCOMPARE(normalize({"gapps"}), QSet<QString>({"gapps"}));
         QCOMPARE(normalize({"shamiko"}), QSet<QString>({"shamiko", "magisk_root", "play_spoof"}));
     }
 
@@ -444,7 +444,8 @@ private slots:
     }
 
     void gatesUnmetRequires() {
-        QVERIFY(hasGate(featureGates({"gapps"}), "gapps", "warn"));  // needs arm_translate
+        QVERIFY(hasGate(featureGates({"shamiko"}), "shamiko", "warn"));  // needs root + play_spoof
+        QVERIFY(!hasGate(featureGates({"gapps"}), "gapps", "warn"));  // native x86_64 APKs
     }
 
     // --- vendored PIF profile staleness (bd remora-4ei.47) ---
@@ -578,6 +579,9 @@ private slots:
     // and GApps/Widevine ride under an explicit accepted-exposure decision. Shamiko is different
     // in kind: it is closed-source freeware, NO licence grants redistribution at all, so an image
     // carrying it cannot be mirrored under any framing, disclaimer or policy change.
+    // (The accepted-exposure decision for GApps/Widevine was SUPERSEDED: only the
+    // public_release tag is publishable now, pinned by the test above. This one stays as the
+    // floor for every remora24 tag, publishable or not.)
     //
     // It is also the easiest one to add by accident, because it looks like part of the hiding
     // stack that play_spoof already pulls in. It is not: shamiko REQUIRES play_spoof, but
@@ -602,6 +606,30 @@ private slots:
                  qPrintable(QStringLiteral("only %1 remora24:* tags found — the tag family was "
                                            "renamed and this audit stopped checking anything")
                                 .arg(checked)));
+    }
+
+    // bd remora-phvx/qksj — the public register is now ONE tag (docs/IMAGE_MIRROR.md, the
+    // policy), and what makes it publishable is that it carries nothing the register
+    // excludes. Pinned from both sides: the profile blocks every excluded payload, and the tag a
+    // download imports resolves without any source build.
+    void publicReleaseIsTheOnlyPublishableTagAndCarriesNoExcludedPayload() {
+        const QStringList excluded{"gapps",      "microg",      "arm_translate",
+                                   "webview_pairip_fix", "widevine_l3", "magisk_root",
+                                   "play_spoof", "shamiko"};
+        for (const QString &k : excluded)
+            QVERIFY2(hasGate(featureGates({"public_release", k}), "public_release", "block"),
+                     qPrintable(k));
+        QVERIFY(normalize({"public_release"}).contains("mirror_agent"));
+        QVERIFY(normalize({"public_release"}).contains("mesa_source"));
+        const ImageTag *pub = findImageTag(QStringLiteral("remora24:x86_64-public"));
+        QVERIFY(pub);
+        for (const QString &k : excluded) QVERIFY2(!pub->provides.contains(k), qPrintable(k));
+        for (const Gate &g : featureGates(pub->provides))
+            QVERIFY2(g.severity != QLatin1String("block"), qPrintable(g.key + ": " + g.reason));
+        QCOMPARE(selectImage(pub->provides, 17).tag, QStringLiteral("remora24:x86_64-public"));
+        QVERIFY(!buildRecipe(pub->provides, 17).needsSourceBuild);
+        // the private ladder is unchanged: its default still resolves to a private tag
+        QVERIFY(!selectImage(defaultBuildSet(17), 17).tag.contains(QLatin1String("public")));
     }
 
     void a17ResolvesToItsSourceBuiltImage() {

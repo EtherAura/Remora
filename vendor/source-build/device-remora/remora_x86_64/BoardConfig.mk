@@ -5,6 +5,11 @@ TARGET_CPU_ABI := x86_64
 TARGET_ARCH := x86_64
 TARGET_ARCH_VARIANT := x86_64
 
+# Written by stage-features.sh from the build's feature selection: REMORA_NATIVE_BRIDGE_ENABLED
+# (arm_translate) and REMORA_PUBLIC_RELEASE (bd remora-phvx). Optional so a manual build of an
+# unstaged tree still parses; unset reads as "bridge on", the behaviour before the switch existed.
+-include device/remora/remora-features.mk
+
 # 64-BIT ONLY (bd remora-ykhz). The second arch is gone, and with it every 32-bit copy of every
 # native library in the image — that is half of R3's remaining prebuilt payload, ~45 files reducing
 # to ~22, plus the 32-bit zygote and webview_zygote as running processes.
@@ -33,10 +38,15 @@ include build/make/target/board/BoardConfigGsiCommon.mk
 # native call. Without the advertisement it is refused at install as incompatible, which
 # is the honest answer (bd remora-rve). 32-bit x86 keeps running — the image is genuinely
 # multilib — and arm64-v8a is untouched.
+# The 64-bit advertisement follows the same rule: only when the build carries a translator. A
+# build without arm_translate advertised arm64-v8a anyway, so ARM-only apps installed and died at
+# their first native call, the 32-bit failure again (bd remora-phvx).
+ifneq ($(REMORA_NATIVE_BRIDGE_ENABLED),false)
 TARGET_NATIVE_BRIDGE_ARCH := arm64
 TARGET_NATIVE_BRIDGE_ARCH_VARIANT := armv8-a
 TARGET_NATIVE_BRIDGE_CPU_VARIANT := generic
 TARGET_NATIVE_BRIDGE_ABI := arm64-v8a
+endif
 
 TARGET_USERIMAGES_SPARSE_EXT_DISABLED := true
 

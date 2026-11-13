@@ -100,15 +100,15 @@ Building images from source has its own host settings, listed in the README.
 note; **MANDATORY** is always on (the checkbox is forced). The registry also knows **PARKED**
 (selecting it blocks the build) and **DEFERRED** (warns); no current feature uses either.
 
-`requires` is closed automatically when an image is selected (asking for `gapps` pulls in
-`arm_translate`); `conflicts` blocks the combination.
+`requires` is closed automatically when an image is selected (asking for `shamiko` pulls in
+`magisk_root` and `play_spoof`); `conflicts` blocks the combination.
 
 | key | label | section | default | requires | conflicts | status |
 |---|---|---|---|---|---|---|
 | `lineage_frameworks` | LineageOS frameworks | Base system | on | | | OK |
 | `container_compat_patches` | Container-compat patch set | Base system | on | | | MANDATORY |
 | `mirror_agent` | In-image mirror agent | Base system | on for Android 17 | | | OK |
-| `gapps` | Google Apps (Play Store/Services) | Apps and Google services | on | `arm_translate` | `microg` | OK |
+| `gapps` | Google Apps (Play Store/Services) | Apps and Google services | on | | `microg` | OK |
 | `microg` | microG (de-Googled Play services) | Apps and Google services | off | | `gapps` | CAVEAT |
 | `arm_translate` | ARM app translation (native bridge) | Compatibility | on | | | CAVEAT |
 | `system_updater` | In-Android system updater (host-applied) | Compatibility | off | patch `settings_hide_stock_updater` | | OK |
@@ -136,8 +136,11 @@ build starts.
   half of the mirror (capture, input, audio, app list), so an image without it cannot be mirrored.
   Default-on for Android 17. On 16 it is off by default because no registered Android 16 tag carries
   it; enable it for a 16 source build. See [MIRROR_AGENT.md](MIRROR_AGENT.md).
-- **`gapps`** — Play Store and Play services. The GApps payload is arm64, hence the native-bridge
-  requirement. One of the two features that can be layered onto an existing image (§5).
+- **`gapps`** — Play Store and Play services. One of the two overlayable features (§5).
+  [APK inspection](GOOGLE_PLAY_SOURCE_TERMS.md) found x86_64 native code; a fresh bridge-free
+  Android 17 instance opened the unauthenticated Store. ARM translation is a separate app feature.
+  The Image library and `remora play-install` provide the pinned optional installer for a
+  Google-free A17 base, without source compilation or changes to existing instance data.
 - **`microg`** — GmsCore, its Companion and the Aurora Store instead of GApps. Push, check-in,
   location and Aurora installs work; signature spoofing is not wired, so apps that verify the Play
   signature through the GMS client library still refuse. Source build only.

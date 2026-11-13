@@ -16,6 +16,11 @@ different image. The full catalogue, including source patches and runtime settin
 The registry also knows **PARKED** (selecting it blocks the build) and **DEFERRED** (warns). No
 current feature uses either.
 
+These statuses describe technical behaviour, not distribution rights or Google certification.
+Public images must satisfy the [distribution policy](../IMAGE_MIRROR.md). A local GApps overlay
+does not establish permission to obtain or use Google's apps on Remora. The Google APKs support
+x86_64; ARM-only third-party apps need a separately obtained compatible translator.
+
 A profile lists its features in `features=`, and the workspace shows them on the **Image** page.
 Leave the key unset and the defaults for the Android version apply.
 
@@ -26,7 +31,7 @@ Leave the key unset and the defaults for the Android version apply.
 | `lineage_frameworks` | LineageOS frameworks | on | | | OK |
 | `container_compat_patches` | Container-compat patch set | on | | | MANDATORY |
 | `mirror_agent` | In-image mirror agent | on for Android 17 | | | OK |
-| `gapps` | Google Apps (Play Store and Play services) | on | `arm_translate` | `microg` | OK |
+| `gapps` | Google Apps (Play Store and Play services) | on | | `microg` | OK |
 | `microg` | microG, de-Googled Play services | off | | `gapps` | CAVEAT |
 | `arm_translate` | ARM app translation (native bridge) | on | | | CAVEAT |
 | `system_updater` | In-Android system updater, applied by the host | off | patch `settings_hide_stock_updater` | | OK |
@@ -40,6 +45,7 @@ Leave the key unset and the defaults for the Android version apply.
 | `mesa_source` | Mesa from source | off | | | OK |
 | `hw_video_decode` | Hardware video decode (VA Codec2) | off | | | CAVEAT |
 | `sensors` | Sensors (accelerometer and gyroscope, host-injectable) | off | patches `sensors_hal`, `sensors_product` | | OK |
+| `public_release` | Public release profile (redistributable) | off | `mirror_agent`, `mesa_source` | `gapps`, `microg`, `arm_translate`, `webview_pairip_fix`, `widevine_l3`, `magisk_root`, `play_spoof`, `shamiko` | CAVEAT |
 
 A "requires patch" entry is a source patch the feature needs in a from-scratch build. The Image
 page enables it along with the feature. A hand-edited profile that lacks it gets a warning when the
@@ -53,11 +59,28 @@ build starts, because the build would succeed and ship the feature doing nothing
 - **`mirror_agent`** bakes the Remora agent into the image as a boot service. It is the device half
   of the mirror, so an image without it cannot be mirrored. It is off by default on Android 16:
   enable it for a 16 source build. See [Mirroring](Mirroring.md).
+- **`public_release`** builds the image Remora publishes, `remora24:x86_64-public`. It is x86_64
+  only, and carries no Google apps, ARM translation, Widevine, root or Play spoofing. It refuses
+  every one of those features, and the image stops advertising the ARM ABI. The build clears the
+  previous build's installed partitions first, and ends with a release audit that fails the build
+  on any excluded payload. ARM-only apps refuse to install on it. Most people download this image
+  with `remora images fetch` rather than build it; see [CLI Reference](CLI-Reference.md#official-images).
 
 ## Apps and Google services
 
-- **`gapps`** adds the Play Store and Play services. The payload is arm64, which is why it requires
-  the native bridge. It is one of the two features that can be layered onto an existing image.
+The **Built images** card has **Install Google Play…** and **Remove Play overlay…** actions.
+Select a Docker image row, then accept the displayed provider/terms notice. Installation supports
+a Google-free Android 17 x86_64 base and creates a separate `remora-local:` image; select it for
+a fresh instance. Download and verification happen directly on that image's Docker host. The
+installer rejects an existing Google/microG installation and never runs the third-party scripts.
+The remove action refuses any image used by a running or stopped container and retains the base
+and Android data. These actions do not change existing profiles or log into Google. Details and
+headless/remote usage are in [CLI Reference](CLI-Reference.md#build).
+
+- **`gapps`** adds the Play Store and Play services and supports layering onto an existing image.
+  The [APK audit](../GOOGLE_PLAY_SOURCE_TERMS.md) found x86_64 native code, and an isolated
+  Android 17 boot opened the Play Store without an ARM bridge. The feature no longer requires
+  `arm_translate`. This establishes startup, not Google certification, account access or app compatibility.
 - **`microg`** installs GmsCore, its Companion and the Aurora Store instead. Push, check-in,
   location and Aurora installs work. Signature spoofing is not wired, so apps that verify the Play
   signature through the GMS client library still refuse. Source build only.

@@ -32,6 +32,26 @@ if [ -z "$PROD" ]; then
 fi
 [ -f "$PROD/system.img" ] || { echo "assemble: no system.img under $PROD"; exit 1; }
 
+# PUBLIC RELEASE (bd remora-phvx): every overlay below that carries a third-party payload is a
+# refusal here, never a skip. The tag must say -public so the name and the content cannot
+# disagree, and ARM translation is pinned OFF whatever the caller left unset — the presence rule in
+# ndk-overlay.sh would otherwise stage the bridge from a vendored payload. The image only keeps its
+# tag if public-audit.py passes it at the end.
+PUBLIC=0
+if [ "${WITH_PUBLIC_RELEASE:-false}" = true ]; then
+  case "$TAG" in
+  *-public|*-public-*) ;;
+  *) echo "assemble: a public release must carry a -public tag, not $TAG" >&2; exit 1 ;;
+  esac
+  for _v in WITH_NDK WITH_PLAY_SPOOF WITH_SHAMIKO; do
+    eval "_val=\${$_v:-}"
+    [ "$_val" = true ] && { echo "assemble: public release refuses $_v=true (docs/IMAGE_MIRROR.md)" >&2; exit 1; }
+  done
+  WITH_NDK=false
+  PUBLIC=1
+  echo "=== public release: ARM translation, Widevine and the spoof stack are refused ==="
+fi
+
 # THE CPU TUNING THIS BUILD ACTUALLY USED, stamped onto the image so a deploy can refuse a host that
 # cannot execute it (bd remora-bm7.13). A TARGET_ARCH_VARIANT image does not run SLOWER on a CPU
 # without the ISA — it SIGILLs, and the log names libart or a vendor HAL rather than the processor.
@@ -102,8 +122,9 @@ case "$TAG" in
   }
   WV_ON=1 ;;
 esac
-# The three overlays below are DELIBERATELY always-on when vendored (no tag marker, no toggle):
-# they are container-viability plumbing every image wants, not à-la-carte features (bd remora-0go).
+# The device-compat and hw-features overlays below are DELIBERATELY always-on when vendored (no
+# tag marker, no toggle): they are container-viability plumbing every image wants, not à-la-carte
+# features (bd remora-0go). ARM translation is not that: it follows the WITH_NDK selection.
 #
 # ARM translation payload. TWO halves, both overlaid into /system:
 #  (1) guest payload (guest/system): bin/arm64 app_process64+linker64, lib64/arm64 guest system
@@ -117,7 +138,11 @@ esac
 # Overlaying half (2) here makes ARM translation self-sufficient regardless of the build path, the
 # same way widevine overlays /vendor. Harvested from the proven golden image.
 NDKROOT="$(cd "$(dirname "$0")" && pwd)/features/ndk_translation"
-NDKGUEST="$NDKROOT/guest"
+# Gated on the WITH_NDK selection, not on the payload directory alone (see ndk-overlay.sh).
+# shellcheck source=vendor/source-build/ndk-overlay.sh
+. "$(cd "$(dirname "$0")" && pwd)/ndk-overlay.sh"
+NDK_ON=0
+ndk_overlay_on "$NDKROOT" && NDK_ON=1
 # Device-compat overlay (GPS feature decl etc.) — merged into /product.
 DEVCOMPAT="$(cd "$(dirname "$0")" && pwd)/features/device_compat"
 # Extra hardware-feature declarations (GPS &co): Play gates app installs on device features.
@@ -202,7 +227,7 @@ DF=$(mktemp)
     [ -d "$PROD/$p" ] && echo "COPY $p /$p"
   done
   [ "$WV_ON" = 1 ] && echo "COPY wv/vendor /vendor"
-  [ -d "$NDKGUEST/system" ] && echo "COPY ndkguest/system /system"
+  [ "$NDK_ON" = 1 ] && echo "COPY ndkguest/system /system"
   [ -d "$DEVCOMPAT/product" ] && echo "COPY devcompat/product /product"
   [ -d "$HWFEAT/system" ] && echo "COPY hwfeat/system /system"
   # play_spoof: bake the dormant ReZygisk+PIF stack under /system/etc/remora-spoof
@@ -216,6 +241,9 @@ DF=$(mktemp)
   # one `docker image inspect --format` answers it without creating a container or extracting a
   # layer — and it survives `docker save | docker load`, which is the delivery path this defends.
   [ -n "$ARCH_VARIANT" ] && echo "LABEL remora.arch_variant=\"$ARCH_VARIANT\""
+  # In the config for the same reason as the arch stamp: a downloader or a deploy can tell a public
+  # build from a private one with one inspect, and the catalog verifier requires it.
+  [ "$PUBLIC" = 1 ] && echo 'LABEL remora.public_release="true"'
   # THE HARDWARE IDENTITY IS SET HERE AND NOWHERE ELSE (bd remora-28ix.4 R4). Not in
   # device/remora's remora.prop, where it looks like it should live: init's PropertyInit calls
   # ExportKernelBootProps() — which copies ro.boot.hardware to ro.hardware — BEFORE
@@ -255,17 +283,8 @@ if [ "$WV_ON" = 1 ]; then
   cp -a "$WVDIR/vendor" "$DFDIR/wv/vendor"
   parts_extra="wv"
 fi
-if [ -d "$NDKGUEST/system" ]; then
-  mkdir -p "$DFDIR/ndkguest"
-  cp -a "$NDKGUEST/system" "$DFDIR/ndkguest/system"
-  # Merge the host native-bridge libs (libnb.so etc.) into the overlay's /system/lib64. Kept at the
-  # feature root (single source of truth: the WITH_NDK build path installs the SAME files) rather
-  # than duplicated under guest/. On A16 this re-places identical bytes (harmless); on A17 it
-  # supplies libnb.so the skipped WITH_NDK path would have (bd remora-rve).
-  if ls "$NDKROOT"/lib64/*.so >/dev/null 2>&1; then
-    mkdir -p "$DFDIR/ndkguest/system/lib64"
-    cp "$NDKROOT"/lib64/*.so "$DFDIR/ndkguest/system/lib64/"
-  fi
+if [ "$NDK_ON" = 1 ]; then
+  stage_ndk_overlay "$NDKROOT" "$DFDIR"
   # A17 builds its OWN arm64 guest payload (guest linker + app_process + guest libs
   # from frameworks/libs/native_bridge_support, pulled in by the device product
   # config). Where the tree produced one, do NOT overlay the harvested Android-16
@@ -446,6 +465,14 @@ EXCLUDES="$EXCLUDES --exclude=vendor/lib/*.so --exclude=vendor/lib/*.so.[0-9]*"
 # above; a source build should also carry PRODUCT_PACKAGES_REMOVE += su, and this covers the
 # assemble-only and incremental paths where out/ still holds an already-compiled copy.
 EXCLUDES="$EXCLUDES --exclude=xbin/su --exclude=system/xbin/su"
+# PUBLIC ONLY: Aperture's lens launcher (bd remora-phvx). LineageOS-authored and Apache-2.0, but it
+# exists to pose as Google Camera — its package name is com.google.android.apps.googlecamera.fishfood
+# — so that Google Lens accepts its launch intent, and it does nothing without Google's own app. A
+# public image carries no Google package and no impersonation, and it arrives as a `required` of
+# Aperture, which PRODUCT_PACKAGES_REMOVE cannot reach; Play overlays added later are private.
+if [ "$PUBLIC" = 1 ]; then
+  EXCLUDES="$EXCLUDES --exclude=system/product/app/ApertureLensLauncher --exclude=product/app/ApertureLensLauncher"
+fi
 docker run --rm -v "$PROD":/prod:ro -v "$DFDIR":/ctx:ro ubuntu:22.04 \
     tar -c --mode='go+rX' $EXCLUDES -C /ctx Dockerfile $parts_extra -C /prod $parts \
     | docker build -t "$TAG" -
@@ -475,5 +502,24 @@ if [ -n "$ARCH_VARIANT" ]; then
     exit 1
   }
   echo "=== verified: $TAG declares arch variant $ARCH_VARIANT ==="
+fi
+# THE RELEASE AUDIT IS THE LAST GATE (bd remora-phvx), run on the image as built rather than on
+# the inputs: it walks the exported rootfs, so a file that reached the image by any route — a stale
+# out/ partition, an overlay, an inherit nobody enumerated — is seen. On failure the tag is removed,
+# so nothing downstream can promote, save or publish an image that did not pass; the report is
+# kept for diagnosis. Reports live outside the tree because out/ is root-owned and this runs as
+# the docker user.
+if [ "$PUBLIC" = 1 ]; then
+  AUDIT_DIR="${REMORA_AUDIT_DIR:-$HOME/.local/share/remora/release-audits}"
+  mkdir -p "$AUDIT_DIR"
+  _p=$(basename "$PROD")
+  python3 "$(cd "$(dirname "$0")" && pwd)/public-audit.py" --image "$TAG" --product "$PROD" \
+      --compliance "$TREE/out/soong/compliance-metadata/$_p" \
+      --sbom "$TREE/out/soong/sbom/$_p/sbom.spdx.json" \
+      --aapt2 "$TREE/prebuilts/sdk/tools/linux/bin/aapt2" --out-dir "$AUDIT_DIR" || {
+    docker image rm "$TAG" >/dev/null 2>&1
+    echo "assemble: $TAG FAILED the public release audit and its tag was removed (reports: $AUDIT_DIR)" >&2
+    exit 1
+  }
 fi
 echo "=== assembled $TAG ==="

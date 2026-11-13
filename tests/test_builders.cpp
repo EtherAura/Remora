@@ -1620,6 +1620,36 @@ private slots:
         for (const QString &t : a3) QVERIFY(!t.startsWith("--video-encoder"));
     }
 
+    // bd remora-phvx — the public image carries the c2-va codecs (hw_video_decode) under a name with
+    // no "-hwc2" in it, so the pins key on the registry, not the spelling: plain h264 must still
+    // avoid the vendor AVC entry that cannot start, and h265 must still reach the VAAPI encoder.
+    void mirrorEncoderPinsFollowTheRegistryNotTheTagSpelling() {
+        ResolvedConfig c = macvlanCfg();
+        c.imageTag = "remora24:x86_64-public";
+        const auto [e, a] = buildMirrorArgv(c, "192.168.0.77:5555");
+        QVERIFY(a.contains("--video-encoder=c2.android.avc.encoder"));
+        c.videoCodec = "h265";
+        const auto [e2, a2] = buildMirrorArgv(c, "192.168.0.77:5555");
+        QVERIFY(a2.contains("--video-encoder=c2.remora.vaapi.hevc.encoder"));
+        // a registered tag WITHOUT hw_video_decode stays untouched
+        c.imageTag = "remora24:x86_64";
+        c.videoCodec.clear();
+        const auto [e3, a3] = buildMirrorArgv(c, "192.168.0.77:5555");
+        for (const QString &t : a3) QVERIFY(!t.startsWith("--video-encoder"));
+        // bd remora-wzaa.3 — an UNREGISTERED image (the Play overlay of the public base) where no
+        // VAAPI encoder can run pins the software AVC encoder; with VA encode available it doesn't.
+        c.imageTag = "remora-local:play-public-test";
+        const auto [e4, a4] = buildMirrorArgv(c, "192.168.0.77:5555");
+        for (const QString &t : a4) QVERIFY(!t.startsWith("--video-encoder"));
+        c.vaEncodeUnusable = true;
+        const auto [e5, a5] = buildMirrorArgv(c, "192.168.0.77:5555");
+        QVERIFY(a5.contains("--video-encoder=c2.android.avc.encoder"));
+        // …and a registered non-c2va tag stays untouched even then
+        c.imageTag = "remora24:x86_64";
+        const auto [e6, a6] = buildMirrorArgv(c, "192.168.0.77:5555");
+        for (const QString &t : a6) QVERIFY(!t.startsWith("--video-encoder"));
+    }
+
     void mirrorVideoCodecOptIn() {
         // default (h264 / empty) emits no --video-codec token…
         const auto [e0, a0] = buildMirrorArgv(bareCfg(), "localhost:5555");

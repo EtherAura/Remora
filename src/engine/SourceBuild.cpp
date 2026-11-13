@@ -229,12 +229,17 @@ QStringList knownArchVariants() {
 }
 
 QString sourceBuiltTag(int androidVersion, bool lineage, bool withGapps, bool withMicrog,
-                       bool withWidevine, bool withHwc2, const QString &archVariant) {
+                       bool withWidevine, bool withHwc2, const QString &archVariant,
+                       bool publicRelease) {
     QString variant;
-    if (withGapps) variant += QStringLiteral("-gapps");
-    if (withMicrog) variant += QStringLiteral("-microg");
-    if (withWidevine) variant += QStringLiteral("-wv");
-    if (withHwc2) variant += QStringLiteral("-hwc2");
+    if (publicRelease) {
+        variant = QStringLiteral("-public");
+    } else {
+        if (withGapps) variant += QStringLiteral("-gapps");
+        if (withMicrog) variant += QStringLiteral("-microg");
+        if (withWidevine) variant += QStringLiteral("-wv");
+        if (withHwc2) variant += QStringLiteral("-hwc2");
+    }
     // CPU tuning last, right before -src: "…-hwc2-broadwell-src" promotes to "…-hwc2-broadwell",
     // a parallel family to the portable "…-hwc2" rather than a replacement for it.
     if (!archVariant.isEmpty()) variant += QLatin1Char('-') + archVariant;
@@ -258,6 +263,18 @@ QString sourceBuildCommand(const QStringList &steps) {
     return wrapped.join(QStringLiteral(" && "));
 }
 
+QStringList publicReleaseConflicts(const SourceBuildPlan &plan) {
+    if (!plan.publicRelease) return {};
+    QStringList out;
+    if (plan.withGapps) out << QStringLiteral("gapps");
+    if (plan.withMicrog) out << QStringLiteral("microg");
+    if (plan.withNdk) out << QStringLiteral("arm_translate");
+    if (plan.withMagisk) out << QStringLiteral("magisk_root");
+    if (plan.withPlaySpoof) out << QStringLiteral("play_spoof");
+    if (plan.withShamiko) out << QStringLiteral("shamiko");
+    return out;
+}
+
 QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &readVendorPath) {
     // Bound to the names the chain was written against, so the step text below is byte-identical to
     // what MainWindow emitted before it moved here. A rename would be a silent behaviour change in
@@ -275,6 +292,14 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
                withShamiko = plan.withShamiko, withCamera = plan.withCamera,
                withUsbAudio = plan.withUsbAudio,
                withMesaSource = plan.withMesaSource;
+
+    // Refused before anything is touched — the whole chain is one failing step. Widevine has no
+    // plan flag (assemble reads it from the tag), which is why the tag is public-only below.
+    if (const QStringList bad = publicReleaseConflicts(plan); !bad.isEmpty())
+        return {QStringLiteral("{ echo \"public release: refusing %1 — the public register "
+                               "excludes them from every published image (docs/IMAGE_MIRROR.md)\" "
+                               ">&2; false; }")
+                    .arg(bad.join(QStringLiteral(", ")))};
 
     const QMap<QString, QString> marks = patchProjectMarks(tree);
     const QString repoFp =
@@ -593,6 +618,9 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
         // testing the wrong set is how the first validation build shipped agent-less with every
         // gate green (nothing asserted WITH_AGENT reached the environment; now a test does).
         if (plan.withAgent) fenv += QStringLiteral("WITH_AGENT=true ");
+        // Makes stage-features.sh refuse every excluded payload rather than skip it, and records
+        // the profile in device/remora/remora-features.mk for the board and product config.
+        if (plan.publicRelease) fenv += QStringLiteral("WITH_PUBLIC_RELEASE=true ");
         // UNCONDITIONAL, even with no prebuilt feature ticked (bd remora-4ei.42). This script
         // does two things that have nothing to do with the à-la-carte features: it stages
         // hardware/remora/c2-va, which is in no repo manifest and therefore exists ONLY
@@ -654,6 +682,9 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
     if (withGapps) featureEnv += QStringLiteral(" -e WITH_GAPPS=true");
     if (withNdk) featureEnv += QStringLiteral(" -e WITH_NDK=true");
     if (withMagisk) featureEnv += QStringLiteral(" -e WITH_MAGISK=true");
+    // do-build.sh clears the previous build's installed partitions before `m` on this (see its
+    // note: same product name, so AOSP's own config-change installclean never fires).
+    if (plan.publicRelease) featureEnv += QStringLiteral(" -e WITH_PUBLIC_RELEASE=true");
     // CONTAINER BOUNDS — bd remora-4ei.27. On this docker run had no --memory and
     // no --cgroup-parent, and it hung the entire host for three hours.
     //
@@ -910,9 +941,16 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
     // dirname $0) always come from the complete repo — the tree's features/ copy is stale. The
     // tree is passed as $1 (it only supplies out/target/product for the partitions).
     QString asmEnv;
+    // BOTH WAYS, unlike the flags below: assemble keeps overlaying ARM translation whenever its
+    // payload is vendored unless it is told otherwise, so leaving WITH_NDK out when arm_translate
+    // is off would bake the bridge anyway.
+    asmEnv += withNdk ? QStringLiteral("WITH_NDK=true ") : QStringLiteral("WITH_NDK=false ");
     if (withPlaySpoof) asmEnv += QStringLiteral("WITH_PLAY_SPOOF=true ");
         // Only meaningful alongside play_spoof — assemble stages it inside that block.
         if (withShamiko) asmEnv += QStringLiteral("WITH_SHAMIKO=true ");
+    // Assembly refuses excluded overlays outright on this and finishes with the release audit,
+    // so the image this step tags is either audited clean or not produced at all.
+    if (plan.publicRelease) asmEnv += QStringLiteral("WITH_PUBLIC_RELEASE=true ");
     // Name the product dir EXPLICITLY: with both device trees building through the transition
     // (bd remora-28ix.4), assemble's glob would find two product dirs and refuse — and the one
     // this build just wrote is exactly the lunch's product.

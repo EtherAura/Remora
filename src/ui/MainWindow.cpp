@@ -1,5 +1,7 @@
 #include "ui/MainWindow.h"
 #include "engine/AppTransfer.h"
+#include "engine/PlayInstall.h"
+#include "engine/PublicImages.h"
 #include <algorithm>
 #ifdef Q_OS_UNIX
 #include <csignal>   // ::killpg
@@ -455,6 +457,7 @@ struct SourceImage {
     QString file;
     qint64 size = 0;   // 0 = unknown (a mirror index without the bytes column)
     qint64 mtime = 0;  // 0 = unknown (mirrors don't say; directories do)
+    QString error;
 };
 
 // List what a source's location offers. http(s):// → GET <location>/index.txt, the contract bd
@@ -467,6 +470,35 @@ QList<SourceImage> scanSourceLocation(const ImageSource &s, const QString &setti
     QList<SourceImage> out;
     const QString loc = s.location;
     if (loc.isEmpty()) return out;
+    // THE OFFICIAL SOURCE IS A SIGNED CATALOG (bd remora-qksj): index.json + index.json.sig,
+    // authenticated against Remora's release key by vendor/release/catalog.py before anything is
+    // listed, let alone loaded. A row that fails verification is shown as the failure, never as an
+    // image. Only that one location: a user-added mirror cannot sign with Remora's key, so it keeps
+    // the index.txt contract below that it was added under.
+    if (loc == kPublicImageSource) {
+        RealSpawner sp;
+        const auto verified = runPublicImages(sp, {"list", "--source", loc});
+        if (verified.rc) {
+            SourceImage error;
+            error.source = s.name;
+            error.location = loc;
+            error.error = verified.stderrTail.isEmpty() ? QStringLiteral("Catalog verification failed")
+                                                        : verified.stderrTail;
+            out << error;
+            return out;
+        }
+        for (const auto &entry : publicImagesResult(verified.out).value("images").toArray()) {
+            const auto image = entry.toObject();
+            SourceImage im;
+            im.source = s.name;
+            im.location = s.location;
+            im.tag = image.value("tag").toString();
+            im.file = image.value("archive").toObject().value("file").toString();
+            im.size = image.value("archive").toObject().value("bytes").toInteger();
+            out << im;
+        }
+        return out;
+    }
     if (loc.startsWith(QLatin1String("http://")) || loc.startsWith(QLatin1String("https://"))) {
         // -f: a 404 must read as "no index", never as an index of one HTML error page.
         const QString idx = runShell(
@@ -1249,6 +1281,7 @@ void MainWindow::buildUi() {
         bl->addStretch(1);
         bl->addWidget(transferBtn);
         v->addWidget(btns);
+
         // Denylisted packages the table has no row for (see rebuildIntegrationsList).
         denylistOrphanLabel_ = hintLabel(QString());
         denylistOrphanLabel_->hide();
@@ -2470,6 +2503,22 @@ void MainWindow::buildUi() {
         bl->addStretch(1);
         v->addWidget(btns);
 
+        auto *playRow = new QHBoxLayout();
+        auto *playInstall = new QPushButton(QStringLiteral("Install Google Play…"));
+        auto *playRemove = new QPushButton(QStringLiteral("Remove Play overlay…"));
+        playInstall->setToolTip(QStringLiteral(
+            "Download a pinned third-party package on this image's Docker host and create a "
+            "separate local image. Requires a Google-free Android 17 x86_64 base."));
+        playRemove->setToolTip(QStringLiteral(
+            "Remove an unused Play overlay created by Remora. Keeps the original base and Android data."));
+        sourceButtons_ << playInstall << playRemove;
+        connect(playInstall, &QPushButton::clicked, this, [this] { runPlayOverlay(false); });
+        connect(playRemove, &QPushButton::clicked, this, [this] { runPlayOverlay(true); });
+        playRow->addWidget(playInstall);
+        playRow->addWidget(playRemove);
+        playRow->addStretch(1);
+        v->addLayout(playRow);
+
         // A SECOND row for the reclaim-disk controls, not the button bar above: six archive actions
         // plus three size readouts and their two Clean buttons overran the page width and scrolled
         // sideways. They are also a different kind of thing — the bar acts on the selected archive,
@@ -2532,8 +2581,25 @@ void MainWindow::buildUi() {
                                       QStringLiteral("Remove source"));
         connect(addBtn, &QPushButton::clicked, this, &MainWindow::onAddSource);
         connect(rmBtn, &QPushButton::clicked, this, &MainWindow::onRemoveSource);
+        auto *official = new QPushButton(QStringLiteral("Official downloads"));
+        connect(official, &QPushButton::clicked, this, [this] {
+            auto it = std::find_if(sources_.begin(), sources_.end(), [](const ImageSource &s) {
+                return s.location == kPublicImageSource;
+            });
+            if (it == sources_.end()) {
+                ImageSource s;
+                s.name = QStringLiteral("Remora public images");
+                s.location = kPublicImageSource;
+                s.enabled = true;
+                sources_ << s;
+            } else it->enabled = true;
+            saveImageSources(path_, sources_);
+            rebuildSourcesTree();
+            onRefreshArchives();
+        });
         bl->addWidget(addBtn);
         bl->addWidget(rmBtn);
+        bl->addWidget(official);
         bl->addStretch(1);
         v->addWidget(btns);
         col->addWidget(box);
@@ -3798,6 +3864,13 @@ void MainWindow::setRunning(bool running) {
 // A source pull runs in a detached worker; without this it reparents to init and keeps fetching
 // after the window is gone (repo sync is resumable, so stopping it loses nothing but time).
 void MainWindow::closeEvent(QCloseEvent *event) {
+    if (imageProcess_) {
+        QMessageBox::information(this, QStringLiteral("Image operation running"),
+            QStringLiteral("Wait for the image operation to finish before closing Remora. "
+                           "Its progress is available in the log pane."));
+        event->ignore();
+        return;
+    }
     const qint64 pid = pullChildPid_.load();
     if (pid > 0) {
         if (QMessageBox::question(
@@ -3997,7 +4070,8 @@ void MainWindow::onAddSource() {
         this, QStringLiteral("Add image source"),
         QStringLiteral("Location — https:// mirror, ssh user@host:/dir, or a local directory\n"
                        "(blank = a plain tag list; a mirror serves <url>/index.txt, one\n"
-                       "'<tag> [<file> [<bytes>]]' per line):"),
+                       "'<tag> [<file> [<bytes>]]' per line). Remora's own signed images are\n"
+                       "added with Official downloads:"),
         QLineEdit::Normal, QString(), &ok);
     if (!ok) return;
     const QString tags = QInputDialog::getText(
@@ -4215,6 +4289,13 @@ void MainWindow::onRefreshArchives() {
                     // docker tag) stay empty here.
                     for (const SourceImage &si : offered) {
                         auto *item = new QTreeWidgetItem(archivesTree_);
+                        if (!si.error.isEmpty()) {
+                            item->setText(0, QStringLiteral("(source · %1)").arg(si.source));
+                            item->setText(1, si.error);
+                            item->setToolTip(1, si.error);
+                            item->setFlags(Qt::NoItemFlags);
+                            continue;
+                        }
                         item->setText(0, QStringLiteral("(source · %1)").arg(si.source));
                         item->setText(1, si.tag.isEmpty()
                                              ? si.file + QStringLiteral("  (unreadable manifest)")
@@ -4452,6 +4533,98 @@ void MainWindow::onActiveImageChanged() {
             : QStringLiteral("pinned %1 — press Connect to deploy it").arg(tag),
         8000);
     recompute();  // relabels entry 0 and re-runs the codec gate against the new image
+}
+
+void MainWindow::runPlayOverlay(bool rollback) {
+    if (running_) return;
+    auto *item = archivesTree_ ? archivesTree_->currentItem() : nullptr;
+    const QString path = item ? item->data(0, Qt::UserRole).toString() : QString();
+    const QString tag = item ? item->data(0, Qt::UserRole + 1).toString() : QString();
+    const QString host = item ? item->data(0, Qt::UserRole + 2).toString() : QString();
+    if (!item || !path.isEmpty() || tag.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Google Play"),
+            QStringLiteral("Select an image already loaded in Docker, rather than an archive or download source."));
+        return;
+    }
+    if (rollback && !tag.startsWith("remora-local:")) {
+        QMessageBox::information(this, QStringLiteral("Remove Play overlay"),
+            QStringLiteral("Select a remora-local: Play image created by this installer."));
+        return;
+    }
+    const QString title = rollback ? QStringLiteral("Remove Play overlay") : QStringLiteral("Install Google Play");
+    QMessageBox consent(QMessageBox::Information, title,
+        rollback ? QStringLiteral("Remove %1 on %2? The installer refuses images used by a running "
+                                  "or stopped container. The original base and Android data are retained.").arg(
+                                      tag, host.isEmpty() ? QStringLiteral("this computer") : host)
+                 : playNotice() + QStringLiteral("\n\nBase: %1\nDocker host: %2").arg(
+                                      tag, host.isEmpty() ? QStringLiteral("this computer") : host),
+        QMessageBox::NoButton, this);
+    auto *accept = consent.addButton(rollback ? QStringLiteral("Remove overlay")
+                                             : QStringLiteral("Accept terms and install"), QMessageBox::AcceptRole);
+    consent.addButton(QMessageBox::Cancel);
+    consent.setDefaultButton(QMessageBox::Cancel);
+    consent.exec();
+    if (consent.clickedButton() != accept) return;
+    QStringList args{"play-install"};
+    if (rollback) args << "--rollback" << tag;
+    else args << "--base" << tag << "--accept-terms" << playTermsVersion();
+    if (!host.isEmpty()) args << "--host" << host;
+    runImageCommand(args, title, rollback, true);
+}
+
+void MainWindow::runImageCommand(const QStringList &args, const QString &title, bool rollback, bool play) {
+    auto *process = new QProcess(this);
+    imageProcess_ = process;
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    auto output = std::make_shared<QByteArray>();
+    connect(process, &QProcess::readyReadStandardOutput, this, [this, process, output] {
+        const auto data = process->readAllStandardOutput();
+        output->append(data);
+        // The final receipt is parsed below; log build progress without dumping its file manifest.
+        for (const auto &line : data.split('\n'))
+            if (!line.startsWith("REMORA_PLAY_RESULT=") && !line.startsWith("REMORA_IMAGES_RESULT="))
+                appendLog(QString::fromUtf8(line));
+    });
+    connect(process, &QProcess::errorOccurred, this, [this, process, title](QProcess::ProcessError e) {
+        if (e != QProcess::FailedToStart) return;
+        imageProcess_ = nullptr;
+        setRunning(false);
+        showFailure(title, "Could not start image helper", process->errorString());
+        process->deleteLater();
+    });
+    connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+        [this, process, output, rollback, play, title](int code, QProcess::ExitStatus status) {
+            output->append(process->readAllStandardOutput());
+            imageProcess_ = nullptr;
+            setRunning(false);
+            if (code || status != QProcess::NormalExit) {
+                showFailure(title, "Image operation failed", QString::fromUtf8(output->right(6000)));
+            } else {
+                QJsonObject result;
+                for (const auto &line : output->split('\n'))
+                    if (line.startsWith(play ? "REMORA_PLAY_RESULT=" : "REMORA_IMAGES_RESULT="))
+                        result = QJsonDocument::fromJson(line.mid(play ? 19 : 21)).object();
+                if (result.isEmpty()) {
+                    showFailure(title, "Image helper returned no receipt", QString::fromUtf8(output->right(6000)));
+                    process->deleteLater();
+                    return;
+                }
+                onRefreshArchives();
+                QMessageBox::information(this, title, !play
+                    ? QStringLiteral("Authenticated and imported %1. Select it as the active image. "
+                                     "Android data is unchanged.\n\nReceipt on the Docker host: %2")
+                          .arg(result.value("tag").toString(), result.value("receipt").toString())
+                    : rollback
+                    ? QStringLiteral("Unused overlay removed. The original base image and Android data are retained.")
+                    : QStringLiteral("Created %1. Select it for a fresh instance to use Google Play. "
+                                     "Existing instances and data are unchanged.\n\nReceipt on the Docker host: %2")
+                          .arg(result.value("tag").toString(), result.value("receipt").toString()));
+            }
+            process->deleteLater();
+        });
+    setRunning(true);
+    appendLog(title);
+    process->start(QCoreApplication::applicationFilePath(), args);
 }
 
 void MainWindow::onPromoteImage() {
@@ -5349,8 +5522,9 @@ void MainWindow::onBuildFromSource() {
     // sourceBuiltTag() in engine/SourceBuild.cpp.
     const int builtVer = cfg_.image.androidVersion.value_or(16);
     const QString archVariant = cfg_.image.archVariant.value_or(QString());
+    const bool publicRelease = features_.contains(QStringLiteral("public_release"));
     const QString builtTag = sourceBuiltTag(builtVer, lineageKind, withGapps, withMicrog, withWv,
-                                            withHwc2, archVariant);
+                                            withHwc2, archVariant, publicRelease);
     // Prompt to name this build so it's identifiable in the (often cluttered) image list. Blank =
     // no custom name; Cancel aborts the build. The name is display-only, prepended to the tag.
     {
@@ -5439,7 +5613,8 @@ void MainWindow::onBuildFromSource() {
                                     withNdk, withMagisk, withUpdater, withPlaySpoof, withShamiko,
                                     withCamera,
                                     withWv,
-                                    withHwc2, builtTag, archVariant, requiredOwners] {
+                                    withHwc2, builtTag, archVariant, requiredOwners,
+                                    publicRelease] {
         cleanupStaleWorktrees(host, tree);  // heal killed-sync wreckage before repo touches it
         const QString patchRoot = stageSourceAssets(host);
         const QString sbuild = patchRoot.left(patchRoot.lastIndexOf(QLatin1Char('/'))) +
@@ -5489,6 +5664,7 @@ void MainWindow::onBuildFromSource() {
         plan.withUsbAudio = features_.contains(QStringLiteral("usb_audio"));
         plan.withMesaSource = features_.contains(QStringLiteral("mesa_source"));
         plan.withAgent = features_.contains(QStringLiteral("mirror_agent"));
+        plan.publicRelease = publicRelease;
         plan.archVariant = archVariant;
         plan.requiredPatchOwners = requiredOwners;
         // The chain itself lives in engine/SourceBuild so `remora build --source` runs the SAME
@@ -7800,12 +7976,27 @@ void MainWindow::onFetchSourceImage() {
     const QString tag = item->data(0, Qt::UserRole + 3).toString();
     const QString file = item->data(0, Qt::UserRole + 4).toString();
     const QString sourceName = item->data(0, Qt::UserRole + 6).toString();
-    if (item->text(2).startsWith(QLatin1String("local"))) {
+    const bool http = loc.startsWith(QLatin1String("http://"))
+                      || loc.startsWith(QLatin1String("https://"));
+    const bool official = loc == kPublicImageSource;
+    if (item->text(2).startsWith(QLatin1String("local")) && !official) {
         statusBar()->showMessage(QStringLiteral("%1 is already local").arg(tag), 4000);
         return;
     }
-    const bool http = loc.startsWith(QLatin1String("http://"))
-                      || loc.startsWith(QLatin1String("https://"));
+    // The official source never goes through curl | docker load: the helper verifies the signed
+    // catalog and the archive's SHA-256 and identity BEFORE Docker sees a byte (catalog.py).
+    if (official) {
+        if (QMessageBox::question(this, QStringLiteral("Fetch authenticated image"),
+                QStringLiteral("Verify and fetch %1 from %2? The signed catalog and archive hash "
+                               "are checked before Docker import. A previous active image is retained "
+                               "for rollback; Android data is unchanged.").arg(tag, sourceName)) != QMessageBox::Yes)
+            return;
+        QStringList args{"images", "fetch", "--source", loc, "--tag", tag};
+        const auto host = buildHostStr();
+        if (!host.isEmpty()) args << "--host" << host;
+        runImageCommand(args, QStringLiteral("Fetch authenticated image"), false, false);
+        return;
+    }
     // A mirror index row may name only a tag — then there is no archive URL to fetch. The
     // contract (bd remora-2ylt) makes the file column optional, so this is the mirror's way of
     // saying "exists, not downloadable"; surface that instead of guessing a filename.

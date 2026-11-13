@@ -3,6 +3,7 @@
 // hostEncodeFrameSocketDirFor: the composer's bind mount and the encoder's own socket path must
 // come from ONE rule, or the container mounts a directory the encoder never binds in.
 #include "core/Resolver.h"
+#include "core/Features.h"
 
 #include <QRegularExpression>
 
@@ -46,6 +47,17 @@ QString sharedFolderBind(const QString &entry) {
 QString stagedShareBind(const QString &entry) {
     QString b = sharedFolderBind(entry);
     return b.replace(QLatin1String(":/data/media/0/"), QLatin1String(":/remora/share/"));
+}
+
+// The image carries the c2-va codecs. Their tag used to say so by spelling alone ("-hwc2"), and
+// the encoder pins below keyed on that substring; the public base carries hw_video_decode under a
+// name with no such marker (bd remora-phvx), so a pure substring test would leave plain h264 on
+// the vendor AVC entry that cannot start. The registry is the authority; the spelling stays as
+// the fallback for an unregistered or arch-suffixed -hwc2 tag.
+static bool imageCarriesC2Va(const QString &imageTag) {
+    if (imageTag.contains(QLatin1String("hwc2"))) return true;
+    const ImageTag *t = findImageTag(imageTag);
+    return t && t->provides.contains(QStringLiteral("hw_video_decode"));
 }
 
 static QString companionAppRaw(const QString &entry) {
@@ -524,13 +536,19 @@ std::pair<QMap<QString, QString>, QStringList> buildMirrorArgv(const ResolvedCon
         // Registration is not function, so it was also run: the component was created live with no
         // errors ("Created component [c2.remora.vaapi.hevc.encoder]"). Images carry BOTH spellings
         // while the dual registration lasts, so this is reversible by editing one string.
-        if (cfg.videoCodec == QLatin1String("h265") && cfg.imageTag.contains(QLatin1String("hwc2")))
+        if (cfg.videoCodec == QLatin1String("h265") && imageCarriesC2Va(cfg.imageTag))
             a << QStringLiteral("--video-encoder=c2.remora.vaapi.hevc.encoder");
     }
     // The -hwc2 image ranks the vendor VAAPI AVC encoder first for h264, but that vendor AVC
     // entry cannot start (only the HEVC path is implemented) — pin plain h264 to the software
     // encoder so the default codec keeps working on the accelerated image.
-    else if (cfg.imageTag.contains(QLatin1String("hwc2")))
+    // An image the registry does not know gets the same pin wherever no VAAPI encoder can run: it
+    // may carry c2-va (a Play overlay of the public base does, under a remora-local: name), and
+    // c2.android.avc.encoder is in every AOSP image, so the pin costs nothing where it is not
+    // needed. Measured: unpinned, the overlay's mirror died five times on the VAAPI AVC encoder
+    // in guest mode (bd remora-wzaa.3).
+    else if (imageCarriesC2Va(cfg.imageTag) ||
+             (cfg.vaEncodeUnusable && !findImageTag(cfg.imageTag)))
         a << QStringLiteral("--video-encoder=c2.android.avc.encoder");
     // Encoder frame cap: forwarded to the c2-va component (vendor tuning), which drops at its
     // input queue (remora-rjh). Emitted only when resolved — unset at ≤60 fps.

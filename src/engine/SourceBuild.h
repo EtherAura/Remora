@@ -59,6 +59,13 @@ struct SourceBuildPlan {
     // exists for x86_64 AND 32-bit x86 in this soong). Empty = leave the tree's generic x86-64
     // baseline untouched, byte-identical chain to before the option existed (bd remora-bm7.11).
     QString archVariant;
+    // The public_release profile (bd remora-phvx): the build is meant for publication. It is a
+    // refusal contract, not a payload: staging, assembly and the post-build audit each fail on a
+    // proprietary, root or spoofing payload instead of skipping it, the installed partitions of
+    // the previous build are cleared before `m` so a private build's files cannot carry over into
+    // this rootfs, and the tag becomes the public one. The payload flags above must all be off —
+    // publicReleaseConflicts() names any that are not, and sourceBuildSteps then refuses.
+    bool publicRelease = false;
     // Patch key → requesting feature(s), from featureRequiredPatchOwners(). A conflict on one of
     // these fails the patch pass loudly instead of shipping the feature missing (bd remora-82c.1).
     QMap<QString, QString> requiredPatchOwners;
@@ -76,6 +83,12 @@ struct SourceBuildPlan {
 // Pure apart from `readVendor`, which is injected for the same reason SourcePatches injects it: the
 // fingerprints must read the LOCAL vendor tree even when the build host is remote.
 QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &readVendor);
+
+// The payload flags a public_release plan has set that the public register excludes (gapps,
+// microg, arm_translate, magisk_root, play_spoof, shamiko — by feature key). Empty for a plan that
+// is not public, or that is clean. Callers refuse before staging anything; the chain refuses too,
+// so no caller can produce a contaminated "public" build by forgetting to ask.
+QStringList publicReleaseConflicts(const SourceBuildPlan &plan);
 
 // Join steps into ONE shell command. Always use this rather than steps.join(" && "): each step is
 // brace-grouped so that a bare top-level ';' ANYWHERE inside a step cannot split the AND-list.
@@ -137,8 +150,13 @@ QString stageSourceAssets(Spawner &sp, const QString &host);
 // is part of the tag for the same reason the version is: a broadwell build is a DIFFERENT image
 // with different host requirements, and it must coexist with (and be publishable beside) the
 // portable baseline rather than silently replace it.
+//
+// A public_release build is one name, "<family>:x86_64-public-src": the profile is what a
+// downloader chooses, so the feature ladder's suffixes do not apply (they are conflicts or folded
+// into the profile). The arch variant still marks a CPU-tuned build, as everywhere else.
 QString sourceBuiltTag(int androidVersion, bool lineage, bool withGapps, bool withMicrog,
-                       bool withWidevine, bool withHwc2, const QString &archVariant = {});
+                       bool withWidevine, bool withHwc2, const QString &archVariant = {},
+                       bool publicRelease = false);
 
 // The curated TARGET_ARCH_VARIANT choices the GUI offers (raw soong names; the combo stays
 // editable for anything newer). Every entry exists for both x86_64 and 32-bit x86 in the A17
