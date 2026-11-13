@@ -91,6 +91,13 @@ is refused (`INSTALL_FAILED_NO_MATCHING_ABIS`). Data survives the container bein
 removing it keeps the base. Served from a local HTTPS mirror, the release passes `images list`,
 `fetch` and `rollback`; a one-byte change to the catalog is refused.
 
+**Published** as `remora24:x86_64-public-20261113.035540`, catalog sequence 1. An
+anonymous `fetch` from GitHub imports it on both Docker image stores: the classic one, which names
+the image by its config digest, and the containerd store a fresh Docker 29 install defaults to,
+which names it by its manifest digest. The client checks that the manifest is in the verified
+archive and carries the signed config, then accepts either ID. The first attempt on a clean
+containerd daemon refused the image, because the client expected only the config digest.
+
 Run against the private deployed image, the audit refuses it with 275 findings: the ARM guest
 runtime and aarch64 ELFs, the bridge and ABI properties, GApps by package and by permission file,
 Widevine, Magisk and the spoof stack. It refuses none of stock AOSP.

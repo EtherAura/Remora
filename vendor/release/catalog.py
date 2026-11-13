@@ -153,17 +153,25 @@ def download(base, item, cache):
 
 
 def archive_identity(path, image):
-    """Read bounded config/manifest entries; never extract files onto the host.
+    """Read bounded config/manifest entries; never extract files onto the host. Returns the image
+    IDs `docker load` may give this image.
 
     Both `docker save` layouts are accepted: the legacy one (config at <id>.json) and the OCI one
     Docker 25+ writes (config at blobs/sha256/<id>, plus an index.json). The OCI index carries its
     own image-name annotations, which `docker load` also tags by, so they are held to the same
-    single signed version tag as manifest.json's RepoTags."""
+    single signed version tag as manifest.json's RepoTags.
+
+    The ID depends on the daemon's image store, not on the image: the classic store names an image
+    by its config digest (the signed image_id), the containerd store, the default on a fresh Docker
+    29 install, by the manifest digest the index points at. Each manifest the index names must be
+    in this archive, hash to its digest and carry the signed config, so either ID is the signed
+    image: the archive's bytes are the signed ones, and this ties the manifest to its config."""
     digest = image['image_id'][7:]
     configs = (digest + '.json', 'blobs/sha256/' + digest)
     with tarfile.open(path,'r:*') as t:
         names = set()
         manifest = index = config = None
+        blobs, kept = {}, 0  # small blobs: the index's manifests are among them
         for member in t:
             p = PurePosixPath(member.name)
             require(not p.is_absolute() and '..' not in p.parts and str(p) not in names, 'Unsafe/duplicate Docker archive path')
@@ -177,56 +185,71 @@ def archive_identity(path, image):
                 else:
                     require(hashlib.sha256(data).hexdigest() == digest, 'Docker config digest mismatch')
                     config = json.loads(data)
+            elif member.isfile() and p.parent == PurePosixPath('blobs/sha256') and \
+                    member.size <= 64 * 1024 and kept < 16 * 1024 * 1024:
+                blobs[p.name] = t.extractfile(member).read()
+                kept += member.size
         require(manifest and len(manifest) == 1 and manifest[0]['Config'] in configs and config,
                 'Archive does not contain the signed image identity')
         require(manifest[0]['RepoTags'] == [image['version_tag']], 'Archive attempts to change unexpected Docker tags')
         repo, _, ref = image['version_tag'].rpartition(':')
+        ids = {image['image_id']}
         for m in (index or {}).get('manifests', []):
             a = m.get('annotations') or {}
             named = a.get('io.containerd.image.name')
             require(named in (None, image['version_tag'], 'docker.io/library/' + image['version_tag'])
                     and a.get('org.opencontainers.image.ref.name') in (None, ref),
                     'Archive index names an unexpected Docker tag')
+            md = m.get('digest') or ''
+            data = blobs.get(md[7:]) if re.fullmatch(r'sha256:[0-9a-f]{64}', md) else None
+            require(data is not None and hashlib.sha256(data).hexdigest() == md[7:]
+                    and (json.loads(data).get('config') or {}).get('digest') == image['image_id'],
+                    'Archive index names a manifest other than the signed image')
+            ids.add(md)
         require(config['architecture'] == 'amd64' and config['os'] == 'linux', 'Wrong Docker platform')
         labels = config.get('config',{}).get('Labels') or {}
         require(labels.get('org.remora.play.local_only') is None,
                 'Private Play overlays cannot be public images')
         require(labels.get('remora.public_release') == 'true',
                 'Image is not a public_release build')
+    return ids
 
 
 def fetch(base, image, catalog_state, cache):
     check_local_docker()
     require(re.fullmatch(r'remora24:x86_64-public-[A-Za-z0-9_.-]+', image['version_tag']), 'Invalid immutable version tag')
     old_version = image_id(image['version_tag'])
-    require(old_version in (None,image['image_id']), 'Immutable version tag already names different bytes')
     archive = download(base,image['archive'],cache)
-    archive_identity(archive,image)
+    ids = archive_identity(archive,image)
+    require(old_version in {None} | ids, 'Immutable version tag already names different bytes')
     previous = image_id(image['tag'])
     # All verification precedes docker load. The archive only carries the immutable version tag.
     print('Importing authenticated image…', flush=True)
     run('docker','load','-i',str(archive))
-    require(image_id(image['version_tag']) == image['image_id'], 'Imported image ID differs from signed metadata')
+    # From here on the image is named by the ID this daemon gave it (see archive_identity).
+    local = image_id(image['version_tag'])
+    require(local in ids, 'Imported image ID differs from signed metadata')
     backup = None
-    if previous and previous != image['image_id']:
+    if previous and previous != local:
         backup = 'remora-rollback:public-' + previous[7:]
         require(image_id(backup) in (None,previous), 'Rollback tag conflicts with an existing image')
         run('docker','tag',previous,backup)
-    receipt = {'tag':image['tag'],'image':image['image_id'],'previous':previous,'backup':backup,
-               'catalog':catalog_state,'archive':image['archive'],'source':base,'data_unchanged':True}
+    receipt = {'tag':image['tag'],'image':local,'signed_image_id':image['image_id'],
+               'previous':previous,'backup':backup,'catalog':catalog_state,
+               'archive':image['archive'],'source':base,'data_unchanged':True}
     receipt_path = cache/(image['tag'].replace(':','_')+'.receipt.json')
     # Retain the original rollback boundary on an idempotent repeat.
-    if previous == image['image_id'] and receipt_path.exists():
+    if previous == local and receipt_path.exists():
         receipt = json.loads(receipt_path.read_text())
     prepared = receipt_path.with_suffix('.pending.json')
     atomic_json(prepared,receipt)
     try:
-        run('docker','tag',image['image_id'],image['tag'])
+        run('docker','tag',local,image['tag'])
         os.replace(prepared,receipt_path)
     except BaseException:
         if previous:
             run('docker','tag',previous,image['tag'])
-        elif image_id(image['tag']) == image['image_id']:
+        elif image_id(image['tag']) == local:
             run('docker','image','rm','--no-prune',image['tag'])
         raise
     return receipt | {'receipt':str(receipt_path)}

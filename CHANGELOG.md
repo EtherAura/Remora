@@ -25,7 +25,7 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 - `remora images list|fetch|rollback` and the Image library's **Official downloads** source.
   Official images come from a signed catalog: the signature, validity window, archive SHA-256,
   Docker identity and tags are all checked before `docker load`, and the previously active image
-  is kept for rollback. `vendor/release/package-release.py` packages an audited image with its
+  is kept for rollback. Both Docker image stores are supported, classic and containerd. `vendor/release/package-release.py` packages an audited image with its
   SBOM, notices, audit, provenance and corresponding source, and signs the catalog.
 
 ### Fixed

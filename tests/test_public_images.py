@@ -48,21 +48,29 @@ def add(t, name, data):
 
 
 def docker_archive(path, labels=None, repo_tags=None, index_name=None, config_override=None,
-                   legacy=False):
-    """A minimal `docker save` archive in the OCI layout Docker 25+ writes (or the legacy one)."""
+                   legacy=False, manifest_config=None, manifest_missing=False):
+    """A minimal `docker save` archive in the OCI layout Docker 25+ writes (or the legacy one).
+    Returns the config digest; `.manifest_digest` holds the digest the index points at."""
     config = json.dumps({'architecture': 'amd64', 'os': 'linux', 'config': {'Labels': (
         {'remora.public_release': 'true'} if labels is None else labels)},
         'rootfs': {'type': 'layers', 'diff_ids': []}}).encode()
     digest = hashlib.sha256(config).hexdigest()
     cname = digest + '.json' if legacy else 'blobs/sha256/' + digest
+    manifest = json.dumps({'schemaVersion': 2, 'config': {
+        'digest': manifest_config or 'sha256:' + digest, 'size': len(config)}, 'layers': []}).encode()
+    mdigest = hashlib.sha256(manifest).hexdigest()
     with tarfile.open(path, 'w') as t:
         add(t, cname, config_override or config)
+        if not legacy and not manifest_missing:
+            add(t, 'blobs/sha256/' + mdigest, manifest)
         add(t, 'manifest.json', json.dumps([{'Config': cname, 'Layers': [],
                                              'RepoTags': repo_tags or [VTAG]}]).encode())
         if not legacy:
-            add(t, 'index.json', json.dumps({'manifests': [{'annotations': {
-                'io.containerd.image.name': index_name or 'docker.io/library/' + VTAG,
-                'org.opencontainers.image.ref.name': VTAG.split(':')[1]}}]}).encode())
+            add(t, 'index.json', json.dumps({'manifests': [{'digest': 'sha256:' + mdigest,
+                'annotations': {
+                    'io.containerd.image.name': index_name or 'docker.io/library/' + VTAG,
+                    'org.opencontainers.image.ref.name': VTAG.split(':')[1]}}]}).encode())
+    docker_archive.manifest_digest = 'sha256:' + mdigest
     return 'sha256:' + digest
 
 
@@ -157,7 +165,18 @@ class Archive(unittest.TestCase):
         for legacy in (False, True):
             with self.subTest(legacy=legacy):
                 iid = docker_archive(self.path, legacy=legacy)
-                catalog.archive_identity(self.path, self.entry(iid))
+                ids = catalog.archive_identity(self.path, self.entry(iid))
+                # The containerd image store names the image by the manifest the index points
+                # at, the classic store by its config: both are the signed image.
+                self.assertEqual(ids, {iid} if legacy else {iid, docker_archive.manifest_digest})
+
+    def test_index_must_point_at_the_signed_image(self):
+        other = 'sha256:' + hashlib.sha256(b'another image').hexdigest()
+        for kw in (dict(manifest_config=other), dict(manifest_missing=True)):
+            with self.subTest(**kw):
+                iid = docker_archive(self.path, **kw)
+                with self.assertRaises(catalog.VerificationError):
+                    catalog.archive_identity(self.path, self.entry(iid))
 
     def test_wrong_identity_tags_and_labels_fail(self):
         cases = [
@@ -240,6 +259,28 @@ class Download(unittest.TestCase):
             with self.assertRaises(catalog.VerificationError):
                 catalog.fetch('https://h/x', image, {'sequence': 1}, self.cache)
         self.assertFalse([c for c in calls if 'load' in c], calls)
+
+    def test_fetch_tags_by_the_id_the_daemon_assigned(self):
+        """A fresh Docker 29 install (containerd image store) names the loaded image by its
+        manifest digest; the import must accept that and tag by it, not refuse."""
+        iid = docker_archive(self.cache / 'src.tar')
+        local = docker_archive.manifest_digest
+        body = (self.cache / 'src.tar').read_bytes()
+        image = image_entry(iid, ref('a.tar', body))
+        loaded, calls = [], []
+        ids = lambda r: local if loaded and r == VTAG else None
+
+        def run(*a):
+            calls.append(a)
+            if 'load' in a:
+                loaded.append(True)
+            return ''
+        with self.serve(body), \
+                patch.object(catalog, 'check_local_docker', lambda: None), \
+                patch.object(catalog, 'image_id', ids), patch.object(catalog, 'run', run):
+            receipt = catalog.fetch('https://h/x', image, {'sequence': 1}, self.cache)
+        self.assertIn(('docker', 'tag', local, TAG), calls)
+        self.assertEqual((receipt['image'], receipt['signed_image_id']), (local, iid))
 
 
 if __name__ == '__main__':
