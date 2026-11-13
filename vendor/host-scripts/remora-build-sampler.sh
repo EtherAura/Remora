@@ -21,7 +21,8 @@
 
 OUT="${1:-/tmp/remora-build-samples.jsonl}"
 INT="${2:-2}"
-SLICE=/sys/fs/cgroup/remorabuild.slice
+# The build nests under containers.slice (the dash in its name is systemd hierarchy).
+SLICE=/sys/fs/cgroup/containers.slice/containers-remorabuild.slice
 
 : > "$OUT"
 echo "sampling to $OUT every ${INT}s — waiting for the build container…" >&2

@@ -51,6 +51,7 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="2026.11.0" date="2026-11-13"/>
     <release version="2026.10.0" date="2026-10-02">
       <description>
         <p>Remora's own mirror protocol, Android 17 without the ashmem module, and release packages:</p>

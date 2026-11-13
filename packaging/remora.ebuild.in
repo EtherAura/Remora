@@ -1,0 +1,84 @@
+# Template for the Gentoo ebuild a release carries as remora-<version>.ebuild.
+#
+# Rendering is a copy to that file name: Portage reads ${PV} from it, so SRC_URI and S below follow
+# the version without any substitution, and a -rN revision bump keeps working. The template holds no
+# @-delimited placeholder tokens, and whatever renders it refuses one. There is no sum to stamp either: Gentoo
+# keeps checksums in the overlay's Manifest (`ebuild remora-<version>.ebuild manifest`).
+# tools/test-gentoo-ebuild.sh renders it offline and checks it against the PKGBUILD.
+
+EAPI=8
+
+inherit cmake optfeature xdg
+
+DESCRIPTION="Build, deploy and mirror Android running in Docker"
+HOMEPAGE="https://github.com/EtherAura/Remora"
+# The release's source tarball asset: `git archive --prefix=Remora-<version>/`.
+SRC_URI="https://github.com/EtherAura/Remora/releases/download/v${PV}/Remora-${PV}.tar.gz"
+S="${WORKDIR}/Remora-${PV}"
+
+LICENSE="GPL-3"
+SLOT="0"
+KEYWORDS="~amd64"
+IUSE="test"
+RESTRICT="!test? ( test )"
+
+# Qt 6: Core Widgets Test Network DBus OpenGLWidgets (qtbase), Multimedia, WebEngineWidgets. The
+# mirror decodes and records with FFmpeg; the host frame encoder and decoder link it too, and
+# remora-frame-decoder (host_decode) exports VA surfaces itself.
+COMMON_DEPEND="
+	dev-qt/qtbase:6[dbus,gui,network,opengl,widgets]
+	dev-qt/qtmultimedia:6
+	dev-qt/qtwebengine:6[widgets]
+	media-libs/libva:=
+	media-video/ffmpeg:=
+"
+# The mirror's CUDA interop includes FFmpeg's NVIDIA headers (the driver is loaded at runtime), and
+# libavutil's hwcontext_vulkan.h, which remora-frame-encoder includes, includes vulkan/vulkan.h.
+DEPEND="
+	${COMMON_DEPEND}
+	dev-util/vulkan-headers
+	media-libs/nv-codec-headers
+"
+# adb is how Remora reaches every device it deploys, local or remote.
+RDEPEND="
+	${COMMON_DEPEND}
+	dev-util/android-tools
+"
+# The test suites build throwaway git repositories to apply patch series against.
+BDEPEND="
+	virtual/pkgconfig
+	test? ( dev-vcs/git )
+"
+
+src_configure() {
+	# Points the binary at /usr/share/remora/vendor, where the install puts the scripts and native
+	# helpers, instead of at the extracted source tree it was built from.
+	local mycmakeargs=(
+		-DREMORA_INSTALLED_VENDOR=ON
+	)
+	cmake_src_configure
+}
+
+src_test() {
+	# The suites read the vendor tree their build was configured against, and the packaged build
+	# points at /usr/share/remora/vendor, which does not exist until this package is installed. So
+	# they run from a development build of the same source, which reads ${S}/vendor directly.
+	# Offline by design (no docker, device or Android image); Qt still wants a platform plugin.
+	local mycmakeargs=(
+		-DREMORA_INSTALLED_VENDOR=OFF
+	)
+	local BUILD_DIR="${WORKDIR}/${P}_check"
+	cmake_src_configure
+	cmake_src_compile
+	QT_QPA_PLATFORM=offscreen cmake_src_test
+}
+
+pkg_postinst() {
+	xdg_pkg_postinst
+	optfeature "running Android on this machine (the bare target)" app-containers/docker
+	optfeature "deploying to a docker host over ssh (the remote target)" virtual/openssh
+	optfeature "NVIDIA acceleration through the Venus render server" x11-drivers/nvidia-drivers
+	optfeature "sharing host input devices with the container" dev-lang/python
+	optfeature "showing the boot animation in the mirror while Android starts" app-arch/unzip
+	optfeature "opening a device's storage from the workspace (pkexec)" sys-auth/polkit
+}

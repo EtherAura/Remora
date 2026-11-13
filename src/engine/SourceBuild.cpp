@@ -697,14 +697,20 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
     // which left a responsive screen and no input device to use it with. Measured: the build
     // wrote nothing to disk for 3h09m while its status line kept ticking, because the status
     // line goes to a pipe and targets go to disk. Own slice => that blast radius is gone.
-    // The name is deliberately undashed: systemd reads '-' in a slice name as hierarchy, so
-    // "remora-build.slice" would imply a parent remora.slice. The slice needs no unit file —
-    // systemd creates it on demand with no limits, which is what we want, because the binding
-    // limit should be the container's own.
+    // The name is containers-remorabuild.slice, and its one dash is deliberate: systemd reads
+    // '-' in a slice name as hierarchy, so the build slice nests UNDER containers.slice, the
+    // slice the other containers run in. A host that budgets memory for its containers then
+    // budgets the build inside the same total instead of beside it, and can bound the build
+    // slice on its own as well. Neither slice needs a unit file — systemd creates a missing one
+    // on demand with no limits, so on a host that sets none the binding limit is the
+    // container's own, exactly as before.
     //
-    // WHY --memory-swap EQUALS --memory: that disables container swap entirely, so the build
-    // hits a hard wall and exits 137 instead of quietly filling 60 GB of swap over an hour —
-    // which is the condition systemd-oomd trips on (see the preflight note above).
+    // SWAP IS NOT A SAFETY NET. A build that grows past its resident cap into swap does not
+    // reliably fail cleanly: a source build was seen to drive its host into swap thrash, with
+    // siso's memory-stall figure climbing from under a second per second to minutes per
+    // second, until the journal stopped and the machine had to be restarted. So the swap
+    // allowance below is a small fixed margin, not a multiple of the cap, and a host is free to
+    // cap the slice's swap lower still.
     //
     // THE AUTO FIGURE IS NOT CALIBRATED. MemAvailable minus a 6 GiB reserve is first
     // principles, not a measurement, and it is deliberately taken at LAUNCH so a machine
@@ -856,13 +862,13 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
     // WHAT ACTUALLY PREVENTS THE HOST HANG IS THE SLICE, NOT THE CAP, and the two
     // are separable. That incident was a MemoryHigh THROTTLE DEADLOCK inside system.slice:
     // bluetoothd, systemd-journald and systemd-resolved were throttled alongside the build
-    // because docker scopes default into that slice. --cgroup-parent=remorabuild.slice is what
-    // fixes it — a top-level slice with no limits cannot throttle system services however
-    // large it grows. Dropping --memory therefore does NOT reintroduce the hang.
-    // It does reintroduce lesser risks, honestly: the build can now grow into swap, and
-    // systemd-oomd may kill it on swap fill (it has before — see the preflight note). Both are
-    // CLEAN failures rather than a wedged host, and the desktop keeps its MemoryLow=16G while
-    // the VM's RAM is VFIO-pinned and cannot be swapped out from under the mirror.
+    // because docker scopes default into that slice. --cgroup-parent=containers-remorabuild.slice
+    // is what fixes it — a slice outside system.slice cannot throttle system services however
+    // large it grows. Dropping --memory therefore does NOT reintroduce THAT hang.
+    // It does leave a real risk, and this comment used to understate it: uncapped, the build
+    // can grow into whatever swap the host allows, and that is NOT a clean failure — see "SWAP
+    // IS NOT A SAFETY NET" above. What bounds an uncapped build is the host's own limits on the
+    // slice (memory, swap, systemd-oomd pressure), not anything this command sets.
     // Set the spin box to a positive value to restore a hard ceiling.
     steps << QStringLiteral(
                   // BASE IS DERIVED FROM MemTotal, NOT MemAvailable — MemAvailable is an
@@ -891,18 +897,22 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
                   // entirely, which turns any cap below the workload's true peak into a
                   // guaranteed OOM: soong_build's live heap plateaus at 19.4 GiB and Go wants
                   // roughly 2x that before it collects, so a 26 GiB swap-off cap died at 2:52 in
-                  // analysis (bd remora-82c.13). Swapping is slow, but on a host that is already
-                  // 15 GiB into swap by design, "slower" is the entire point of throttling and
-                  // "killed" is not a throttle at all.
-                  // 2x the cap, not unlimited: bounded so a runaway cannot drag the whole host
-                  // into thrash, and still far more headroom than the peak needs.
-                  "MEMFLAGS=\"--memory=${MEMG}g --memory-swap=$((MEMG*2))g\"; "
-                  "CAPMSG=\"${MEMG} GiB resident + $((MEMG)) GiB swap\"; else MEMFLAGS=; "
+                  // analysis (bd remora-82c.13). That overshoot is brief — Go collects once it
+                  // reaches its limit — so a small swap margin rides it out; a large one only
+                  // lets a genuine overrun page the host to a standstill.
+                  // The cap PLUS 4 GiB, not a multiple of it. --memory-swap is the
+                  // memory+swap total, so this allows 4 GiB of swap whatever the cap. It used to
+                  // be 2x the cap — as much swap as RAM — and a build that grew into that much
+                  // swap thrashed the host instead of failing (see SWAP IS NOT A SAFETY NET).
+                  // 4 GiB absorbs a brief overshoot; anything larger is real demand, which the
+                  // cap should be raised to meet.
+                  "MEMFLAGS=\"--memory=${MEMG}g --memory-swap=$((MEMG+4))g\"; "
+                  "CAPMSG=\"${MEMG} GiB resident + 4 GiB swap\"; else MEMFLAGS=; "
                   "CAPMSG=\"UNCAPPED (slice-isolated only)\"; fi; "
                   "echo \"build container ${CAPMSG} in "
-                  "remorabuild.slice, soong_build Go heap ${GOMEM} GiB, siso Go heap "
+                  "containers-remorabuild.slice, soong_build Go heap ${GOMEM} GiB, siso Go heap "
                   "${SISOMEM} GiB\"; "
-                  "docker run --rm --cgroup-parent=remorabuild.slice --cpu-shares=128 "
+                  "docker run --rm --cgroup-parent=containers-remorabuild.slice --cpu-shares=128 "
                   "${MEMFLAGS} "
                   "-e SOONG_GOMEMLIMIT=${GOMEM}GiB -e GOMEMLIMIT=${SISOMEM}GiB "
                   // BUILD_LUNCH is passed EXPLICITLY rather than left to do-build.sh's own

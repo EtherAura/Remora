@@ -6,7 +6,7 @@
 # refuses a tag it disagrees with.
 
 pkgname=remora
-pkgver=2026.10.0
+pkgver=2026.11.0
 pkgrel=1
 pkgdesc='Build, deploy and mirror Android running in Docker'
 arch=('x86_64')

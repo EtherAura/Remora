@@ -4551,6 +4551,140 @@ private slots:
         QVERIFY(!neither.contains(QLatin1String("WITH_SHAMIKO")));
     }
 
+    // The build container nests under containers.slice and gets a fixed 4 GiB of swap above its
+    // cap. A swap allowance of 2x the cap let a build thrash its host instead of failing. EXECUTED:
+    // the real docker-run step runs under sh with `docker` stubbed to print its argv, so the
+    // shell arithmetic that sizes --memory-swap is what is checked, not the template text. An
+    // explicit cap makes every figure independent of the host's own memory.
+    void sourceBuildContainerNestsUnderContainersSliceWithBoundedSwap() {
+        auto noVendor = [](const QString &) { return QList<QPair<QString, QByteArray>>(); };
+        auto runArgv = [&](int memGiB) {
+            SourceBuildPlan p;
+            p.tree = QStringLiteral("/src/tree");
+            p.sourceBuildDir = QStringLiteral("/root/source-build");
+            p.builtTag = QStringLiteral("t:1");
+            p.androidVersion = 17;
+            p.buildMemGiB = memGiB;
+            QString step;
+            for (const QString &s : sourceBuildSteps(p, noVendor))
+                if (s.contains(QLatin1String("docker run --rm"))) step = s;
+            if (step.isEmpty()) return QStringList{QStringLiteral("<no docker run step>")};
+            QProcess sh;
+            sh.start(QStringLiteral("sh"),
+                     {QStringLiteral("-c"),
+                      QStringLiteral("docker() { printf 'ARG:%s\\n' \"$@\"; }; ") + step});
+            if (!sh.waitForFinished(15000) || sh.exitCode() != 0)
+                return QStringList{QStringLiteral("<step failed>")};
+            QStringList args;
+            for (const QString &l : QString::fromUtf8(sh.readAllStandardOutput()).split('\n'))
+                if (l.startsWith(QLatin1String("ARG:"))) args << l.mid(4);
+            return args;
+        };
+        const QString nested = QStringLiteral("--cgroup-parent=containers-remorabuild.slice");
+        for (int cap : {8, 24, 30}) {
+            const QStringList a = runArgv(cap);
+            QVERIFY2(a.size() > 2 && a.at(0) == QLatin1String("run"), qPrintable(a.join(' ')));
+            QVERIFY2(a.contains(nested), qPrintable(a.join(' ')));
+            QVERIFY(!a.contains(QStringLiteral("--cgroup-parent=remorabuild.slice")));
+            QCOMPARE(a.filter(QStringLiteral("--cgroup-parent=")).size(), 1);
+            // Exactly the cap plus 4 GiB: 8→12, 24→28, 30→34 — never 2x the cap.
+            QVERIFY2(a.contains(QStringLiteral("--memory=%1g").arg(cap)), qPrintable(a.join(' ')));
+            QVERIFY2(a.contains(QStringLiteral("--memory-swap=%1g").arg(cap + 4)),
+                     qPrintable(a.join(' ')));
+            QCOMPARE(a.filter(QStringLiteral("--memory-swap=")).size(), 1);
+            // The Go heap bounds that keep soong_build and siso under the cap are untouched.
+            const int heap = cap * 65 / 100;
+            QVERIFY(a.contains(QStringLiteral("SOONG_GOMEMLIMIT=%1GiB").arg(heap)));
+            QVERIFY(a.contains(QStringLiteral("GOMEMLIMIT=%1GiB").arg(heap)));
+            QVERIFY(a.contains(QStringLiteral("--cpu-shares=128")));
+        }
+        // No cap: no memory flags at all, but still the nested slice.
+        const QStringList uncapped = runArgv(0);
+        QVERIFY2(uncapped.contains(nested), qPrintable(uncapped.join(' ')));
+        QVERIFY(uncapped.filter(QStringLiteral("--memory")).isEmpty());
+    }
+
+    // assemble-image.sh overlaid the ARM translation payload whenever its guest directory was
+    // vendored, so an image built with arm_translate OFF still carried the bridge. EXECUTED against
+    // the gate assemble sources, with the WITH_NDK the real assemble step sets, on a fixture of
+    // sentinel files: a contains() check cannot tell a gate that always copies from one that works.
+    void armTranslationOverlayFollowsTheSelection() {
+        auto noVendor = [](const QString &) { return QList<QPair<QString, QByteArray>>(); };
+        const QString sbuild = QDir::cleanPath(QStringLiteral(FIXTURES_DIR "/../../vendor/source-build"));
+        QVERIFY(QFile::exists(sbuild + QStringLiteral("/ndk-overlay.sh")));
+        const QString invoke = QStringLiteral("sh ") + sbuild + QStringLiteral("/assemble-image.sh");
+        // The env prefix of the real assemble step, i.e. exactly what assemble is started with.
+        auto asmEnvFor = [&](bool withNdk) {
+            SourceBuildPlan p;
+            p.tree = QStringLiteral("/src/tree");
+            p.sourceBuildDir = sbuild;
+            p.builtTag = QStringLiteral("t:1");
+            p.androidVersion = 17;
+            p.withNdk = withNdk;
+            for (const QString &s : sourceBuildSteps(p, noVendor))
+                if (s.contains(invoke)) return s.left(s.indexOf(invoke));
+            return QStringLiteral("<no assemble step>");
+        };
+        const QString on = asmEnvFor(true), off = asmEnvFor(false);
+        QVERIFY2(on.contains(QLatin1String("WITH_NDK=true ")), qPrintable(on));
+        // Stated, not omitted: an absent WITH_NDK is the unset case, which still copies.
+        QVERIFY2(off.contains(QLatin1String("WITH_NDK=false ")), qPrintable(off));
+
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        const QString root = tmp.path() + QStringLiteral("/ndk_translation");
+        const auto put = [](const QString &path) {
+            if (!QDir().mkpath(QFileInfo(path).path())) return false;
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write("sentinel\n") == 9;
+        };
+        QVERIFY(put(root + QStringLiteral("/guest/system/etc/guest-sentinel")));
+        QVERIFY(put(root + QStringLiteral("/lib64/host-sentinel.so")));
+        // Runs `<env>sh -c '<what assemble does with the gate>'` in a fresh context dir, with any
+        // inherited WITH_NDK removed so only the prefix can select.
+        int n = 0;
+        const auto stage = [&](const QString &envPrefix, const QString &ndkRoot) {
+            const QString ctx = tmp.path() + QStringLiteral("/ctx%1").arg(++n);
+            if (!QDir().mkpath(ctx)) return QString();
+            const QString inner = QStringLiteral(
+                "sh -c '. \"$1/ndk-overlay.sh\"; if ndk_overlay_on \"$2\"; then "
+                "stage_ndk_overlay \"$2\" \"$3\"; fi' gate \"$1\" \"$2\" \"$3\"");
+            QProcess sh;
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.remove(QStringLiteral("WITH_NDK"));
+            sh.setProcessEnvironment(env);
+            sh.start(QStringLiteral("sh"),
+                     {QStringLiteral("-c"), envPrefix + inner, QStringLiteral("outer"), sbuild,
+                      ndkRoot, ctx});
+            if (!sh.waitForFinished(15000) || sh.exitCode() != 0) return QString();
+            return ctx + QStringLiteral("/ndkguest/system");
+        };
+        const auto staged = [](const QString &sys) {
+            return QFile::exists(sys + QStringLiteral("/etc/guest-sentinel")) &&
+                   QFile::exists(sys + QStringLiteral("/lib64/host-sentinel.so"));
+        };
+
+        // EXPLICITLY OFF + payload present → nothing staged. The defect: the old gate copied here.
+        const QString offSys = stage(off, root);
+        QVERIFY(!offSys.isEmpty());
+        QVERIFY2(!QDir(offSys).exists(), "arm_translate off still staged the translation overlay");
+        // EXPLICITLY ON → both halves staged, guest payload and host bridge libs.
+        const QString onSys = stage(on, root);
+        QVERIFY(!onSys.isEmpty());
+        QVERIFY2(staged(onSys), "arm_translate on did not stage the translation overlay");
+        // UNSET (a hand invocation naming no selection) → the original presence rule: staged.
+        const QString unsetSys = stage(QString(), root);
+        QVERIFY(!unsetSys.isEmpty());
+        QVERIFY2(staged(unsetSys), "an unset WITH_NDK no longer stages a vendored overlay");
+        // Payload absent → nothing to stage, and no failure, whatever the selection.
+        const QString absent = tmp.path() + QStringLiteral("/no-such-payload");
+        for (const QString &prefix : {on, QString()}) {
+            const QString sys = stage(prefix, absent);
+            QVERIFY(!sys.isEmpty());
+            QVERIFY(!QDir(sys).exists());
+        }
+    }
+
     // bd remora-mdq2. An A17 build ran with the A16 pin sitting in .repo/manifests/remora-pinned.xml
     // and `repo sync --force-sync` dragged 23 projects back to lineage-23.0 revisions; it then died
     // in kati on a missing file, with nothing anywhere pointing at the manifest. The guard added for
@@ -5148,7 +5282,7 @@ private slots:
         };
         QVERIFY(step(steps, "stage-features.sh").contains(QLatin1String("WITH_PUBLIC_RELEASE=true")));
         // do-build.sh runs installclean on it — the stale-partition half of the contract
-        QVERIFY(step(steps, "--cgroup-parent=remorabuild.slice")
+        QVERIFY(step(steps, "--cgroup-parent=containers-remorabuild.slice")
                     .contains(QLatin1String("-e WITH_PUBLIC_RELEASE=true")));
         const QString assemble = step(steps, "assemble-image.sh");
         QVERIFY(assemble.contains(QLatin1String("WITH_PUBLIC_RELEASE=true")));

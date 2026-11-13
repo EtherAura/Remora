@@ -7,26 +7,46 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+## [2026.11.0] - 2026-11-13
+
 ### Added
 
-- Optional Google Play installation from the Image library or `remora play-install`. Downloads
-  a pinned LiteGapps Android 17 x86_64 package directly on the Docker host after explicit terms
-  acceptance, verifies archive/APK hashes against the signature audit, and creates a separate
-  COPY-only `remora-local:` image. Rejects incompatible or Google/microG-containing bases, retains
-  receipts and the original image/data, and can remove unused overlays. Public base-image
-  redistribution remains subject to the separate image audit.
-- A `public_release` build profile that produces the redistributable Android 17 image,
-  `remora24:x86_64-public`: x86_64 only, with no Google apps, ARM translation, Widevine, root or Play
-  spoofing. The profile refuses those features. The build clears the previous build's installed
+- **Optional Google Play, installed locally.** From the Image library or `remora play-install`:
+  downloads a pinned LiteGapps Android 17 x86_64 package directly on the Docker host after
+  explicit terms acceptance, verifies archive/APK hashes against the signature audit, and creates
+  a separate COPY-only `remora-local:` image. Rejects incompatible or Google/microG-containing
+  bases, retains receipts and the original image/data, and can remove unused overlays. Public
+  base-image redistribution remains subject to the separate image audit.
+- **A redistributable Android 17 image.** The `public_release` build profile produces
+  `remora24:x86_64-public`: x86_64 only, with no Google apps, ARM translation, Widevine, root or
+  Play spoofing. The profile refuses those features. The build clears the previous build's installed
   partitions and generates an SBOM, and assembly ends with a release audit
   (`vendor/source-build/public-audit.py`). The audit walks the built image's files, ELF
   architectures, APK packages, ABI properties and licences, and fails the build on any excluded
   payload.
-- `remora images list|fetch|rollback` and the Image library's **Official downloads** source.
+- **Official prebuilt images.** `remora images list|fetch|rollback` and the Image library's
+  **Official downloads** source fetch Remora's audited image from the project's GitHub release.
   Official images come from a signed catalog: the signature, validity window, archive SHA-256,
   Docker identity and tags are all checked before `docker load`, and the previously active image
-  is kept for rollback. Both Docker image stores are supported, classic and containerd. `vendor/release/package-release.py` packages an audited image with its
-  SBOM, notices, audit, provenance and corresponding source, and signs the catalog.
+  is kept for rollback. Both Docker image stores are supported, classic and containerd.
+  `vendor/release/package-release.py` packages an audited image with its SBOM, notices, audit,
+  provenance and corresponding source, and signs the catalog.
+- **A Gentoo ebuild template.** `packaging/remora.ebuild.in` is an EAPI 8 ebuild (`~amd64`) that
+  builds Remora from a release's source tarball with the Gentoo equivalents of the Arch package's
+  dependencies, for use as `remora-<version>.ebuild` in a local overlay.
+  `tools/test-gentoo-ebuild.sh [<version>]` checks it offline. Releases do not attach the ebuild
+  yet, and it has not yet been built by Portage.
+
+### Changed
+
+- **The source build container now runs in `containers-remorabuild.slice`, and gets 4 GiB of
+  swap instead of as much swap as its memory cap.** The slice name nests the build under
+  `containers.slice`, so a host that limits memory for all its containers counts the build in
+  the same budget. With a memory cap set in the Source build card, `--memory-swap` is now the cap
+  plus 4 GiB, not twice the cap: a build that spilled far into swap could make the whole host
+  unresponsive instead of failing. A build that needs more memory needs a higher cap, not more
+  swap. Neither slice needs to exist beforehand; systemd creates it, with no limits, if the host
+  does not define one.
 
 ### Fixed
 
@@ -125,6 +145,7 @@ First public release.
   then mirror with Remora's own Qt/FFmpeg client and an agent baked into the image — video, audio,
   input, clipboard, desktop-mode displays and app listing.
 
-[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.10.0...HEAD
+[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.0...HEAD
+[2026.11.0]: https://github.com/EtherAura/Remora/compare/v2026.10.0...v2026.11.0
 [2026.10.0]: https://github.com/EtherAura/Remora/compare/edf8471e0a38447667502e70c19115ee6c014083...v2026.10.0
 [2026.09]: https://github.com/EtherAura/Remora/commit/edf8471e0a38447667502e70c19115ee6c014083
