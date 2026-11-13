@@ -2204,12 +2204,34 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
                                    "grep -qF -- '%1'").arg(ctx.rc.hostEncodeFrameSocket)},
                    {}, log)
                 .rc == 0;
-        if (!alive)
+        if (!alive) {
+            // Its last words, from ITS log: a dead encoder has no /proc entry to resolve the log
+            // through, so the log is found by the line every encoder opens with, which names this
+            // profile's frame socket. Without them this note could only guess, and its guess (VRAM)
+            // sent a node mix-up — "opening the encoder: Bad address", half the card free — to
+            // nvidia-smi.
+            const QStringList last =
+                sp.run({"sh", "-c",
+                        QStringLiteral("f=$(grep -lF -- 'listening for the render server on %1' "
+                                       "/tmp/remora-detached-*.log 2>/dev/null | xargs -r ls -t "
+                                       "2>/dev/null | head -1); "
+                                       "[ -n \"$f\" ] && echo \"$f\" && tail -n 1 \"$f\"")
+                            .arg(ctx.rc.hostEncodeFrameSocket)},
+                       {}, log)
+                    .out.trimmed()
+                    .split(QLatin1Char('\n'));
+            const QString why =
+                last.size() == 2
+                    ? QStringLiteral(" Its last log (%1) ended: \"%2\"").arg(last[0], last[1])
+                    : QStringLiteral(" It most often dies for want of GPU memory; check "
+                                     "`nvidia-smi` for free VRAM and for abandoned "
+                                     "remora-frame-encoder processes holding it.");
             return QStringLiteral(
-                "\nNOTE: the host encoder for this profile is NOT running, and with host_encode on "
-                "it is where the mirror's video comes from — so this is an encoder failure, not a "
-                "mirror one. It most often dies for want of GPU memory; check `nvidia-smi` for free "
-                "VRAM and for abandoned remora-frame-encoder processes holding it.");
+                       "\nNOTE: the host encoder for this profile is NOT running, and with "
+                       "host_encode on it is where the mirror's video comes from — so this is an "
+                       "encoder failure, not a mirror one.%1")
+                .arg(why);
+        }
         // Running but serving nobody is the OTHER shape, and it looks identical from the mirror's side.
         // Naming it separately matters because the remedy is different: nothing is wrong with the
         // GPU, the mirror simply never got a slot.
@@ -2361,12 +2383,16 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
                 QStringLiteral("boot splash pid %1 is taking over as the mirror").arg(det.pid));
         sp.waitMs(livenessDelayMs);
         const bool alive = sp.detachedAlive(det);  // once — the fake counts calls
+        // The mirror's OWN log, never the newest /tmp/remora-detached-*.log: on a host-encode
+        // profile the render server writes a line per composed frame, so "newest" was always its
+        // log, and a dead mirror was reported with "[remora-frame] res_id=3 … DISPLAY" as its
+        // last words — a healthy frame from another process.
         const QString said =
-            sp.run({"sh", "-c",
-                    "tail -n 8 $(ls -t /tmp/remora-detached-*.log 2>/dev/null | head -1) "
-                    "2>/dev/null"},
-                   {}, log)
-                .out.trimmed();
+            det.log.isEmpty()
+                ? QString()
+                : sp.run({"sh", "-c", QStringLiteral("tail -n 8 %1 2>/dev/null").arg(det.log)},
+                         {}, log)
+                      .out.trimmed();
         bool broken = false;
         // WHY this attempt was rejected, in Remora's own words. Without it the retry line below
         // reported "the mirror exited immediately" for a process Remora had just killed itself, and

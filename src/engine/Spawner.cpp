@@ -159,7 +159,7 @@ Detached RealSpawner::spawnDetached(const QStringList &argv, const QMap<QString,
     p.setStandardErrorFile(ownLog, QIODevice::Append);
     qint64 pid = 0;
     p.startDetached(&pid);
-    return {pid};
+    return {pid, ownLog};
 }
 
 bool RealSpawner::detachedAlive(const Detached &d) {

@@ -157,6 +157,7 @@ public:
     QString hostEncoderLogPath = QStringLiteral("/tmp/remora-detached-77-1.log");
     QStringList firstPacketCounts{QStringLiteral("0"), QStringLiteral("1")};
     QString hostEncoderLogTail;  // what `tail -n 12 <encoder log>` answers on the evidence read
+    QString deadEncoderLog;      // the dead-encoder note's lookup: "<path>\n<last line>" or empty
     // What the encoder's published status file holds (bd remora-e5x.18.3). Empty = no file, the
     // answer of a host whose encoder predates status or is not running — never a note.
     QString encoderStatusOut;
@@ -454,6 +455,9 @@ public:
         // flow-probe counters (n 400).
         if (argv.value(0) == "sh" && cmd.contains("tail -n 12"))
             return R(0, hostEncoderLogTail);
+        // A DEAD encoder's log, found by its opening line: "<path>\n<last line>", or nothing.
+        if (argv.value(0) == "sh" && cmd.contains("listening for the render server"))
+            return R(0, deadEncoderLog);
         // The teardown reap extracts encoder PIDs (its awk stage) rather than asking yes/no, so
         // it must be matched before the generic encoder-liveness rule below (bd remora-e5x.19.1).
         if (argv.value(0) == "sh" && cmd.contains("ps -C remora-frame-encoder") &&
@@ -3392,6 +3396,37 @@ private slots:
                  qPrintable(r.stderrTail));
     }
 
+    // A dead encoder is named with ITS last words, not a guess. The incident: an encoder that
+    // landed on the wrong GPU died with "opening the encoder: Bad address" while half the card
+    // was free, and the note sent the reader to nvidia-smi.
+    void deadEncoderNoteQuotesTheEncodersOwnLog() {
+        FakeSpawner sp;
+        sp.detachedDead = true;  // every mirror attempt exits at once
+        sp.hostEncoderProcAlive = false;
+        sp.deadEncoderLog = QStringLiteral(
+            "/tmp/remora-detached-9-3.log\n"
+            "remora-frame-encoder: opening the encoder: Bad address\n");
+        auto ctx = makeContext(withGuest(), Backend::Bare);
+        ctx.rc.hostEncode = true;
+        ctx.rc.hostEncodeDrivesMirror = true;
+        RecordingSink sink;
+        const StepResult r = doConnect(sp, ctx, sink, 5, 0, 0, 2);
+        QVERIFY(!r.ok);
+        QVERIFY2(r.detail.contains(QStringLiteral("NOT running")), qPrintable(r.detail));
+        QVERIFY2(r.detail.contains(QStringLiteral("/tmp/remora-detached-9-3.log")),
+                 qPrintable(r.detail));
+        QVERIFY2(r.detail.contains(QStringLiteral("opening the encoder: Bad address")),
+                 qPrintable(r.detail));
+        QVERIFY2(!r.detail.contains(QStringLiteral("nvidia-smi")), qPrintable(r.detail));
+
+        // No log found keeps the old advice rather than saying nothing.
+        FakeSpawner bare;
+        bare.detachedDead = true;
+        bare.hostEncoderProcAlive = false;
+        const StepResult g = doConnect(bare, ctx, sink, 5, 0, 0, 2);
+        QVERIFY2(g.detail.contains(QStringLiteral("nvidia-smi")), qPrintable(g.detail));
+    }
+
     void connectFailsWhenTheFreshMirrorDiesUnserved() {
         FakeSpawner sp;
         sp.servedConsumers = 1;
@@ -4467,8 +4502,8 @@ private slots:
                               "--unit=remora-detached-7-0"}));
         // the original command must survive intact and in order, right after the wrapper
         QCOMPARE(got.mid(6), argv);
-        // --quiet is not cosmetic: Chain.cpp tails the newest /tmp/remora-detached-*.log for the
-        // mirror's dying words, and systemd-run's unit announcement would land in that very file.
+        // --quiet is not cosmetic: Chain.cpp tails the mirror's own /tmp/remora-detached-*.log for
+        // its dying words, and systemd-run's unit announcement would land in that very file.
         QVERIFY(got.contains(QStringLiteral("--quiet")));
     }
 

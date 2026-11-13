@@ -660,6 +660,15 @@ QStringList buildHostEncoderArgv(const ResolvedConfig &cfg) {
                   // attached, and resets the moment one is.
                   QStringLiteral("--idle-timeout"),
                   QStringLiteral("600")};
+    // THE GPU THAT RENDERED THE FRAMES, always named. The encoder imports each frame's dmabuf
+    // through a Vulkan device opened on this node, and only the renderer can import its own
+    // tiling — so it is the NVIDIA node when Venus carries rendering there, else the selected
+    // node. Left to the encoder's default (renderD128), it held only while NVIDIA happened to
+    // probe first: a boot that enumerated xe first put the encoder on the Intel GPU, ffmpeg's
+    // CUDA derive found no matching device, and NVENC died on a null context — reported as
+    // "the mirror exited immediately after 5 attempts" with VRAM half free.
+    const std::optional<QString> node = cfg.venusNode ? cfg.venusNode : cfg.gpuNode;
+    if (node && !node->isEmpty()) a << QStringLiteral("--drm-node") << *node;
     if (!cfg.videoBitRate.isEmpty()) {
         // The mirror spells bit rates "30M"; ffmpeg wants a plain integer.
         QString br = cfg.videoBitRate;

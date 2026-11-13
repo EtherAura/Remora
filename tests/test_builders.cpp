@@ -241,6 +241,27 @@ private slots:
         QCOMPARE(buildHostEncoderArgv(c), expected);
     }
 
+    // The encoder must import on the GPU that RENDERED the frames, so the node is always named
+    // rather than left to its renderD128 default. That default held only while NVIDIA probed
+    // first; a boot that enumerated xe first put it on the Intel GPU, the CUDA derive matched
+    // nothing, and NVENC died — reported as a mirror failure with VRAM half free.
+    void hostEncoderNamesTheRenderingNode() {
+        ResolvedConfig c;
+        c.hostEncodeFrameSocket = QStringLiteral("/f.sock");
+        c.hostEncodeVideoSocket = QStringLiteral("/v.sock");
+        const auto nodeOf = [](const QStringList &a) {
+            const int i = a.indexOf(QStringLiteral("--drm-node"));
+            return i >= 0 && i + 1 < a.size() ? a.at(i + 1) : QString();
+        };
+        QVERIFY(!buildHostEncoderArgv(c).contains(QStringLiteral("--drm-node")));
+        c.gpuNode = QString("/dev/dri/renderD128");
+        QCOMPARE(nodeOf(buildHostEncoderArgv(c)), QString("/dev/dri/renderD128"));
+        // Venus renders on NVIDIA while gpuNode stays the xe node gralloc opens: the NVIDIA one
+        // wins, whichever number the kernel handed it this boot.
+        c.venusNode = QString("/dev/dri/renderD129");
+        QCOMPARE(nodeOf(buildHostEncoderArgv(c)), QString("/dev/dri/renderD129"));
+    }
+
     // The idle timeout is not decoration: without it an abandoned encoder held ~2.9 GB of VRAM for
     // seven hours and starved every later one (bd remora-e5x.13). Pinned separately so a future
     // argv edit cannot quietly drop it, and pinned as >= the 240s cold-boot wait because the

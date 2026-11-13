@@ -575,6 +575,18 @@ fourcc_to_pixfmt(uint32_t fourcc)
  * MUST BE THE OPTS FORM. av_hwdevice_ctx_create_derived() takes no dictionary, so the option cannot
  * be expressed through it — that call is why the encoder could never have had a working direct
  * transfer, whatever ffmpeg it was linked against. */
+static bool
+vk_dev_props(AVBufferRef *vk_dev, VkPhysicalDeviceProperties *p)
+{
+   AVVulkanDeviceContext *vk = ((AVHWDeviceContext *)vk_dev->data)->hwctx;
+   PFN_vkGetPhysicalDeviceProperties fn = (PFN_vkGetPhysicalDeviceProperties)vk->get_proc_addr(
+      vk->inst, "vkGetPhysicalDeviceProperties");
+   if (!fn)
+      return false;
+   fn(vk->phys_dev, p);
+   return true;
+}
+
 static int
 vulkan_dev_from_drm(AVBufferRef **out, AVBufferRef *drm_dev)
 {
@@ -584,7 +596,25 @@ vulkan_dev_from_drm(AVBufferRef **out, AVBufferRef *drm_dev)
       return err;
    err = av_hwdevice_ctx_create_derived_opts(out, AV_HWDEVICE_TYPE_VULKAN, drm_dev, opts, 0);
    av_dict_free(&opts);
+   /* Named, because a wrong --drm-node is otherwise invisible: the import goes through, and the
+    * first thing to fail is NVENC several steps later with an error about a pointer. */
+   VkPhysicalDeviceProperties p;
+   if (err >= 0 && vk_dev_props(*out, &p))
+      fprintf(stderr, "[encoder] importing on %s (vendor 0x%04x)\n", p.deviceName, p.vendorID);
    return err;
+}
+
+/* CUDA can only be derived from an NVIDIA Vulkan device, and ffmpeg cannot be trusted to say so:
+ * its derive matches the Vulkan device's UUID against every CUDA device, and when none matches it
+ * logs "Could not derive CUDA device." and then returns SUCCESS (8.1.x — the error path keeps the
+ * 0 of the last cuDeviceGetUuid) with no context inside. Both callers took that at its word, so an
+ * encoder that landed on the Intel GPU chose NVENC, and died in OpenEncodeSessionEx with "invalid
+ * ptr" / "Bad address". Asked of the device instead of the derive's return code. */
+static bool
+vk_dev_is_nvidia(AVBufferRef *vk_dev)
+{
+   VkPhysicalDeviceProperties p;
+   return vk_dev_props(vk_dev, &p) && p.vendorID == 0x10de;
 }
 
 static void
@@ -959,7 +989,7 @@ resolve_codec(const char *requested, AVBufferRef *vk_dev)
       return "h264_vulkan";
    if (strcmp(requested, "hevc") && strcmp(requested, "h265"))
       return requested; /* explicit name — the caller knows best */
-   if (avcodec_find_encoder_by_name("hevc_nvenc")) {
+   if (avcodec_find_encoder_by_name("hevc_nvenc") && vk_dev_is_nvidia(vk_dev)) {
       AVBufferRef *cuda = NULL;
       if (av_hwdevice_ctx_create_derived(&cuda, AV_HWDEVICE_TYPE_CUDA, vk_dev, 0) >= 0) {
          av_buffer_unref(&cuda);
@@ -1115,6 +1145,14 @@ encoder_init(struct encoder *e, struct importer *im, const char *codec_name,
       exit(1);
    }
    if (nvenc) {
+      /* An EXPLICIT nvenc name skips resolve_codec's check, so it is repeated here: on another
+       * vendor's device the derive below "succeeds" empty (see vk_dev_is_nvidia). */
+      if (!vk_dev_is_nvidia(im->vk_dev)) {
+         fprintf(stderr, "remora-frame-encoder: %s needs the frames on an NVIDIA GPU, and "
+                         "--drm-node opened another vendor's — pass the node that rendered "
+                         "them\n", backend);
+         exit(1);
+      }
       if (!g_cuda_dev) {
          err = av_hwdevice_ctx_create_derived(&g_cuda_dev, AV_HWDEVICE_TYPE_CUDA, im->vk_dev, 0);
          if (!err) live_cuda_dev++;

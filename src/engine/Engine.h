@@ -26,6 +26,7 @@ struct ProcResult {
 using LineSink = std::function<void(const QString & /*stream*/, const QString & /*text*/)>;
 struct Detached {
     qint64 pid = 0;
+    QString log;  // this child's OWN stdout+stderr file; empty when the spawner keeps none
 };
 
 class Spawner {

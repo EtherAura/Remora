@@ -7,6 +7,13 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Fixed
+
+- The host frame encoder now runs on the GPU that rendered the frames. It used to open the first
+  render node, so on a boot that enumerated the Intel GPU before the NVIDIA one, NVENC failed with
+  "opening the encoder: Bad address" and the mirror reported "exited immediately after 5 attempts".
+  A mirror or encoder that dies is now reported with its own last log line, not another process's.
+
 ## [2026.10.0] - 2026-10-02
 
 ### Added
