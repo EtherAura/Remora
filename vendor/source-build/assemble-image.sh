@@ -43,9 +43,10 @@ if [ "${WITH_PUBLIC_RELEASE:-false}" = true ]; then
   *-public|*-public-*) ;;
   *) echo "assemble: a public release must carry a -public tag, not $TAG" >&2; exit 1 ;;
   esac
-  for _v in WITH_NDK WITH_PLAY_SPOOF WITH_SHAMIKO; do
-    eval "_val=\${$_v:-}"
-    [ "$_val" = true ] && { echo "assemble: public release refuses $_v=true (docs/IMAGE_MIRROR.md)" >&2; exit 1; }
+  for _v in "WITH_NDK=${WITH_NDK:-}" "WITH_PLAY_SPOOF=${WITH_PLAY_SPOOF:-}" \
+            "WITH_SHAMIKO=${WITH_SHAMIKO:-}"; do
+    [ "${_v#*=}" = true ] && {
+      echo "assemble: public release refuses ${_v%%=*}=true (docs/IMAGE_MIRROR.md)" >&2; exit 1; }
   done
   WITH_NDK=false
   PUBLIC=1
