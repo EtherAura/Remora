@@ -372,6 +372,23 @@ private slots:
         QCOMPARE(bad->reason, QStringLiteral("no"));
         QCOMPARE(consumed, 9);
         QVERIFY(!parseSessionReply(hex("00" "000000"), nullptr).has_value());
+
+        // More follows the reply on the wire (a listing, the control stream): consumed is the
+        // reply's own length, never the buffer's.
+        consumed = 0;
+        const auto okTail = parseSessionReply(hex("00" "0000002a" "00000003"), &consumed);
+        QVERIFY(okTail.has_value());
+        QCOMPARE(okTail->sessionId, quint32(42));
+        QCOMPARE(consumed, 5);
+        consumed = 0;
+        const auto badTail = parseSessionReply(hex("01" "00000000" "0002" "6e6f" "ff"), &consumed);
+        QVERIFY(badTail.has_value());
+        QCOMPARE(badTail->reason, QStringLiteral("no"));
+        QCOMPARE(consumed, 9);
+
+        // A failure whose u16 reason length has not fully arrived is not a reply yet.
+        QVERIFY(!parseSessionReply(hex("01" "00000000"), nullptr).has_value());
+        QVERIFY(!parseSessionReply(hex("01" "00000000" "00"), nullptr).has_value());
     }
 
     void agentTunnelArgvGolden() {
