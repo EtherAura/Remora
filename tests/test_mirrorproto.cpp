@@ -278,6 +278,24 @@ private slots:
         QCOMPARE(p.next()->clipboardText, QStringLiteral("hi"));
     }
 
+    void deviceAckIgnoresTrailingBytes() {
+        // A grown ACK body: the sequence is the first 8 bytes, the rest is ignored, and the size
+        // prefix still finds the next record.
+        DeviceMessageParser p;
+        p.feed(hex("0000000a" "02" "0000000000000042" "ff"
+                   "00000003" "01" "6869"));
+        auto ack = p.next();
+        QVERIFY(ack.has_value());
+        QCOMPARE(ack->type, DeviceRecord::ClipboardAck);
+        QCOMPARE(ack->sequence, Q_UINT64_C(0x42));
+        auto clip = p.next();
+        QVERIFY(clip.has_value());
+        QCOMPARE(clip->type, DeviceRecord::Clipboard);
+        QCOMPARE(clip->clipboardText, QStringLiteral("hi"));
+        QVERIFY(!p.next().has_value());
+        QVERIFY(!p.error());
+    }
+
     void mirrorForwardCandidates() {
         QCOMPARE(adbForwardListArgv("adb"), (QStringList{"adb", "forward", "--list"}));
         // The observed leak (bd remora-6f92): agent forwards from crashed sessions. Rows for other
