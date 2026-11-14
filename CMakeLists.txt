@@ -262,6 +262,44 @@ target_link_libraries(test_store PRIVATE remora_store remora_core Qt6::Test)
 target_compile_definitions(test_store PRIVATE REMORA_TEST_HOME="${REMORA_TEST_HOME}")
 add_test(NAME store COMMAND test_store)
 
+# --- fuzz targets (off by default; Clang only, in a build directory of their own; bd remora-fdcv) ---
+# The parser under test is compiled again, instrumented, into a library of its own: linking the
+# harness against remora_core would fuzz an uninstrumented parser. Every sanitizer flag is set on
+# these targets alone, so nothing else in the tree changes when the option is on.
+option(REMORA_FUZZ "Build the libFuzzer targets (Clang only) and the `fuzz`-labelled smoke tests" OFF)
+if(REMORA_FUZZ)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "REMORA_FUZZ needs Clang (libFuzzer), not ${CMAKE_CXX_COMPILER_ID}: "
+            "configure a separate build directory with -DCMAKE_C_COMPILER=clang "
+            "-DCMAKE_CXX_COMPILER=clang++")
+    endif()
+    set(REMORA_FUZZ_SANITIZERS -fsanitize=address,undefined -fno-sanitize-recover=all
+        -fno-omit-frame-pointer -g)
+    add_library(remora_fuzz_mirrorproto STATIC src/core/MirrorProto.cpp)
+    target_include_directories(remora_fuzz_mirrorproto PUBLIC src)
+    target_link_libraries(remora_fuzz_mirrorproto PUBLIC Qt6::Core)
+    target_compile_options(remora_fuzz_mirrorproto PRIVATE ${REMORA_FUZZ_SANITIZERS}
+        -fsanitize=fuzzer-no-link)
+
+    add_executable(remora_fuzz_device_message_parser tests/fuzz/fuzz_device_message_parser.cpp)
+    target_link_libraries(remora_fuzz_device_message_parser PRIVATE remora_fuzz_mirrorproto)
+    target_compile_options(remora_fuzz_device_message_parser PRIVATE ${REMORA_FUZZ_SANITIZERS}
+        -fsanitize=fuzzer)
+    target_link_options(remora_fuzz_device_message_parser PRIVATE ${REMORA_FUZZ_SANITIZERS}
+        -fsanitize=fuzzer)
+
+    # About ten seconds of fuzzing from the checked-in seeds. New inputs go to the first corpus
+    # directory, which is in the build tree, as do crash artifacts; the seed directory is only read.
+    set(_fuzz_out "${CMAKE_BINARY_DIR}/fuzz/device_message_parser")
+    file(MAKE_DIRECTORY "${_fuzz_out}/corpus" "${_fuzz_out}/artifacts")
+    add_test(NAME fuzz_device_message_parser
+        COMMAND remora_fuzz_device_message_parser -max_total_time=10 -timeout=10
+            -rss_limit_mb=2048 -print_final_stats=1 "-artifact_prefix=${_fuzz_out}/artifacts/"
+            "${_fuzz_out}/corpus" "${CMAKE_SOURCE_DIR}/tests/fuzz/corpus/device_message_parser")
+    set_tests_properties(fuzz_device_message_parser PROPERTIES LABELS fuzz TIMEOUT 60
+        ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=1;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
+endif()
+
 # ENVIRONMENT, not ENVIRONMENT_MODIFICATION: the latter needs CMake 3.22, and an older ctest drops
 # an unknown property silently, which would leave the run quietly unisolated. APPEND keeps whatever
 # else a test puts in its ENVIRONMENT. Register every test above this line.
