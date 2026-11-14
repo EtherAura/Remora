@@ -48,6 +48,19 @@ PARSE_SESSION_REPLY = {
     "agentSessionReplyParsing-halfLength": "01" "00000000" "00",
 }
 
+# textMessage takes a QString, not wire bytes, so these are harness inputs (fuzz_text_message.cpp):
+# a mode byte, then either the text's UTF-8 (mode < 0x80) or a prefix length, the prefix and a
+# unit repeated until the UTF-8 reaches 1 MiB - 1 - 64 + (mode & 0x7f) bytes (mode >= 0x80).
+TEXT_MESSAGE = {
+    # textGolden: "hé" as it is, record 00000004 02 68c3a9.
+    "textGolden": "00" "68c3a9",
+    # textTruncationGolden: "a" then U+1F600 x 262144 (target 1048577, mode 0x80 | 66), cut back
+    # to "a" + 262143 of them;
+    "textTruncationGolden-straddle": "c2" "01" "61" "f09f9880",
+    # and 1048575 x "a" (target 1048575, mode 0x80 | 64), which fits exactly.
+    "textTruncationGolden-fit": "c0" "00" "61",
+}
+
 
 def write(corpus: str, seeds: dict) -> None:
     out = HERE / "corpus" / corpus
@@ -59,3 +72,4 @@ def write(corpus: str, seeds: dict) -> None:
 if __name__ == "__main__":
     write("device_message_parser", DEVICE_MESSAGE_PARSER)
     write("parse_session_reply", PARSE_SESSION_REPLY)
+    write("text_message", TEXT_MESSAGE)
