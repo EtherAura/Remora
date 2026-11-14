@@ -298,6 +298,22 @@ if(REMORA_FUZZ)
             "${_fuzz_out}/corpus" "${CMAKE_SOURCE_DIR}/tests/fuzz/corpus/device_message_parser")
     set_tests_properties(fuzz_device_message_parser PROPERTIES LABELS fuzz TIMEOUT 60
         ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=1;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
+
+    add_executable(remora_fuzz_parse_session_reply tests/fuzz/fuzz_parse_session_reply.cpp)
+    target_link_libraries(remora_fuzz_parse_session_reply PRIVATE remora_fuzz_mirrorproto)
+    target_compile_options(remora_fuzz_parse_session_reply PRIVATE ${REMORA_FUZZ_SANITIZERS}
+        -fsanitize=fuzzer)
+    target_link_options(remora_fuzz_parse_session_reply PRIVATE ${REMORA_FUZZ_SANITIZERS}
+        -fsanitize=fuzzer)
+
+    set(_fuzz_out "${CMAKE_BINARY_DIR}/fuzz/parse_session_reply")
+    file(MAKE_DIRECTORY "${_fuzz_out}/corpus" "${_fuzz_out}/artifacts")
+    add_test(NAME fuzz_parse_session_reply
+        COMMAND remora_fuzz_parse_session_reply -max_total_time=10 -timeout=10
+            -rss_limit_mb=2048 -print_final_stats=1 "-artifact_prefix=${_fuzz_out}/artifacts/"
+            "${_fuzz_out}/corpus" "${CMAKE_SOURCE_DIR}/tests/fuzz/corpus/parse_session_reply")
+    set_tests_properties(fuzz_parse_session_reply PROPERTIES LABELS fuzz TIMEOUT 60
+        ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=1;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
 endif()
 
 # ENVIRONMENT, not ENVIRONMENT_MODIFICATION: the latter needs CMake 3.22, and an older ctest drops

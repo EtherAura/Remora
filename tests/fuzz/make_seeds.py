@@ -29,6 +29,25 @@ DEVICE_MESSAGE_PARSER = {
     "deviceFramingErrorLatches-atCap": "0010000001",
 }
 
+PARSE_SESSION_REPLY = {
+    # No bytes at all: below every vector here, so not a reply.
+    "empty": "",
+    # agentSessionReplyParsing: a success reply, session 42.
+    "agentSessionReplyParsing-ok": "00" "0000002a",
+    # a failure whose two-byte reason has one byte so far,
+    "agentSessionReplyParsing-badTruncated": "01" "00000000" "0002" "6e",
+    # the same failure complete, reason "no",
+    "agentSessionReplyParsing-bad": "01" "00000000" "0002" "6e6f",
+    # a header one byte short,
+    "agentSessionReplyParsing-shortHeader": "00" "000000",
+    # each reply with more of the stream after it,
+    "agentSessionReplyParsing-okTail": "00" "0000002a" "00000003",
+    "agentSessionReplyParsing-badTail": "01" "00000000" "0002" "6e6f" "ff",
+    # and a failure whose u16 reason length has not arrived, then has half arrived.
+    "agentSessionReplyParsing-noLength": "01" "00000000",
+    "agentSessionReplyParsing-halfLength": "01" "00000000" "00",
+}
+
 
 def write(corpus: str, seeds: dict) -> None:
     out = HERE / "corpus" / corpus
@@ -39,3 +58,4 @@ def write(corpus: str, seeds: dict) -> None:
 
 if __name__ == "__main__":
     write("device_message_parser", DEVICE_MESSAGE_PARSER)
+    write("parse_session_reply", PARSE_SESSION_REPLY)
