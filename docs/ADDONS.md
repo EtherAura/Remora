@@ -91,6 +91,14 @@ the image as a file:
 The execs run in the context `u:r:su:s0`. The sources call that context inert, because the
 container runs with SELinux disabled.
 
+### Security: an su grant is host root
+
+The Android container always runs `--privileged` (`buildDockerRunArgv` in `src/core/Builders.cpp`;
+see `SECURITY.md`). Granting a guest app `su` must therefore be treated as granting it host-level
+privileges: it reaches the host kernel and devices through the container. The DenyList and Shamiko
+only hide root from apps; they do not contain it and are not a security boundary. This is the
+threat model a privileged container implies, not a demonstrated flaw in Remora's own client.
+
 ### What it needs from the build, and what it does not
 
 The build only places files: the seven prebuilts and the four copy pairs above. There is no

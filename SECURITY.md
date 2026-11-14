@@ -22,6 +22,10 @@ the design:
 - **The Android container runs `--privileged`.** Android's init, its binder devices and GPU access
   need it. Root inside the container is therefore close to root on the docker host: run images you
   built, from sources you trust, and treat a compromised Android instance as a compromised host.
+  The same holds for an image built with root (`magisk_root`): granting an app `su` in the guest
+  gives it host-level privileges, reaching the host kernel and devices through the container.
+  Hiding root from apps (DenyList, Shamiko) is not a security boundary and contains nothing. This
+  is what `--privileged` means, not a known flaw in Remora's own client.
 - **Docker group membership is root-equivalent** on the machine that runs the containers. Remora
   requires it for the `bare` target; that is Docker's model, not something Remora adds.
 - **adb is a root shell into the device, reachable on the instance's adb port.** A `bare` instance
