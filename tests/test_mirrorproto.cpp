@@ -153,6 +153,12 @@ private slots:
         const FramePoint none = framePoint({10, 10}, {0, 0});  // degenerate frame
         QCOMPARE(none.x, 0.0f);
         QCOMPARE(none.y, 0.0f);
+        // Either side alone being zero or negative is degenerate too; QSize() is (-1, -1).
+        for (const QSize size : {QSize(1920, 0), QSize(0, 1080), QSize(), QSize(-1920, 1080)}) {
+            const FramePoint p = framePoint({10, 10}, size);
+            QCOMPARE(p.x, 0.0f);
+            QCOMPARE(p.y, 0.0f);
+        }
     }
 
     // Media streams ---------------------------------------------------------------------------
