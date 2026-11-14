@@ -7,6 +7,8 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+## [2026.11.1] - 2026-11-14
+
 ### Fixed
 
 - **A source build no longer deadlocks on a tree that has never been built.** Before, with
@@ -157,7 +159,8 @@ First public release.
   then mirror with Remora's own Qt/FFmpeg client and an agent baked into the image — video, audio,
   input, clipboard, desktop-mode displays and app listing.
 
-[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.0...HEAD
+[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.1...HEAD
+[2026.11.1]: https://github.com/EtherAura/Remora/compare/v2026.11.0...v2026.11.1
 [2026.11.0]: https://github.com/EtherAura/Remora/compare/v2026.10.0...v2026.11.0
 [2026.10.0]: https://github.com/EtherAura/Remora/compare/edf8471e0a38447667502e70c19115ee6c014083...v2026.10.0
 [2026.09]: https://github.com/EtherAura/Remora/commit/edf8471e0a38447667502e70c19115ee6c014083
