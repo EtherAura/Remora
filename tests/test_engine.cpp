@@ -697,9 +697,251 @@ public:
     void waitMs(int) override {}
 };
 
+// bd remora-lqnv: runs the REAL generated chain from its Mesa staging step to the end, through
+// /bin/sh, with every outside command faked — stage-features.sh, assemble-image.sh and docker log
+// what they were asked to do into <dir>/log, and a failure is arranged by a file under <dir>/fake.
+// No Docker, no tree, nothing outside the temporary directory.
+struct MesaTailRun {
+    int rc = -1;
+    QString out, log;
+};
+struct MesaTailSetup {
+    bool payload = false;        // features/mesa_source/lib64 exists
+    bool prereqsBuilt = false;   // libdrm.so + libva's generated header already in out/
+    bool doBuildScript = true;   // source-build/do-build.sh exists (absent = the cp fails)
+    bool publicRelease = false;
+    int stageRc = 0, builderRc = 0, moduleRc = 0;
+    bool moduleMakesNothing = false;  // module build exits 0 but installs nothing
+};
+static void writeExec(const QString &path, const QByteArray &body) {
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(body);
+    f.close();
+    QVERIFY(f.setPermissions(f.permissions() | QFileDevice::ExeOwner));
+}
+static MesaTailRun runMesaTail(const QString &dir, const MesaTailSetup &s) {
+    MesaTailRun r;
+    const QString tree = dir + QStringLiteral("/tree"), sb = dir + QStringLiteral("/sb"),
+                  fake = dir + QStringLiteral("/fake"), bin = dir + QStringLiteral("/bin");
+    for (const QString &d : {tree, sb + QStringLiteral("/features"), fake, bin}) QDir().mkpath(d);
+    const QString drm = tree + QStringLiteral("/out/target/product/remora_x86_64/vendor/lib64");
+    const QString vag =
+        tree + QStringLiteral("/out/soong/.intermediates/external/libva/libva_gen_headers/gen/va");
+    if (s.payload) QDir().mkpath(sb + QStringLiteral("/features/mesa_source/lib64"));
+    if (s.prereqsBuilt) {
+        QDir().mkpath(drm);
+        QDir().mkpath(vag);
+        QFile(drm + QStringLiteral("/libdrm.so")).open(QIODevice::WriteOnly);
+        QFile(vag + QStringLiteral("/va_version.h")).open(QIODevice::WriteOnly);
+    }
+    if (s.doBuildScript) writeExec(sb + QStringLiteral("/do-build.sh"), "#!/bin/sh\n");
+    auto rcFile = [&](const char *name, int rc) {
+        QFile f(fake + QLatin1Char('/') + QLatin1String(name));
+        if (f.open(QIODevice::WriteOnly)) f.write(QByteArray::number(rc));
+    };
+    rcFile("stage-rc", s.stageRc);
+    rcFile("build-rc", s.builderRc);
+    rcFile("module-rc", s.moduleRc);
+    // The real stage-features.sh refuses Mesa staging without its payload; so does the fake.
+    writeExec(sb + QStringLiteral("/stage-features.sh"),
+              "#!/bin/sh\necho \"STAGE mesa=${WITH_MESA_SOURCE:-false}\" >> \"$FAKE_DIR/../log\"\n"
+              "if [ \"$WITH_MESA_SOURCE\" = true ] && [ ! -d \"$2/mesa_source/lib64\" ]; then "
+              "exit 1; fi\nexit \"$(cat \"$FAKE_DIR/stage-rc\")\"\n");
+    writeExec(sb + QStringLiteral("/assemble-image.sh"),
+              "#!/bin/sh\necho ASSEMBLE >> \"$FAKE_DIR/../log\"\n");
+    writeExec(bin + QStringLiteral("/docker"),
+              QStringLiteral(
+                  "#!/bin/sh\nL=\"$FAKE_DIR/../log\"\ncase \"$1\" in\n"
+                  "image) exit 0 ;;\n"
+                  "build) echo BUILDER-BUILD >> \"$L\"; exit \"$(cat \"$FAKE_DIR/build-rc\")\" ;;\n"
+                  "run) case \"$*\" in\n"
+                  "  *--module*) echo \"MODULE-BUILD $*\" >> \"$L\"; "
+                  "rc=$(cat \"$FAKE_DIR/module-rc\"); if [ \"$rc\" = 0 ] && [ %3 = no ]; then "
+                  "mkdir -p %1 %2 && : > %1/libdrm.so && : > %2/va_version.h; fi; exit \"$rc\" ;;\n"
+                  "  *) echo FULL-BUILD >> \"$L\"; exit 0 ;;\n  esac ;;\nesac\nexit 0\n")
+                  .arg(drm, vag, s.moduleMakesNothing ? QStringLiteral("yes") : QStringLiteral("no"))
+                  .toUtf8());
+
+    SourceBuildPlan plan;
+    plan.tree = tree;
+    plan.sourceBuildDir = sb;
+    plan.builtTag = QStringLiteral("remora24:x86_64-src");
+    plan.androidVersion = 17;
+    plan.withAgent = plan.withMesaSource = true;
+    plan.publicRelease = s.publicRelease;
+    auto noVendor = [](const QString &) { return QList<QPair<QString, QByteArray>>(); };
+    const QStringList steps = sourceBuildSteps(plan, noVendor);
+    qsizetype first = -1;
+    for (qsizetype i = 0; i < steps.size() && first < 0; ++i)
+        if (steps.at(i).contains(QLatin1String("stage-features.sh"))) first = i;
+    if (first < 0) return r;
+
+    QProcess p;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("PATH"), bin + QLatin1Char(':') + env.value(QStringLiteral("PATH")));
+    env.insert(QStringLiteral("FAKE_DIR"), fake);
+    env.insert(QStringLiteral("HOME"), dir);
+    p.setProcessEnvironment(env);
+    p.setProcessChannelMode(QProcess::MergedChannels);
+    p.start(QStringLiteral("/bin/sh"), {QStringLiteral("-c"), sourceBuildCommand(steps.mid(first))});
+    if (!p.waitForFinished(30000)) return r;
+    r.rc = p.exitCode();
+    r.out = QString::fromUtf8(p.readAll());
+    QFile lf(dir + QStringLiteral("/log"));
+    if (lf.open(QIODevice::ReadOnly)) r.log = QString::fromUtf8(lf.readAll());
+    return r;
+}
+
 class TestEngine : public QObject {
     Q_OBJECT
 private slots:
+    // bd remora-lqnv. A fresh tree with mesa_source on and no payload: the chain prepares exactly
+    // what build-mesa.sh reads from the tree, then STOPS — nonzero, with the helper's invocation,
+    // and without staging Mesa, building the image, assembling it or recording patch state.
+    void missingMesaPayloadPreparesLibdrmThenStops() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const MesaTailRun r = runMesaTail(dir.path(), {});
+        QVERIFY2(r.rc != 0, qPrintable(r.out));
+        // staged WITHOUT Mesa (the only staging the module build's guard accepts), then the builder,
+        // then the module build — in that order
+        const qsizetype stage = r.log.indexOf(QLatin1String("STAGE mesa=false"));
+        const qsizetype builder = r.log.indexOf(QLatin1String("BUILDER-BUILD"));
+        const qsizetype module = r.log.indexOf(QLatin1String("MODULE-BUILD"));
+        QVERIFY2(stage >= 0 && builder > stage && module > builder, qPrintable(r.log));
+        for (const char *m : {"libdrm", "libdrm_amdgpu", "libdrm_intel", "libva_gen_headers"})
+            QVERIFY2(r.log.contains(QLatin1Char(' ') + QLatin1String(m)), m);
+        QVERIFY2(!r.log.contains(QLatin1String("STAGE mesa=true")), qPrintable(r.log));
+        QVERIFY2(!r.log.contains(QLatin1String("FULL-BUILD")), qPrintable(r.log));
+        QVERIFY2(!r.log.contains(QLatin1String("ASSEMBLE")), qPrintable(r.log));
+        QVERIFY2(!r.out.contains(QLatin1String("patch state recorded")), qPrintable(r.out));
+        QVERIFY2(r.out.contains(QStringLiteral("REMORA_MESA_TREE=%1/tree").arg(dir.path())),
+                 qPrintable(r.out));
+        QVERIFY2(r.out.contains(QLatin1String("vendor/host-prereqs/mesa-android/build-mesa.sh")),
+                 qPrintable(r.out));
+        QVERIFY2(r.out.contains(QStringLiteral("REMORA_MESA_OUT=%1/sb/features/mesa_source/lib64")
+                                    .arg(dir.path())),
+                 qPrintable(r.out));
+    }
+
+    // THE REGRESSION THE FIRST CANDIDATE HAD: a failed staging or a failed cp must stop the
+    // preparation dead — no builder image, no module build, no full build, no instructions that
+    // read as "ready". Each failure is checked separately.
+    void mesaPreparationStopsOnEveryEarlyFailure() {
+        struct Case {
+            const char *name;
+            MesaTailSetup setup;
+            QStringList mustNotRun;
+        };
+        MesaTailSetup stageFails, cpFails, builderFails, moduleFails, moduleEmpty;
+        stageFails.stageRc = 1;
+        cpFails.doBuildScript = false;
+        builderFails.builderRc = 1;
+        moduleFails.moduleRc = 2;
+        moduleEmpty.moduleMakesNothing = true;
+        const QStringList all{QStringLiteral("BUILDER-BUILD"), QStringLiteral("MODULE-BUILD"),
+                              QStringLiteral("FULL-BUILD"), QStringLiteral("ASSEMBLE"),
+                              QStringLiteral("STAGE mesa=true")};
+        const QList<Case> cases{
+            {"staging fails", stageFails, all},
+            {"cp fails", cpFails, all},
+            {"builder fails", builderFails, all.mid(1)},
+            {"module build fails", moduleFails, all.mid(2)},
+            {"module build installs nothing", moduleEmpty, all.mid(2)},
+        };
+        for (const Case &c : cases) {
+            QTemporaryDir dir;
+            QVERIFY(dir.isValid());
+            const MesaTailRun r = runMesaTail(dir.path(), c.setup);
+            QVERIFY2(r.rc > 0, c.name);
+            for (const QString &m : c.mustNotRun)
+                QVERIFY2(!r.log.contains(m),
+                         qPrintable(QStringLiteral("%1: %2 ran\n%3").arg(QLatin1String(c.name), m,
+                                                                         r.log)));
+            QVERIFY2(!r.out.contains(QLatin1String("build-mesa.sh")),
+                     qPrintable(QLatin1String(c.name) + QLatin1Char('\n') + r.out));
+            QVERIFY2(!r.out.contains(QLatin1String("patch state recorded")), c.name);
+        }
+    }
+
+    // Prerequisites a previous build left in out/ are reused: no staging, no Docker at all, straight
+    // to the helper's invocation — and still a stop, never a build.
+    void mesaPreparationReusesBuiltPrerequisites() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        MesaTailSetup s;
+        s.prereqsBuilt = true;
+        const MesaTailRun r = runMesaTail(dir.path(), s);
+        QVERIFY(r.rc != 0);
+        QVERIFY2(r.log.isEmpty(), qPrintable(r.log));
+        QVERIFY2(r.out.contains(QLatin1String("build-mesa.sh")), qPrintable(r.out));
+        QVERIFY(!r.out.contains(QLatin1String("patch state recorded")));
+    }
+
+    // A public release must not be staged without Mesa — its staging refuses that by policy — so a
+    // missing payload with nothing built is refused before anything runs, naming the way round.
+    void publicMesaPreparationRefusesToStageWithoutMesa() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        MesaTailSetup s;
+        s.publicRelease = true;
+        const MesaTailRun r = runMesaTail(dir.path(), s);
+        QVERIFY(r.rc > 0);
+        QVERIFY2(r.log.isEmpty(), qPrintable(r.log));
+        QVERIFY2(r.out.contains(QLatin1String("public release")), qPrintable(r.out));
+        QVERIFY(!r.out.contains(QLatin1String("patch state recorded")));
+        // with the prerequisites already built, the public route reaches the helper too
+        QTemporaryDir dir2;
+        s.prereqsBuilt = true;
+        const MesaTailRun r2 = runMesaTail(dir2.path(), s);
+        QVERIFY(r2.rc > 0);
+        QVERIFY2(r2.log.isEmpty(), qPrintable(r2.log));
+        QVERIFY2(r2.out.contains(QLatin1String("build-mesa.sh")), qPrintable(r2.out));
+    }
+
+    // With the payload present nothing changes: Mesa is staged, the full build and assembly run,
+    // patch state is recorded, no module build happens, and every step after staging is the very
+    // text a mesa-less plan generates.
+    void presentMesaPayloadKeepsTheNormalRoute() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        MesaTailSetup s;
+        s.payload = true;
+        const MesaTailRun r = runMesaTail(dir.path(), s);
+        QVERIFY2(r.rc == 0, qPrintable(r.out + r.log));
+        QVERIFY2(!r.log.contains(QLatin1String("MODULE-BUILD")), qPrintable(r.log));
+        QVERIFY2(!r.log.contains(QLatin1String("STAGE mesa=false")), qPrintable(r.log));
+        const qsizetype stage = r.log.indexOf(QLatin1String("STAGE mesa=true"));
+        const qsizetype full = r.log.indexOf(QLatin1String("FULL-BUILD"));
+        QVERIFY2(stage >= 0 && full > stage && r.log.indexOf(QLatin1String("ASSEMBLE")) > full,
+                 qPrintable(r.log));
+        QVERIFY(r.out.contains(QLatin1String("patch state recorded")));
+        QVERIFY(!r.out.contains(QLatin1String("build-mesa.sh")));
+
+        auto noVendor = [](const QString &) { return QList<QPair<QString, QByteArray>>(); };
+        SourceBuildPlan p;
+        p.tree = QStringLiteral("/src/tree");
+        p.sourceBuildDir = QStringLiteral("/root/source-build");
+        p.builtTag = QStringLiteral("t:1");
+        p.androidVersion = 17;
+        p.withAgent = true;
+        const QStringList without = sourceBuildSteps(p, noVendor);
+        p.withMesaSource = true;
+        const QStringList with = sourceBuildSteps(p, noVendor);
+        QCOMPARE(with.size(), without.size());
+        qsizetype stageIdx = -1;
+        for (qsizetype i = 0; i < with.size(); ++i) {
+            if (with.at(i).contains(QLatin1String("stage-features.sh"))) {
+                stageIdx = i;
+                break;
+            }
+            QCOMPARE(with.at(i), without.at(i));
+        }
+        QVERIFY(stageIdx >= 0);
+        QCOMPARE(with.mid(stageIdx + 1), without.mid(stageIdx + 1));
+    }
+
     // A FAILING STEP MUST STOP THE CHAIN. This is behavioural, not textual, because the bug it
     // guards was invisible to every string-comparison test: the chain LOOKED right and ran wrong.
     //

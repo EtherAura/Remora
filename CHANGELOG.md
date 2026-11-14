@@ -7,6 +7,18 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Fixed
+
+- **A source build no longer deadlocks on a tree that has never been built.** Before, with
+  `mesa_source` enabled and no Mesa payload, staging refused, and `build-mesa.sh` needed a libdrm
+  that only a build could make. Now `remora build --source` builds just libdrm, its backends and
+  the libva headers that script reads. It reuses them when they are already built. It then stops
+  with a nonzero status and prints the `build-mesa.sh` command to run before building again. It
+  does not run that script, build the image or record the build as done. A failure during this
+  preparation stops everything after it. A `public_release` profile refuses this preparation
+  unless those libraries are already built. With the payload present, the build runs as before.
+  This route is tested offline with fake commands only. It has not yet been run on a fresh tree.
+
 ## [2026.11.0] - 2026-11-13
 
 ### Added

@@ -79,8 +79,17 @@ The script needs `git`, `meson`, `ninja`, `cmake`, `pkg-config` and `python3`. I
 resumable, and the expensive ones cache in the work directory. Two things to know:
 
 - It takes the target libdrm from the source tree's build output
-  (`out/target/product/remora_x86_64/vendor/lib64`), and stops with a message telling you to build
-  the image first when that output is not there yet.
+  (`out/target/product/remora_x86_64/vendor/lib64`) and libva's generated headers, and stops when
+  that output is not there yet. On a tree that has never been built, run `remora build --source`
+  first, with `mesa_source` enabled. When the payload is missing, the source build prepares only
+  these inputs: it stages the tree without Mesa, ensures the builder image, and builds libdrm, its
+  four backends and the libva headers through `do-build.sh --module`. It reuses them if a previous
+  build left them in place. Then it stops with a nonzero status and prints the exact
+  `build-mesa.sh` command for this tree and payload directory. It does not run that script, and it
+  does not build or assemble the image. Run the printed command, then run the source build again.
+  A failure while it prepares those inputs stops the build at that point. A `public_release`
+  profile cannot stage without Mesa, so it refuses this preparation unless the inputs are already
+  built. Prepare them with one non-public `mesa_source` build of the same tree.
 - A machine that renders through NVIDIA cannot exercise this payload, because Android there uses
   the Venus driver. Validate a new payload on an Intel or AMD host, and keep a rollback image tag
   when you adopt one. [The Mesa README](../../vendor/host-prereqs/mesa-android/README.md) has the

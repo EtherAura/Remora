@@ -597,6 +597,8 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
     // vendored Dockerfile recreates the builder image on any machine when it's missing
     // stage the à-la-carte prebuilt features (gapps/ndk/magisk) into the tree + wire the
     // product makefile — AFTER the patch reset, so the inheritance lines survive
+    qsizetype mesaStageIdx = -1;
+    QString mesaPrepFenv;
     {
         QString fenv;
         if (withGapps) fenv += QStringLiteral("WITH_GAPPS=true ");
@@ -632,6 +634,10 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
         // is `[ "$WITH_X" = true ] && stage …`, so an empty env is a clean no-op for them.
         steps << QStringLiteral("%1sh %2/stage-features.sh %3 %2/features")
                      .arg(fenv, sbuild, tree);
+        if (withMesaSource) {
+            mesaStageIdx = steps.size() - 1;
+            mesaPrepFenv = QString(fenv).remove(QStringLiteral("WITH_MESA_SOURCE=true "));
+        }
     }
     // CPU arch variant (bd remora-bm7.11): write the requested -march level into the device
     // BoardConfig — AFTER the patch reset, like the staging edits, so it survives to the build.
@@ -942,6 +948,87 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
                   // Every A17 source build has failed this way since the value was first passed
                   // (bd remora-82c.12).
                   .arg(lunchConfigFor(androidVer));
+    // A FRESH TREE HAS NO ROUTE TO ITS FIRST MESA PAYLOAD WITHOUT THIS (bd remora-lqnv). Staging
+    // refuses mesa_source with no payload, and build-mesa.sh refuses to make one until the tree's
+    // target libdrm is built — so on a never-built tree each waits for the other. When the payload
+    // is absent, this builds only what that helper reads out of the tree (libdrm and its backends
+    // into the product's vendor/lib64, libva's soong-generated headers) through do-build.sh's own
+    // --module path, then STOPS, nonzero, naming the helper. It never runs the helper and never
+    // lets the chain carry on: the image would have no GL/Vulkan stack, and nothing past this
+    // point may record a build that did not happen.
+    //
+    // A SUBSHELL, AND EVERY COMMAND IN IT CARRIES ITS OWN `|| exit`. The first cut of this put the
+    // builder check — `inspect || docker build` — bare inside an && list, where `||` binds to the
+    // whole list on its left: a failed staging or cp fell through to docker build, the module build
+    // and a "ready" message. Here a failure anywhere leaves the subshell nonzero, and the && before
+    // the real staging stops the chain. `exit` is safe because it only leaves the subshell; the pty
+    // sentinel after the chain still prints.
+    //
+    // The staging here is WITHOUT Mesa: do-build.sh refuses a module build on an unstaged tree
+    // (bd remora-25u) and stage-features.sh refuses Mesa without its payload, so this is the only
+    // staging that can precede the payload. A public release forbids exactly that staging, so it
+    // is refused rather than relaxed — unless the prerequisites are already built, when no staging
+    // is needed at all. The paths are the helper's own (stage 3 of build-mesa.sh); the product
+    // directory is the lunch's product, the same one the helper names.
+    if (mesaStageIdx >= 0) {
+        const QString product = lunchConfigFor(androidVer).section(QLatin1Char('-'), 0, 0);
+        const QString payload = sbuild + QStringLiteral("/features/mesa_source/lib64");
+        const QString drm = tree + QStringLiteral("/out/target/product/") + product
+                            + QStringLiteral("/vendor/lib64/libdrm.so");
+        const QString vaHeader = tree + QStringLiteral(
+            "/out/soong/.intermediates/external/libva/libva_gen_headers/gen/va/va_version.h");
+        const QString prepare =
+            plan.publicRelease
+                ? QStringLiteral("echo \"mesa_source: public release — preparing libdrm means "
+                                 "staging this tree without Mesa, which a public release refuses. "
+                                 "Run one source build of a non-public profile with mesa_source "
+                                 "against this tree to build them, then this one again\" >&2; "
+                                 "exit 1")
+                : mesaPrepFenv
+                      + QStringLiteral("sh %1/stage-features.sh %2 %1/features || { echo "
+                                       "\"mesa_source preparation: staging without Mesa failed — "
+                                       "stopping\" >&2; exit 1; }; ")
+                            .arg(sbuild, tree)
+                      + QStringLiteral("cp %1/do-build.sh %2/do-build.sh || { echo \"mesa_source "
+                                       "preparation: copying do-build.sh failed — stopping\" >&2; "
+                                       "exit 1; }; ")
+                            .arg(sbuild, tree)
+                      + QStringLiteral("{ [ \"$(docker image inspect -f '{{index .Config.Labels "
+                                       "\"remora.builder\"}}' remora-builder:latest 2>/dev/null)\" "
+                                       "= 2 ] || docker build -t remora-builder:latest -f "
+                                       "%1/builder.Dockerfile %1; } || { echo \"mesa_source "
+                                       "preparation: the builder image failed — stopping\" >&2; "
+                                       "exit 1; }; ")
+                            .arg(sbuild)
+                      // the full build's own container run, so the module build gets the same
+                      // lunch, bounds and environment — only do-build.sh's arguments differ
+                      + steps.last()
+                      + QStringLiteral(" --module \"libdrm libdrm_amdgpu libdrm_intel "
+                                       "libdrm_nouveau libdrm_radeon libva_gen_headers\" || { echo "
+                                       "\"mesa_source preparation: the libdrm module build failed — "
+                                       "stopping\" >&2; exit 1; }; ")
+                      + QStringLiteral("for f in %1 %2; do [ -f \"$f\" ] || { echo \"mesa_source "
+                                       "preparation: the module build left no $f, which the Mesa "
+                                       "helper needs — stopping\" >&2; exit 1; }; done")
+                            .arg(drm, vaHeader);
+        steps[mesaStageIdx] =
+            QStringLiteral("( if [ -d %1 ]; then exit 0; fi; "
+                           "echo \"=== mesa_source: no payload at %1 — preparing what the Mesa "
+                           "helper reads from the tree (bd remora-lqnv) ===\"; "
+                           "if [ -f %2 ] && [ -f %3 ]; then echo \"mesa_source: libdrm and the libva "
+                           "headers are already built — reusing them\"; else ")
+                .arg(payload, drm, vaHeader)
+            + prepare
+            + QStringLiteral("; fi; "
+                             "echo \"mesa_source: the tree is ready for build-mesa.sh. The image was "
+                             "NOT built — make the Mesa payload first, from a Remora checkout on "
+                             "this build host:\"; "
+                             "echo \"  REMORA_MESA_NDK=<ndk> REMORA_MESA_TREE=%1 REMORA_MESA_OUT=%2 "
+                             "vendor/host-prereqs/mesa-android/build-mesa.sh\"; "
+                             "echo \"then run this source build again.\"; exit 1 ) && ")
+                  .arg(tree, payload)
+            + steps.at(mesaStageIdx);
+    }
     // package the compiled partitions into a bootable docker image on the host (the builder
     // container has no docker) — this is what makes the build show up in Built images. The tag
     // (builtTag, computed up front) reflects the baked-in features, with a -src marker so a
