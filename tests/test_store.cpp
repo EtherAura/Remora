@@ -1,10 +1,42 @@
+#include <QDir>
+#include <QFileInfo>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QtTest>
 
+#include <algorithm>
+
 #include "store/Store.h"
 
 using namespace remora;
+
+// Whether `path` resolves strictly inside `root`, compared component by component. Every symlink
+// is followed, the leaf included: an existing leaf is canonicalized whole, and only a leaf that
+// does not exist at all (not even as a dangling link) is placed under its canonicalized parent.
+// Anything that cannot be resolved (a dangling link, a missing ancestor, a missing root) is
+// reported outside, never judged by its spelling.
+static bool within(const QString &path, const QString &root) {
+    const QString canonicalRoot = QFileInfo(root).canonicalFilePath();
+    if (canonicalRoot.isEmpty())
+        return false;
+    const QFileInfo leaf(path);
+    QString resolved;
+    if (leaf.exists() || leaf.isSymLink()) {
+        resolved = leaf.canonicalFilePath();
+    } else {
+        const QString name = leaf.fileName();
+        const QString parent = QFileInfo(leaf.absolutePath()).canonicalFilePath();
+        if (parent.isEmpty() || name.isEmpty() || name == QStringLiteral(".") ||
+            name == QStringLiteral(".."))
+            return false;
+        resolved = parent + QLatin1Char('/') + name;
+    }
+    if (resolved.isEmpty())
+        return false;
+    const QStringList r = canonicalRoot.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    const QStringList p = resolved.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    return p.size() > r.size() && std::equal(r.cbegin(), r.cend(), p.cbegin());
+}
 
 // The store's one hard contract beyond round-tripping: a save must never destroy keys the
 // writing binary's model does not know. Old binaries save routinely — the GUI writes settings
@@ -18,6 +50,60 @@ class TestStore : public QObject {
     QString rc(const QTemporaryDir &dir) const { return dir.filePath(QStringLiteral("remorarc")); }
 
 private slots:
+    // Every case below writes to a QTemporaryDir, but the store's default path is the user's real
+    // remorarc. ctest gives each suite a HOME and XDG_* inside the build tree; this refuses to run
+    // at all unless the default path really resolves inside it, so a later case that reaches the
+    // default path can only ever touch the build tree, and a passing suite proves the isolation.
+    void initTestCase() {
+        const QString path = defaultRemorarcPath();
+        if (!within(path, QStringLiteral(REMORA_TEST_HOME)))
+            QFAIL(qPrintable(QStringLiteral("default remorarc %1 is not inside the isolated test "
+                                            "HOME %2; run the suite through ctest")
+                                 .arg(path, QStringLiteral(REMORA_TEST_HOME))));
+    }
+
+    // The guard above is only as good as within(): a symlinked leaf, a sibling whose name merely
+    // starts with the root's, or a link that resolves nowhere must all count as outside.
+    void withinFollowsLinksAndComparesComponents() {
+        QTemporaryDir base;
+        QVERIFY(base.isValid());
+        const QDir b(base.path());
+        QVERIFY(b.mkpath(QStringLiteral("home/.config")));
+        QVERIFY(b.mkpath(QStringLiteral("homex/.config")));
+        QVERIFY(b.mkpath(QStringLiteral("outside")));
+        const QString root = b.filePath(QStringLiteral("home"));
+        const QString cfg = b.filePath(QStringLiteral("home/.config"));
+        const QString outsideFile = b.filePath(QStringLiteral("outside/remorarc"));
+        for (const QString &f : {outsideFile, cfg + QStringLiteral("/real")}) {
+            QFile file(f);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+        }
+
+        // Inside: a file not yet created, an existing one, and a link that stays in the root.
+        QVERIFY(within(cfg + QStringLiteral("/remorarc"), root));
+        QVERIFY(within(cfg + QStringLiteral("/real"), root));
+        QVERIFY(QFile::link(cfg + QStringLiteral("/real"), cfg + QStringLiteral("/inner")));
+        QVERIFY(within(cfg + QStringLiteral("/inner"), root));
+
+        // An existing leaf link whose target is outside, though its parent is inside.
+        QVERIFY(QFile::link(outsideFile, cfg + QStringLiteral("/leaf")));
+        QVERIFY(!within(cfg + QStringLiteral("/leaf"), root));
+        // A sibling that shares the root's spelling as a string prefix.
+        QVERIFY(!within(b.filePath(QStringLiteral("homex/.config/remorarc")), root));
+        // Dangling links, whether the missing target would be outside or inside.
+        QVERIFY(QFile::link(b.filePath(QStringLiteral("outside/none")),
+                            cfg + QStringLiteral("/dangling-out")));
+        QVERIFY(!within(cfg + QStringLiteral("/dangling-out"), root));
+        QVERIFY(QFile::link(cfg + QStringLiteral("/none"), cfg + QStringLiteral("/dangling-in")));
+        QVERIFY(!within(cfg + QStringLiteral("/dangling-in"), root));
+        // An ancestor link leading out, a missing ancestor, a missing root, the root itself.
+        QVERIFY(QFile::link(b.filePath(QStringLiteral("outside")), cfg + QStringLiteral("/dir")));
+        QVERIFY(!within(cfg + QStringLiteral("/dir/remorarc"), root));
+        QVERIFY(!within(root + QStringLiteral("/missing/remorarc"), root));
+        QVERIFY(!within(cfg + QStringLiteral("/remorarc"), b.filePath(QStringLiteral("gone"))));
+        QVERIFY(!within(root, root));
+    }
+
     void saveInstancePreservesUnknownKeys() {
         QTemporaryDir dir;
         const QString path = rc(dir);

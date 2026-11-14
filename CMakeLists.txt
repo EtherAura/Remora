@@ -204,6 +204,18 @@ endif()
 add_custom_target(remora_native ALL DEPENDS ${REMORA_NATIVE_OUTPUTS})
 
 # --- tests ---
+# Every test runs with HOME and the XDG base directories inside the build tree (set below, once
+# all tests are registered), so no suite can read or write the user's real configuration. The
+# store suite refuses to run unless its default remorarc resolves inside this directory.
+set(REMORA_TEST_HOME "${CMAKE_BINARY_DIR}/test-home")
+set(REMORA_TEST_ENV
+    "HOME=${REMORA_TEST_HOME}"
+    "XDG_CONFIG_HOME=${REMORA_TEST_HOME}/.config"
+    "XDG_DATA_HOME=${REMORA_TEST_HOME}/.local/share"
+    "XDG_CACHE_HOME=${REMORA_TEST_HOME}/.cache"
+    "XDG_STATE_HOME=${REMORA_TEST_HOME}/.local/state")
+file(MAKE_DIRECTORY "${REMORA_TEST_HOME}/.config" "${REMORA_TEST_HOME}/.local/share"
+     "${REMORA_TEST_HOME}/.cache" "${REMORA_TEST_HOME}/.local/state")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME play_install COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_play_install.py)
 add_test(NAME public_images COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_public_images.py)
@@ -247,7 +259,16 @@ add_test(NAME reddit_session COMMAND test_reddit_session)
 
 add_executable(test_store tests/test_store.cpp)
 target_link_libraries(test_store PRIVATE remora_store remora_core Qt6::Test)
+target_compile_definitions(test_store PRIVATE REMORA_TEST_HOME="${REMORA_TEST_HOME}")
 add_test(NAME store COMMAND test_store)
+
+# ENVIRONMENT, not ENVIRONMENT_MODIFICATION: the latter needs CMake 3.22, and an older ctest drops
+# an unknown property silently, which would leave the run quietly unisolated. APPEND keeps whatever
+# else a test puts in its ENVIRONMENT. Register every test above this line.
+get_property(_remora_tests DIRECTORY PROPERTY TESTS)
+foreach(_t IN LISTS _remora_tests)
+    set_property(TEST "${_t}" APPEND PROPERTY ENVIRONMENT ${REMORA_TEST_ENV})
+endforeach()
 
 # --- install (binary + vendored scripts + desktop integration) ---
 install(TARGETS remora RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
