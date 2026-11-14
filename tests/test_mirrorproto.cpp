@@ -90,6 +90,26 @@ private slots:
         QCOMPARE(textMessage(QStringLiteral("hé")), hex("00000004" "02" "68c3a9"));
     }
 
+    void textTruncationGolden() {
+        // The body is cut to 1 MiB - 1 so the record fits the control limit. One ASCII byte then
+        // four-byte characters puts the raw cut on the third byte of the last one, which is
+        // dropped whole: 1 + 262143 * 4 = 1048573 bytes, size field 0x000ffffe.
+        const QByteArray smile("\xf0\x9f\x98\x80");
+        const QByteArray straddle =
+            textMessage(QStringLiteral("a") + QStringLiteral("\U0001F600").repeated(262144));
+        QCOMPARE(straddle.left(5), hex("000ffffe" "02"));
+        const QByteArray body = straddle.mid(5);
+        QCOMPARE(body.size(), 1048573);
+        QCOMPARE(body, QByteArray("a") + smile.repeated(262143));
+
+        // 1048575 bytes fit exactly and go over unchanged: size field 0x00100000, the limit.
+        const QByteArray fit = textMessage(QString(1048575, QLatin1Char('a')));
+        QCOMPARE(fit.left(5), hex("00100000" "02"));
+        QCOMPARE(qFromBigEndian<quint32>(fit.constData()), kControlRecordMax);
+        QCOMPARE(fit.size(), 5 + 1048575);
+        QCOMPARE(fit.mid(5), QByteArray(1048575, 'a'));
+    }
+
     void pointerGolden() {
         // Fractions and pressure are plain big-endian binary32: 0.5, 0.25, 1.0.
         QCOMPARE(pointerMessage(0, PointerTool::Mouse, 0, {0.5f, 0.25f}, 1.0f, 1, 1),
