@@ -623,6 +623,16 @@ private slots:
         shortAck.feed(hex("00000003" "02" "0000"));
         QVERIFY(!shortAck.next().has_value());
         QVERIFY(shortAck.error());
+        // The parser reads with the control cap: one byte over 1 MiB is a framing error at once,
+        // while exactly 1 MiB is accepted and waits for its body.
+        DeviceMessageParser overCap;
+        overCap.feed(hex("00100001"));
+        QVERIFY(!overCap.next().has_value());
+        QVERIFY(overCap.error());
+        DeviceMessageParser atCap;
+        atCap.feed(hex("00100000" "01"));
+        QVERIFY(!atCap.next().has_value());
+        QVERIFY(!atCap.error());
     }
 };
 
