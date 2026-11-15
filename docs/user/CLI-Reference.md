@@ -40,7 +40,7 @@ the command line is also the way to drive Remora over ssh.
 | `remora service [<profile>] [--remove]` | Install and enable systemd user units: up at login, sleep at logout, plus the update and auto-sleep watchers. `--remove` disables and deletes them |
 | `remora watch-boot [<profile>]` | Restart the device and attach the mirror during boot, to see the boot animation |
 | `remora update-watch [<profile>]` | Serve the in-Android updater: wait for *Apply* on the device, then redeploy onto the new image. Runs until stopped |
-| `remora reset-data [<profile>] --yes` | Factory reset: delete the profile's `/data`. `bare` only. Without `--yes` it explains what would be deleted and does nothing |
+| `remora reset-data [<profile>] --yes` | Factory reset: delete the profile's `/data`, and its application-menu folder with it. `bare` only. Without `--yes` it explains what would be deleted and does nothing |
 
 ## Windows
 
@@ -111,7 +111,10 @@ derived image; otherwise its name includes the base and installer recipe hashes.
 names and overwriting a different existing image are refused.
 
 Select the resulting tag for a **fresh instance**. Existing profiles, running containers and
-Android data are unchanged. Google/microG conflicts, wrong SDK/ABI, unsafe base links/ONBUILD
+Android data are unchanged. To keep a profile on Google Play across image updates, set
+`google_play=true` and `play_terms=<acceptance version>` in it instead, or tick **Add Google Play
+services** on the Image page: `up` then builds or reuses the overlay over the profile's current
+image, on its Docker host, before it deploys, and `plan` names the image the overlay goes on. Google/microG conflicts, wrong SDK/ABI, unsafe base links/ONBUILD
 instructions and mismatching payloads are rejected before building. The cache and receipts live
 on the Docker host at `${XDG_CACHE_HOME:-~/.cache}/remora/play/`, accessible only to that user.
 The receipt binds the source, archive/APK hashes and audited certificate identities, local

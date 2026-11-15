@@ -76,6 +76,11 @@ const QList<QPair<QString, QString>> &venusGuestLibs();
 QString sharedFolderBind(const QString &entry);
 QString stagedShareBind(const QString &entry);  // overlayfs staging spot (rebound after boot)
 
+// The image carries the c2-va codecs, so the VAAPI HEVC encoder h265 rides on. The registry
+// answers, with the "-hwc2" spelling as the fallback for an unregistered or arch-suffixed tag.
+// Pass ResolvedConfig::capabilityTag(), not imageTag: a Play overlay's name is in no registry.
+bool imageCarriesC2Va(const QString &imageTag);
+
 // Companion-app entry, in one of two forms:
 //   "<hostDir>[:<Name>]"        the directory already lives on the DOCKER HOST (like sharedFolders)
 //   "local:<localDir>[:<Name>]" the directory lives HERE; Remora stages it to the docker host

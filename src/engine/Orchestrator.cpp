@@ -9,6 +9,7 @@
 #include <QTextStream>
 
 #include "core/Builders.h"
+#include "engine/PlayInstall.h"
 
 namespace remora {
 
@@ -306,9 +307,24 @@ bool sleepRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner &
     return runChain(steps, sink);
 }
 
-bool smartRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner &sp,
+bool smartRun(Backend backend, const RemoraConfig &profile, LogSink &sink, Spawner &sp,
               const std::optional<HostCapabilities> &caps, const QString &windowTitle,
               const ConflictFn &onConflict, bool fullscreenDisplay) {
+    // GOOGLE PLAY FIRST (bd remora-6laf.8). Everything below asks whether the running container is
+    // the image this profile needs, and with Play on that is the overlay for the CURRENT base —
+    // which exists only once this has found or built it. Its own visible step, because the first
+    // run after a base update builds for half a minute before anything else happens. A failure
+    // stops here: going on without the overlay would recreate the device on the base, without Play.
+    RemoraConfig cfg = profile;
+    if (cfg.image.googlePlay.value_or(false)) {
+        const QVector<Step> play{{"play-overlay", "Google Play overlay", [&](LogSink &s) {
+            return ensurePlayOverlay(sp, cfg, backend,
+                                     [&s](const QString &stream, const QString &text) {
+                                         s.line(QStringLiteral("play-overlay"), stream, text);
+                                     });
+        }}};
+        if (!runChain(play, sink)) return false;
+    }
     RunContext ctx = makeContext(cfg, backend, caps, windowTitle, fullscreenDisplay);
     // Reconnect (fast path) only when the running container matches what this profile needs:
     //   (1) created from the image the tag currently points to (a rebuild/retag must recreate), and

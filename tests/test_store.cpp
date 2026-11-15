@@ -200,6 +200,37 @@ private slots:
         QVERIFY(loaded.input.cameraDevices->isEmpty());
     }
 
+    // bd remora-6laf.8 — the Google Play option and the terms version it was accepted under
+    // persist; the overlay a deploy materialized never does, since it belongs to one base and a
+    // saved copy would pin the profile to that base for good.
+    void googlePlayRoundTripsAndTheOverlayNeverPersists() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        RemoraConfig c;
+        c.image.googlePlay = true;
+        c.image.playTerms = QStringLiteral("litegapps-a17-20261001-v1");
+        c.image.playOverlay = QStringLiteral("remora-local:play-08c62ac56c4d-07db5d1f5dc7");
+        saveInstance(path, QStringLiteral("x"), c);
+        const RemoraConfig loaded = loadInstance(path, QStringLiteral("x"));
+        QCOMPARE(loaded.image.googlePlay, std::optional<bool>(true));
+        QCOMPARE(loaded.image.playTerms, std::optional<QString>(*c.image.playTerms));
+        QVERIFY(!loaded.image.playOverlay.has_value());
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.beginGroup(QStringLiteral("Instance-x"));
+            for (const QString &k : s.allKeys())
+                QVERIFY(!s.value(k).toString().contains(QStringLiteral("remora-local")));
+        }
+        // off removes both keys, so turning it back on asks for the terms again
+        c.image.googlePlay.reset();
+        c.image.playTerms.reset();
+        saveInstance(path, QStringLiteral("x"), c);
+        QSettings s(path, QSettings::IniFormat);
+        s.beginGroup(QStringLiteral("Instance-x"));
+        QVERIFY(!s.contains(QStringLiteral("google_play")));
+        QVERIFY(!s.contains(QStringLiteral("play_terms")));
+    }
+
     void saveInstanceTouchesOnlyItsOwnGroup() {
         QTemporaryDir dir;
         const QString path = rc(dir);

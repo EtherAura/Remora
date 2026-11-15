@@ -54,7 +54,7 @@ QString stagedShareBind(const QString &entry) {
 // name with no such marker (bd remora-phvx), so a pure substring test would leave plain h264 on
 // the vendor AVC entry that cannot start. The registry is the authority; the spelling stays as
 // the fallback for an unregistered or arch-suffixed -hwc2 tag.
-static bool imageCarriesC2Va(const QString &imageTag) {
+bool imageCarriesC2Va(const QString &imageTag) {
     if (imageTag.contains(QLatin1String("hwc2"))) return true;
     const ImageTag *t = findImageTag(imageTag);
     return t && t->provides.contains(QStringLiteral("hw_video_decode"));
@@ -536,19 +536,20 @@ std::pair<QMap<QString, QString>, QStringList> buildMirrorArgv(const ResolvedCon
         // Registration is not function, so it was also run: the component was created live with no
         // errors ("Created component [c2.remora.vaapi.hevc.encoder]"). Images carry BOTH spellings
         // while the dual registration lasts, so this is reversible by editing one string.
-        if (cfg.videoCodec == QLatin1String("h265") && imageCarriesC2Va(cfg.imageTag))
+        if (cfg.videoCodec == QLatin1String("h265") && imageCarriesC2Va(cfg.capabilityTag()))
             a << QStringLiteral("--video-encoder=c2.remora.vaapi.hevc.encoder");
     }
     // The -hwc2 image ranks the vendor VAAPI AVC encoder first for h264, but that vendor AVC
     // entry cannot start (only the HEVC path is implemented) — pin plain h264 to the software
     // encoder so the default codec keeps working on the accelerated image.
     // An image the registry does not know gets the same pin wherever no VAAPI encoder can run: it
-    // may carry c2-va (a Play overlay of the public base does, under a remora-local: name), and
+    // may carry c2-va (a hand-pinned Play overlay of the public base does, under a remora-local:
+    // name — the google_play option asks its base instead, through capabilityTag()), and
     // c2.android.avc.encoder is in every AOSP image, so the pin costs nothing where it is not
     // needed. Measured: unpinned, the overlay's mirror died five times on the VAAPI AVC encoder
     // in guest mode (bd remora-wzaa.3).
-    else if (imageCarriesC2Va(cfg.imageTag) ||
-             (cfg.vaEncodeUnusable && !findImageTag(cfg.imageTag)))
+    else if (imageCarriesC2Va(cfg.capabilityTag()) ||
+             (cfg.vaEncodeUnusable && !findImageTag(cfg.capabilityTag())))
         a << QStringLiteral("--video-encoder=c2.android.avc.encoder");
     // Encoder frame cap: forwarded to the c2-va component (vendor tuning), which drops at its
     // input queue (remora-rjh). Emitted only when resolved — unset at ≤60 fps.

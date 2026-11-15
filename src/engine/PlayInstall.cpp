@@ -1,4 +1,5 @@
 #include "engine/PlayInstall.h"
+#include "core/Resolver.h"
 #include "engine/SourceBuild.h"
 #include <QFile>
 #include <QJsonDocument>
@@ -67,5 +68,47 @@ ProcResult runPlayInstall(Spawner &sp, const QStringList &arguments, const QStri
     const auto cleaned = sp.run(ssh("rm -rf -- " + shellQuote(dir)));
     if (cleaned.rc && log) log("stderr", "Could not remove owned remote staging directory: " + dir);
     return result;
+}
+QJsonObject playInstallResult(const QString &output) {
+    for (const auto &line : output.split('\n'))
+        if (line.startsWith("REMORA_PLAY_RESULT="))
+            return QJsonDocument::fromJson(line.mid(19).toUtf8()).object();
+    return {};
+}
+StepResult ensurePlayOverlay(Spawner &sp, RemoraConfig &cfg, Backend backend, const LineSink &log) {
+    // Cleared first: an overlay recorded by an earlier deploy belongs to the base it was built on,
+    // and resolving through it would deploy that base however far the profile has moved on.
+    cfg.image.playOverlay.reset();
+    const ResolvedConfig rc = resolve(cfg, backend);
+    if (!rc.googlePlay) return StepResult::good("Google Play off");
+    if (rc.playIncluded)
+        return StepResult::good(rc.imageTag + " already includes Google apps — nothing to add");
+    const QString terms = playTermsVersion();
+    if (terms.isEmpty()) return StepResult::fail("Installed Play installer/manifest is missing");
+    if (rc.playTerms != terms)
+        return StepResult::fail(rc.playTerms.isEmpty()
+            ? QStringLiteral("Google Play is on but its provider terms were never accepted — turn "
+                             "it on from the Image page, or read `remora play-install --show-terms` "
+                             "and set play_terms=%1").arg(terms)
+            : QStringLiteral("the Google Play provider terms changed (accepted %1, now %2) — turn "
+                             "Google Play off and on again on the Image page to read and accept "
+                             "them").arg(rc.playTerms, terms));
+    // Built where the container runs: the payload is downloaded and the layer created on that
+    // Docker host, the same rule `remora play-install --host` follows.
+    const QString host = backend == Backend::Remote ? rc.sshHost.value_or(QString()) : QString();
+    if (backend == Backend::Remote && host.isEmpty())
+        return StepResult::fail("Google Play needs the remote Docker host — set ssh_host first");
+    const ProcResult r =
+        runPlayInstall(sp, {"--base", rc.imageTag, "--accept-terms", rc.playTerms}, host, log);
+    const QJsonObject result = playInstallResult(r.out);
+    const QString tag = result.value("tag").toString();
+    if (r.rc != 0 || tag.isEmpty())
+        return StepResult::fail("could not add Google Play to " + rc.imageTag,
+                                r.stderrTail.isEmpty() ? r.out.right(2000) : r.stderrTail);
+    cfg.image.playOverlay = tag;
+    return StepResult::good(QStringLiteral("%1 %2 — Google Play over %3")
+                                .arg(result.value("reused").toBool() ? QStringLiteral("reused")
+                                                                     : QStringLiteral("built"),
+                                     tag, rc.imageTag));
 }
 }

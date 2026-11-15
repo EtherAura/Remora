@@ -108,6 +108,17 @@ struct ImageConfig {
                                         // host class, and a variant-suffixed image tag so tuned
                                         // builds coexist with the portable one. Unset = the
                                         // tree's generic x86-64 baseline (bd remora-bm7.11).
+    // Google Play as a local overlay on whatever image this profile deploys (bd remora-6laf.8).
+    // On, up/Connect builds or reuses the remora-local: Play layer for the resolved base on the
+    // profile's Docker host and runs the container from it, so a base that updates takes Play
+    // with it. playTerms is the provider terms version the user accepted (the installer's
+    // terms_version); the installer refuses any other. Unset = off.
+    std::optional<bool> googlePlay;
+    std::optional<QString> playTerms;
+    // NOT persisted: the overlay ensurePlayOverlay materialized for THIS deploy. resolve() swaps
+    // it in as the container image only after every capability decision has been made against
+    // the registered base.
+    std::optional<QString> playOverlay;
 };
 
 struct NetworkConfig {

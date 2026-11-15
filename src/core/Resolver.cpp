@@ -609,6 +609,20 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
          (hostGpuBackend && !g.vaDriver.has_value() && caps.has_value() &&
           caps->hostRenderDriver.has_value() && !driverHasVaEncode(*caps->hostRenderDriver)));
 
+    // GOOGLE PLAY, LAST (bd remora-6laf.8). Everything above decided what the image can do from
+    // the registered tag; the overlay only adds Google's apps, so the swap to the image the
+    // container actually runs comes after all of it and changes nothing else. A base that already
+    // carries Google apps or microG has nothing to add — the installer would refuse it — so the
+    // request is kept (plan says so) but never materialized.
+    r.googlePlay = im.googlePlay.value_or(false);
+    r.playTerms = im.playTerms.value_or(QString());
+    r.playIncluded = taggedImage && (taggedImage->provides.contains(QStringLiteral("gapps")) ||
+                                     taggedImage->provides.contains(QStringLiteral("microg")));
+    if (r.googlePlay && !r.playIncluded && im.playOverlay && !im.playOverlay->isEmpty()) {
+        r.playBaseTag = r.imageTag;
+        r.imageTag = *im.playOverlay;
+    }
+
     return r;
 }
 

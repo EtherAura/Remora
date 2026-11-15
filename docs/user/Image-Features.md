@@ -68,14 +68,28 @@ build starts, because the build would succeed and ship the feature doing nothing
 
 ## Apps and Google services
 
-The **Built images** card has **Install Google Play…** and **Remove Play overlay…** actions.
-Select a Docker image row, then accept the displayed provider/terms notice. Installation supports
-a Google-free Android 17 x86_64 base and creates a separate `remora-local:` image; select it for
-a fresh instance. Download and verification happen directly on that image's Docker host. The
-installer rejects an existing Google/microG installation and never runs the third-party scripts.
-The remove action refuses any image used by a running or stopped container and retains the base
-and Android data. These actions do not change existing profiles or log into Google. Details and
-headless/remote usage are in [CLI Reference](CLI-Reference.md#build).
+To give a profile Google Play, tick **Add Google Play services** in the **Active image** card and
+accept the provider's terms. The next **Connect** downloads the pinned package on the profile's
+Docker host, builds a private `remora-local:` overlay over the image the profile deploys, and
+restarts the device on it. Later connects reuse the overlay. When the base image changes, for
+example after an official image update, the next connect builds a new overlay over it, so Play
+follows the image. The base image is never modified, and Android data is kept. Android grants
+Google's apps their default permissions when a device first boots, so for a clean setup tick the
+option before the first connect, or reset the device's data with `remora reset-data`. Unticking it
+runs the base image again. Apps and accounts stay in Android data until it is reset. The option
+needs an Android 17 x86_64 image without Google apps, such as the public image. A profile whose
+image already includes Google Play shows that instead. In a profile file the option is
+`google_play` and `play_terms`; see [Configuration](Configuration.md#root-and-play).
+
+The **Built images** card has **Install Google Play…** and **Remove Play overlay…** actions for
+the image library itself. Select a Docker image row, then accept the displayed provider/terms
+notice. Installation supports a Google-free Android 17 x86_64 base and creates a separate
+`remora-local:` image without changing any profile. A profile pinned to that image keeps it when
+the base is updated, which the profile option above avoids. Download and verification happen
+directly on that image's Docker host. The installer rejects an existing Google/microG installation
+and never runs the third-party scripts. The remove action refuses any image used by a running or
+stopped container and retains the base and Android data. Neither the option nor these actions
+logs into Google. Details and headless/remote usage are in [CLI Reference](CLI-Reference.md#build).
 
 - **`gapps`** adds the Play Store and Play services and supports layering onto an existing image.
   The [APK audit](../GOOGLE_PLAY_SOURCE_TERMS.md) found x86_64 native code, and an isolated

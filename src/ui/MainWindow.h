@@ -65,6 +65,7 @@ private slots:
     void onPromoteImage();
     void runPlayOverlay(bool rollback);
     void onActiveImageChanged();
+    void onGooglePlayToggled(bool on);
     void onPushImage();
     void onFetchSourceImage();
     void onPruneImages();
@@ -285,6 +286,9 @@ private:
     QList<QPushButton *> runButtons_;     // Run-row Start/Connect/Stop — gated while busy
                                            // skips its own confirm (avoids a double dialog)
     QComboBox *activeImageCombo_ = nullptr;  // which tag this profile deploys — and the pin itself
+    // Google Play as a profile option (bd remora-6laf.8): the toggle, and what it would layer over.
+    QCheckBox *googlePlayCheck_ = nullptr;
+    QLabel *googlePlayNote_ = nullptr;
     QString derivedImageTag() const;
     // Re-apply everything that depends on which image this profile deploys.
     void refreshImageGating();

@@ -15,6 +15,7 @@
 #include "core/Resolver.h"
 #include "core/SourcePatches.h"
 #include "engine/AppTransfer.h"
+#include "engine/PlayInstall.h"
 #include "engine/RedditLogin.h"
 #include "engine/Engine.h"
 #include "store/Store.h"
@@ -82,6 +83,10 @@ public:
     bool containerRunning = true;   // connect's pre-adb "is the container even up?" probe
     bool containerPaused = false;   // remora sleep state: Running=true + Paused=true
     bool containerStale = false;    // smart connect: container image != what the tag points to
+    // What the Play installer answers (bd remora-6laf.8): its stdout, receipt line included, and
+    // its exit status. Asked only when a profile turns google_play on.
+    QString playInstallOut;
+    int playInstallRc = 0;
     bool containerHasC2 = true;     // smart connect: container was booted with the c2 boot arg
     // The canned container's fps boot arg. Defaults to 60 because the RESOLVER defaults fps to
     // 60 (a17-30hz fix) — a current container carries it, so the whole-set compare
@@ -198,6 +203,9 @@ public:
         auto R = [](int rc, QString out = {}, QString err = {}) { return ProcResult{rc, out, err}; };
 
         if (argv.value(0) == "id") return R(0, groupsStr());
+        if (argv.value(0) == "python3" && cmd.contains("install.py"))
+            return R(playInstallRc, playInstallOut,
+                     playInstallRc ? QStringLiteral("Play installation failed: boom") : QString());
         // Ahead of the generic rules: the husk scan is a plain `sh -c` and would otherwise be
         // swallowed by whichever broader pattern matched first. The endpoint scan names `ss -tnHp`
         // too — it picks the mirror by whether it has a tunnel — so it has to be matched on its
@@ -4152,6 +4160,55 @@ private slots:
         RecordingSink sink;
         QVERIFY(smartRun(Backend::Bare, macvlanBareProfile(), sink, sp));
         QVERIFY(!hasCall(sp, "docker rm -f"));
+        QVERIFY(!hasCall(sp, "docker run"));
+    }
+
+    // bd remora-6laf.8 — Google Play materializes BEFORE anything compares images: the probe has
+    // to ask about the overlay the profile needs, and the deploy has to run that overlay. A failure
+    // stops the run, because going on would recreate the device on the base, without Play.
+    static RemoraConfig playBareProfile() {
+        RemoraConfig cfg = macvlanBareProfile();
+        cfg.image.androidVersion = 17;
+        cfg.image.imageTag = QStringLiteral("remora24:x86_64-public");
+        cfg.image.googlePlay = true;
+        cfg.image.playTerms = playTermsVersion();
+        return cfg;
+    }
+
+    void smartConnectDeploysTheGooglePlayOverlay() {
+        const QString overlay = QStringLiteral("remora-local:play-08c62ac56c4d-07db5d1f5dc7");
+        FakeSpawner sp;
+        sp.containerNetworks = QStringLiteral("lan=192.0.2.77 ");
+        sp.containerStale = true;  // the running container is the bare base, not the overlay
+        sp.playInstallOut = QStringLiteral("REMORA_PLAY_RESULT={\"tag\":\"%1\"}\n").arg(overlay);
+        RecordingSink sink;
+        QVERIFY(smartRun(Backend::Bare, playBareProfile(), sink, sp));
+        QCOMPARE(sink.of("play-overlay"), StepState::Ok);
+        int install = -1, probe = -1;
+        for (int i = 0; i < sp.calls.size(); ++i) {
+            if (install < 0 && sp.calls[i].contains("install.py")) install = i;
+            if (probe < 0 && sp.calls[i].contains("State.Running") &&
+                sp.calls[i].contains("{{.Image}}"))
+                probe = i;
+        }
+        QVERIFY(install >= 0);
+        QVERIFY(probe > install);
+        QVERIFY(sp.calls[probe].contains(overlay));
+        QVERIFY(sp.calls[install].contains("--base remora24:x86_64-public"));
+        bool ranOverlay = false;
+        for (const QString &c : sp.calls)
+            if (c.startsWith("docker run") && c.contains(" " + overlay + " ")) ranOverlay = true;
+        QVERIFY(ranOverlay);
+    }
+
+    void smartConnectStopsWhenGooglePlayCannotBeAdded() {
+        FakeSpawner sp;
+        sp.playInstallRc = 1;
+        RecordingSink sink;
+        QVERIFY(!smartRun(Backend::Bare, playBareProfile(), sink, sp));
+        QCOMPARE(sink.of("play-overlay"), StepState::Failed);
+        QVERIFY(!hasCall(sp, "State.Running"));
+        QVERIFY(!hasCall(sp, "docker rm"));
         QVERIFY(!hasCall(sp, "docker run"));
     }
 

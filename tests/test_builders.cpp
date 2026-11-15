@@ -1650,6 +1650,53 @@ private slots:
         for (const QString &t : a6) QVERIFY(!t.startsWith("--video-encoder"));
     }
 
+    // bd remora-6laf.8 — with the google_play option the container runs a remora-local: overlay,
+    // and every question about what the image can do is still answered by its base: the resolver
+    // swaps the overlay in LAST, and the encoder pins read capabilityTag(). The overlay's own name
+    // is in no registry, so asking it would answer "nothing".
+    void playOverlayKeepsTheBaseCapabilities() {
+        RemoraConfig cfg;
+        cfg.image.androidVersion = 17;
+        cfg.image.imageTag = QStringLiteral("remora24:x86_64-public");
+        cfg.image.googlePlay = true;
+        cfg.image.playTerms = QStringLiteral("terms-v1");
+        ResolvedConfig r = resolve(cfg, Backend::Bare);
+        QVERIFY(r.googlePlay);
+        QVERIFY(!r.playIncluded);
+        QCOMPARE(r.playTerms, QStringLiteral("terms-v1"));
+        // not materialized yet (plan, the GUI): the base is what resolves, and nothing is swapped
+        QCOMPARE(r.imageTag, QStringLiteral("remora24:x86_64-public"));
+        QVERIFY(r.playBaseTag.isEmpty());
+        const QString overlay = QStringLiteral("remora-local:play-08c62ac56c4d-07db5d1f5dc7");
+        cfg.image.playOverlay = overlay;
+        r = resolve(cfg, Backend::Bare);
+        QCOMPARE(r.imageTag, overlay);
+        QCOMPARE(r.playBaseTag, QStringLiteral("remora24:x86_64-public"));
+        QCOMPARE(r.capabilityTag(), QStringLiteral("remora24:x86_64-public"));
+        QVERIFY(r.agentBaked);  // decided from the base, which bakes the agent
+        QVERIFY(buildDockerRunArgv(r).contains(overlay));
+        QVERIFY(!buildDockerRunArgv(r).contains(QStringLiteral("remora24:x86_64-public")));
+        r.videoCodec = QStringLiteral("h265");
+        const auto [e, a] = buildMirrorArgv(r, r.target);
+        QVERIFY(a.contains("--video-encoder=c2.remora.vaapi.hevc.encoder"));
+        // a recorded overlay is inert while the option is off: the base deploys
+        cfg.image.googlePlay = false;
+        QCOMPARE(resolve(cfg, Backend::Bare).imageTag, QStringLiteral("remora24:x86_64-public"));
+        // a base that already carries Google apps has nothing to add, recorded overlay or not
+        cfg.image.googlePlay = true;
+        cfg.image.imageTag = QStringLiteral("remora24:x86_64-gapps-wv-hwc2");
+        r = resolve(cfg, Backend::Bare);
+        QVERIFY(r.playIncluded);
+        QCOMPARE(r.imageTag, QStringLiteral("remora24:x86_64-gapps-wv-hwc2"));
+        QVERIFY(r.playBaseTag.isEmpty());
+        // the h265 availability the Image page greys by: the public image ships the encoder under
+        // a name with no "hwc2" in it, and a hand-pinned overlay is still unknown
+        QVERIFY(imageCarriesC2Va(QStringLiteral("remora24:x86_64-public")));
+        QVERIFY(imageCarriesC2Va(QStringLiteral("remora24:x86_64-gapps-wv-hwc2-alderlake")));
+        QVERIFY(!imageCarriesC2Va(QStringLiteral("remora24:x86_64")));
+        QVERIFY(!imageCarriesC2Va(overlay));
+    }
+
     void mirrorVideoCodecOptIn() {
         // default (h264 / empty) emits no --video-codec token…
         const auto [e0, a0] = buildMirrorArgv(bareCfg(), "localhost:5555");

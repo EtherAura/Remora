@@ -126,6 +126,8 @@ RemoraConfig loadInstance(const QString &path, const QString &name) {
             c.image.sourcePatches =
                 canonicalPatchKeys(splitList(s.value("source_patches").toString()));
         if (has("arch_variant")) c.image.archVariant = s.value("arch_variant").toString();
+        if (has("google_play")) c.image.googlePlay = s.value("google_play").toBool();
+        if (has("play_terms")) c.image.playTerms = s.value("play_terms").toString();
         if (has("output_dir")) c.image.outputDir = s.value("output_dir").toString();
         if (has("network_mode")) c.network.networkMode = s.value("network_mode").toString();
         if (has("docker_network")) c.network.dockerNetwork = s.value("docker_network").toString();
@@ -315,6 +317,8 @@ void saveInstance(const QString &path, const QString &name, const RemoraConfig &
     wStr("built_recipe", c.image.builtRecipe);
     wList("source_patches", c.image.sourcePatches);
     wStr("arch_variant", c.image.archVariant);
+    wBool("google_play", c.image.googlePlay);
+    wStr("play_terms", c.image.playTerms);
     wStr("output_dir", c.image.outputDir);
     wStr("network_mode", c.network.networkMode);
     wStr("docker_network", c.network.dockerNetwork);

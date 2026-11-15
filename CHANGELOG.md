@@ -7,6 +7,31 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Added
+
+- **Google Play as a profile option.** The Image page's **Active image** card has an **Add
+  Google Play services** toggle, saved in the profile as `google_play` and the accepted
+  `play_terms` version. Turning it on asks for the provider's terms. Each connect then builds, or
+  reuses, the private local Play overlay over whatever image the profile resolves to, on the
+  profile's Docker host, and runs the device from it. An image update therefore brings Play
+  along, which a profile pinned to an overlay never did. `plan` names the image the overlay goes
+  on. A connect refuses when the accepted terms are missing or older than the installer's, and
+  does nothing for an image that already includes Google apps.
+
+### Fixed
+
+- **h265 is no longer greyed out on the public image.** The Image page decided whether an image
+  ships the hardware HEVC encoder from `hwc2` in its tag, which the public image lacks, so opening
+  a profile on it reset the codec to h264. It now asks the image registry, as the mirror does.
+- **The in-Android updater follows profile changes.** `remora update-watch` read the profile once
+  at start, so **Apply** in Android redeployed the settings it started with, undoing any change
+  made in the workspace since. It now reads the profile on every check. With Google Play on, it
+  compares the image the Play overlay was built on, rather than reporting an update forever.
+- **`remora reset-data` also clears the profile's application menu.** The menu refresh keeps a
+  folder whose device suddenly reports under half its apps, which protects it from a list read
+  mid-boot. After a reset, that guard kept a launcher for every deleted app. The next connect now
+  builds the folder again from the fresh device.
+
 ## [2026.11.1] - 2026-11-14
 
 ### Fixed

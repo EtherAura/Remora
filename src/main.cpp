@@ -214,6 +214,15 @@ static int cmdPlan(const QStringList &a, QTextStream &out) {
         out << "# " << l << "\n";
     for (const QString &l : archVariantReport(planSp, backend, rc).split(QLatin1Char('\n')))
         out << "# " << l << "\n";
+    // Google Play is materialized by the deploy, never here: plan builds nothing, so it names the
+    // base the overlay goes on and leaves the overlay's own name to `up` (bd remora-6laf.8).
+    if (rc.googlePlay)
+        out << (rc.playIncluded
+                    ? QStringLiteral("# Google Play: on — %1 already includes Google apps, so "
+                                     "there is nothing to add\n").arg(rc.imageTag)
+                    : QStringLiteral("# Google Play: on — up builds or reuses a local overlay "
+                                     "(remora-local:play-…) over %1 and runs the container from "
+                                     "it in place of the image named below\n").arg(rc.imageTag));
     out << buildDockerRunArgv(rc).join(QLatin1Char(' ')) << "\n\n";
     // The in-house client takes flags, not environment — the argv IS the whole contract.
     Q_UNUSED(env);
@@ -626,11 +635,10 @@ static QString updaterStateDir(const ResolvedConfig &rc) {
 static int cmdUpdateWatch(const QStringList &a) {
     QString inst;
     Backend b;
-    const RemoraConfig cfg = configAndBackend(a, inst, b);
+    const RemoraConfig startup = configAndBackend(a, inst, b);
     RealSpawner sp;
     ConsoleSink sink;
-    const ResolvedConfig rc = resolve(cfg, b);
-    const QString guest = rc.sshHost.value_or(QString());
+    const QString guest = resolve(startup, b).sshHost.value_or(QString());
     // Same two transports as every other host-side probe (Probe.cpp): bare runs the shell locally,
     // remote gets there over ssh. This loop only ever knew the ssh half, so on a BARE profile — the
     // preferred target, and what an unset backend= resolves to — it exited 2 the moment it started.
@@ -652,6 +660,22 @@ static int cmdUpdateWatch(const QStringList &a) {
                                    : QStringLiteral("on this machine"))
                         << " — waiting for in-device Apply (Ctrl-C to stop)\n";
     for (;;) {
+        // RE-READ EVERY TICK, as auto-sleep does: Apply deploys what the profile says NOW. A
+        // watcher holding its startup copy undid every GUI change made since — turn Google Play
+        // on, Connect, then Apply in Android, and the device came back without it.
+        const RemoraConfig cfg = loadInstance(defaultRemorarcPath(), inst);
+        const ResolvedConfig rc = resolve(cfg, b);
+        // With Google Play on, the container runs an overlay whose image ID never equals the
+        // base's (bd remora-6laf.8): compare the base the overlay was built on instead, or the
+        // device would offer an update forever. Play off compares the image itself, so a device
+        // still on an overlay is pending — and Apply moves it back onto the base.
+        const QString playBase =
+            rc.googlePlay && !rc.playIncluded
+                ? QStringLiteral("[ -n \"$C\" ] && B=$(docker image inspect -f "
+                                 "'{{index .Config.Labels \"org.remora.play.base\"}}' \"$C\" "
+                                 "2>/dev/null) && [ -n \"$B\" ] && [ \"$B\" != '<no value>' ] "
+                                 "&& C=$B; ")
+                : QString();
         // one round trip: consume the apply signal if present AND refresh state
         // (pending = the running container's image differs from what the tag points to now).
         // The state carries what the RemoraUpdater card renders: the tag, the tag image's
@@ -660,7 +684,7 @@ static int cmdUpdateWatch(const QStringList &a) {
         // whoever ships an image; quotes/newlines stripped to keep the JSON valid).
         const QString probe = QStringLiteral(
             "A=0; [ -e \"%3/updater/apply\" ] && { rm -f \"%3/updater/apply\"; A=1; }; "
-            "C=$(docker inspect -f '{{.Image}}' %1 2>/dev/null); "
+            "C=$(docker inspect -f '{{.Image}}' %1 2>/dev/null); %4"
             "T=$(docker image inspect -f '{{.Id}}' %2 2>/dev/null); "
             "TB=$(docker image inspect -f '{{.Created}}' %2 2>/dev/null | cut -c1-19); "
             "CB=''; [ -n \"$C\" ] && CB=$(docker image inspect -f '{{.Created}}' \"$C\" "
@@ -673,7 +697,8 @@ static int cmdUpdateWatch(const QStringList &a) {
             "\"current\": \"%s\", \"summary\": \"%s\"}' "
             "\"$P\" '%2' \"$TB\" \"$CB\" \"$S\" > \"%3/updater/state.json\"; "
             "echo APPLY=$A")
-                                   .arg(rc.containerName, rc.imageTag, updaterStateDir(rc));
+                                   .arg(rc.containerName, rc.imageTag, updaterStateDir(rc),
+                                        playBase);
         const ProcResult r = remote ? sp.run(Spawner::sshArgv(guest, probe), {}, {})
                                     : sp.run({"sh", "-c", probe}, {}, {});
         if (r.out.contains(QLatin1String("APPLY=1"))) {
@@ -766,6 +791,11 @@ static int cmdResetData(const QStringList &a, QTextStream &out) {
         return 1;
     }
     const StepResult r = wipeDataDir(sp, rc, {});
+    // The apps went with the data, so their launchers go too. Left in place, the menu refresh after
+    // the next `up` saw a device with under half the apps the folder lists — its boot-settling
+    // guard's signature — and kept every launcher of a deleted app indefinitely. Removed, the
+    // folder is simply built again from what the fresh device has.
+    if (r.ok) appMenuRemove(sp, inst, sink);
     QTextStream(stderr) << (r.ok ? QStringLiteral("\n%1 — the next `up` boots a fresh instance.\n")
                                        .arg(r.detail)
                                  : QStringLiteral("\nnot wiped: %1\n").arg(r.detail));

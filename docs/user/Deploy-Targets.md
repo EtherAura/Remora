@@ -138,7 +138,8 @@ own, then retry.
 
 To start an instance over, `remora reset-data <profile> --yes` deletes the profile's `/data`
 (`bare` only). With the default layering, only that instance's layer is removed and the shared
-base stays.
+base stays. The profile's application-menu folder goes with it, and the next connect builds it
+again from the fresh device.
 
 ## The same profile on several hosts
 

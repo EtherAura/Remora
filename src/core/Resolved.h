@@ -13,6 +13,17 @@ namespace remora {
 struct ResolvedConfig {
     Backend backend;
     QString imageTag, containerName, dataDir;
+    // Google Play as a local overlay (bd remora-6laf.8). googlePlay and playTerms are the
+    // profile's request; playIncluded says the registered base already carries Google apps or
+    // microG, so there is nothing to add. playBaseTag is set only once the engine has materialized
+    // the overlay: it names the registered image underneath, and imageTag is then the overlay the
+    // container runs.
+    bool googlePlay = false, playIncluded = false;
+    QString playTerms, playBaseTag;
+    // The tag every question about what the image CAN DO is asked of. A Play overlay adds Google's
+    // apps and nothing else, so its answers are its base's — and its remora-local: name is in no
+    // registry, which would otherwise answer "nothing".
+    QString capabilityTag() const { return playBaseTag.isEmpty() ? imageTag : playBaseTag; }
     // The Android release the profile names (android_version=, default 16) — the same number the
     // image tag was derived from. Asked where the release changes what the HOST must provide.
     int androidVersion = 16;

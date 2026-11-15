@@ -804,6 +804,10 @@ static StepResult ensureImageOn(Spawner &sp, const QString &host, const QString 
     if (target.rc != 0)
         return StepResult::fail(QStringLiteral("image not found on %1: %2").arg(where, tag),
                                 target.stderrTail);
+    // A remora-local: image (a Play overlay) is built on the host that runs it and never pushed,
+    // so a same-named one here is a sibling built from the same inputs, not a stale copy of it.
+    if (tag.startsWith(QLatin1String("remora-local:")))
+        return StepResult::good(QStringLiteral("image %1 present on %2 (built there)").arg(tag, where));
     const auto local = sp.run({"docker", "image", "inspect", "--format", kLayersFmt, tag}, {}, log);
     if (local.rc == 0 && local.out.trimmed() != target.out.trimmed())
         return StepResult::fail(

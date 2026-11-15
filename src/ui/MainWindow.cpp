@@ -2247,6 +2247,29 @@ void MainWindow::buildUi() {
         connect(activeImageCombo_, &QComboBox::currentIndexChanged, this,
                 &MainWindow::onActiveImageChanged);
         form->addRow(QStringLiteral("Deploys"), activeImageCombo_);
+        // A PROFILE SETTING, NOT AN IMAGE ACTION (bd remora-6laf.8). The Built images card can
+        // already make a Play overlay, but a pin to that overlay never follows the base: the next
+        // image update deploys nothing new, silently. On here, every Connect layers Play over
+        // whatever the row above resolves to, so an update brings it along. The terms are asked
+        // for once, by this toggle, never by a deploy.
+        auto *playRow = new QWidget();
+        auto *pl = new QHBoxLayout(playRow);
+        pl->setContentsMargins(0, 0, 0, 0);
+        googlePlayCheck_ = new QCheckBox(QStringLiteral("Add Google Play services"));
+        googlePlayCheck_->setToolTip(QStringLiteral(
+            "Layer Google Play (Play Store and Play services) over this profile's image. Connect "
+            "downloads a pinned third-party package on this profile's Docker host, builds a "
+            "private local overlay image from it, and runs the device on that overlay; the base "
+            "image itself is never changed. An image update rebuilds the overlay on the next "
+            "Connect. Needs an Android 17 x86_64 image without Google apps, such as the public "
+            "image. Turning it off runs the base again; apps and accounts stay in Android data."));
+        googlePlayNote_ = new QLabel();
+        googlePlayNote_->setStyleSheet("color:#777;");
+        connect(googlePlayCheck_, &QCheckBox::toggled, this, &MainWindow::onGooglePlayToggled);
+        pl->addWidget(googlePlayCheck_);
+        pl->addSpacing(8);
+        pl->addWidget(googlePlayNote_, 1);
+        form->addRow(QStringLiteral("Google Play"), playRow);
     }
 
 
@@ -2508,7 +2531,9 @@ void MainWindow::buildUi() {
         auto *playRemove = new QPushButton(QStringLiteral("Remove Play overlay…"));
         playInstall->setToolTip(QStringLiteral(
             "Download a pinned third-party package on this image's Docker host and create a "
-            "separate local image. Requires a Google-free Android 17 x86_64 base."));
+            "separate local image. Requires a Google-free Android 17 x86_64 base. To give THIS "
+            "profile Google Play, use the Google Play option in the Active image card instead: "
+            "it follows image updates, and a pinned overlay does not."));
         playRemove->setToolTip(QStringLiteral(
             "Remove an unused Play overlay created by Remora. Keeps the original base and Android data."));
         sourceButtons_ << playInstall << playRemove;
@@ -3012,6 +3037,10 @@ void MainWindow::loadConfig() {
     if (archVariantCombo_) {
         const QString v = cfg_.image.archVariant.value_or(QString());
         archVariantCombo_->setCurrentText(v.isEmpty() ? archVariantCombo_->itemText(0) : v);
+    }
+    if (googlePlayCheck_) {
+        QSignalBlocker block(googlePlayCheck_);  // loading a profile is not the user accepting terms
+        googlePlayCheck_->setChecked(cfg_.image.googlePlay.value_or(false));
     }
     if (buildJobsSpin_) buildJobsSpin_->setValue(cfg_.image.buildJobs.value_or(0));
     if (buildMemSpin_) buildMemSpin_->setValue(cfg_.image.buildMemGiB.value_or(0));
@@ -3641,6 +3670,23 @@ void MainWindow::refreshImageGating() {
         for (const QString &t : tags) activeImageCombo_->addItem(t, t);
         activeImageCombo_->setCurrentIndex(qMax(0, activeImageCombo_->findData(tag)));
     }
+    // What the Google Play option would layer over, asked of the resolver with the live feature
+    // ticks — the same image the Deploys row names. The pinned installer package is Android 17
+    // only, and an image that already carries Google apps has nothing to add; a toggle that is
+    // already on stays switchable either way, so the setting can always be turned off.
+    if (googlePlayCheck_ && googlePlayNote_) {
+        RemoraConfig probe = cfg_;
+        probe.image.features = QStringList(features_.begin(), features_.end());
+        const ResolvedConfig base = resolve(probe, currentBackend());
+        const bool on = cfg_.image.googlePlay.value_or(false);
+        const bool a17 = base.androidVersion == 17;
+        googlePlayCheck_->setEnabled(on || (a17 && !base.playIncluded));
+        googlePlayNote_->setText(
+            base.playIncluded ? QStringLiteral("already in %1").arg(base.imageTag)
+            : !a17            ? QStringLiteral("needs an Android 17 image")
+            : on              ? QStringLiteral("layered over %1 on each Connect").arg(base.imageTag)
+                              : QString());
+    }
     // Grey the HW-encoder codecs when this profile's image can't deliver them: an explicit tag
     // must ship the encoder itself (-hwc2); feature-based A16 qualifies because the resolver
     // auto-bumps gapps images to -hwc2 when a HW codec is selected. Everything else → h264 only.
@@ -3656,10 +3702,13 @@ void MainWindow::refreshImageGating() {
         // resolver bumped. A17 source builds are -hwc2 too (the pre-rename tag family:...-gapps-wv-hwc2-*),
         // so the rule silently greyed out h265 on a profile whose image ships the encoder, reset
         // the selection to h264, and left no way to choose it.
+        // The registry answers it, as it does for the encoder pin itself: the public image ships
+        // the encoder under a name with no "hwc2" in it, and a spelling test greyed h265 out on it
+        // and reset the profile to h264 the moment the page loaded.
         RemoraConfig hevcProbe = cfg_;
         hevcProbe.mirror.videoCodec = QStringLiteral("h265");
         const bool hevcCapable =
-            resolve(hevcProbe, currentBackend()).imageTag.contains(QLatin1String("hwc2"));
+            imageCarriesC2Va(resolve(hevcProbe, currentBackend()).capabilityTag());
         // h265 rides the -hwc2 image's VAAPI encoder; av1 has NO hardware encoder in any
         // Remora image (the software AV1 encoder dies instantly at full resolution) — the
         // c2-va component is HEVC-only, so av1 stays disabled everywhere for now.
@@ -4533,6 +4582,56 @@ void MainWindow::onActiveImageChanged() {
             : QStringLiteral("pinned %1 — press Connect to deploy it").arg(tag),
         8000);
     recompute();  // relabels entry 0 and re-runs the codec gate against the new image
+}
+
+// The Google Play toggle (bd remora-6laf.8). Turning it on is the user accepting the provider's
+// versioned terms, so the dialog comes first and nothing is saved without it; turning it off needs
+// no consent. Neither downloads or deploys anything — the next Connect does that, like every other
+// setting on this page — so the toggle is cheap to flip and the step that does the work is visible
+// in the deploy, where its failure can say what went wrong.
+void MainWindow::onGooglePlayToggled(bool on) {
+    if (suppressAutosave_ || !googlePlayCheck_) return;
+    RemoraConfig probe = cfg_;
+    probe.image.features = QStringList(features_.begin(), features_.end());
+    const ResolvedConfig base = resolve(probe, currentBackend());
+    const QString host = base.backend == Backend::Remote ? base.sshHost.value_or(QString())
+                                                         : QString();
+    if (on) {
+        QMessageBox consent(
+            QMessageBox::Information, QStringLiteral("Add Google Play services"),
+            playNotice() + QStringLiteral(
+                "\n\nProfile: %1\nBase image: %2\nDocker host: %3\n\nNothing is downloaded "
+                "yet. The next Connect builds the overlay and restarts the device on it; Android "
+                "data is kept. Android grants Google's apps their default permissions when a "
+                "device first boots, so one that has already booted without them may ask for "
+                "some later.")
+                               .arg(instance_, base.imageTag,
+                                    host.isEmpty() ? QStringLiteral("this computer") : host),
+            QMessageBox::NoButton, this);
+        auto *accept = consent.addButton(QStringLiteral("Accept terms and add"),
+                                         QMessageBox::AcceptRole);
+        consent.addButton(QMessageBox::Cancel);
+        consent.setDefaultButton(QMessageBox::Cancel);
+        consent.exec();
+        if (consent.clickedButton() != accept) {
+            QSignalBlocker block(googlePlayCheck_);
+            googlePlayCheck_->setChecked(false);
+            return;
+        }
+        cfg_.image.googlePlay = true;
+        cfg_.image.playTerms = playTermsVersion();
+    } else {
+        cfg_.image.googlePlay.reset();  // wBool removes the key on a nullopt
+        cfg_.image.playTerms.reset();   // re-enabling asks again
+    }
+    autosave();
+    statusBar()->showMessage(
+        on ? QStringLiteral("Google Play on — press Connect to build it over %1 and restart the "
+                            "device on it").arg(base.imageTag)
+           : QStringLiteral("Google Play off — press Connect to restart the device on %1 without "
+                            "it").arg(base.imageTag),
+        8000);
+    refreshImageGating();
 }
 
 void MainWindow::runPlayOverlay(bool rollback) {
