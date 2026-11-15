@@ -1036,6 +1036,13 @@ private:
             else if (!cf.detail.isEmpty())
                 notes << cf.detail;
         }
+        // The updater channel is a bind source too, and the in-Android app writes into it.
+        if (!ctx.rc.updaterDir.isEmpty()) {
+            if (sp_.run({"sh", "-c", updaterDirPrepScript(ctx.rc.updaterDir)}, {}, log).rc != 0)
+                return StepResult::fail(QStringLiteral("could not create the updater directory %1")
+                                            .arg(ctx.rc.updaterDir));
+            notes << QStringLiteral("updater dir %1").arg(ctx.rc.updaterDir);
+        }
         // THE COMPOSER'S FRAME-SOCKET DIRECTORY IS A BIND SOURCE, so it must exist HERE — before
         // provision — and be owned by us (bd remora-emoe phase 2). Creating it in the encoder step
         // instead was wrong and cost a failed deploy: provision runs first, docker creates a missing
@@ -1202,7 +1209,17 @@ private:
                     .out.simplified()
                     .split(QLatin1Char(' '), Qt::SkipEmptyParts),
                 ctx.rc);
-        if (staleImage || staleNet || staleDevs) {
+        // The updater channel is a bind, fixed at create time like the rest: a container made
+        // before it existed keeps showing an updater that can neither see nor ask for an update.
+        const bool staleUpdater =
+            !curImg.isEmpty() &&
+            containerLacksUpdaterBind(
+                sp_.run({"docker", "inspect", "-f",
+                         "{{range .HostConfig.Binds}}{{println .}}{{end}}", ctx.rc.containerName},
+                        {}, log)
+                    .out,
+                ctx.rc);
+        if (ctx.replaceOwn || staleImage || staleNet || staleDevs || staleUpdater) {
             log(QStringLiteral("stdout"),
                 staleImage
                     ? QStringLiteral("%1 was created from a superseded %2 — recreating")
@@ -1211,11 +1228,21 @@ private:
                     ? QStringLiteral("%1 was created with different networking than %2 mode now "
                                      "asks for — recreating")
                           .arg(ctx.rc.containerName, ctx.rc.networkMode)
-                    : QStringLiteral("%1 was created with different device passthrough than the "
+                : staleDevs
+                    ? QStringLiteral("%1 was created with different device passthrough than the "
                                      "profile now resolves (camera replugged or removed?) — "
                                      "recreating")
+                          .arg(ctx.rc.containerName)
+                : staleUpdater
+                    ? QStringLiteral("%1 was created without the in-Android updater's channel — "
+                                     "recreating").arg(ctx.rc.containerName)
+                    : QStringLiteral("%1 no longer matches the profile — recreating")
                           .arg(ctx.rc.containerName));
             sp_.run({"docker", "rm", "-f", ctx.rc.containerName}, {}, log);
+            // What the takeover used to reap up front, minus the mirrors: the splash on this target
+            // is one, and it is about to show this boot. The old session's frame encoder and its
+            // sockets go; the next connect's husk reaper takes any window that outlived its device.
+            if (ctx.replaceOwn) reapSessionOrphans(sp_, ctx.rc.containerName, QString(), log);
         } else if (sp_.run({"docker", "start", ctx.rc.containerName}, {}, log).rc == 0) {
             if (!wasRunning) appendStatusLine(ctx.statusPath, QStringLiteral("REMORA_BOOTING"));
             return StepResult::good(QStringLiteral("started existing %1").arg(ctx.rc.containerName));
@@ -1349,6 +1376,12 @@ private:
     StepResult hostPrereqs(const RunContext &ctx, LogSink &sink) {
         auto log = mkLog(sink, "host-prereqs");
         sp_.run(Spawner::sshArgv(ctx.guest, "mkdir -p ~/.remora"), {}, log);
+        // The updater channel's bind source, as on bare — the same script, run over there.
+        if (!ctx.rc.updaterDir.isEmpty() &&
+            sp_.run(Spawner::sshArgv(ctx.guest, updaterDirPrepScript(ctx.rc.updaterDir)), {}, log)
+                    .rc != 0)
+            return StepResult::fail(QStringLiteral("could not create the updater directory %1 on "
+                                                   "%2").arg(ctx.rc.updaterDir, ctx.guest));
         // CHECKED pushes, because these become the /remora bind SOURCES at docker run
         // (bd remora-4ei.88) — docker answers a missing source by creating an empty directory
         // there, so a failed scp must stop the deploy HERE, where the message names the push,
@@ -1446,18 +1479,33 @@ private:
                     {}, log)
                 .out.trimmed() == QLatin1String("true");
         // Networking is fixed at create time here too — see the bare provision (bd remora-400).
-        if (containerNetworkStale(
-                sp_.run(Spawner::sshArgv(ctx.guest,
-                                         QStringLiteral("docker inspect -f '%1' %2")
-                                             .arg(QString::fromUtf8(kNetworkInspectFormat), c)),
-                        {}, log)
-                    .out,
-                ctx.rc)) {
+        const bool staleNet = containerNetworkStale(
+            sp_.run(Spawner::sshArgv(ctx.guest,
+                                     QStringLiteral("docker inspect -f '%1' %2")
+                                         .arg(QString::fromUtf8(kNetworkInspectFormat), c)),
+                    {}, log)
+                .out,
+            ctx.rc);
+        // …and so is the updater channel's bind. An inspect that fails (no container yet) prints
+        // nothing to its stdout, which must not read as a missing bind: there is nothing to
+        // recreate, and the run below creates it with the bind.
+        const ProcResult binds = sp_.run(
+            Spawner::sshArgv(ctx.guest, QStringLiteral("docker inspect -f "
+                                                       "'{{range .HostConfig.Binds}}{{println .}}"
+                                                       "{{end}}' %1").arg(c)),
+            {}, log);
+        const bool staleUpdater = binds.rc == 0 && containerLacksUpdaterBind(binds.out, ctx.rc);
+        if (ctx.replaceOwn || staleNet || staleUpdater) {
             log(QStringLiteral("stdout"),
-                QStringLiteral("%1 was created with different networking than %2 mode now asks "
-                               "for — recreating")
-                    .arg(c, ctx.rc.networkMode));
+                staleNet ? QStringLiteral("%1 was created with different networking than %2 mode "
+                                          "now asks for — recreating")
+                               .arg(c, ctx.rc.networkMode)
+                : staleUpdater ? QStringLiteral("%1 was created without the in-Android updater's "
+                                                "channel — recreating").arg(c)
+                               : QStringLiteral("%1 no longer matches the profile — recreating")
+                                     .arg(c));
             sp_.run(Spawner::sshArgv(ctx.guest, "docker rm -f " + c), {}, log);
+            if (ctx.replaceOwn) reapSessionOrphans(sp_, c, QString(), log);  // as on bare
         } else if (sp_.run(Spawner::sshArgv(ctx.guest, "docker start " + c), {}, log).rc == 0) {
             if (!wasRunning) appendStatusLine(ctx.statusPath, QStringLiteral("REMORA_BOOTING"));
             return StepResult::good(QStringLiteral("started existing %1").arg(c));

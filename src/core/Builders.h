@@ -76,6 +76,17 @@ const QList<QPair<QString, QString>> &venusGuestLibs();
 QString sharedFolderBind(const QString &entry);
 QString stagedShareBind(const QString &entry);  // overlayfs staging spot (rebound after boot)
 
+// Where RemoraUpdater looks for its state and leaves Apply — fixed by the app in the image.
+inline constexpr char kUpdaterMount[] = "/rezmods/updater";
+// The profile wants the updater channel and the container (its HostConfig.Binds, one per line)
+// was created without it. Judged by the mount point alone: a remote bind source reads back
+// expanded, where the profile spells it "$HOME/…".
+bool containerLacksUpdaterBind(const QString &binds, const ResolvedConfig &cfg);
+// The updater channel's host directory made ready to be a bind source, before docker run creates
+// it root-owned: the app writes Apply as Android's system uid, 1000, so a host user with any other
+// uid has to open the directory to it. A shell script, so bare and remote run the same text.
+QString updaterDirPrepScript(const QString &dir);
+
 // The image carries the c2-va codecs, so the VAAPI HEVC encoder h265 rides on. The registry
 // answers, with the "-hwc2" spelling as the fallback for an unregistered or arch-suffixed tag.
 // Pass ResolvedConfig::capabilityTag(), not imageTag: a Play overlay's name is in no registry.

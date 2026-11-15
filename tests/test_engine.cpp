@@ -340,6 +340,11 @@ public:
                                            ? QString()
                                            : containerExtraBootArgs + QStringLiteral("\n")))
                        : R(1, {}, "No such container");
+        // provision's updater-bind inspect. Matched on its format field, AFTER the smart-connect
+        // probe, whose format also ranges over HostConfig.Binds.
+        if (argv.mid(0, 2) == QStringList{"docker", "inspect"} &&
+            cmd.contains("{{range .HostConfig.Binds}}"))
+            return containerRunning ? R(0, containerBinds) : R(1, {}, "No such container");
         // provision's device-staleness inspect (bd remora-usn0). AFTER the smart-connect probe:
         // that one's format also names HostConfig.Devices, so this rule matching first would
         // swallow it and answer with the bare device list.
@@ -2998,6 +3003,40 @@ private slots:
         QVERIFY(seen.sameName);
     }
 
+    // Replacing our OWN running container waits for provision. The takeover used to remove it
+    // before the chain ran, so a step that failed before provision left the device down with
+    // nothing to replace it — found when the in-Android updater's redeploy failed its host
+    // prerequisites and took a working device with it.
+    void aReplacementThatFailsEarlyLeavesTheRunningDevice() {
+        FakeSpawner sp;
+        sp.localPs = QStringLiteral("remora-bm\n");  // ours, running…
+        sp.containerStale = true;                      // …on a superseded image: a replacement
+        sp.dataDirShape = QStringLiteral("flat");      // which preflight then refuses
+        RecordingSink sink;
+        QVERIFY(!smartRun(Backend::Bare, RemoraConfig{}, sink, sp));
+        QCOMPARE(sink.of("preflight"), StepState::Failed);
+        QVERIFY(!hasCall(sp, "docker rm"));
+        QVERIFY(!hasCall(sp, "docker run"));
+    }
+
+    void aReplacementRemovesTheOldContainerOnlyAtProvision() {
+        FakeSpawner sp;
+        sp.localPs = QStringLiteral("remora-bm\n");
+        sp.containerStale = true;
+        RecordingSink sink;
+        QVERIFY(smartRun(Backend::Bare, RemoraConfig{}, sink, sp));
+        int shape = -1, rm = -1, run = -1;
+        for (int i = 0; i < sp.calls.size(); ++i) {
+            if (shape < 0 && sp.calls[i].contains("-d $D/upper")) shape = i;  // preflight
+            if (rm < 0 && sp.calls[i].startsWith("docker rm -f remora-bm")) rm = i;
+            if (run < 0 && sp.calls[i].startsWith("docker run -d")) run = i;
+        }
+        QVERIFY(shape >= 0);
+        QVERIFY(rm > shape);
+        QVERIFY(run > rm);
+        QCOMPARE(sink.of("provision"), StepState::Ok);
+    }
+
     // bd remora-4u4.6 — an explicitly passed host device is exclusive. V4L2 capture is
     // single-opener, so handing /dev/video0 to a second instance does not share the camera, it
     // just makes the second one fail to open it.
@@ -4199,6 +4238,39 @@ private slots:
         for (const QString &c : sp.calls)
             if (c.startsWith("docker run") && c.contains(" " + overlay + " ")) ranOverlay = true;
         QVERIFY(ranOverlay);
+    }
+
+    // The in-Android updater's channel is a docker-run bind: a container created without it keeps
+    // an updater that can neither see an update nor ask for one, so Connect recreates it — in the
+    // fast path's check AND in provision, which a running container otherwise passes untouched.
+    static RemoraConfig updaterProfile() {
+        RemoraConfig cfg = macvlanBareProfile();
+        cfg.image.androidVersion = 17;
+        cfg.image.imageTag = QStringLiteral("remora24:x86_64-public");  // carries system_updater
+        return cfg;
+    }
+
+    void smartConnectRecreatesAContainerWithoutTheUpdaterChannel() {
+        FakeSpawner sp;
+        sp.containerNetworks = QStringLiteral("lan=192.0.2.77 ");
+        sp.containerBinds = QStringLiteral("/srv/data:/data-diff");  // made before the channel
+        RecordingSink sink;
+        QVERIFY(smartRun(Backend::Bare, updaterProfile(), sink, sp));
+        QVERIFY(hasCall(sp, "docker rm -f"));
+        const QString dir = QDir::homePath() + "/.local/share/remora/updater/remora-bm";
+        QVERIFY(hasCall(sp, "-v " + dir + ":/rezmods/updater"));
+        QVERIFY(hasCall(sp, "mkdir -p"));  // host-prereqs made the bind source first
+    }
+
+    void smartConnectReconnectsWhenTheUpdaterChannelIsThere() {
+        FakeSpawner sp;
+        sp.containerNetworks = QStringLiteral("lan=192.0.2.77 ");
+        sp.containerBinds = QDir::homePath() +
+                            "/.local/share/remora/updater/remora-bm:/rezmods/updater";
+        RecordingSink sink;
+        QVERIFY(smartRun(Backend::Bare, updaterProfile(), sink, sp));
+        QVERIFY(!hasCall(sp, "docker rm -f"));
+        QVERIFY(!hasCall(sp, "docker run"));
     }
 
     void smartConnectStopsWhenGooglePlayCannotBeAdded() {

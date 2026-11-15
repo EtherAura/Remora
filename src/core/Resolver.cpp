@@ -526,6 +526,16 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
     r.agentBaked =
         im.features.contains(QStringLiteral("mirror_agent")) ||
         (taggedImage && taggedImage->provides.contains(QStringLiteral("mirror_agent")));
+    // The in-Android updater's channel, decided the same way and for the same reason: the feature
+    // asked for, or the registered image carrying it. It was a VM-only bind until the vm backend
+    // retired (bd remora-d5v), which left bare and remote devices showing an updater that could
+    // neither see an update nor ask for one.
+    if (im.features.contains(QStringLiteral("system_updater")) ||
+        (taggedImage && taggedImage->provides.contains(QStringLiteral("system_updater"))))
+        r.updaterDir = r.rezmodsDir
+                           ? *r.rezmodsDir + QStringLiteral("/updater")
+                           : (backend == Backend::Remote ? QStringLiteral("$HOME") : home) +
+                                 QStringLiteral("/.local/share/remora/updater/") + r.containerName;
 
     // HW-ENCODE CAPABILITY GATE, applied LAST and at ONE point so bare and remote cannot drift
     // (bd remora-e5x.4). Everything above may have selected h265, which Builders then pins to

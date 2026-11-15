@@ -4,7 +4,10 @@
 
 namespace remora {
 QString playTermsVersion();
-QString playNotice();
+// The provider and terms notice the user accepts. `what` says what accepting leads to, which is
+// not the same for the profile option (the device moves onto the layer, data kept) and for a
+// standalone `remora play-install` (a separate image, nothing else touched).
+QString playNotice(const QString &what);
 // Arguments use the helper's strict parser; only our own source/manifest are staged remotely.
 ProcResult runPlayInstall(Spawner &sp, const QStringList &arguments, const QString &host,
                           const LineSink &log = {});

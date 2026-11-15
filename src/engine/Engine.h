@@ -121,6 +121,10 @@ struct RunContext {
     bool retiredVmBackend = false;
     // The profile's gpu_mode= is neither host nor guest; preflight refuses it by name.
     std::optional<QString> unrecognisedGpuMode;
+    // The deploy replaces this profile's OWN running container. Provision removes it — after the
+    // steps before it have passed — rather than the takeover doing it up front: removed first, any
+    // of those steps failing left the device down with nothing to replace it.
+    bool replaceOwn = false;
     QString windowTitle;
     // A desktop/app launch (--new-display) is an ADDITIONAL window: it must not disturb a running
     // mirror, so doConnect skips the stale-mirror / stale-server kills when this is set.

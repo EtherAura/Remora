@@ -10,6 +10,9 @@ namespace remora {
 // listing and fetching go through vendor/release/catalog.py's verification.
 inline const QString kPublicImageSource =
     QStringLiteral("https://github.com/EtherAura/Remora/releases/download/android-images");
+// The tag that follows the official channel: what a fetch moves to each new release, and what a
+// profile deploys when it takes Remora's public image as it comes.
+inline const QString kPublicImageTag = QStringLiteral("remora24:x86_64-public");
 
 // Run vendor/release/catalog.py (list | fetch | rollback) with Remora's public trust anchor, on
 // this machine or — given `host` — on that Docker host over ssh. Remotely the helper and the key

@@ -1,4 +1,5 @@
 #include <QFile>
+#include <QProcess>
 #include <QtTest>
 
 #include "core/Prereqs.h"
@@ -352,6 +353,21 @@ private slots:
         QVERIFY(!archVariantRefusal(QStringLiteral("alderlake"), zen1Flags(), tag,
                                     QStringLiteral("h"))
                      .isEmpty());
+    }
+
+    // The shared image fetch (vendor/release/catalog.py: `remora images fetch`, the workspace's
+    // Official downloads, Android's update-watch) releases its downloaded archive once the image is
+    // imported and promoted, and only then. The lifecycle is the helper's own Python, so is its
+    // regression; it runs from here, under this suite's isolated HOME.
+    void imageFetchReleasesItsArchiveOnlyAfterImport() {
+        QProcess p;
+        p.setProcessChannelMode(QProcess::MergedChannels);
+        p.start(QStringLiteral(REMORA_PYTHON),
+                {QStringLiteral(REMORA_SOURCE_DIR "/tests/test_public_images.py"),
+                 QStringLiteral("ImportCache")});
+        QVERIFY2(p.waitForFinished(120000), "the image-cache regression did not finish");
+        const QByteArray out = p.readAll();
+        QVERIFY2(p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0, out.constData());
     }
 };
 

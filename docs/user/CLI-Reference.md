@@ -39,7 +39,7 @@ the command line is also the way to drive Remora over ssh.
 | `remora auto-sleep [<profile>]` | Idle watcher: freezes the device after `auto_sleep_minutes` with no mirror window. Runs until stopped |
 | `remora service [<profile>] [--remove]` | Install and enable systemd user units: up at login, sleep at logout, plus the update and auto-sleep watchers. `--remove` disables and deletes them |
 | `remora watch-boot [<profile>]` | Restart the device and attach the mirror during boot, to see the boot animation |
-| `remora update-watch [<profile>]` | Serve the in-Android updater: wait for *Apply* on the device, then redeploy onto the new image. Runs until stopped |
+| `remora update-watch [<profile>]` | Serve the in-Android updater: show the device whether a newer image is on the host or, for the official image, in Remora's signed catalog, and on *Apply* download it if needed and redeploy onto it. Runs until stopped |
 | `remora reset-data [<profile>] --yes` | Factory reset: delete the profile's `/data`, and its application-menu folder with it. `bare` only. Without `--yes` it explains what would be deleted and does nothing |
 
 ## Windows
@@ -77,15 +77,21 @@ active profile.
 
 ```bash
 remora images list
+remora images check --tag remora24:x86_64-public
 remora images fetch --tag remora24:x86_64-public
 remora images rollback --tag remora24:x86_64-public
 ```
 
 `images list` prints the signed catalog of Remora's public, redistributable Android 17 images.
+`images check` says whether the catalog's release is newer than the image this host has under that
+tag, without downloading anything. A host that built a newer image itself is not offered an older
+release.
 `images fetch` downloads one and imports it, after checking the catalog's signature and validity
 and the archive's SHA-256, Docker identity and tag. Anything that fails a check is refused before
 Docker sees it. The image is imported under an immutable version tag and then tagged
-`remora24:x86_64-public`. A previous image with that name is kept as `remora-rollback:public-…`.
+`remora24:x86_64-public`. The downloaded archive is removed once that succeeds; an import that
+fails keeps it, so trying again does not download it again. A previous image with that name is
+kept as `remora-rollback:public-…`.
 `images rollback` restores it; Android data is never touched. Add `--host user@host` to run on that
 Docker host. `--source` names another signed catalog location. The workspace's **Official
 downloads** button adds the same source to the Image library.
@@ -142,7 +148,7 @@ the image this installer is meant for. The overlay it creates is private and is 
 | `remora recipe [<profile>] [--base <tag>]` | Print the custom-image Dockerfile for the profile's features. `--base` layers onto that image instead of the best-matching registered tag |
 | `remora build [--tag <tag>] [--base <tag>]` | Build that recipe for the active profile, as a Docker overlay. `--tag` names the result |
 | `remora build --source [<profile>]` | Full source build of the profile's image: the same chain the workspace runs. A profile with the `public_release` feature builds the redistributable `remora24:x86_64-public` image, and the build fails if the release audit does |
-| `remora images list\|fetch\|rollback [--tag <tag>] [--source <url>] [--host <user@host>]` | List, verify and import, or roll back an official signed image. See above |
+| `remora images list\|check\|fetch\|rollback [--tag <tag>] [--source <url>] [--host <user@host>]` | List, check for a newer release of, verify and import, or roll back an official signed image. Every action but `list` needs `--tag`. See above |
 | `remora venus-build [--dir <dir>] [--tag <version>\|latest]` | Build and install the NVIDIA Venus host renderer. `--dir` sets the install root, `--tag` the guest-library release |
 
 ## Move apps between instances

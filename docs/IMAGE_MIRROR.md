@@ -163,12 +163,13 @@ of Remora's hosting/publication paths. This choice establishes the workflow, not
 or a conclusion that all remaining licence/service questions are resolved. The detailed contract
 and risks are in the feasibility report; `remora-wzaa` tracks delivery.
 
-The Image library and [`remora play-install`](user/CLI-Reference.md#build) implement the optional
-flow. They require explicit versioned terms acceptance, download the pinned LiteGapps package
-directly on the local/SSH Docker host, verify the audited bytes, extract only 20 selected payload
-files and add one local permission denial. A COPY-only layer uses an immutable base image ID;
-`remora-local:` names and `org.remora.play.local_only=true` mark private derivatives. No build
-archive, registry push or profile change is performed. Receipts remain in a private host cache;
+The Image page's Google Play option and [`remora play-install`](user/CLI-Reference.md#build)
+implement the optional flow. They require explicit versioned terms acceptance, download the pinned
+LiteGapps package directly on the local/SSH Docker host, verify the audited bytes, extract only 20
+selected payload files and add one local permission denial. A COPY-only layer uses an immutable
+base image ID; `remora-local:` names and `org.remora.play.local_only=true` mark private
+derivatives. No build archive or registry push is performed; only the option changes a profile,
+and only the one the user turned it on for. Receipts remain in a private host cache;
 unused-overlay removal retains the base and all Android data.
 
 A fresh private bridge-free fixture booted and opened the unauthenticated Store. The feature

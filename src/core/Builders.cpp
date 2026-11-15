@@ -54,6 +54,16 @@ QString stagedShareBind(const QString &entry) {
 // name with no such marker (bd remora-phvx), so a pure substring test would leave plain h264 on
 // the vendor AVC entry that cannot start. The registry is the authority; the spelling stays as
 // the fallback for an unregistered or arch-suffixed -hwc2 tag.
+bool containerLacksUpdaterBind(const QString &binds, const ResolvedConfig &cfg) {
+    return !cfg.updaterDir.isEmpty() &&
+           !binds.contains(QStringLiteral(":") + QLatin1String(kUpdaterMount));
+}
+
+QString updaterDirPrepScript(const QString &dir) {
+    return QStringLiteral("D=\"%1\"; mkdir -p \"$D\" && { [ \"$(id -u)\" = 1000 ] || "
+                          "chmod 0777 \"$D\"; }").arg(dir);
+}
+
 bool imageCarriesC2Va(const QString &imageTag) {
     if (imageTag.contains(QLatin1String("hwc2"))) return true;
     const ImageTag *t = findImageTag(imageTag);
@@ -374,6 +384,10 @@ QStringList buildDockerRunArgv(const ResolvedConfig &cfg) {
     // folders above these are emitted regardless of useOverlayfs.
     for (const QString &app : cfg.companionApps)
         a << "-v" << companionAppBind(app, cfg.rezmodsDir.value_or(QString()));
+    // The in-Android updater's channel: RemoraUpdater reads the host's state.json here and leaves
+    // its Apply signal beside it. Not under /data, so the init-time overlay cannot shadow it.
+    if (!cfg.updaterDir.isEmpty())
+        a << "-v" << cfg.updaterDir + QStringLiteral(":") + QLatin1String(kUpdaterMount);
 
     a << cfg.imageTag;
     a << buildBootArgs(cfg);

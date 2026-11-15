@@ -9,6 +9,14 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Added
 
+- **New public releases reach the device through its own updater.** For a profile that deploys
+  Remora's official image, `remora update-watch` checks the signed release catalog every six
+  hours and shows a newer release in Android's *System updates*, with its size. *Download and
+  apply* downloads and verifies it, keeps the previous image for rollback, builds the Google
+  Play layer again when the profile has one, and restarts the device on it with its data kept. A
+  failed download or restart is reported on that screen. `remora images check` asks the same
+  question from a terminal.
+
 - **Google Play as a profile option.** The Image page's **Active image** card has an **Add
   Google Play services** toggle, saved in the profile as `google_play` and the accepted
   `play_terms` version. Turning it on asks for the provider's terms. Each connect then builds, or
@@ -18,11 +26,42 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   on. A connect refuses when the accepted terms are missing or older than the installer's, and
   does nothing for an image that already includes Google apps.
 
+### Removed
+
+- **The Image library's Install Google Play… and Remove Play overlay… buttons.** They made a
+  Play image a profile had to be pinned to by hand, beside the profile option that does the whole
+  job. The option's images appear in the list as a **Google Play layer**, which Delete removes.
+  `remora play-install` still makes a standalone Play image from the command line.
+
 ### Fixed
 
-- **h265 is no longer greyed out on the public image.** The Image page decided whether an image
-  ships the hardware HEVC encoder from `hwc2` in its tag, which the public image lacks, so opening
-  a profile on it reset the codec to h264. It now asks the image registry, as the mirror does.
+- **A release update no longer leaves its download behind.** Every fetch of an official image —
+  `remora images fetch`, the workspace's Official downloads and Android's *Download and apply* —
+  kept the downloaded archive in `~/.cache/remora/images/` for good, several hundred MB per
+  release. The archive is now removed once its image has been verified, imported and promoted;
+  an import that fails keeps it, so the retry does not download it again. Fetching a release that
+  is already installed now downloads and verifies it again. Older images and rollback tags are
+  still kept, as before.
+- **The in-Android updater works again on bare and remote devices.** Its directory was mounted
+  only by the retired `vm` backend, so the *System updates* screen could neither see an update
+  nor ask for one. Each container now gets its own directory, mounted where the app looks, and a
+  container created without it is recreated on the next connect. Profiles on one host no longer
+  share one Apply signal, which could have updated the wrong device.
+- **A redeploy that fails no longer leaves the device down.** When a connect had to replace the
+  profile's own running container, it removed the container before any deploy step ran, so a
+  failure in preflight, the image check or the host prerequisites left nothing running. The old
+  container is now replaced only when the deploy reaches the step that creates the new one.
+- **Apply in Android now redeploys with the host's GPU probed.** `remora update-watch` redeployed
+  without the live GPU probe that `remora up` takes, so on an NVIDIA (Venus) host the update
+  failed its host prerequisites every time.
+- **The image library lists each image once.** An image with several names, such as a fetched
+  release under its tag and its version name, was a row per name, each showing the full size.
+  It is now one row, its other names in a tooltip. Delete removes all of them, and the Active
+  image list still offers each name.
+- **h265 works with the public image again in the workspace.** The Image page and Connect both
+  decided whether an image ships the hardware HEVC encoder from `hwc2` in its tag, which the
+  public image lacks. The Image page reset the codec to h264, and Connect stopped with "No h265
+  encoder in this image". Both now ask the image registry, as the mirror does.
 - **The in-Android updater follows profile changes.** `remora update-watch` read the profile once
   at start, so **Apply** in Android redeployed the settings it started with, undoing any change
   made in the workspace since. It now reads the profile on every check. With Google Play on, it
@@ -31,6 +70,10 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   folder whose device suddenly reports under half its apps, which protects it from a list read
   mid-boot. After a reset, that guard kept a launcher for every deleted app. The next connect now
   builds the folder again from the fresh device.
+- **`remora images check` and `fetch` without `--tag` now say that the tag is missing.** They
+  downloaded the catalog first and then reported "Requested tag is absent from the authenticated
+  catalog", as though the catalog were at fault. They now stop before any download and name the
+  flag, as `rollback` already did.
 
 ## [2026.11.1] - 2026-11-14
 

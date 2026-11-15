@@ -81,15 +81,12 @@ needs an Android 17 x86_64 image without Google apps, such as the public image. 
 image already includes Google Play shows that instead. In a profile file the option is
 `google_play` and `play_terms`; see [Configuration](Configuration.md#root-and-play).
 
-The **Built images** card has **Install Google Play…** and **Remove Play overlay…** actions for
-the image library itself. Select a Docker image row, then accept the displayed provider/terms
-notice. Installation supports a Google-free Android 17 x86_64 base and creates a separate
-`remora-local:` image without changing any profile. A profile pinned to that image keeps it when
-the base is updated, which the profile option above avoids. Download and verification happen
-directly on that image's Docker host. The installer rejects an existing Google/microG installation
-and never runs the third-party scripts. The remove action refuses any image used by a running or
-stopped container and retains the base and Android data. Neither the option nor these actions
-logs into Google. Details and headless/remote usage are in [CLI Reference](CLI-Reference.md#build).
+The overlay is listed in the **Built images** card as a **Google Play layer**. Deleting one that
+no device uses is safe: the next connect of a profile that needs it builds it again. Download and
+verification happen directly on the Docker host, the installer rejects an image that already
+contains Google apps or microG, and it never runs the third-party scripts. Remora does not log
+into Google for you. To make a standalone Play image without a profile, use `remora
+play-install`; see [CLI Reference](CLI-Reference.md#build).
 
 - **`gapps`** adds the Play Store and Play services and supports layering onto an existing image.
   The [APK audit](../GOOGLE_PLAY_SOURCE_TERMS.md) found x86_64 native code, and an isolated
@@ -103,8 +100,9 @@ logs into Google. Details and headless/remote usage are in [CLI Reference](CLI-R
 
 - **`arm_translate`** is the ARM native bridge that runs arm64-only apps on x86_64. Its caveat is
   ABI-list ordering: an app can be started under the wrong ABI. The payload is proprietary.
-- **`system_updater`** adds *Settings, System, Remora Updater*. *Apply* signals the host, where
-  `remora update-watch` does the update.
+- **`system_updater`** adds *Settings, System, System updates*. *Download and apply* signals the
+  host, where `remora update-watch` does the update, including new public releases. See
+  [The in-Android updater](Android-Apps-on-the-Desktop.md#the-in-android-updater).
 - **`play_spoof`** bakes a ReZygisk and PlayIntegrityFork stack so that Google Play sees a
   certified Pixel inside GMS and Play only. System properties and adb are untouched. It stays
   dormant until the `play_spoof=true` runtime setting turns it on, and `remora certify` reports the

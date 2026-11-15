@@ -243,6 +243,8 @@ add_test(NAME mirrorproto COMMAND test_mirrorproto)
 
 add_executable(test_prereqs tests/test_prereqs.cpp)
 target_link_libraries(test_prereqs PRIVATE remora_core Qt6::Test)
+# The image-fetch cache regression is the helper's own Python; this suite runs it.
+target_compile_definitions(test_prereqs PRIVATE REMORA_PYTHON="${Python3_EXECUTABLE}" REMORA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 add_test(NAME prereqs COMMAND test_prereqs)
 
 add_executable(test_engine tests/test_engine.cpp)
@@ -380,8 +382,10 @@ install(CODE "
     endif()
   endforeach()
 ")
+# Python writes bytecode caches into the source tree whenever something imports a vendor module,
+# and the PKGBUILD's check() runs ctest, which does, right before package() installs.
 install(DIRECTORY vendor/ DESTINATION ${CMAKE_INSTALL_DATADIR}/remora/vendor
-        USE_SOURCE_PERMISSIONS)
+        USE_SOURCE_PERMISSIONS PATTERN "__pycache__" EXCLUDE)
 # No standalone PIP entry: it would sit loose in the application list, outside every profile folder,
 # and act on whichever profile happened to be active — ambiguous the moment there are two. The PIP
 # is launched from its profile's folder ("Android (PIP)"), where the profile is explicit.

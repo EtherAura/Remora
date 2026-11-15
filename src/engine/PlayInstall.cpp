@@ -13,12 +13,10 @@ static QJsonObject manifest() {
     return QJsonDocument::fromJson(f.readAll()).object();
 }
 QString playTermsVersion() { return manifest().value("terms_version").toString(); }
-QString playNotice() {
+QString playNotice(const QString &what) {
     const auto m = manifest();
     return QStringLiteral(
-        "Download %1 — %2 directly from the provider on the selected Docker host. "
-        "This creates a separate local image; the original image, running instances and Android "
-        "data are retained. Use the new image with fresh Android data.\n\n"
+        "Package: %1 — %2, downloaded directly from the provider.\n\n%6\n\n"
         "Google APKs remain proprietary; the installer licence does not license them. Remora "
         "is not Google licensed or certified. Service access, Play Integrity, DRM and app "
         "compatibility are not guaranteed. No attestation spoofing is added. "
@@ -26,7 +24,7 @@ QString playNotice() {
         "Third-party terms: %3\nGoogle terms: %4\nAcceptance version: %5")
         .arg(m.value("provider").toString(), m.value("release").toString(),
              m.value("terms_url").toString(), m.value("google_terms_url").toString(),
-             m.value("terms_version").toString());
+             m.value("terms_version").toString(), what);
 }
 ProcResult runPlayInstall(Spawner &sp, const QStringList &arguments, const QString &host,
                           const LineSink &log) {
@@ -41,7 +39,10 @@ ProcResult runPlayInstall(Spawner &sp, const QStringList &arguments, const QStri
     const int accept = arguments.indexOf("--accept-terms");
     if (!arguments.contains("--show-terms") && !arguments.contains("--rollback") &&
         (accept < 0 || arguments.value(accept + 1) != playTermsVersion()))
-        return {2, {}, playNotice() + "\nUse --accept-terms " + playTermsVersion()};
+        return {2, {}, playNotice("This creates a separate local image on the Docker host; the "
+                                  "original image, running instances and Android data are "
+                                  "retained. Use the new image with fresh Android data.") +
+                           "\nUse --accept-terms " + playTermsVersion()};
     if (host.isEmpty() || arguments.contains("--show-terms"))
         return sp.run(QStringList{"python3", script, "--manifest", data} + arguments, {}, log);
     const auto ssh = [&host](const QString &command) {

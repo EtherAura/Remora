@@ -14,6 +14,9 @@ dist/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+# bd's cooperative gate: flock files beside .beads and its Dolt root. bd never deletes them, and
+# its 1.3.4 release notes give this pattern for them.
+*.gate.lock*
 # androguard writes this into the CWD on every run, so any APK inspection from the repo root
 # leaves one behind (bd remora-9lj's Reddit RE work is where they come from).
 androguard.log

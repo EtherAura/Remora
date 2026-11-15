@@ -63,7 +63,6 @@ private slots:
     void onRenameArchive();
     void onDeleteArchive();
     void onPromoteImage();
-    void runPlayOverlay(bool rollback);
     void onActiveImageChanged();
     void onGooglePlayToggled(bool on);
     void onPushImage();
@@ -117,7 +116,7 @@ private:
     Backend currentBackend() const;
     void applyToConfig();
     void setRunning(bool running);
-    void runImageCommand(const QStringList &args, const QString &title, bool rollback, bool play);
+    void runImageCommand(const QStringList &args, const QString &title);  // the images helper
     QProcess *imageProcess_ = nullptr;
 
     QLineEdit *dataDirEdit_ = nullptr;

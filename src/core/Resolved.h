@@ -29,6 +29,12 @@ struct ResolvedConfig {
     int androidVersion = 16;
     QString dataBaseDir;  // overlayfs shared lower layer — mounted only when useOverlayfs
     std::optional<QString> rezmodsDir;  // shared staging tree on the docker host (opt-in)
+    // Where the in-Android updater and `remora update-watch` meet, bind-mounted at the
+    // /rezmods/updater the RemoraUpdater app reads its state from and leaves Apply in. Empty when
+    // the image has no updater. One per CONTAINER, so two profiles on one host never answer each
+    // other's Apply. Absolute on bare; "$HOME/…" on remote, which the remote shell expands both in
+    // the docker run and inside the watcher's double-quoted probe.
+    QString updaterDir;
     int width, height, dpi;
     bool useMemfd;
     GpuMode gpuMode;

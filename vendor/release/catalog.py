@@ -252,7 +252,59 @@ def fetch(base, image, catalog_state, cache):
         elif image_id(image['tag']) == local:
             run('docker','image','rm','--no-prune',image['tag'])
         raise
+    # Imported and promoted, so this fetch's archive has done its job; until here it stays, so a
+    # failed import retries from it. Only its own digest-named entry goes, and failing to remove it
+    # is not a failed import: the image is already in Docker.
+    try:
+        archive.unlink(missing_ok=True)
+    except OSError as e:
+        print('Could not remove the imported archive ' + image['archive']['file'] + ': ' + str(e),
+              file=sys.stderr, flush=True)
     return receipt | {'receipt':str(receipt_path)}
+
+
+def installed_version(image, installed):
+    """The release stamp of the image this host runs under the catalog's tag: its own immutable
+    version name when it has one, else None (a local build that was never fetched)."""
+    tags = json.loads(run('docker', 'image', 'inspect', '--format', '{{json .RepoTags}}', installed))
+    prefix = image['tag'] + '-'
+    stamps = [t[len(prefix):] for t in tags or []
+              if t.startswith(prefix) and re.fullmatch(r'\d{8}\.\d{6}', t[len(prefix):])]
+    return max(stamps) if stamps else None
+
+
+def stamp_time(stamp):
+    return dt.datetime.strptime(stamp, '%Y%m%d.%H%M%S').replace(tzinfo=dt.timezone.utc)
+
+
+def check(image):
+    """Whether the authenticated catalog's release is newer than what this host has under its tag.
+    Nothing is downloaded. A different image is not enough: a host that built a newer image
+    itself must not be offered an older release as an update."""
+    check_local_docker()
+    stamp = image['version_tag'][len(image['tag']) + 1:]
+    installed = image_id(image['tag'])
+    have = image_id(image['version_tag'])
+    current = installed is not None and installed in {image['image_id'], have}
+    if installed is None:
+        update = True
+    elif current:
+        update = False
+    elif not re.fullmatch(r'\d{8}\.\d{6}', stamp):
+        update = True  # an unreadable stamp cannot be ranked; offering it leaves the choice to the user
+    else:
+        mine = installed_version(image, installed)
+        if mine:
+            update = stamp > mine
+        else:
+            # Never fetched, so no stamp to rank by: the image's creation time stands in. Assembly
+            # follows the build that stamped it, so a release is newer only if it was stamped after
+            # this image was put together.
+            created = run('docker', 'image', 'inspect', '--format', '{{.Created}}', installed).strip()
+            update = stamp_time(stamp) > dt.datetime.fromisoformat(created[:19] + '+00:00')
+    return {'tag': image['tag'], 'version_tag': image['version_tag'], 'version': stamp,
+            'installed': installed, 'current': current, 'update': update,
+            'bytes': image['archive']['bytes'], 'fingerprint': image.get('fingerprint', '')}
 
 
 def rollback(tag, cache):
@@ -275,11 +327,14 @@ def rollback(tag, cache):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=['list','fetch','rollback'])
+    p.add_argument('action',choices=['list','check','fetch','rollback'])
     p.add_argument('--source',default='https://github.com/EtherAura/Remora/releases/download/android-images')
     p.add_argument('--tag')
     p.add_argument('--key',default=str(Path(__file__).with_name('image-signing-key.pem')))
     a = p.parse_args(argv)
+    # Before the catalog is fetched: with no tag, check and fetch otherwise failed on the lookup
+    # and blamed the catalog for lacking a tag nobody asked for.
+    require(a.action == 'list' or a.tag, a.action.capitalize() + ' needs --tag')
     u = urllib.parse.urlsplit(a.source)
     require(u.scheme == 'https' and u.netloc and not u.username and not u.password and not u.query and not u.fragment,
             'Source must be an HTTPS directory URL')
@@ -290,7 +345,6 @@ def main(argv=None):
     with open(cache/'import.lock','a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
         if a.action == 'rollback':
-            require(a.tag,'Rollback needs --tag')
             result = rollback(a.tag,cache)
         else:
             statefile = cache/('catalog-'+hashlib.sha256(Path(a.key).read_bytes()).hexdigest()+'.json')
@@ -301,7 +355,8 @@ def main(argv=None):
             else:
                 selected = [im for im in m['images'] if im['tag'] == a.tag]
                 require(len(selected) == 1,'Requested tag is absent from the authenticated catalog')
-                result = fetch(base,selected[0],state,cache)
+                result = (check(selected[0]) if a.action == 'check'
+                          else fetch(base,selected[0],state,cache))
     print('REMORA_IMAGES_RESULT='+json.dumps(result,separators=(',',':')),flush=True)
     return 0
 

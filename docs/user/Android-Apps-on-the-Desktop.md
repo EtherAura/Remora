@@ -151,6 +151,27 @@ device, so run it once on a working instance. After you rebuild that instance's 
 
 ## The in-Android updater
 
-An image built with the `system_updater` feature has *Remora Updater* under Android's system
-settings. Pressing *Apply* there signals the host, and `remora update-watch` on the host recreates
-the container onto the new image. The login service installs that watcher.
+Every Android 17 image, the public one included, has *System updates* under Android's system
+settings. A container cannot update itself, so the host does it: `remora update-watch` writes what
+the screen shows and acts on its *Download and apply* button. The login service installs that
+watcher, so a device set up with `remora service` needs nothing else.
+
+The screen offers two kinds of update:
+
+- **A new public release.** When the profile deploys the official image (`remora24:x86_64-public`
+  from its features, not pinned to one version), the watcher checks Remora's signed release
+  catalog every six hours. A newer release appears with its size, and nothing is downloaded until
+  you press the button. The host then downloads it, checks it against Remora's signing key,
+  imports it, and keeps the previous image for `remora images rollback`. If the profile has Google
+  Play, the Play layer is built again over the new image. Your apps and data are kept, and the
+  device restarts once.
+- **A newer image already on the host**, such as a source build you promoted or an image you
+  fetched in the workspace. Applying it restarts the device on that image.
+
+If an update fails, for example because the download was cut off or the disk is full, the screen
+says so and the device keeps running the image it had. `remora images check --tag
+remora24:x86_64-public` asks the catalog the same question from a terminal.
+
+Each container gets its own updater directory under `~/.local/share/remora/updater/`, mounted into
+the device at `/rezmods/updater`. A container created before Remora mounted it is recreated on the
+next connect, with its data kept.

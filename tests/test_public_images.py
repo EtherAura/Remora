@@ -3,6 +3,7 @@
 The acceptance line these pin: a corrupt, truncated, stale or unauthorized artifact fails safely,
 and every check precedes `docker load`.
 """
+import contextlib
 import datetime as dt
 import hashlib
 import importlib.util
@@ -150,6 +151,60 @@ class Catalog(unittest.TestCase):
                 self.verify(index([self.entry | change]))
 
 
+class Check(unittest.TestCase):
+    """`check` (the in-Android updater's question): is the catalog's release newer than what
+    this host runs under the tag? Nothing is downloaded, and a host that built something newer
+    itself must not be offered an older release."""
+    SIGNED = 'sha256:' + '1' * 64
+    LOCAL = 'sha256:' + '2' * 64
+
+    def ask(self, ids, tags=(), created='2026-11-13T06:39:39.1Z'):
+        def run(*argv):
+            return json.dumps(list(tags)) if '{{json .RepoTags}}' in argv else created
+        with patch.object(catalog, 'check_local_docker', lambda: None), \
+                patch.object(catalog, 'image_id', lambda r: ids.get(r)), \
+                patch.object(catalog, 'run', run):
+            return catalog.check(image_entry(self.SIGNED, ref('a.tar.xz')))
+
+    def test_the_signed_image_is_current(self):
+        r = self.ask({TAG: self.SIGNED})
+        self.assertEqual((r['current'], r['update'], r['version']), (True, False, '20261113.012458'))
+
+    def test_containerd_names_the_same_release_by_another_id(self):
+        # The containerd store gives a loaded image its manifest digest; the version name the
+        # fetch imported under points at the same local ID, so the release is still current.
+        r = self.ask({TAG: self.LOCAL, VTAG: self.LOCAL})
+        self.assertEqual((r['current'], r['update']), (True, False))
+
+    def test_a_newer_release_is_offered_and_an_older_one_is_not(self):
+        older = TAG + '-20261101.000000'
+        newer = TAG + '-20261201.000000'
+        self.assertTrue(self.ask({TAG: self.LOCAL}, tags=[TAG, older])['update'])
+        self.assertFalse(self.ask({TAG: self.LOCAL}, tags=[TAG, newer])['update'])
+
+    def test_a_local_build_is_ranked_by_when_it_was_made(self):
+        # No version name (never fetched): the release counts as newer only when it was stamped
+        # after this image was assembled.
+        self.assertTrue(self.ask({TAG: self.LOCAL}, created='2026-11-12T00:00:00Z')['update'])
+        self.assertFalse(self.ask({TAG: self.LOCAL}, created='2026-11-14T00:00:00Z')['update'])
+
+    def test_nothing_installed_is_an_update(self):
+        r = self.ask({})
+        self.assertEqual((r['installed'], r['current'], r['update']), (None, False, True))
+        self.assertEqual(r['bytes'], 1)
+
+    def test_a_missing_tag_is_named_before_the_catalog_is_fetched(self):
+        # Checked after the download, a missing tag read as one the catalog lacked.
+        def get(*a):
+            raise AssertionError('the catalog was fetched')
+        with tempfile.TemporaryDirectory() as d, patch.dict('os.environ', {'XDG_CACHE_HOME': d}), \
+                patch.object(catalog, 'get', get):
+            for action in ('check', 'fetch', 'rollback'):
+                with self.subTest(action=action), self.assertRaisesRegex(
+                        catalog.VerificationError, '^' + action.capitalize() + ' needs --tag$'):
+                    catalog.main([action])
+
+
 class Archive(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.TemporaryDirectory()
@@ -281,6 +336,143 @@ class Download(unittest.TestCase):
             receipt = catalog.fetch('https://h/x', image, {'sequence': 1}, self.cache)
         self.assertIn(('docker', 'tag', local, TAG), calls)
         self.assertEqual((receipt['image'], receipt['signed_image_id']), (local, iid))
+
+
+class FakeDocker:
+    """Tags and the calls that move them, enough for fetch's import and promotion. A step named
+    in `fail` exits non-zero the way `run` reports it."""
+    def __init__(self, local, fail=()):
+        self.tags, self.local, self.fail, self.calls = {}, local, set(fail), []
+
+    def image_id(self, r):
+        return self.tags.get(r)
+
+    def run(self, *a):
+        self.calls.append(a)
+        if a[1] in self.fail:
+            raise catalog.VerificationError('docker ' + a[1] + ' failed')
+        if a[1] == 'load':
+            self.tags[VTAG] = self.local
+        elif a[1] == 'tag':
+            self.tags[a[3]] = self.tags.get(a[2], a[2])
+        elif a[1:3] == ('image', 'rm'):
+            self.tags.pop(a[-1], None)
+        return ''
+
+
+class ImportCache(unittest.TestCase):
+    """The downloaded archive is cache only until its image is imported and promoted: then the
+    fetch releases it, whichever caller ran the fetch. Until then it stays, so a failed import can
+    be retried from it, and nothing else in the cache is ever this fetch's to remove."""
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory()
+        self.cache = Path(self.d.name) / 'images'
+        self.cache.mkdir()
+        src = Path(self.d.name) / 'src.tar'
+        self.iid = docker_archive(src)
+        self.body = src.read_bytes()
+        self.image = image_entry(self.iid, ref('a.tar', self.body))
+        self.archive = self.cache / self.image['archive']['sha256']
+        # Another release's archive, the catalog state, another tag's receipt and the lock.
+        self.others = {'f' * 64: b'another release', 'catalog-' + 'e' * 64 + '.json': b'{}',
+                       'remora24_x86_64-public-other.receipt.json': b'{}', 'import.lock': b''}
+        for name, data in self.others.items():
+            (self.cache / name).write_bytes(data)
+        self.downloads = 0
+
+    def tearDown(self):
+        self.d.cleanup()
+
+    def fetch(self, docker, body=None):
+        test = self
+
+        class Opener:
+            def open(_, url, timeout):
+                test.downloads += 1
+                return io.BytesIO(test.body if body is None else body)
+        with patch.object(catalog.urllib.request, 'build_opener', lambda *a: Opener()), \
+                patch.object(catalog, 'check_local_docker', lambda: None), \
+                patch.object(catalog, 'image_id', docker.image_id), \
+                patch.object(catalog, 'run', docker.run):
+            return catalog.fetch('https://h/x', self.image, {'sequence': 1}, self.cache)
+
+    def assertOthersKept(self):
+        for name, data in self.others.items():
+            self.assertEqual((self.cache / name).read_bytes(), data, name)
+
+    def test_a_successful_import_releases_its_archive(self):
+        docker = FakeDocker(self.iid)
+        receipt = self.fetch(docker)
+        self.assertEqual(docker.tags[TAG], self.iid)
+        self.assertTrue(Path(receipt['receipt']).exists())
+        self.assertFalse(self.archive.exists())
+        self.assertOthersKept()
+
+    def test_a_failed_verification_loads_nothing_and_caches_nothing(self):
+        bad = bytearray(self.body)
+        bad[-600] ^= 0xFF
+        docker = FakeDocker(self.iid)
+        with self.assertRaises(catalog.VerificationError):
+            self.fetch(docker, bytes(bad))
+        self.assertFalse([c for c in docker.calls if 'load' in c], docker.calls)
+        self.assertFalse(self.archive.exists())
+        self.assertOthersKept()
+
+    def test_a_refused_identity_loads_nothing_and_leaves_the_cache_as_it_was(self):
+        self.image['image_id'] = 'sha256:' + '2' * 64
+        docker = FakeDocker(self.iid)
+        with self.assertRaises(catalog.VerificationError):
+            self.fetch(docker)
+        self.assertFalse([c for c in docker.calls if 'load' in c], docker.calls)
+        self.assertEqual(self.archive.read_bytes(), self.body)
+        self.assertOthersKept()
+
+    def test_a_failed_import_keeps_the_archive_for_the_retry(self):
+        for step in ('load', 'tag'):
+            with self.subTest(step=step):
+                docker = FakeDocker(self.iid, fail={step})
+                with self.assertRaises(catalog.VerificationError):
+                    self.fetch(docker)
+                self.assertNotIn(TAG, docker.tags)
+                self.assertEqual(catalog.sha(self.archive), self.image['archive']['sha256'])
+                # The retry imports from the kept archive without downloading it, then releases it.
+                before = self.downloads
+                docker.fail.clear()
+                self.fetch(docker)
+                self.assertEqual(self.downloads, before)
+                self.assertEqual(docker.tags[TAG], self.iid)
+                self.assertFalse(self.archive.exists())
+        self.assertOthersKept()
+
+    def test_a_repeated_fetch_succeeds_and_keeps_the_first_rollback_boundary(self):
+        replaced = 'sha256:' + '9' * 64
+        docker = FakeDocker(self.iid)
+        docker.tags[TAG] = replaced
+        first = self.fetch(docker)
+        second = self.fetch(docker)
+        # Released after the first import, so the repeat downloads and verifies it again.
+        self.assertEqual(self.downloads, 2)
+        self.assertFalse(self.archive.exists())
+        self.assertEqual((first['previous'], second['previous']), (replaced, replaced))
+        self.assertEqual(docker.tags['remora-rollback:public-' + '9' * 64], replaced)
+        self.assertEqual(docker.tags[TAG], self.iid)
+        self.assertOthersKept()
+
+    def test_a_failure_to_release_the_archive_does_not_fail_the_import(self):
+        real = Path.unlink
+
+        def unlink(p, *a, **k):
+            if p == self.archive:
+                raise PermissionError('read-only cache')
+            return real(p, *a, **k)
+        docker = FakeDocker(self.iid)
+        with patch.object(catalog.Path, 'unlink', unlink), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            receipt = self.fetch(docker)
+        self.assertEqual(docker.tags[TAG], self.iid)
+        self.assertTrue(Path(receipt['receipt']).exists())
+        self.assertIn('a.tar', err.getvalue())
+        self.assertIn('read-only cache', err.getvalue())
 
 
 if __name__ == '__main__':

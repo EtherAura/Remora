@@ -300,6 +300,8 @@ struct DockerImage {
     QString size;
     QString created;    // "YYYY-MM-DD HH:MM" (docker's CreatedAt, truncated)
     QString hostLabel;  // which docker host this was scanned from (empty = local)
+    QString id;         // docker's short image ID — what makes two names one image
+    QStringList aliases;  // the image's other names, once groupImageNames has run
 };
 QList<DockerImage> scanDockerImages(const QString &buildHost, QString *dockerError = nullptr) {
     QList<DockerImage> out;
@@ -328,16 +330,19 @@ QList<DockerImage> scanDockerImages(const QString &buildHost, QString *dockerErr
     const QString listing = runShell(
         buildHost,
         QStringLiteral(
-            "docker images --format '{{.Repository}}:{{.Tag}}|{{.CreatedAt}}' 2>/dev/null "
+            "docker images --format '{{.Repository}}:{{.Tag}}|{{.ID}}|{{.CreatedAt}}' 2>/dev/null "
             "| grep -Ei 'remora|lineage|erstt' | grep -v '<none>' "
-            "| grep -v 'remora-builder' | while IFS='|' read -r t c; do "
+            "| grep -v 'remora-builder' | while IFS='|' read -r t i c; do "
+            // Sized once per IMAGE: a second name for the same ID is the same bytes, and its row
+            // folds into the first one anyway (groupImageNames).
+            "case \" $seen \" in *\" $i \"*) echo \"$t||$c|$i\"; continue;; esac; seen=\"$seen $i\"; "
             "s=$(docker history \"$t\" --format '{{.Size}}' 2>/dev/null | awk "
             "'function b(x, n,u){n=x+0;u=x;gsub(/[0-9.]/,\"\",u);"
             "if(u==\"kB\")return n*1e3;if(u==\"MB\")return n*1e6;"
             "if(u==\"GB\")return n*1e9;if(u==\"TB\")return n*1e12;return n}"
             "{tot+=b($1)}END{if(tot>=1e9)printf \"%.2fGB\",tot/1e9;"
             "else if(tot>=1e6)printf \"%.0fMB\",tot/1e6;else printf \"%.0fkB\",tot/1e3}'); "
-            "echo \"$t|$s|$c\"; done"),
+            "echo \"$t|$s|$c|$i\"; done"),
         30000);
     for (const QString &line : listing.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
         const QStringList f = line.split(QLatin1Char('|'));
@@ -346,10 +351,36 @@ QList<DockerImage> scanDockerImages(const QString &buildHost, QString *dockerErr
             im.tag = f[0].trimmed();
             im.size = f[1].trimmed();
             im.created = f[2].trimmed().left(16);  // "2026-07-12 14:01:49 -0400 EDT" → "…14:01"
+            im.id = f.value(3).trimmed();
             out << im;
         }
     }
     return out;
+}
+
+// One entry per IMAGE, not per name. A fetched public image arrives under its tag and its
+// immutable version name, a promoted build can keep its -src name, and listing each name as a row
+// showed one 2.4 GB image as three — read as three copies on disk. The shortest name leads (the
+// others are that name plus a suffix); the rest ride along as aliases, so pinning by any of them
+// still works and Delete can remove them all.
+static void groupImageNames(QList<DockerImage> &images) {
+    QList<DockerImage> out;
+    for (const DockerImage &im : images) {
+        DockerImage *same = nullptr;
+        for (DockerImage &o : out)
+            if (!im.id.isEmpty() && o.id == im.id && o.hostLabel == im.hostLabel) same = &o;
+        if (!same) {
+            out << im;
+            continue;
+        }
+        const bool leads = im.tag.size() < same->tag.size() ||
+                           (im.tag.size() == same->tag.size() && im.tag < same->tag);
+        same->aliases << (leads ? same->tag : im.tag);
+        if (leads) same->tag = im.tag;
+        if (same->size.isEmpty()) same->size = im.size;
+    }
+    for (DockerImage &o : out) o.aliases.sort();
+    images = out;
 }
 
 // Parse docker's SI size strings ("2.845GB", "618.6MB", "0B", "1.5kB") to bytes. Multi-char
@@ -1691,10 +1722,10 @@ void MainWindow::buildUi() {
         // and three names that read like three names are easier to choose between than three
         // sentences. Nothing is lost — the resolver states the same thing where it acts on it.
         videoCodecCombo_->setToolTip(QStringLiteral(
-            "h265 is the default: the -hwc2 image's hardware HEVC encoder. It needs an image "
-            "carrying that encoder — the resolver picks the -hwc2 variant for a feature-based "
-            "profile — and a host GPU with VA-API encode; without one, the deploy falls back to "
-            "h264 and says so.\n\n"
+            "h265 is the default: Remora's hardware HEVC encoder. It needs an image carrying "
+            "that encoder (the hw_video_decode feature: the -hwc2 images and the public image) "
+            "and a host GPU with VA-API encode; without one, the deploy falls back to h264 and "
+            "says so.\n\n"
             "h264 works on every image.\n\n"
             "av1 has no hardware encoder in any image yet, so it encodes in software."));
         {
@@ -2247,11 +2278,12 @@ void MainWindow::buildUi() {
         connect(activeImageCombo_, &QComboBox::currentIndexChanged, this,
                 &MainWindow::onActiveImageChanged);
         form->addRow(QStringLiteral("Deploys"), activeImageCombo_);
-        // A PROFILE SETTING, NOT AN IMAGE ACTION (bd remora-6laf.8). The Built images card can
-        // already make a Play overlay, but a pin to that overlay never follows the base: the next
-        // image update deploys nothing new, silently. On here, every Connect layers Play over
-        // whatever the row above resolves to, so an update brings it along. The terms are asked
-        // for once, by this toggle, never by a deploy.
+        // A PROFILE SETTING, NOT AN IMAGE ACTION (bd remora-6laf.8). It replaced the Built images
+        // card's Install Google Play… button, whose overlay a profile had to be pinned to by hand
+        // — and a pin never follows the base, so the next image update deployed nothing new,
+        // silently. On here, every Connect layers Play over whatever the row above resolves to, so
+        // an update brings it along. The terms are asked for once, by this toggle, never by a
+        // deploy.
         auto *playRow = new QWidget();
         auto *pl = new QHBoxLayout(playRow);
         pl->setContentsMargins(0, 0, 0, 0);
@@ -2526,23 +2558,11 @@ void MainWindow::buildUi() {
         bl->addStretch(1);
         v->addWidget(btns);
 
-        auto *playRow = new QHBoxLayout();
-        auto *playInstall = new QPushButton(QStringLiteral("Install Google Play…"));
-        auto *playRemove = new QPushButton(QStringLiteral("Remove Play overlay…"));
-        playInstall->setToolTip(QStringLiteral(
-            "Download a pinned third-party package on this image's Docker host and create a "
-            "separate local image. Requires a Google-free Android 17 x86_64 base. To give THIS "
-            "profile Google Play, use the Google Play option in the Active image card instead: "
-            "it follows image updates, and a pinned overlay does not."));
-        playRemove->setToolTip(QStringLiteral(
-            "Remove an unused Play overlay created by Remora. Keeps the original base and Android data."));
-        sourceButtons_ << playInstall << playRemove;
-        connect(playInstall, &QPushButton::clicked, this, [this] { runPlayOverlay(false); });
-        connect(playRemove, &QPushButton::clicked, this, [this] { runPlayOverlay(true); });
-        playRow->addWidget(playInstall);
-        playRow->addWidget(playRemove);
-        playRow->addStretch(1);
-        v->addLayout(playRow);
+        // No Google Play buttons here any more: "Install Google Play…" built a layer from the
+        // selected row and changed no profile, beside a profile option that does the whole job —
+        // two ways to one result, and the weaker one first in the eye. The option is the one way;
+        // its layers appear in this list like any image, and Delete removes an unused one.
+        // `remora play-install` still makes a standalone Play image from the command line.
 
         // A SECOND row for the reclaim-disk controls, not the button bar above: six archive actions
         // plus three size readouts and their two Clean buttons overran the page width and scrolled
@@ -3659,9 +3679,12 @@ void MainWindow::refreshImageGating() {
                                    QString());
         QStringList tags;
         for (int i = 0; archivesTree_ && i < archivesTree_->topLevelItemCount(); ++i) {
-            const QString t =
-                archivesTree_->topLevelItem(i)->data(0, Qt::UserRole + 1).toString();
-            if (!t.isEmpty() && !tags.contains(t)) tags << t;
+            const QTreeWidgetItem *row = archivesTree_->topLevelItem(i);
+            // An image's other names too: pinning to its immutable version name is how a profile
+            // stays on one release.
+            for (const QString &t : QStringList{row->data(0, Qt::UserRole + 1).toString()} +
+                                        row->data(0, Qt::UserRole + 3).toStringList())
+                if (!t.isEmpty() && !tags.contains(t)) tags << t;
         }
         // A pin naming an image this host does not have is still the profile's pin — list it, or
         // selecting anything else would be the only way to leave a state the page could not show.
@@ -3726,7 +3749,7 @@ void MainWindow::refreshImageGating() {
                         : dc == QLatin1String("av1")
                             ? QStringLiteral("no Remora image ships an AV1 hardware encoder — "
                                              "the software one fails at full resolution")
-                            : QStringLiteral("needs the -hwc2 image's hardware encoder — not "
+                            : QStringLiteral("needs an image with Remora's hardware encoder — not "
                                              "available for this image / Android version"));
                 }
             }
@@ -4249,6 +4272,7 @@ void MainWindow::onRefreshArchives() {
                 if (!dup) { im.hostLabel = shost; images << im; }
             }
         }
+        groupImageNames(images);
         // ── 1. The listing ──
         QMetaObject::invokeMethod(
             this,
@@ -4278,14 +4302,39 @@ void MainWindow::onRefreshArchives() {
                 }
                 for (const DockerImage &im : images) {
                     auto *item = new QTreeWidgetItem(archivesTree_);
+                    // A Google Play layer's tag is two hashes; name what it is instead. The
+                    // installer's own prefix marks it, whichever profile's Connect built it.
+                    const bool playLayer = im.tag.startsWith(QLatin1String("remora-local:play-"));
+                    const QString kind = playLayer ? QStringLiteral("Google Play layer")
+                                                   : QStringLiteral("docker image");
                     item->setText(0, im.hostLabel.isEmpty()
-                                         ? QStringLiteral("(docker image · local)")
-                                         : QStringLiteral("(docker image · %1)").arg(im.hostLabel));
-                    item->setText(1, imageLabel(settings, im.tag));
+                                         ? QStringLiteral("(%1 · local)").arg(kind)
+                                         : QStringLiteral("(%1 · %2)").arg(kind, im.hostLabel));
+                    if (playLayer)
+                        item->setToolTip(0, QStringLiteral(
+                            "Google Play layered over a base image by a profile's Google Play "
+                            "option (Active image card). Connect builds it again whenever it is "
+                            "missing, so deleting an unused one is safe."));
+                    item->setText(1, im.aliases.isEmpty()
+                                         ? imageLabel(settings, im.tag)
+                                         : QStringLiteral("%1  (+%2 more %3)")
+                                               .arg(imageLabel(settings, im.tag))
+                                               .arg(im.aliases.size())
+                                               .arg(im.aliases.size() == 1
+                                                        ? QStringLiteral("name")
+                                                        : QStringLiteral("names")));
+                    if (!im.aliases.isEmpty())
+                        item->setToolTip(1, QStringLiteral(
+                            "One image under %1 names, stored once:\n%2\n\nDelete removes "
+                            "them all; the Active image list offers each of them.")
+                                                .arg(im.aliases.size() + 1)
+                                                .arg((QStringList{im.tag} + im.aliases)
+                                                         .join(QLatin1Char('\n'))));
                     item->setText(2, im.created);
                     item->setText(3, im.size);
                     item->setData(0, Qt::UserRole, QString());       // no file
                     item->setData(0, Qt::UserRole + 1, im.tag);      // docker rmi target
+                    item->setData(0, Qt::UserRole + 3, im.aliases);  // its other names
                     item->setData(0, Qt::UserRole + 2, im.hostLabel);  // where it lives (push src)
                 }
                 const QString hostName = host.isEmpty() ? QStringLiteral("this host") : host;
@@ -4464,12 +4513,17 @@ void MainWindow::onDeleteArchive() {
                                                             : rm.out.trimmed());
     } else if (!imageTag.isEmpty()) {  // a docker image on the build/source host
         const QString where = host.isEmpty() ? QStringLiteral("local") : host;
+        // Every name the row stands for: removing only the one shown would untag it and leave
+        // the image — the same bytes, under its other names — exactly where it was.
+        const QString names =
+            (QStringList{imageTag} + item->data(0, Qt::UserRole + 3).toStringList())
+                .join(QLatin1Char(' '));
         if (QMessageBox::question(this, QStringLiteral("Remove docker image"),
                                   QStringLiteral("docker rmi %1 on %2 (%3)?")
-                                      .arg(imageTag, where, item->text(3)))
+                                      .arg(names, where, item->text(3)))
             != QMessageBox::Yes)
             return;
-        QString out = runShell(host, QStringLiteral("docker rmi %1 2>&1").arg(imageTag), 30000);
+        QString out = runShell(host, QStringLiteral("docker rmi %1 2>&1").arg(names), 30000);
         const bool conflict = out.contains(QLatin1String("conflict"))
                               || out.contains(QLatin1String("must be forced"))
                               || out.contains(QLatin1String("cannot"));
@@ -4499,7 +4553,7 @@ void MainWindow::onDeleteArchive() {
                         host,
                         QStringLiteral("cids=$(docker ps -aq --filter ancestor=%1); "
                                        "[ -n \"$cids\" ] && docker rm -f $cids >/dev/null 2>&1; "
-                                       "docker rmi -f %1 2>&1").arg(imageTag),
+                                       "docker rmi -f %2 2>&1").arg(imageTag, names),
                         30000);
                     if (out.contains(QLatin1String("conflict"))
                         || out.contains(QLatin1String("cannot")))
@@ -4528,7 +4582,7 @@ void MainWindow::onDeleteArchive() {
                         host,
                         QStringLiteral("cids=$(docker ps -aq --filter ancestor=%1); "
                                        "[ -n \"$cids\" ] && docker rm $cids >/dev/null 2>&1; "
-                                       "docker rmi -f %1 2>&1").arg(imageTag),
+                                       "docker rmi -f %2 2>&1").arg(imageTag, names),
                         30000);
                     if (out.contains(QLatin1String("conflict"))
                         || out.contains(QLatin1String("cannot")))
@@ -4599,14 +4653,15 @@ void MainWindow::onGooglePlayToggled(bool on) {
     if (on) {
         QMessageBox consent(
             QMessageBox::Information, QStringLiteral("Add Google Play services"),
-            playNotice() + QStringLiteral(
-                "\n\nProfile: %1\nBase image: %2\nDocker host: %3\n\nNothing is downloaded "
-                "yet. The next Connect builds the overlay and restarts the device on it; Android "
-                "data is kept. Android grants Google's apps their default permissions when a "
-                "device first boots, so one that has already booted without them may ask for "
-                "some later.")
-                               .arg(instance_, base.imageTag,
-                                    host.isEmpty() ? QStringLiteral("this computer") : host),
+            playNotice(QStringLiteral(
+                "Nothing is downloaded yet. On the next Connect, the Docker host below downloads "
+                "it, layers it over the profile's base image as a private local image, and "
+                "restarts the device on that. The base image and Android data are kept. Android "
+                "grants Google's apps their default permissions when a device first boots, so one "
+                "that has already booted without them may ask for some later."))
+                + QStringLiteral("\n\nProfile: %1\nBase image: %2\nDocker host: %3")
+                      .arg(instance_, base.imageTag,
+                           host.isEmpty() ? QStringLiteral("this computer") : host),
             QMessageBox::NoButton, this);
         auto *accept = consent.addButton(QStringLiteral("Accept terms and add"),
                                          QMessageBox::AcceptRole);
@@ -4634,44 +4689,7 @@ void MainWindow::onGooglePlayToggled(bool on) {
     refreshImageGating();
 }
 
-void MainWindow::runPlayOverlay(bool rollback) {
-    if (running_) return;
-    auto *item = archivesTree_ ? archivesTree_->currentItem() : nullptr;
-    const QString path = item ? item->data(0, Qt::UserRole).toString() : QString();
-    const QString tag = item ? item->data(0, Qt::UserRole + 1).toString() : QString();
-    const QString host = item ? item->data(0, Qt::UserRole + 2).toString() : QString();
-    if (!item || !path.isEmpty() || tag.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("Google Play"),
-            QStringLiteral("Select an image already loaded in Docker, rather than an archive or download source."));
-        return;
-    }
-    if (rollback && !tag.startsWith("remora-local:")) {
-        QMessageBox::information(this, QStringLiteral("Remove Play overlay"),
-            QStringLiteral("Select a remora-local: Play image created by this installer."));
-        return;
-    }
-    const QString title = rollback ? QStringLiteral("Remove Play overlay") : QStringLiteral("Install Google Play");
-    QMessageBox consent(QMessageBox::Information, title,
-        rollback ? QStringLiteral("Remove %1 on %2? The installer refuses images used by a running "
-                                  "or stopped container. The original base and Android data are retained.").arg(
-                                      tag, host.isEmpty() ? QStringLiteral("this computer") : host)
-                 : playNotice() + QStringLiteral("\n\nBase: %1\nDocker host: %2").arg(
-                                      tag, host.isEmpty() ? QStringLiteral("this computer") : host),
-        QMessageBox::NoButton, this);
-    auto *accept = consent.addButton(rollback ? QStringLiteral("Remove overlay")
-                                             : QStringLiteral("Accept terms and install"), QMessageBox::AcceptRole);
-    consent.addButton(QMessageBox::Cancel);
-    consent.setDefaultButton(QMessageBox::Cancel);
-    consent.exec();
-    if (consent.clickedButton() != accept) return;
-    QStringList args{"play-install"};
-    if (rollback) args << "--rollback" << tag;
-    else args << "--base" << tag << "--accept-terms" << playTermsVersion();
-    if (!host.isEmpty()) args << "--host" << host;
-    runImageCommand(args, title, rollback, true);
-}
-
-void MainWindow::runImageCommand(const QStringList &args, const QString &title, bool rollback, bool play) {
+void MainWindow::runImageCommand(const QStringList &args, const QString &title) {
     auto *process = new QProcess(this);
     imageProcess_ = process;
     process->setProcessChannelMode(QProcess::MergedChannels);
@@ -4679,10 +4697,9 @@ void MainWindow::runImageCommand(const QStringList &args, const QString &title, 
     connect(process, &QProcess::readyReadStandardOutput, this, [this, process, output] {
         const auto data = process->readAllStandardOutput();
         output->append(data);
-        // The final receipt is parsed below; log build progress without dumping its file manifest.
+        // The final receipt is parsed below; log progress without dumping it.
         for (const auto &line : data.split('\n'))
-            if (!line.startsWith("REMORA_PLAY_RESULT=") && !line.startsWith("REMORA_IMAGES_RESULT="))
-                appendLog(QString::fromUtf8(line));
+            if (!line.startsWith("REMORA_IMAGES_RESULT=")) appendLog(QString::fromUtf8(line));
     });
     connect(process, &QProcess::errorOccurred, this, [this, process, title](QProcess::ProcessError e) {
         if (e != QProcess::FailedToStart) return;
@@ -4692,32 +4709,24 @@ void MainWindow::runImageCommand(const QStringList &args, const QString &title, 
         process->deleteLater();
     });
     connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
-        [this, process, output, rollback, play, title](int code, QProcess::ExitStatus status) {
+        [this, process, output, title](int code, QProcess::ExitStatus status) {
             output->append(process->readAllStandardOutput());
             imageProcess_ = nullptr;
             setRunning(false);
             if (code || status != QProcess::NormalExit) {
                 showFailure(title, "Image operation failed", QString::fromUtf8(output->right(6000)));
             } else {
-                QJsonObject result;
-                for (const auto &line : output->split('\n'))
-                    if (line.startsWith(play ? "REMORA_PLAY_RESULT=" : "REMORA_IMAGES_RESULT="))
-                        result = QJsonDocument::fromJson(line.mid(play ? 19 : 21)).object();
+                const QJsonObject result = publicImagesResult(QString::fromUtf8(*output));
                 if (result.isEmpty()) {
                     showFailure(title, "Image helper returned no receipt", QString::fromUtf8(output->right(6000)));
                     process->deleteLater();
                     return;
                 }
                 onRefreshArchives();
-                QMessageBox::information(this, title, !play
-                    ? QStringLiteral("Authenticated and imported %1. Select it as the active image. "
-                                     "Android data is unchanged.\n\nReceipt on the Docker host: %2")
-                          .arg(result.value("tag").toString(), result.value("receipt").toString())
-                    : rollback
-                    ? QStringLiteral("Unused overlay removed. The original base image and Android data are retained.")
-                    : QStringLiteral("Created %1. Select it for a fresh instance to use Google Play. "
-                                     "Existing instances and data are unchanged.\n\nReceipt on the Docker host: %2")
-                          .arg(result.value("tag").toString(), result.value("receipt").toString()));
+                QMessageBox::information(this, title,
+                    QStringLiteral("Authenticated and imported %1. Select it as the active image. "
+                                   "Android data is unchanged.\n\nReceipt on the Docker host: %2")
+                        .arg(result.value("tag").toString(), result.value("receipt").toString()));
             }
             process->deleteLater();
         });
@@ -6896,16 +6905,19 @@ void MainWindow::onNewProfile() {
 // with a clear choice instead of letting the connect fail cryptically.
 bool MainWindow::gateVideoCodec(RemoraConfig &cfg, Backend backend) {
     const ResolvedConfig rc = resolve(cfg, backend);
+    // The same question the mirror's encoder pin asks (Builders, imageCarriesC2Va), so the two
+    // cannot disagree. This gate used to test the tag for "hwc2" and stopped every Connect of the
+    // public image, which carries the encoder under a name without it.
     if (rc.videoCodec == QLatin1String("h264")
-        || (rc.videoCodec == QLatin1String("h265")
-            && rc.imageTag.contains(QLatin1String("hwc2"))))
+        || (rc.videoCodec == QLatin1String("h265") && imageCarriesC2Va(rc.capabilityTag())))
         return true;
     const auto ret = QMessageBox::question(
         this, QStringLiteral("No %1 encoder in this image").arg(rc.videoCodec),
         QStringLiteral("This profile asks the mirror for %1, but image '%2' has no hardware video "
-                       "encoder (stock images only ship the software h264 encoder; Remora's "
-                       "-hwc2 image adds HEVC). The session would fail with \u201cCould not create "
-                       "video encoder\u201d.\n\nConnect with h264 instead?")
+                       "encoder (only images with Remora's VA-API codecs, the hw_video_decode "
+                       "feature, can encode HEVC; every image has the software h264 encoder). "
+                       "The session would fail with \u201cCould not create video "
+                       "encoder\u201d.\n\nConnect with h264 instead?")
             .arg(rc.videoCodec, rc.imageTag),
         QMessageBox::Yes | QMessageBox::Cancel);
     if (ret != QMessageBox::Yes) return false;
@@ -8093,7 +8105,7 @@ void MainWindow::onFetchSourceImage() {
         QStringList args{"images", "fetch", "--source", loc, "--tag", tag};
         const auto host = buildHostStr();
         if (!host.isEmpty()) args << "--host" << host;
-        runImageCommand(args, QStringLiteral("Fetch authenticated image"), false, false);
+        runImageCommand(args, QStringLiteral("Fetch authenticated image"));
         return;
     }
     // A mirror index row may name only a tag — then there is no archive URL to fetch. The

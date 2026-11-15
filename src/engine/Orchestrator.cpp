@@ -161,9 +161,15 @@ bool connectRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner
     if (const auto conflict = conflictFor(state, backend, ctx.rc)) {
         const bool consent = onConflict ? onConflict(*conflict) : false;
         if (!consent) return false;
-        // Stop the actual HOLDER, not a hardcoded name — with per-profile containers the two are
-        // only the same for the historical default profile (bd remora-4u4.1).
-        excl.stop(backend, conflict->holder);
+        // OUR OWN container is replaced by provision, once preflight, the image and the host
+        // prerequisites have all passed. Removed here, before any of them ran, a failure in one
+        // left the device down with nothing to replace it — found when the in-Android updater's
+        // redeploy failed its host prerequisites and took a working device with it. A foreign
+        // holder still goes now: it holds a resource the chain's own steps may need. Stop the
+        // actual HOLDER, not a hardcoded name — with per-profile containers the two are only the
+        // same for the historical default profile (bd remora-4u4.1).
+        if (conflict->sameName) ctx.replaceOwn = true;
+        else excl.stop(backend, conflict->holder);
     }
     auto dep = makeDeployer(backend, sp);
     startSplash(sp, ctx);  // after conflict consent — a declined takeover must not flash a window
@@ -476,7 +482,10 @@ bool smartRun(Backend backend, const RemoraConfig &profile, LogSink &sink, Spawn
     // next `up`. Not running still falls through — an extra window does need the device up.
     if (ctx.extraWindow() && running)
         return reconnectRun(backend, cfg, sink, sp, caps, windowTitle, fullscreenDisplay);
-    if (running && fresh && argsOk && sharesOk && appsOk && devsOk && netOk)
+    // The updater channel is a docker-run bind like the shares: a container created without it
+    // keeps an in-Android updater that can neither see an update nor ask for one.
+    const bool updaterOk = !containerLacksUpdaterBind(out, ctx.rc);
+    if (running && fresh && argsOk && sharesOk && appsOk && devsOk && netOk && updaterOk)
         return reconnectRun(backend, cfg, sink, sp, caps, windowTitle, fullscreenDisplay);
     // Falling through to a full deploy while OUR OWN container is running (stale image, missing
     // c2, or changed geometry) is a recreate, not a foreign-holder conflict — auto-consent when

@@ -1697,6 +1697,60 @@ private slots:
         QVERIFY(!imageCarriesC2Va(overlay));
     }
 
+    // The in-Android updater's channel (it was a VM-only bind until the vm backend retired): one
+    // directory per container, bind-mounted where RemoraUpdater looks, and only for an image that
+    // carries the updater.
+    void updaterChannelIsOnePerContainerAndOnlyWithTheUpdater() {
+        RemoraConfig cfg;
+        cfg.image.androidVersion = 17;
+        cfg.image.imageTag = QStringLiteral("remora24:x86_64-public");  // registered with it
+        cfg.backend.containerName = QStringLiteral("remora-a");
+        ResolvedConfig r = resolve(cfg, Backend::Bare);
+        const QString dir = QDir::homePath() + "/.local/share/remora/updater/remora-a";
+        QCOMPARE(r.updaterDir, dir);
+        const QStringList argv = buildDockerRunArgv(r);
+        QVERIFY(argv.contains(dir + ":/rezmods/updater"));
+        QVERIFY(argv.indexOf(dir + ":/rezmods/updater") < argv.indexOf(r.imageTag));
+        // another container on the same host gets its own: one Apply cannot reach both devices
+        cfg.backend.containerName = QStringLiteral("remora-b");
+        QVERIFY(resolve(cfg, Backend::Bare).updaterDir.endsWith("/remora-b"));
+        // remote: spelled for the remote shell, which expands it in the run and in the probe
+        cfg.backend.sshHost = QStringLiteral("user@host");
+        QCOMPARE(resolve(cfg, Backend::Remote).updaterDir,
+                 QStringLiteral("$HOME/.local/share/remora/updater/remora-b"));
+        // the feature asked for on an image the registry does not know counts too…
+        cfg.backend.sshHost.reset();
+        cfg.image.imageTag = QStringLiteral("remora-local:custom");
+        cfg.image.features = QStringList{QStringLiteral("system_updater")};
+        QVERIFY(!resolve(cfg, Backend::Bare).updaterDir.isEmpty());
+        // …and an image without the updater (every A17 tag has it; the A16 ones do not) gets no
+        // channel and no bind
+        cfg.image.features.clear();
+        cfg.image.androidVersion = 16;
+        cfg.image.imageTag = QStringLiteral("remora23:x86_64-gapps");
+        r = resolve(cfg, Backend::Bare);
+        QVERIFY(r.updaterDir.isEmpty());
+        for (const QString &t : buildDockerRunArgv(r)) QVERIFY(!t.contains("/rezmods"));
+    }
+
+    void updaterBindStalenessReadsTheMountPointOnly() {
+        ResolvedConfig r = bareCfg();
+        r.updaterDir = QStringLiteral("$HOME/.local/share/remora/updater/remora-bm");
+        // a remote container reports its bind source expanded; the mount point is what counts
+        QVERIFY(!containerLacksUpdaterBind(
+            "/srv/x:/data-diff\n/home/u/.local/share/remora/updater/remora-bm:/rezmods/updater\n",
+            r));
+        QVERIFY(containerLacksUpdaterBind("/srv/x:/data-diff\n", r));
+        r.updaterDir.clear();  // no updater, nothing can be missing
+        QVERIFY(!containerLacksUpdaterBind(QString(), r));
+        // the bind source is made before docker run, opened to Android's system uid only when
+        // this host's user is not that same uid
+        const QString prep = updaterDirPrepScript(QStringLiteral("/h/u/d"));
+        QVERIFY(prep.contains("D=\"/h/u/d\""));
+        QVERIFY(prep.contains("mkdir -p \"$D\""));
+        QVERIFY(prep.contains("[ \"$(id -u)\" = 1000 ] || chmod 0777 \"$D\""));
+    }
+
     void mirrorVideoCodecOptIn() {
         // default (h264 / empty) emits no --video-codec token…
         const auto [e0, a0] = buildMirrorArgv(bareCfg(), "localhost:5555");

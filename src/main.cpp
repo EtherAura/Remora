@@ -618,19 +618,14 @@ static int cmdUp(const QStringList &a) {
 // remora sleep [<profile>] — freeze the device in place (docker pause): zero CPU, session fully
 // preserved. The next Connect/up wakes it in ~1s instead of a ~50s cold boot.
 // remora update-watch [<profile>] — the host half of the in-Android updater: the device
-// shows/requests updates, the HOST applies them (a container has no recovery). Loops: every 15s,
-// checks the guest-side /rezmods/updater/apply signal (written by the RemoraUpdater app's Apply
-// button); when present, consumes it and runs the smart deploy, which recreates the container onto
-// the new image. Also keeps state.json honest each tick.
-// Where the host half of the updater keeps apply/state.json. A pinned rezmods tree is the
-// operator's own layout and the one the guest's /rezmods mount is fed from, so it wins when set.
-// Unset, this was a hardcoded ~/rezmods: every tick of every update-watch created a VISIBLE
-// directory in the root of $HOME, on profiles that never configured the feature and had nothing
-// reading it back. $HOME (not ~) because the path is used inside double quotes, and it is expanded
-// by whichever shell runs the probe — the REMOTE one on an ssh profile.
-static QString updaterStateDir(const ResolvedConfig &rc) {
-    return rc.rezmodsDir.value_or(QStringLiteral("$HOME/.local/share/remora/rezmods"));
-}
+// shows/requests updates, the HOST applies them (a container has no recovery). Every 15s it writes
+// the device's state.json into the profile's updater directory — bind-mounted at /rezmods/updater,
+// where the RemoraUpdater app reads it — and looks for the Apply signal the app leaves beside it.
+// Two kinds of update: an image already on the Docker host that the profile's tag has moved to (a
+// source build promoted, an image fetched in the workspace), and — for a profile on Remora's
+// official public image — a newer release in the signed catalog, found by a check every few hours
+// and downloaded only when Apply asks for it.
+static constexpr int kReleaseCheckSecs = 6 * 3600;
 
 static int cmdUpdateWatch(const QStringList &a) {
     QString inst;
@@ -659,12 +654,67 @@ static int cmdUpdateWatch(const QStringList &a) {
                         << (remote ? QStringLiteral("via ") + guest
                                    : QStringLiteral("on this machine"))
                         << " — waiting for in-device Apply (Ctrl-C to stop)\n";
+    const LineSink say = [](const QString &, const QString &line) {
+        QTextStream(stderr) << line << Qt::endl;
+    };
+    QJsonObject offer;  // the catalog's newer release for the official image, when there is one
+    QString offerFor, lastError;
+    QDateTime nextCheck;  // invalid = check on the first pass
     for (;;) {
         // RE-READ EVERY TICK, as auto-sleep does: Apply deploys what the profile says NOW. A
         // watcher holding its startup copy undid every GUI change made since — turn Google Play
         // on, Connect, then Apply in Android, and the device came back without it.
         const RemoraConfig cfg = loadInstance(defaultRemorarcPath(), inst);
         const ResolvedConfig rc = resolve(cfg, b);
+        // An image without the updater has nothing on the device to read the state. Stay
+        // resident, so a profile that moves onto one is served without a restart.
+        if (rc.updaterDir.isEmpty()) {
+            QThread::sleep(15);
+            continue;
+        }
+        // OFFICIAL RELEASES, for a profile that follows the official image and nothing else: a
+        // pinned version stays where it was pinned, and a private build was never published.
+        // Checked against the signed catalog, never downloaded here — the download is Apply's.
+        // A failed check waits for the next slot like a good one: a dead network is not retried
+        // every 15 seconds, and the last answer stands until a check replaces it.
+        if (rc.imageTag != kPublicImageTag) {
+            offer = {};
+            offerFor.clear();
+        } else if (offerFor != rc.imageTag || !nextCheck.isValid() ||
+                   QDateTime::currentDateTimeUtc() >= nextCheck) {
+            const ProcResult c = runPublicImages(sp, {"check", "--tag", kPublicImageTag},
+                                                 remote ? guest : QString());
+            const QJsonObject r = publicImagesResult(c.out);
+            if (c.rc == 0 && !r.isEmpty()) {
+                offer = r.value("update").toBool() ? r : QJsonObject();
+                offerFor = rc.imageTag;
+            } else {
+                QTextStream(stderr) << "release check failed: "
+                                    << (c.stderrTail.isEmpty() ? c.out.right(500) : c.stderrTail)
+                                    << Qt::endl;
+            }
+            nextCheck = QDateTime::currentDateTimeUtc().addSecs(kReleaseCheckSecs);
+        }
+        // What the update card says about a release not downloaded yet. The stamp is the build's
+        // UTC time (do-build.sh), the form the app already renders for a built image. Quotes and
+        // backslashes go: the probe prints the summary into JSON as it is.
+        QString offerBuilt, summary;
+        if (!offer.isEmpty()) {
+            const QString v = offer.value("version").toString();
+            const QDateTime t = QDateTime::fromString(v, QStringLiteral("yyyyMMdd.HHmmss"));
+            offerBuilt = t.isValid() ? t.toString(QStringLiteral("yyyy-MM-ddTHH:mm:ss")) : QString();
+            summary = QStringLiteral(
+                          "Remora's public image %1 is available: a %2 MB download, checked "
+                          "against Remora's signing key before it is installed. Apps and data are "
+                          "kept, Google Play is added again if this device has it, and the device "
+                          "restarts once.")
+                          .arg(v)
+                          .arg(qint64(offer.value("bytes").toDouble()) / 1000000);
+        }
+        if (!lastError.isEmpty())
+            summary = QStringLiteral("The last update failed: %1. %2").arg(lastError, summary);
+        summary.remove(QLatin1Char('"')).remove(QLatin1Char('\\')).replace(QLatin1Char('\n'),
+                                                                              QLatin1Char(' '));
         // With Google Play on, the container runs an overlay whose image ID never equals the
         // base's (bd remora-6laf.8): compare the base the overlay was built on instead, or the
         // device would offer an update forever. Play off compares the image itself, so a device
@@ -676,35 +726,65 @@ static int cmdUpdateWatch(const QStringList &a) {
                                  "2>/dev/null) && [ -n \"$B\" ] && [ \"$B\" != '<no value>' ] "
                                  "&& C=$B; ")
                 : QString();
-        // one round trip: consume the apply signal if present AND refresh state
-        // (pending = the running container's image differs from what the tag points to now).
-        // The state carries what the RemoraUpdater card renders: the tag, the tag image's
-        // creation time (the update's "built"), the running image's creation time ("current"),
-        // and a one-line summary from the ~/rezmods/updater/summary.txt sidecar (written by
-        // whoever ships an image; quotes/newlines stripped to keep the JSON valid).
-        const QString probe = QStringLiteral(
-            "A=0; [ -e \"%3/updater/apply\" ] && { rm -f \"%3/updater/apply\"; A=1; }; "
-            "C=$(docker inspect -f '{{.Image}}' %1 2>/dev/null); %4"
-            "T=$(docker image inspect -f '{{.Id}}' %2 2>/dev/null); "
-            "TB=$(docker image inspect -f '{{.Created}}' %2 2>/dev/null | cut -c1-19); "
-            "CB=''; [ -n \"$C\" ] && CB=$(docker image inspect -f '{{.Created}}' \"$C\" "
-            "2>/dev/null | cut -c1-19); "
-            "S=''; [ -f \"%3/updater/summary.txt\" ] && "
-            "S=$(head -c 300 \"%3/updater/summary.txt\" | tr -d '\"\\\\' | tr '\\n' ' '); "
-            "mkdir -p \"%3/updater\"; "
-            "if [ -n \"$T\" ] && [ \"$C\" != \"$T\" ]; then P=true; else P=false; fi; "
-            "printf '{\"pending\": %s, \"tag\": \"%s\", \"built\": \"%s\", "
-            "\"current\": \"%s\", \"summary\": \"%s\"}' "
-            "\"$P\" '%2' \"$TB\" \"$CB\" \"$S\" > \"%3/updater/state.json\"; "
-            "echo APPLY=$A")
-                                   .arg(rc.containerName, rc.imageTag, updaterStateDir(rc),
-                                        playBase);
-        const ProcResult r = remote ? sp.run(Spawner::sshArgv(guest, probe), {}, {})
-                                    : sp.run({"sh", "-c", probe}, {}, {});
-        if (r.out.contains(QLatin1String("APPLY=1"))) {
+        // One round trip: refresh the state AND report whether Apply is waiting. The signal is
+        // only READ here — it stays until the update has finished, which is what keeps the app
+        // on "Applying" through a download and a reboot. The state carries what the
+        // RemoraUpdater card renders: the tag, the update's build time, the running image's, and
+        // a one-line summary (an official release's own, else the summary.txt sidecar whoever
+        // ships an image may write; quotes/newlines stripped to keep the JSON valid).
+        const QString probe =
+            QStringLiteral("U=\"%3\"; XP=%5; XB=%6; XS=%7; "
+                           "A=0; [ -e \"$U/apply\" ] && A=1; "
+                           "C=$(docker inspect -f '{{.Image}}' %1 2>/dev/null); %4"
+                           "T=$(docker image inspect -f '{{.Id}}' %2 2>/dev/null); "
+                           "TB=$(docker image inspect -f '{{.Created}}' %2 2>/dev/null | "
+                           "cut -c1-19); "
+                           "CB=''; [ -n \"$C\" ] && CB=$(docker image inspect -f '{{.Created}}' "
+                           "\"$C\" 2>/dev/null | cut -c1-19); "
+                           "S=''; [ -f \"$U/summary.txt\" ] && "
+                           "S=$(head -c 300 \"$U/summary.txt\" | tr -d '\"\\\\' | tr '\\n' ' '); "
+                           "if [ -n \"$T\" ] && [ \"$C\" != \"$T\" ]; then P=true; else P=false; fi; "
+                           "[ -n \"$XP\" ] && { P=true; TB=$XB; }; [ -n \"$XS\" ] && S=$XS; "
+                           "mkdir -p \"$U\"; "
+                           "printf '{\"pending\": %s, \"tag\": \"%s\", \"built\": \"%s\", "
+                           "\"current\": \"%s\", \"summary\": \"%s\"}' "
+                           "\"$P\" '%2' \"$TB\" \"$CB\" \"$S\" > \"$U/state.json\"; "
+                           "echo APPLY=$A")
+                .arg(rc.containerName, rc.imageTag, rc.updaterDir, playBase,
+                     offer.isEmpty() ? QStringLiteral("''") : QStringLiteral("1"),
+                     shellQuote(offerBuilt), shellQuote(summary));
+        const auto onHost = [&](const QString &script) {
+            return remote ? sp.run(Spawner::sshArgv(guest, script), {}, {})
+                          : sp.run({"sh", "-c", script}, {}, {});
+        };
+        if (onHost(probe).out.contains(QLatin1String("APPLY=1"))) {
             QTextStream(stderr) << "apply requested from the device — updating…\n";
-            smartRun(b, cfg, sink, sp, std::nullopt, inst,
-                     [](const Conflict &) { return true; });
+            lastError.clear();
+            bool ok = true;
+            // A release the host does not have yet is downloaded, verified and imported first;
+            // the deploy then finds the tag moved, layers Google Play over the new base when the
+            // profile has it, and recreates the device on it with its data kept.
+            if (!offer.isEmpty()) {
+                const ProcResult f = runPublicImages(sp, {"fetch", "--tag", kPublicImageTag},
+                                                     remote ? guest : QString(), say);
+                if (f.rc != 0) {
+                    ok = false;
+                    lastError = QStringLiteral("the download of %1 was not completed (%2)")
+                                    .arg(offer.value("version").toString(),
+                                         f.stderrTail.trimmed().section(QLatin1Char('\n'), -1));
+                } else {
+                    offer = {};
+                    nextCheck = QDateTime();  // confirm against the catalog on the next pass
+                }
+            }
+            // With the same live capability probe `up` takes: without one, host GPU mode cannot
+            // name its render node or the Venus stack, and the redeploy failed its host
+            // prerequisites on every NVIDIA profile.
+            if (ok && !smartRun(b, cfg, sink, sp, deployCapabilities(b, cfg, sp), inst,
+                                [](const Conflict &) { return true; }))
+                lastError = QStringLiteral("the device could not be restarted on the new image — "
+                                           "see journalctl --user -u remora-updater-*");
+            onHost(QStringLiteral("rm -f \"%1/apply\"").arg(rc.updaterDir));
         }
         QThread::sleep(15);
     }
@@ -2313,8 +2393,8 @@ static int cmdBuild(const QStringList &a, QTextStream &out) {
 
 static int cmdImages(const QStringList &args) {
     const QString action = args.value(2);
-    if (action != "list" && action != "fetch" && action != "rollback") {
-        QTextStream(stderr) << "Usage: remora images list|fetch|rollback [--tag tag] [--source URL] [--host user@host]\n";
+    if (action != "list" && action != "check" && action != "fetch" && action != "rollback") {
+        QTextStream(stderr) << "Usage: remora images list|check|fetch|rollback [--tag tag] [--source URL] [--host user@host]\n";
         return 2;
     }
     QStringList helper{action};
@@ -2410,8 +2490,9 @@ static void printUsage(QTextStream &out) {
            "                            registry tag — how GApps goes onto a clean mirrored image\n"
         << "  build     [--tag t] [--base tag]  build the recipe (docker/source hosts + dirs in remorarc)\n"
         "  build --source [<p>]    FULL AOSP source rebuild — the same chain the GUI runs\n"
-        << "  images list|fetch|rollback [--tag tag] [--source HTTPS_URL] [--host user@host]\n"
-           "                            authenticated public images; verify before import/promotion\n"
+        << "  images list|check|fetch|rollback [--tag tag] [--source HTTPS_URL] [--host user@host]\n"
+           "                            authenticated public images; verify before import/promotion;\n"
+           "                            check says whether the catalog has a newer release\n"
         << "  play-install --show-terms  view the optional Google Play provider and terms\n"
            "  play-install --base tag --accept-terms VERSION [--host user@host] [--tag remora-local:tag]\n"
            "                            verified direct download, COPY-only local overlay; --rollback tag removes it\n"
