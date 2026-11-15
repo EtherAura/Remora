@@ -475,6 +475,245 @@ class ImportCache(unittest.TestCase):
         self.assertIn('read-only cache', err.getvalue())
 
 
+PROGRESS = 'REMORA_FETCH_PROGRESS='
+
+
+class Stdout:
+    """A stdout that records what each flush made visible, so a test can tell a line written from
+    one a reader could already have seen."""
+    def __init__(self):
+        self.text, self.visible = '', ''
+
+    def write(self, s):
+        self.text += s
+        return len(s)
+
+    def flush(self):
+        self.visible = self.text
+
+    def lines(self, flushed=True):
+        return (self.visible if flushed else self.text).splitlines()
+
+    def progress(self, flushed=True):
+        return [l[len(PROGRESS):] for l in self.lines(flushed) if l.startswith(PROGRESS)]
+
+
+class Body:
+    """An HTTP body served in fixed chunks, then a read that stalls (raises) instead of ending.
+    Before every read it records which progress lines were already flushed."""
+    def __init__(self, chunks, out, stall=None):
+        self.chunks, self.out, self.stall, self.seen = list(chunks), out, stall, []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, n):
+        self.seen.append(self.out.progress())
+        if self.chunks:
+            return self.chunks.pop(0)
+        if self.stall:
+            raise self.stall
+        return b''
+
+
+class FetchProgress(unittest.TestCase):
+    """`fetch --progress`: the helper's own progress events on stdout, one flushed line each, in
+    the fixed REMORA_FETCH_PROGRESS= protocol. This only proves what the helper emits and when it
+    is flushed; nothing here writes state.json, publishes over ssh or bounds how soon a consumer
+    shows it. Without the flag the output is exactly what it was."""
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory()
+        self.cache = Path(self.d.name) / 'images'
+        self.cache.mkdir()
+        src = Path(self.d.name) / 'src.tar'
+        self.iid = docker_archive(src)
+        self.body = src.read_bytes()
+        self.image = image_entry(self.iid, ref('a.tar', self.body))
+        self.archive = self.cache / self.image['archive']['sha256']
+        self.size = len(self.body)
+        self.opened = 0
+
+    def tearDown(self):
+        self.d.cleanup()
+
+    def chunks(self, n=4):
+        step = -(-self.size // n)
+        return [self.body[i:i + step] for i in range(0, self.size, step)]
+
+    def fetch(self, docker, out, body=None, progress=True, cache=None):
+        test = self
+
+        class Opener:
+            def open(_, url, timeout):
+                test.opened += 1
+                return body if body is not None else Body(test.chunks(), out)
+        with patch.object(catalog.urllib.request, 'build_opener', lambda *a: Opener()), \
+                patch.object(catalog, 'check_local_docker', lambda: None), \
+                patch.object(catalog, 'image_id', docker.image_id), \
+                patch.object(catalog, 'run', docker.run), \
+                patch.object(catalog.sys, 'stdout', out):
+            kw = {'progress': catalog.report_progress} if progress else {}
+            return catalog.fetch('https://h/x', self.image, {'sequence': 1}, cache or self.cache, **kw)
+
+    def download_lines(self, counts):
+        return ['download %d %d' % (c, self.size) for c in counts]
+
+    def test_each_count_is_flushed_before_the_next_read_even_when_that_read_stalls(self):
+        out = Stdout()
+        burst = [self.body[:100], self.body[100:300], self.body[300:301]]
+        body = Body(burst, out, stall=TimeoutError('the read stalled'))
+        with self.assertRaisesRegex(TimeoutError, 'stalled'):
+            self.fetch(FakeDocker(self.iid), out, body)
+        # What a reader could see as each read began: the latest count, without another chunk.
+        self.assertEqual([s[-1] for s in body.seen],
+                         self.download_lines([0, 100, 300, 301]))
+        # Nothing was written and left unflushed, and a failed download names no later phase.
+        self.assertEqual(out.progress(), out.progress(flushed=False))
+        self.assertEqual(out.progress(), self.download_lines([0, 100, 300, 301]))
+        self.assertFalse(self.archive.exists())
+
+    def test_a_successful_fetch_reports_download_check_and_import_in_order(self):
+        out, docker = Stdout(), FakeDocker(self.iid)
+        loaded_after = []
+        run = docker.run
+
+        def recording_run(*a):
+            if a[1] == 'load':
+                loaded_after.append(list(out.progress()))
+            return run(*a)
+        docker.run = recording_run
+        receipt = self.fetch(docker, out)
+        counts = [0] + [min(self.size, (i + 1) * len(self.chunks()[0])) for i in range(4)]
+        self.assertEqual(out.progress(), self.download_lines(counts) + ['check', 'import'])
+        # import is announced when it starts, before docker load runs, not after it.
+        self.assertEqual(loaded_after[0][-1], 'import')
+        self.assertEqual(out.progress(), out.progress(flushed=False))
+        self.assertEqual(docker.tags[TAG], self.iid)
+        self.assertTrue(Path(receipt['receipt']).exists())
+        self.assertFalse(self.archive.exists())
+
+    def test_check_is_announced_before_the_archive_is_inspected(self):
+        out = Stdout()
+        real = catalog.archive_identity
+        seen = []
+
+        def identity(*a):
+            seen.append(list(out.progress()))
+            return real(*a)
+        with patch.object(catalog, 'archive_identity', identity):
+            self.fetch(FakeDocker(self.iid), out)
+        self.assertEqual(seen[0][-1], 'check')
+
+    def test_without_the_flag_the_output_and_receipt_are_unchanged(self):
+        plain, flagged = Stdout(), Stdout()
+        first = self.fetch(FakeDocker(self.iid), plain, progress=False)
+        self.assertEqual(plain.lines(flushed=False),
+                         ['Downloading verified artifact a.tar', 'Importing authenticated image…'])
+        self.assertFalse(self.archive.exists())
+        other = Path(self.d.name) / 'other'
+        other.mkdir()
+        second = self.fetch(FakeDocker(self.iid), flagged, cache=other)
+        # The flag only adds its own lines: the rest of the output and the receipt are the same.
+        self.assertEqual([l for l in flagged.lines() if not l.startswith(PROGRESS)], plain.lines())
+        self.assertEqual({k: v for k, v in first.items() if k != 'receipt'},
+                         {k: v for k, v in second.items() if k != 'receipt'})
+        self.assertEqual(json.loads(Path(first['receipt']).read_text()),
+                         json.loads(Path(second['receipt']).read_text()))
+
+    def test_a_cached_archive_is_not_reported_as_downloading(self):
+        self.archive.write_bytes(self.body)
+        out = Stdout()
+        self.fetch(FakeDocker(self.iid), out)
+        self.assertEqual(self.opened, 0)
+        self.assertEqual(out.progress(), ['cached %d' % self.size, 'check', 'import'])
+
+    def test_a_corrupt_cache_is_reported_then_downloaded_again(self):
+        self.archive.write_bytes(b'rotted')
+        out = Stdout()
+        self.fetch(FakeDocker(self.iid), out)
+        self.assertEqual(self.opened, 1)
+        self.assertEqual(out.progress()[:2], ['cached %d' % self.size, 'download 0 %d' % self.size])
+        self.assertEqual(out.progress()[-3:], ['download %d %d' % (self.size, self.size),
+                                               'check', 'import'])
+
+    def test_a_failed_phase_names_no_later_phase(self):
+        bad = bytearray(self.body)
+        bad[-600] ^= 0xFF
+        cases = {
+            # The digest of the whole body is wrong: refused at the end of the download.
+            'download': (lambda: Body([bytes(bad)], out), {}, 'download %d %d' % (self.size, self.size)),
+            # More bytes than the catalog signed: refused before the extra count is reported.
+            'oversize': (lambda: Body([self.body, b'extra'], out), {}, 'download %d %d' % (self.size, self.size)),
+            'check': (lambda: None, {'image_id': 'sha256:' + '2' * 64}, 'check'),
+            'import': (lambda: None, {}, 'import'),
+        }
+        for name, (body, change, last) in cases.items():
+            with self.subTest(phase=name):
+                for p in self.cache.iterdir():
+                    p.unlink()
+                out = Stdout()
+                self.image.update(change or {'image_id': self.iid})
+                docker = FakeDocker(self.iid, fail={'load'} if name == 'import' else ())
+                with self.assertRaises(catalog.VerificationError):
+                    self.fetch(docker, out, body())
+                self.assertEqual(out.progress()[-1], last)
+                self.assertEqual(out.progress(), out.progress(flushed=False))
+                self.assertTrue(all(int(n) <= self.size for l in out.progress() for n in l.split()[1:]))
+                self.assertNotIn(TAG, docker.tags)
+
+    def test_the_protocol_carries_only_known_phases_and_whole_counts(self):
+        out = Stdout()
+        with patch.object(catalog.sys, 'stdout', out):
+            catalog.report_progress('download', 0, 5)
+            catalog.report_progress('cached', 5)
+            catalog.report_progress('check')
+            catalog.report_progress('import')
+            for bad in (('restart',), ('download', 1), ('download', 1, 2, 3), ('download', -1, 5),
+                        ('download', 6, 5), ('download', True, 5), ('download', '1', 5),
+                        ('download', 1.0, 5), ('cached', 0), ('check', 1), ('import\nrestart',),
+                        ('Downloading https://h/x',)):
+                with self.subTest(event=bad), self.assertRaises(catalog.VerificationError):
+                    catalog.report_progress(*bad)
+        self.assertEqual(out.lines(), [PROGRESS + 'download 0 5', PROGRESS + 'cached 5',
+                                       PROGRESS + 'check', PROGRESS + 'import'])
+
+    def test_the_flag_reaches_fetch_through_the_command_line(self):
+        key = Path(self.d.name) / 'key.pem'
+        key.write_bytes(b'not a real key; the catalog check is replaced')
+        m = {'images': [self.image]}
+        state = {'sequence': 1, 'sha256': '0' * 64}
+        for flag in (True, False):
+            with self.subTest(progress=flag):
+                xdg = Path(self.d.name) / ('xdg-%s' % flag)
+                out, docker = Stdout(), FakeDocker(self.iid)
+                with patch.dict('os.environ', {'XDG_CACHE_HOME': str(xdg)}), \
+                        patch.object(catalog, 'get', lambda url, limit: b''), \
+                        patch.object(catalog, 'verify_catalog', lambda *a: (m, state)), \
+                        patch.object(catalog.urllib.request, 'build_opener',
+                                     lambda *a: type('O', (), {'open': lambda _, u, timeout: Body(self.chunks(), out)})()), \
+                        patch.object(catalog, 'check_local_docker', lambda: None), \
+                        patch.object(catalog, 'image_id', docker.image_id), \
+                        patch.object(catalog, 'run', docker.run), \
+                        patch.object(catalog.sys, 'stdout', out):
+                    self.assertEqual(catalog.main(['fetch', '--tag', TAG, '--key', str(key)]
+                                                  + (['--progress'] if flag else [])), 0)
+                self.assertEqual(out.progress()[-2:] if flag else out.progress(),
+                                 ['check', 'import'] if flag else [])
+                self.assertTrue(out.lines()[-1].startswith('REMORA_IMAGES_RESULT='))
+                self.assertEqual(docker.tags[TAG], self.iid)
+
+    def test_the_flag_is_refused_outside_fetch(self):
+        with tempfile.TemporaryDirectory() as d, patch.dict('os.environ', {'XDG_CACHE_HOME': d}), \
+                patch.object(catalog, 'get', lambda *a: self.fail('the catalog was fetched')):
+            for action in ('list', 'check', 'rollback'):
+                with self.subTest(action=action), self.assertRaisesRegex(
+                        catalog.VerificationError, '--progress'):
+                    catalog.main([action, '--tag', TAG, '--progress'])
+
+
 class ReleaseReceiptRetention(unittest.TestCase):
     """The receipt preflight a prune decision needs first: which images the receipts hold for
     rollback, or why that cannot be known. It selects no tag to drop; it only keeps a receipt

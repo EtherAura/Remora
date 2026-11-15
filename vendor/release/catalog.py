@@ -125,9 +125,28 @@ def check_local_docker():
     require(c['Endpoints']['docker']['Host'].startswith('unix://'), 'Use Remora --host for a remote Docker context')
 
 
-def download(base, item, cache):
+# `fetch --progress` events, one stdout line each, flushed as it is written:
+#   REMORA_FETCH_PROGRESS=download <done> <total>   bytes read so far of the signed archive size
+#   REMORA_FETCH_PROGRESS=cached <total>            a cached copy of that size is being verified
+#   REMORA_FETCH_PROGRESS=check                     the archive's identity is being inspected
+#   REMORA_FETCH_PROGRESS=import                    docker load and promotion have begun
+# Only these phase names and whole counts, never log text or URLs. The total is always the size
+# the catalog signed (a download that exceeds it is refused), so there is no unknown total.
+PROGRESS_COUNTS = {'download': 2, 'cached': 1, 'check': 0, 'import': 0}
+
+
+def report_progress(phase, *counts):
+    require(PROGRESS_COUNTS.get(phase) == len(counts)
+            and all(type(n) is int and n >= 0 for n in counts)
+            and (not counts or (counts[-1] > 0 and counts[0] <= counts[-1])),
+            'Invalid progress event')
+    print(' '.join(['REMORA_FETCH_PROGRESS=' + phase] + [str(n) for n in counts]), flush=True)
+
+
+def download(base, item, cache, progress=None):
     path = cache/item['sha256']
     if path.exists():
+        if progress: progress('cached', item['bytes'])
         if path.stat().st_size == item['bytes'] and sha(path) == item['sha256']:
             return path
         # A damaged cache entry is discarded and fetched again, never trusted and never a dead
@@ -138,6 +157,7 @@ def download(base, item, cache):
     fd, temp = tempfile.mkstemp(dir=cache, prefix='download-')
     try:
         url = base + '/' + item['file']
+        if progress: progress('download', 0, item['bytes'])
         with os.fdopen(fd,'wb') as dst, urllib.request.build_opener(HttpsOnly()).open(url,timeout=60) as src:
             count, h = 0, hashlib.sha256()
             for b in iter(lambda: src.read(1024 * 1024),b''):
@@ -145,6 +165,8 @@ def download(base, item, cache):
                 require(count <= item['bytes'], 'Archive exceeds signed size')
                 dst.write(b)
                 h.update(b)
+                # Each count is out before the next read, which may block: none waits on a chunk.
+                if progress: progress('download', count, item['bytes'])
         require(count == item['bytes'] and h.hexdigest() == item['sha256'], 'Archive size/SHA-256 mismatch; Docker was not changed')
         os.replace(temp,path)
         return path
@@ -215,15 +237,17 @@ def archive_identity(path, image):
     return ids
 
 
-def fetch(base, image, catalog_state, cache):
+def fetch(base, image, catalog_state, cache, progress=None):
     check_local_docker()
     require(re.fullmatch(r'remora24:x86_64-public-[A-Za-z0-9_.-]+', image['version_tag']), 'Invalid immutable version tag')
     old_version = image_id(image['version_tag'])
-    archive = download(base,image['archive'],cache)
+    archive = download(base,image['archive'],cache,progress)
+    if progress: progress('check')
     ids = archive_identity(archive,image)
     require(old_version in {None} | ids, 'Immutable version tag already names different bytes')
     previous = image_id(image['tag'])
     # All verification precedes docker load. The archive only carries the immutable version tag.
+    if progress: progress('import')
     print('Importing authenticated image…', flush=True)
     run('docker','load','-i',str(archive))
     # From here on the image is named by the ID this daemon gave it (see archive_identity).
@@ -387,10 +411,12 @@ def main(argv=None):
     p.add_argument('--source',default='https://github.com/EtherAura/Remora/releases/download/android-images')
     p.add_argument('--tag')
     p.add_argument('--key',default=str(Path(__file__).with_name('image-signing-key.pem')))
+    p.add_argument('--progress',action='store_true',help='fetch: print REMORA_FETCH_PROGRESS= lines')
     a = p.parse_args(argv)
     # Before the catalog is fetched: with no tag, check and fetch otherwise failed on the lookup
     # and blamed the catalog for lacking a tag nobody asked for.
     require(a.action == 'list' or a.tag, a.action.capitalize() + ' needs --tag')
+    require(not a.progress or a.action == 'fetch', '--progress is only for fetch')
     u = urllib.parse.urlsplit(a.source)
     require(u.scheme == 'https' and u.netloc and not u.username and not u.password and not u.query and not u.fragment,
             'Source must be an HTTPS directory URL')
@@ -412,7 +438,8 @@ def main(argv=None):
                 selected = [im for im in m['images'] if im['tag'] == a.tag]
                 require(len(selected) == 1,'Requested tag is absent from the authenticated catalog')
                 result = (check(selected[0]) if a.action == 'check'
-                          else fetch(base,selected[0],state,cache))
+                          else fetch(base,selected[0],state,cache,
+                                     report_progress if a.progress else None))
     print('REMORA_IMAGES_RESULT='+json.dumps(result,separators=(',',':')),flush=True)
     return 0
 

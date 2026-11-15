@@ -17,6 +17,12 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   failed download or restart is reported on that screen. `remora images check` asks the same
   question from a terminal.
 
+- **The release fetch helper can report its progress.** `vendor/release/catalog.py fetch
+  --progress` prints a `REMORA_FETCH_PROGRESS=` line as each part of the archive arrives
+  (`download <done> <total>`, in bytes of the signed size), or `cached <total>` when a cached copy
+  is reused, then `check` and `import` as those steps begin. Without the flag its output is
+  unchanged, and nothing passes the flag yet: *System updates* still shows no download progress.
+
 - **Google Play as a profile option.** The Image page's **Active image** card has an **Add
   Google Play services** toggle, saved in the profile as `google_play` and the accepted
   `play_terms` version. Turning it on asks for the provider's terms. Each connect then builds, or
