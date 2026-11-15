@@ -2,6 +2,10 @@
 #include "core/SourcePatches.h"
 #include "store/Store.h"
 
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
 
@@ -481,6 +485,148 @@ void saveImageSources(const QString &path, const QList<ImageSource> &sources) {
         s.endGroup();
     }
     s.sync();
+}
+
+QString serviceUnitInstance(const QString &profile) {
+    QString n = profile;
+    n.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_.-]")), QStringLiteral("-"));
+    return n;
+}
+
+QStringList serviceUnitNames(const QString &profile) {
+    const QString n = serviceUnitInstance(profile);
+    return {QStringLiteral("remora-%1.service").arg(n),
+            QStringLiteral("remora-updater-%1.service").arg(n),
+            QStringLiteral("remora-autosleep-%1.service").arg(n)};
+}
+
+QString serviceRemovalRefusal(const QString &name, const QStringList &knownProfiles) {
+    if (name.isEmpty()) return QStringLiteral("a profile name is required");
+    // The longest name removal touches is the watcher's drop-in directory; a file name is 255 bytes.
+    if (QStringLiteral("remora-autosleep-%1.service.d").arg(serviceUnitInstance(name)).size() > 255)
+        return QStringLiteral("'%1' is too long to name a unit").arg(name);
+    const QStringList mine = serviceUnitNames(name);
+    for (const QString &other : knownProfiles) {
+        if (other == name) continue;
+        for (const QString &u : serviceUnitNames(other)) {
+            if (mine.contains(u))
+                return QStringLiteral("the units of '%1' include %2, which belongs to profile '%3' "
+                                      "— nothing was removed")
+                    .arg(name, u, other);
+        }
+    }
+    return {};
+}
+
+namespace {
+
+// The last non-empty line of a systemctl message, bounded, for a one-line diagnostic.
+QString lastLine(const QString &s) {
+    const QStringList lines = s.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    QString l = lines.isEmpty() ? QString() : lines.last().trimmed();
+    if (l.size() > 200) l = l.left(200) + QStringLiteral("…");
+    return l.isEmpty() ? QStringLiteral("no message") : l;
+}
+
+struct UnitState {
+    bool known = false;  // the query ran and answered both properties
+    QString load, active;
+    bool absent() const {
+        return known && load == QLatin1String("not-found") && active == QLatin1String("inactive");
+    }
+    QString describe() const {
+        return known ? QStringLiteral("manager reports LoadState=%1 ActiveState=%2").arg(load, active)
+                     : QStringLiteral("manager state unknown");
+    }
+};
+
+UnitState queryUnit(const UnitCommandRunner &run, const QString &unit) {
+    const UnitCommandResult r = run({QStringLiteral("systemctl"), QStringLiteral("--user"),
+                                     QStringLiteral("show"), QStringLiteral("--property=LoadState"),
+                                     QStringLiteral("--property=ActiveState"), unit});
+    UnitState st;
+    if (r.rc != 0) return st;
+    bool haveLoad = false, haveActive = false;
+    for (const QString &line : r.out.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QString t = line.trimmed();
+        if (t.startsWith(QLatin1String("LoadState="))) {
+            st.load = t.mid(10);
+            haveLoad = true;
+        } else if (t.startsWith(QLatin1String("ActiveState="))) {
+            st.active = t.mid(12);
+            haveActive = true;
+        }
+    }
+    st.known = haveLoad && haveActive && !st.load.isEmpty() && !st.active.isEmpty();
+    return st;
+}
+
+// Delete path without following any symlink: a link (to a file or a directory, broken or not) is
+// unlinked, a real directory is emptied the same way and removed.
+bool unlinkTree(const QString &path, QString &err) {
+    const QFileInfo fi(path);
+    if (!fi.isSymLink() && !fi.exists()) return true;
+    if (fi.isSymLink() || !fi.isDir()) {
+        if (QFile::remove(path)) return true;
+        err = QStringLiteral("could not delete %1").arg(path);
+        return false;
+    }
+    const QFileInfoList entries = QDir(path).entryInfoList(
+        QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+    for (const QFileInfo &e : entries)
+        if (!unlinkTree(e.absoluteFilePath(), err)) return false;
+    if (QDir().rmdir(path)) return true;
+    err = QStringLiteral("could not delete %1").arg(path);
+    return false;
+}
+
+}  // namespace
+
+UnitRemovalResult removeServiceUnits(const QString &unitDir, const QString &profile,
+                                     const UnitCommandRunner &run) {
+    UnitRemovalResult res;
+    const QString sc = QStringLiteral("systemctl"), user = QStringLiteral("--user");
+    for (const QString &unit : serviceUnitNames(profile)) {
+        const UnitCommandResult dis = run({sc, user, QStringLiteral("disable"),
+                                           QStringLiteral("--now"), unit});
+        if (dis.rc != 0) {
+            // disable fails for a unit with no file on disk, which is also how a running orphan
+            // looks. Only the manager's explicit not-found + inactive makes that harmless.
+            UnitState st = queryUnit(run, unit);
+            QString why = QStringLiteral("disable failed (%1)").arg(lastLine(dis.err));
+            if (st.known && st.load == QLatin1String("not-found") && !st.absent()) {
+                const UnitCommandResult stop = run({sc, user, QStringLiteral("stop"), unit});
+                if (stop.rc == 0)
+                    st = queryUnit(run, unit);
+                else
+                    why += QStringLiteral(", stop failed (%1)").arg(lastLine(stop.err));
+            }
+            if (!st.absent()) {
+                res.ok = false;
+                res.errors << QStringLiteral("%1: %2; %3 — its files were kept")
+                                  .arg(unit, why, st.describe());
+                continue;
+            }
+        }
+        const QString file = unitDir + QLatin1Char('/') + unit;
+        for (const QString &p : QStringList{file, file + QStringLiteral(".d")}) {
+            const QFileInfo fi(p);
+            const bool present = fi.isSymLink() || fi.exists();
+            QString err;
+            if (!unlinkTree(p, err)) {
+                res.ok = false;
+                res.errors << QStringLiteral("%1: %2").arg(unit, err);
+            } else if (present) {
+                res.removed << p;
+            }
+        }
+    }
+    const UnitCommandResult reload = run({sc, user, QStringLiteral("daemon-reload")});
+    if (reload.rc != 0) {
+        res.ok = false;
+        res.errors << QStringLiteral("daemon-reload failed (%1)").arg(lastLine(reload.err));
+    }
+    return res;
 }
 
 }  // namespace remora

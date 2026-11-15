@@ -888,26 +888,32 @@ static int cmdResetData(const QStringList &a, QTextStream &out) {
 static int cmdService(const QStringList &a, QTextStream &out) {
     const QStringList pos = positional(a);
     const QString path = defaultRemorarcPath();
-    const QString inst = pos.isEmpty() ? activeInstance(path) : requireInstance(pos[0]);
-    QString unitInst = inst;
-    unitInst.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_.-]")), QStringLiteral("-"));
-    const QString unitName = QStringLiteral("remora-%1.service").arg(unitInst);
     const QString unitDir = QDir::homePath() + QStringLiteral("/.config/systemd/user");
-    const QString unitPath = unitDir + QLatin1Char('/') + unitName;
     RealSpawner sp;
+    // --remove works from the unit names alone, so it still cleans up after a profile that is
+    // already gone; requireInstance would refuse exactly that case.
     if (a.contains(QLatin1String("--remove"))) {
-        sp.run({"systemctl", "--user", "disable", "--now", unitName}, {}, {});
-        const QString watchName = QStringLiteral("remora-updater-%1.service").arg(unitInst);
-        sp.run({"systemctl", "--user", "disable", "--now", watchName}, {}, {});
-        const QString idleName = QStringLiteral("remora-autosleep-%1.service").arg(unitInst);
-        sp.run({"systemctl", "--user", "disable", "--now", idleName}, {}, {});
-        QFile::remove(unitPath);
-        QFile::remove(unitDir + QLatin1Char('/') + watchName);
-        QFile::remove(unitDir + QLatin1Char('/') + idleName);
-        sp.run({"systemctl", "--user", "daemon-reload"}, {}, {});
-        out << "removed " << unitPath << " (+ update + auto-sleep watchers)\n";
-        return 0;
+        const QString name = pos.isEmpty() ? activeInstance(path) : pos[0];
+        const QString refusal = serviceRemovalRefusal(name, listInstances(path));
+        if (!refusal.isEmpty()) {
+            QTextStream(stderr) << "remora: service --remove: " << refusal << "\n";
+            return 2;
+        }
+        const UnitRemovalResult r = removeServiceUnits(unitDir, name, [&sp](const QStringList &v) {
+            const ProcResult p = sp.run(v, {}, {});
+            return UnitCommandResult{p.rc, p.out, p.stderrTail};
+        });
+        for (const QString &p : r.removed) out << "removed " << p << "\n";
+        for (const QString &e : r.errors) QTextStream(stderr) << "remora: " << e << "\n";
+        out << (r.ok ? QStringLiteral("the units of '%1' are gone.\n")
+                     : QStringLiteral("the units of '%1' were not all removed.\n"))
+                   .arg(name);
+        return r.ok ? 0 : 1;
     }
+    const QString inst = pos.isEmpty() ? activeInstance(path) : requireInstance(pos[0]);
+    const QString unitInst = serviceUnitInstance(inst);
+    const QString unitName = QStringLiteral("remora-%1.service").arg(unitInst);
+    const QString unitPath = unitDir + QLatin1Char('/') + unitName;
     QDir().mkpath(unitDir);
     QFile f(unitPath);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {

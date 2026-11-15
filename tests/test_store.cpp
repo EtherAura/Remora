@@ -434,6 +434,340 @@ private slots:
         s.beginGroup(QStringLiteral("Defaults"));
         QCOMPARE(s.childKeys(), QStringList{QStringLiteral("fps")});
     }
+
+    // ─── service --remove: the unit-removal adapter against a fake manager ───
+
+    // The named regression: the .service file is gone, its drop-in remains, and the manager still
+    // has the unit loaded and running. Its disable and stop fail; a successful reload must not
+    // turn that into success, and the drop-in must survive untouched.
+    void removeKeepsDropInOfRunningOrphanThatCannotStop() {
+        QTemporaryDir dir;
+        const QString unitDir = dir.path();
+        write(unitDir + QStringLiteral("/remora-gone.service.d/override.conf"),
+              "[Service]\nEnvironment=X=1\n");
+        FakeManager m;
+        m.units[QStringLiteral("remora-gone.service")] = {QStringLiteral("not-found"),
+                                                          QStringLiteral("active"), 1, 1};
+        m.units[QStringLiteral("remora-gone.service")].stopErr =
+            QStringLiteral("Failed to stop remora-gone.service: Access denied");
+        m.restAbsent();
+        const UnitRemovalResult r = removeServiceUnits(unitDir, QStringLiteral("gone"), m.runner());
+        QVERIFY(!r.ok);
+        QCOMPARE(read(unitDir + QStringLiteral("/remora-gone.service.d/override.conf")),
+                 QByteArray("[Service]\nEnvironment=X=1\n"));
+        QCOMPARE(r.errors.size(), 1);
+        QVERIFY(r.errors[0].startsWith(QStringLiteral("remora-gone.service: ")));
+        QVERIFY(r.errors[0].contains(QStringLiteral("Access denied")));
+        QVERIFY(r.errors[0].contains(QStringLiteral("ActiveState=active")));
+        QVERIFY(m.ran(QStringLiteral("daemon-reload"), {}));
+        QVERIFY(m.ran(QStringLiteral("stop"), QStringLiteral("remora-gone.service")));
+    }
+
+    // Same missing file, but the manager has the unit LOADED (its file lives elsewhere, or the
+    // reload has not happened): disable fails, and nothing about the local tree excuses it.
+    void removeKeepsDropInOfLoadedOrphan() {
+        QTemporaryDir dir;
+        const QString unitDir = dir.path();
+        write(unitDir + QStringLiteral("/remora-gone.service.d/override.conf"), "keep\n");
+        FakeManager m;
+        m.restAbsent();
+        m.units[QStringLiteral("remora-gone.service")] = {QStringLiteral("loaded"),
+                                                          QStringLiteral("active"), 1, 0};
+        const UnitRemovalResult r = removeServiceUnits(unitDir, QStringLiteral("gone"), m.runner());
+        QVERIFY(!r.ok);
+        QCOMPARE(read(unitDir + QStringLiteral("/remora-gone.service.d/override.conf")),
+                 QByteArray("keep\n"));
+        QVERIFY(r.errors.join('\n').contains(QStringLiteral("LoadState=loaded")));
+        // stop is only the route for a not-found unit; a loaded one that will not disable fails.
+        QVERIFY(!m.ran(QStringLiteral("stop"), QStringLiteral("remora-gone.service")));
+    }
+
+    // No local file and a manager that cannot answer — no bus, permission, garbage, half an
+    // answer. None of them is "already absent".
+    void removeNeverMisreportsUnknownStateAsAbsent_data() {
+        QTest::addColumn<int>("queryRc");
+        QTest::addColumn<QString>("queryOut");
+        QTest::newRow("no bus") << 1 << QString();
+        QTest::newRow("permission") << 4 << QString();
+        QTest::newRow("malformed") << 0 << QStringLiteral("garbage\n");
+        QTest::newRow("half") << 0 << QStringLiteral("LoadState=not-found\n");
+        QTest::newRow("empty value") << 0 << QStringLiteral("LoadState=\nActiveState=inactive\n");
+        QTest::newRow("unknown state") << 0
+                                       << QStringLiteral("LoadState=bad-setting\nActiveState=inactive\n");
+    }
+    void removeNeverMisreportsUnknownStateAsAbsent() {
+        QFETCH(int, queryRc);
+        QFETCH(QString, queryOut);
+        QTemporaryDir dir;
+        const QString unitDir = dir.path();
+        write(unitDir + QStringLiteral("/remora-gone.service.d/override.conf"), "keep\n");
+        FakeManager m;
+        m.restAbsent();
+        FakeManager::Unit &u = m.units[QStringLiteral("remora-gone.service")];
+        u = {QStringLiteral("not-found"), QStringLiteral("inactive"), 1, 0};
+        u.queryRc = queryRc;
+        u.queryOut = queryOut;
+        u.overrideQuery = true;
+        const UnitRemovalResult r = removeServiceUnits(unitDir, QStringLiteral("gone"), m.runner());
+        QVERIFY(!r.ok);
+        QVERIFY(QFileInfo::exists(unitDir + QStringLiteral("/remora-gone.service.d/override.conf")));
+        QVERIFY(r.errors.join('\n').contains(QStringLiteral("remora-gone.service")));
+        QVERIFY(!r.removed.contains(unitDir + QStringLiteral("/remora-gone.service.d")));
+    }
+
+    // Explicit not-found + inactive is the one answer that makes a failed disable harmless: stale
+    // drop-ins go, and running the cleanup again succeeds again.
+    void removeConfirmedAbsentIsRepeatable() {
+        QTemporaryDir dir;
+        const QString unitDir = dir.path();
+        write(unitDir + QStringLiteral("/remora-gone.service.d/override.conf"), "stale\n");
+        write(unitDir + QStringLiteral("/remora-updater-gone.service.d/a.conf"), "stale\n");
+        FakeManager m;
+        m.restAbsent();
+        UnitRemovalResult r = removeServiceUnits(unitDir, QStringLiteral("gone"), m.runner());
+        QVERIFY2(r.ok, qPrintable(r.errors.join('\n')));
+        QVERIFY(!QFileInfo::exists(unitDir + QStringLiteral("/remora-gone.service.d")));
+        QVERIFY(!QFileInfo::exists(unitDir + QStringLiteral("/remora-updater-gone.service.d")));
+        r = removeServiceUnits(unitDir, QStringLiteral("gone"), m.runner());
+        QVERIFY2(r.ok, qPrintable(r.errors.join('\n')));
+        QVERIFY(r.removed.isEmpty());
+    }
+
+    // A not-found unit still running is stopped, then removed once the manager confirms it.
+    void removeStopsRunningOrphanThenDeletes() {
+        QTemporaryDir dir;
+        const QString unitDir = dir.path();
+        write(unitDir + QStringLiteral("/remora-gone.service.d/override.conf"), "x\n");
+        FakeManager m;
+        m.restAbsent();
+        m.units[QStringLiteral("remora-gone.service")] = {QStringLiteral("not-found"),
+                                                          QStringLiteral("active"), 1, 0};
+        const UnitRemovalResult r = removeServiceUnits(unitDir, QStringLiteral("gone"), m.runner());
+        QVERIFY2(r.ok, qPrintable(r.errors.join('\n')));
+        QVERIFY(!QFileInfo::exists(unitDir + QStringLiteral("/remora-gone.service.d")));
+        QVERIFY(m.ran(QStringLiteral("stop"), QStringLiteral("remora-gone.service")));
+    }
+
+    void removeKeepsInstalledUnitWhoseDisableFails() {
+        QTemporaryDir dir;
+        const QString unitDir = dir.path();
+        write(unitDir + QStringLiteral("/remora-p.service"), "[Unit]\n");
+        FakeManager m;
+        m.allPresent(QStringLiteral("p"));
+        m.units[QStringLiteral("remora-p.service")].disableRc = 1;
+        const UnitRemovalResult r = removeServiceUnits(unitDir, QStringLiteral("p"), m.runner());
+        QVERIFY(!r.ok);
+        QCOMPARE(read(unitDir + QStringLiteral("/remora-p.service")), QByteArray("[Unit]\n"));
+    }
+
+    void removeFailsWhenReloadFails() {
+        QTemporaryDir dir;
+        const QString unitDir = dir.path();
+        write(unitDir + QStringLiteral("/remora-p.service"), "[Unit]\n");
+        FakeManager m;
+        m.allPresent(QStringLiteral("p"));
+        m.reloadRc = 1;
+        const UnitRemovalResult r = removeServiceUnits(unitDir, QStringLiteral("p"), m.runner());
+        QVERIFY(!r.ok);
+        QVERIFY(r.errors.join('\n').contains(QStringLiteral("daemon-reload failed")));
+    }
+
+    // A normal cleanup — profile present or already gone, the adapter is the same: all three units
+    // and their exact drop-in directories go, each only after its disable ran, and nothing else.
+    void removeDeletesExactlyTheProfilesUnits() {
+        QTemporaryDir dir;
+        const QString unitDir = dir.path();
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Instance-other/width", 800);
+            s.sync();
+        }
+        for (const QString &u : serviceUnitNames(QStringLiteral("p"))) {
+            write(unitDir + '/' + u, "[Unit]\n");
+            write(unitDir + '/' + u + QStringLiteral(".d/override.conf"), "o\n");
+        }
+        for (const QString &u : serviceUnitNames(QStringLiteral("other")))
+            write(unitDir + '/' + u, "[Unit]\n");
+        write(unitDir + QStringLiteral("/remora-p.service.wants/keep"), "k\n");
+        write(unitDir + QStringLiteral("/remora-pp.service"), "k\n");
+        write(unitDir + QStringLiteral("/unrelated.service"), "k\n");
+        FakeManager m;
+        m.unitDir = unitDir;
+        m.allPresent(QStringLiteral("p"));
+        const UnitRemovalResult r = removeServiceUnits(unitDir, QStringLiteral("p"), m.runner());
+        QVERIFY2(r.ok, qPrintable(r.errors.join('\n')));
+        QCOMPARE(r.removed.size(), 6);
+        for (const QString &u : serviceUnitNames(QStringLiteral("p"))) {
+            QVERIFY(!QFileInfo::exists(unitDir + '/' + u));
+            QVERIFY(!QFileInfo::exists(unitDir + '/' + u + QStringLiteral(".d")));
+            QVERIFY2(m.fileExistedAtDisable.value(u), qPrintable(u));
+        }
+        for (const QString &u : serviceUnitNames(QStringLiteral("other")))
+            QVERIFY(QFileInfo::exists(unitDir + '/' + u));
+        QVERIFY(QFileInfo::exists(unitDir + QStringLiteral("/remora-p.service.wants/keep")));
+        QVERIFY(QFileInfo::exists(unitDir + QStringLiteral("/remora-pp.service")));
+        QVERIFY(QFileInfo::exists(unitDir + QStringLiteral("/unrelated.service")));
+        QCOMPARE(listInstances(path), QStringList{QStringLiteral("other")});
+        QCOMPARE(m.calls.last(), (QStringList{"systemctl", "--user", "daemon-reload"}));
+    }
+
+    // A drop-in directory that is a link, and links inside a real one, are unlinked; what they
+    // point at is untouched.
+    void removeUnlinksSymlinksWithoutFollowing() {
+        QTemporaryDir dir, outside;
+        const QString unitDir = dir.path();
+        write(outside.path() + QStringLiteral("/target-dir/precious"), "p\n");
+        write(outside.path() + QStringLiteral("/precious-file"), "p\n");
+        QVERIFY(QFile::link(outside.path() + QStringLiteral("/target-dir"),
+                            unitDir + QStringLiteral("/remora-gone.service.d")));
+        QVERIFY(QDir().mkpath(unitDir + QStringLiteral("/remora-updater-gone.service.d")));
+        QVERIFY(QFile::link(outside.path() + QStringLiteral("/target-dir"),
+                            unitDir + QStringLiteral("/remora-updater-gone.service.d/dirlink")));
+        QVERIFY(QFile::link(outside.path() + QStringLiteral("/precious-file"),
+                            unitDir + QStringLiteral("/remora-updater-gone.service.d/a.conf")));
+        QVERIFY(QFile::link(outside.path() + QStringLiteral("/missing"),
+                            unitDir + QStringLiteral("/remora-autosleep-gone.service")));
+        FakeManager m;
+        m.restAbsent();
+        const UnitRemovalResult r = removeServiceUnits(unitDir, QStringLiteral("gone"), m.runner());
+        QVERIFY2(r.ok, qPrintable(r.errors.join('\n')));
+        QVERIFY(QDir(unitDir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::System)
+                    .isEmpty());
+        QCOMPARE(read(outside.path() + QStringLiteral("/target-dir/precious")), QByteArray("p\n"));
+        QCOMPARE(read(outside.path() + QStringLiteral("/precious-file")), QByteArray("p\n"));
+    }
+
+    // The decision cmdService takes before requireInstance would have refused a missing profile.
+    void serviceRemovalRefusalDecision() {
+        // an absent profile, with or without any configuration at all
+        QVERIFY(serviceRemovalRefusal(QStringLiteral("gone"), {}).isEmpty());
+        QVERIFY(serviceRemovalRefusal(QStringLiteral("gone"), {QStringLiteral("other")}).isEmpty());
+        QVERIFY(serviceRemovalRefusal(QStringLiteral("p"), {QStringLiteral("p")}).isEmpty());
+        QVERIFY(!serviceRemovalRefusal(QString(), {}).isEmpty());
+        QVERIFY(!serviceRemovalRefusal(QString(300, QLatin1Char('a')), {}).isEmpty());
+        // escaping collision: "a b" and "a-b" share every unit
+        QVERIFY(!serviceRemovalRefusal(QStringLiteral("a b"), {QStringLiteral("a-b")}).isEmpty());
+        // family collisions, both directions
+        QVERIFY(!serviceRemovalRefusal(QStringLiteral("updater-x"), {QStringLiteral("x")}).isEmpty());
+        QVERIFY(!serviceRemovalRefusal(QStringLiteral("x"), {QStringLiteral("autosleep-x")})
+                     .isEmpty());
+        // unsafe spellings become plain unit names: no separator, glob or leading option
+        for (const QString &n : {QStringLiteral("../../etc"), QStringLiteral("a/b"),
+                                 QStringLiteral("*"), QStringLiteral("--now"),
+                                 QStringLiteral("x\ny")}) {
+            for (const QString &u : serviceUnitNames(n)) {
+                QVERIFY2(!u.contains('/') && !u.contains('*') && !u.contains('\n'), qPrintable(u));
+                QVERIFY(u.startsWith(QStringLiteral("remora-")));
+            }
+        }
+        QCOMPARE(serviceUnitNames(QStringLiteral("my phone")),
+                 (QStringList{"remora-my-phone.service", "remora-updater-my-phone.service",
+                              "remora-autosleep-my-phone.service"}));
+    }
+
+    // A traversal-shaped name stays inside the unit directory.
+    void removeTraversalNameStaysInUnitDir() {
+        QTemporaryDir root;
+        const QString unitDir = root.path() + QStringLiteral("/a/b");
+        QVERIFY(QDir().mkpath(unitDir));
+        write(root.path() + QStringLiteral("/a/etc.service"), "k\n");
+        write(root.path() + QStringLiteral("/etc.service.d/k"), "k\n");
+        FakeManager m;
+        m.restAbsent();
+        const UnitRemovalResult r =
+            removeServiceUnits(unitDir, QStringLiteral("../../etc"), m.runner());
+        QVERIFY(r.ok);
+        QVERIFY(r.removed.isEmpty());
+        QVERIFY(QFileInfo::exists(root.path() + QStringLiteral("/a/etc.service")));
+        QVERIFY(QFileInfo::exists(root.path() + QStringLiteral("/etc.service.d/k")));
+    }
+
+private:
+    static void write(const QString &p, const QByteArray &data) {
+        QVERIFY(QDir().mkpath(QFileInfo(p).absolutePath()));
+        QFile f(p);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(data);
+    }
+    static QByteArray read(const QString &p) {
+        QFile f(p);
+        return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+    }
+
+    // A systemd --user manager modelled per unit, independently of any file on disk: what it has
+    // loaded, whether it runs, and how disable / stop / show answer.
+    struct FakeManager {
+        struct Unit {
+            QString load, active;
+            int disableRc = 0, stopRc = 0;
+            QString stopErr;
+            bool overrideQuery = false;
+            int queryRc = 0;
+            QString queryOut;
+        };
+        QMap<QString, Unit> units;
+        int reloadRc = 0;
+        QString unitDir;  // when set, disable records whether the unit's file was still there
+        QList<QStringList> calls;
+        QMap<QString, bool> fileExistedAtDisable;
+
+        // Every unit of the test's absent profiles not modelled yet: explicitly not-found and
+        // inactive, with disable failing the way it does for a unit that has no file.
+        void restAbsent() {
+            QStringList all = serviceUnitNames(QStringLiteral("gone"));
+            all += serviceUnitNames(QStringLiteral("../../etc"));
+            for (const QString &u : all)
+                if (!units.contains(u))
+                    units[u] = {QStringLiteral("not-found"), QStringLiteral("inactive"), 1, 0};
+        }
+        void allPresent(const QString &profile) {
+            for (const QString &u : serviceUnitNames(profile))
+                units[u] = {QStringLiteral("loaded"), QStringLiteral("active"), 0, 0};
+        }
+        bool ran(const QString &verb, const QString &unit) const {
+            for (const QStringList &c : calls)
+                if (c.size() > 2 && c[2] == verb && (unit.isEmpty() || c.last() == unit)) return true;
+            return false;
+        }
+        UnitCommandRunner runner() {
+            return [this](const QStringList &v) -> UnitCommandResult {
+                calls << v;
+                if (v.size() < 3 || v[0] != QLatin1String("systemctl") ||
+                    v[1] != QLatin1String("--user"))
+                    return {127, {}, QStringLiteral("unexpected argv")};
+                const QString verb = v[2];
+                if (verb == QLatin1String("daemon-reload"))
+                    return {reloadRc, {}, reloadRc ? QStringLiteral("reload refused") : QString()};
+                const QString unit = v.last();
+                if (!units.contains(unit)) return {127, {}, QStringLiteral("unmodelled unit")};
+                Unit &u = units[unit];
+                if (verb == QLatin1String("disable")) {
+                    if (!unitDir.isEmpty())
+                        fileExistedAtDisable[unit] = QFileInfo::exists(unitDir + '/' + unit);
+                    if (u.disableRc != 0)
+                        return {u.disableRc, {},
+                                QStringLiteral("Failed to disable unit: Unit file %1 does not "
+                                               "exist.").arg(unit)};
+                    u.active = QStringLiteral("inactive");
+                    return {};
+                }
+                if (verb == QLatin1String("stop")) {
+                    if (u.stopRc != 0) return {u.stopRc, {}, u.stopErr};
+                    u.active = QStringLiteral("inactive");
+                    return {};
+                }
+                if (verb == QLatin1String("show")) {
+                    if (u.overrideQuery)
+                        return {u.queryRc, u.queryOut,
+                                u.queryRc ? QStringLiteral("Failed to connect to bus") : QString()};
+                    return {0, QStringLiteral("LoadState=%1\nActiveState=%2\n").arg(u.load, u.active),
+                            {}};
+                }
+                return {127, {}, QStringLiteral("unexpected verb")};
+            };
+        }
+    };
 };
 
 QTEST_MAIN(TestStore)

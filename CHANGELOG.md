@@ -35,6 +35,13 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- **`remora service <profile> --remove` cleans up after a deleted profile.** It used to refuse
+  with "no such instance" once the profile was gone, leaving no command that removed its login
+  unit and its two watchers. It now works from the unit names alone, and also deletes each unit's
+  `.service.d` drop-in directory. It no longer reports success when a unit could not be stopped
+  or disabled: that unit's files are kept, the reason is printed, and the command exits non-zero.
+  A name whose units would include another existing profile's units is refused.
+
 - **A release update no longer leaves its download behind.** Every fetch of an official image —
   `remora images fetch`, the workspace's Official downloads and Android's *Download and apply* —
   kept the downloaded archive in `~/.cache/remora/images/` for good, several hundred MB per

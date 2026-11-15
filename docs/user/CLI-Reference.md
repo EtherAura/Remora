@@ -37,7 +37,7 @@ the command line is also the way to drive Remora over ssh.
 | `remora reconnect [<profile>] [--backend …]` | Attach to an already-running instance: adb and mirror only, no bring-up |
 | `remora sleep [<profile>]` | Freeze the device with `docker pause`. `remora up` wakes it in about a second |
 | `remora auto-sleep [<profile>]` | Idle watcher: freezes the device after `auto_sleep_minutes` with no mirror window. Runs until stopped |
-| `remora service [<profile>] [--remove]` | Install and enable systemd user units: up at login, sleep at logout, plus the update and auto-sleep watchers. `--remove` disables and deletes them |
+| `remora service [<profile>] [--remove]` | Install and enable systemd user units: up at login, sleep at logout, plus the update and auto-sleep watchers. `--remove` stops, disables and deletes them and their `.service.d` drop-in directories; it works for a profile that no longer exists, and exits non-zero, keeping that unit's files, when a unit cannot be stopped or disabled |
 | `remora watch-boot [<profile>]` | Restart the device and attach the mirror during boot, to see the boot animation |
 | `remora update-watch [<profile>]` | Serve the in-Android updater: show the device whether a newer image is on the host or, for the official image, in Remora's signed catalog, and on *Apply* download it if needed and redeploy onto it. Runs until stopped |
 | `remora reset-data [<profile>] --yes` | Factory reset: delete the profile's `/data`, and its application-menu folder with it. `bare` only. Without `--yes` it explains what would be deleted and does nothing |

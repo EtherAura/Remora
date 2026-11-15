@@ -2,6 +2,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 #include "core/Config.h"
 
 namespace remora {
@@ -45,5 +47,37 @@ struct Deployment {
 };
 QList<Deployment> loadDeployments(const QString &path);
 void saveDeployments(const QString &path, const QList<Deployment> &deployments);
+
+// The systemd --user units `remora service` generates for a profile: remora-<n>,
+// remora-updater-<n> and remora-autosleep-<n>, where <n> is the profile name with everything
+// outside [A-Za-z0-9_.-] replaced by '-'. Removal works from these names alone, so it can still
+// clean up a profile whose section is already gone.
+QString serviceUnitInstance(const QString &profile);
+QStringList serviceUnitNames(const QString &profile);
+// Why `service <name> --remove` must not act on `name`, or empty when it may — the profile need
+// not exist. Refused: a name with no usable unit name, one too long for a unit file, and one whose
+// units would include a unit of a DIFFERENT existing profile (escaping and the unit families can
+// collide: "a b" and "a-b" share units, and profile "updater-x" is x's watcher).
+QString serviceRemovalRefusal(const QString &name, const QStringList &knownProfiles);
+
+// The systemctl call behind removal, injected so the store suite runs it against a fake manager.
+struct UnitCommandResult {
+    int rc = 0;
+    QString out;
+    QString err;
+};
+using UnitCommandRunner = std::function<UnitCommandResult(const QStringList &argv)>;
+struct UnitRemovalResult {
+    bool ok = true;
+    QStringList removed;  // paths deleted
+    QStringList errors;   // one line per unit that was kept, plus a failed reload
+};
+// Stop + disable each of the profile's units, then delete its file and its <unit>.d drop-in
+// directory from unitDir, then daemon-reload. A unit whose disable fails is deleted only when the
+// manager explicitly reports it not-found and inactive (stopping a running orphan first); a
+// missing local file proves nothing about what is loaded. Anything uncertain keeps that unit's
+// files and fails. Symlinks are unlinked, never followed.
+UnitRemovalResult removeServiceUnits(const QString &unitDir, const QString &profile,
+                                     const UnitCommandRunner &run);
 
 }  // namespace remora
