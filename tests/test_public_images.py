@@ -475,5 +475,128 @@ class ImportCache(unittest.TestCase):
         self.assertIn('read-only cache', err.getvalue())
 
 
+class ReleaseReceiptRetention(unittest.TestCase):
+    """The receipt preflight a prune decision needs first: which images the receipts hold for
+    rollback, or why that cannot be known. It selects no tag to drop; it only keeps a receipt
+    with missing rollback fields from passing as a first install. The fixtures are the receipts
+    fetch itself writes for releases A, B and C, imported in turn over the fake Docker."""
+    @classmethod
+    def setUpClass(cls):
+        d = tempfile.TemporaryDirectory()
+        cache = Path(d.name) / 'images'
+        cache.mkdir()
+        docker = FakeDocker(None)
+        cls.ids, cls.receipts = {}, {}
+        for name in 'ABC':
+            src = Path(d.name) / (name + '.tar')
+            iid = docker_archive(src, labels={'remora.public_release': 'true', 'n': name})
+            body = src.read_bytes()
+            image = image_entry(iid, ref(name + '.tar', body))
+            # Each release has its own version tag; the fake only knows one, so it is cleared.
+            docker.local = iid
+            docker.tags.pop(VTAG, None)
+
+            class Opener:
+                def open(_, url, timeout):
+                    return io.BytesIO(body)
+            with patch.object(catalog.urllib.request, 'build_opener', lambda *a: Opener()), \
+                    patch.object(catalog, 'check_local_docker', lambda: None), \
+                    patch.object(catalog, 'image_id', docker.image_id), \
+                    patch.object(catalog, 'run', docker.run):
+                path = catalog.fetch('https://h/x', image, {'sequence': 1}, cache)['receipt']
+            cls.ids[name] = iid
+            cls.receipts[name] = json.loads(Path(path).read_text())
+        d.cleanup()
+
+    def check(self, receipts, tag=TAG):
+        return catalog.release_retention_receipts(tag, receipts)
+
+    def assertIncomplete(self, result):
+        self.assertFalse(result['complete'], result)
+        self.assertIsNone(result['retain'])
+        self.assertTrue(result['reason'])
+
+    def test_the_fixtures_are_the_receipts_fetch_writes(self):
+        a, b, c = (self.receipts[n] for n in 'ABC')
+        self.assertEqual((a['previous'], a['backup']), (None, None))
+        self.assertEqual((b['previous'], b['backup']),
+                         (self.ids['A'], 'remora-rollback:public-' + self.ids['A'][7:]))
+        self.assertEqual((c['image'], c['previous']), (self.ids['C'], self.ids['B']))
+
+    def test_missing_rollback_fields_are_unknown_not_a_first_install(self):
+        complete = self.check([self.receipts['C']])
+        self.assertTrue(complete['complete'], complete)
+        self.assertIsNone(complete['reason'])
+        self.assertEqual(complete['retain'], {self.ids['C'], self.ids['B']})
+        for keys in (['previous'], ['backup'], ['previous', 'backup']):
+            with self.subTest(missing=keys):
+                c = {k: v for k, v in self.receipts['C'].items() if k not in keys}
+                self.assertIncomplete(self.check([c]))
+
+    def test_a_first_install_with_explicit_nulls_retains_its_image(self):
+        result = self.check([self.receipts['A']])
+        self.assertTrue(result['complete'], result)
+        self.assertEqual(result['retain'], {self.ids['A']})
+
+    def test_an_update_retains_the_image_it_replaced_and_the_signed_alias(self):
+        local = 'sha256:' + '7' * 64  # the containerd store's manifest-digest name
+        b = dict(self.receipts['B'], image=local)
+        self.assertEqual(self.check([b])['retain'], {local, self.ids['B'], self.ids['A']})
+
+    def test_an_import_over_the_same_image_records_it_as_previous_without_a_backup(self):
+        same = dict(self.receipts['C'], previous=self.ids['C'], backup=None)
+        self.assertEqual(self.check([same])['retain'], {self.ids['C']})
+
+    def test_current_and_signed_ids_must_be_real_image_ids(self):
+        for key in ('image', 'signed_image_id'):
+            for bad in (None, '', 'f' * 64, 'sha256:' + 'F' * 64, 'sha256:' + 'f' * 63, 1):
+                with self.subTest(key=key, value=bad):
+                    self.assertIncomplete(self.check([dict(self.receipts['C'], **{key: bad})]))
+            with self.subTest(key=key, value='missing'):
+                c = {k: v for k, v in self.receipts['C'].items() if k != key}
+                self.assertIncomplete(self.check([c]))
+
+    def test_a_malformed_or_contradictory_rollback_pair_is_refused(self):
+        b_backup = 'remora-rollback:public-' + self.ids['B'][7:]
+        a_backup = 'remora-rollback:public-' + self.ids['A'][7:]
+        for previous, backup in ((None, b_backup), (self.ids['B'], None), (self.ids['B'], a_backup),
+                                 (self.ids['C'], b_backup), ('sha256:short', None),
+                                 (self.ids['B'][7:], b_backup), (self.ids['B'], self.ids['B'])):
+            with self.subTest(previous=previous, backup=backup):
+                c = dict(self.receipts['C'], previous=previous, backup=backup)
+                self.assertIncomplete(self.check([c]))
+
+    def test_the_requested_channel_must_have_a_receipt(self):
+        other = dict(self.receipts['C'], tag=TAG + '-beta')
+        self.assertIncomplete(self.check([other]))
+        self.assertIncomplete(self.check([]))
+        self.assertIncomplete(self.check([self.receipts['C']], tag='remora24:other'))
+
+    def test_every_channel_is_retained_because_rollback_tags_are_shared(self):
+        other = dict(self.receipts['B'], tag=TAG + '-beta')
+        result = self.check([self.receipts['C'], other])
+        self.assertEqual(result['retain'], {self.ids['C'], self.ids['B'], self.ids['A']})
+        # An invalid record on another channel makes the whole answer unknown.
+        broken = {k: v for k, v in other.items() if k != 'backup'}
+        self.assertIncomplete(self.check([self.receipts['C'], broken]))
+
+    def test_duplicate_or_malformed_collections_are_refused(self):
+        c = self.receipts['C']
+        for receipts in ([c, c], [c, dict(c, previous=self.ids['A'],
+                                          backup='remora-rollback:public-' + self.ids['A'][7:])],
+                         {TAG: c}, c, None, 'receipts', [c, None], [c, [c]],
+                         [dict(c, tag=None)], [dict(c, tag='other:tag')]):
+            with self.subTest(receipts=receipts):
+                self.assertIncomplete(self.check(receipts))
+
+    def test_the_preflight_touches_no_docker_and_no_files(self):
+        def refuse(*a, **k):
+            raise AssertionError('impure call')
+        with patch.object(catalog, 'run', refuse), patch.object(catalog, 'image_id', refuse), \
+                patch.object(catalog.subprocess, 'run', refuse), patch('builtins.open', refuse), \
+                patch.object(catalog.Path, 'read_text', refuse):
+            self.assertTrue(self.check([self.receipts['C']])['complete'])
+
+
 if __name__ == '__main__':
     unittest.main()

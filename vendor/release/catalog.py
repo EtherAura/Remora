@@ -325,6 +325,62 @@ def rollback(tag, cache):
     return {'removed':tag,'immutable_version_retained':True,'data_unchanged':True}
 
 
+RECEIPT_RETENTION_FIELDS = ('tag', 'image', 'signed_image_id', 'previous', 'backup')
+
+
+def release_retention_receipts(tag, receipts):
+    """Validate parsed verified-import receipts, as fetch writes them, and name the image IDs they
+    hold for rollback. Pure: no Docker, no files. `receipts` is every channel's parsed receipt, one
+    per tag, since rollback tags are shared across channels.
+
+    Returns {'complete': True, 'reason': None, 'retain': frozenset of image IDs} — each receipt's
+    current image, its signed image ID and its non-null previous image — or {'complete': False,
+    'reason': <why>, 'retain': None}. A receipt must carry every field in RECEIPT_RETENTION_FIELDS:
+    a missing previous or backup is unknown rollback state, never the first-install null. Passing
+    is only a precondition: it names no tag to drop, matches no live inventory and does not know
+    which images a container uses."""
+    def incomplete(reason):
+        return {'complete': False, 'reason': reason, 'retain': None}
+    tag_pattern = r'remora24:x86_64-public(?:-[A-Za-z0-9_.-]+)?'
+    is_id = lambda v: type(v) is str and re.fullmatch(r'sha256:[0-9a-f]{64}', v) is not None
+    if type(tag) is not str or not re.fullmatch(tag_pattern, tag):
+        return incomplete('Invalid public image tag')
+    if type(receipts) not in (list, tuple):
+        return incomplete('Receipts are not a list')
+    seen, retain = set(), set()
+    for r in receipts:
+        if type(r) is not dict:
+            return incomplete('A receipt is not an object')
+        missing = [k for k in RECEIPT_RETENTION_FIELDS if k not in r]
+        if missing:
+            return incomplete('A receipt lacks ' + ', '.join(missing))
+        t = r['tag']
+        if type(t) is not str or not re.fullmatch(tag_pattern, t):
+            return incomplete('A receipt names an invalid tag')
+        if t in seen:
+            return incomplete('More than one receipt for ' + t)
+        seen.add(t)
+        if not is_id(r['image']) or not is_id(r['signed_image_id']):
+            return incomplete('Receipt for ' + t + ' lacks a valid image ID')
+        previous, backup = r['previous'], r['backup']
+        # fetch's three shapes: a first install (both null), an import over the same image (that
+        # image as previous, no backup), and a replacement (the backup tag named by previous).
+        if previous is None:
+            expected = None
+        elif not is_id(previous):
+            return incomplete('Receipt for ' + t + ' has a malformed previous image')
+        elif previous == r['image']:
+            expected = None
+        else:
+            expected = 'remora-rollback:public-' + previous[7:]
+        if backup != expected:
+            return incomplete('Receipt for ' + t + ' has a backup that contradicts its previous image')
+        retain |= {r['image'], r['signed_image_id']} | ({previous} if previous else set())
+    if tag not in seen:
+        return incomplete('No verified-import receipt for ' + tag)
+    return {'complete': True, 'reason': None, 'retain': frozenset(retain)}
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('action',choices=['list','check','fetch','rollback'])

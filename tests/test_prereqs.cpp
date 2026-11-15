@@ -369,6 +369,19 @@ private slots:
         const QByteArray out = p.readAll();
         QVERIFY2(p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0, out.constData());
     }
+
+    // The receipt preflight any release prune would need first: a receipt that lacks its
+    // rollback fields is unknown rollback state, never a first install that holds nothing back.
+    void imageReceiptRetentionRefusesMissingRollbackFields() {
+        QProcess p;
+        p.setProcessChannelMode(QProcess::MergedChannels);
+        p.start(QStringLiteral(REMORA_PYTHON),
+                {QStringLiteral(REMORA_SOURCE_DIR "/tests/test_public_images.py"),
+                 QStringLiteral("ReleaseReceiptRetention")});
+        QVERIFY2(p.waitForFinished(120000), "the receipt-retention regression did not finish");
+        const QByteArray out = p.readAll();
+        QVERIFY2(p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0, out.constData());
+    }
 };
 
 QTEST_MAIN(TestPrereqs)
