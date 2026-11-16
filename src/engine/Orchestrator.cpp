@@ -10,6 +10,7 @@
 
 #include "core/Builders.h"
 #include "engine/PlayInstall.h"
+#include "engine/Addons.h"
 
 namespace remora {
 
@@ -330,6 +331,19 @@ bool smartRun(Backend backend, const RemoraConfig &profile, LogSink &sink, Spawn
                                      });
         }}};
         if (!runChain(play, sink)) return false;
+    }
+    // ADD-ONS SECOND (bd remora-6laf.10), over whatever the Play step left the profile resolving
+    // to, for the same reason Play goes first: what follows compares the running container with
+    // the image the profile needs, and that is the add-on layer once it exists. A failure stops
+    // here too, or the device would be recreated without root or the ARM bridge it had.
+    if (!cfg.image.addons.isEmpty()) {
+        const QVector<Step> addons{{"addon-overlay", "Add-on layer", [&](LogSink &s) {
+            return ensureAddonOverlay(sp, cfg, backend,
+                                      [&s](const QString &stream, const QString &text) {
+                                          s.line(QStringLiteral("addon-overlay"), stream, text);
+                                      });
+        }}};
+        if (!runChain(addons, sink)) return false;
     }
     RunContext ctx = makeContext(cfg, backend, caps, windowTitle, fullscreenDisplay);
     // Reconnect (fast path) only when the running container matches what this profile needs:

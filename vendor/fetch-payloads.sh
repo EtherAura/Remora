@@ -6,13 +6,17 @@
 #   vendor/fetch-payloads.sh            # report what is present and what is missing
 #   vendor/fetch-payloads.sh <payload>  # stage one
 #
+# REMORA_PAYLOAD_DIR=<dir> stages into <dir>/<payload>/ instead, in the same layout. The add-on
+# layer (bd remora-6laf.10) fetches Magisk that way into the user's payload directory, because an
+# installed Remora's vendor tree is not writable.
+#
 # REFUSES TO GUESS. A build script that silently pulls an unidentified binary into an image is
 # worse than one that stops, so nothing here constructs a plausible URL. A payload is fetched only
 # when PAYLOADS.md records an upstream precise enough to VERIFY what came back — which in practice
 # means a hash, not a link.
 set -e
 SELF=$(cd "$(dirname "$0")" && pwd)
-FEAT="$SELF/source-build/features"
+FEAT="${REMORA_PAYLOAD_DIR:-$SELF/source-build/features}"
 
 # payload:status. THREE states, because "we cannot fetch this" has two different causes and they
 # need two different answers (bd remora-28ix.6):

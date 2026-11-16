@@ -231,6 +231,31 @@ private slots:
         QVERIFY(!s.contains(QStringLiteral("play_terms")));
     }
 
+    // bd remora-6laf.10 — addons= persists as a list; the layer a deploy built never does, for the
+    // same reason the Play overlay does not.
+    void addonsRoundTripAndTheLayerNeverPersists() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        RemoraConfig c;
+        c.image.addons = QStringList{"arm_translate", "magisk_root"};
+        c.image.addonOverlay = QStringLiteral("remora-local:addons-08c62ac56c4d-07db5d1f5dc7");
+        saveInstance(path, QStringLiteral("x"), c);
+        const RemoraConfig loaded = loadInstance(path, QStringLiteral("x"));
+        QCOMPARE(loaded.image.addons, c.image.addons);
+        QVERIFY(!loaded.image.addonOverlay.has_value());
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.beginGroup(QStringLiteral("Instance-x"));
+            for (const QString &k : s.allKeys())
+                QVERIFY(!s.value(k).toString().contains(QStringLiteral("remora-local")));
+        }
+        c.image.addons.clear();
+        saveInstance(path, QStringLiteral("x"), c);
+        QSettings s(path, QSettings::IniFormat);
+        s.beginGroup(QStringLiteral("Instance-x"));
+        QVERIFY(!s.contains(QStringLiteral("addons")));
+    }
+
     void saveInstanceTouchesOnlyItsOwnGroup() {
         QTemporaryDir dir;
         const QString path = rc(dir);

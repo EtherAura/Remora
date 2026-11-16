@@ -5056,6 +5056,105 @@ private slots:
         }
     }
 
+    // bd remora-6laf.5. The arm_translate layer's context, staged by the SAME shell function the
+    // stage script runs, against a fixture payload. python3 is a stub on PATH that records its
+    // arguments: the real patcher refuses anything but the harvested binaries by hash, so the
+    // fixture could never pass it, and what is under test here is the layout and the order, with
+    // the patcher's own refusal driven by a stub that fails.
+    void armLayerStagesPatchedPayloadAndProps() {
+        const QString sbuild =
+            QDir::cleanPath(QStringLiteral(FIXTURES_DIR "/../../vendor/source-build"));
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        const QString root = tmp.path() + QStringLiteral("/ndk_translation");
+        const auto put = [](const QString &path) {
+            if (!QDir().mkpath(QFileInfo(path).path())) return false;
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write("sentinel\n") == 9;
+        };
+        for (const char *f : {"/guest/system/bin/arm64/linker64", "/guest/system/lib64/arm64/libc.so",
+                              "/guest/system/etc/ld.config.arm64.txt", "/lib64/libnb.so",
+                              "/lib64/libndk_translation.so",
+                              "/bin/ndk_translation_program_runner_binfmt_misc_arm64",
+                              "/etc/cpuinfo.arm64.txt", "/etc/binfmt_misc/arm64_exe"})
+            QVERIFY(put(root + QLatin1String(f)));
+        const auto stub = [&](const QString &dir, int rc) {
+            QVERIFY(QDir().mkpath(dir));
+            QFile s(dir + QStringLiteral("/python3"));
+            QVERIFY(s.open(QIODevice::WriteOnly));
+            s.write(QStringLiteral("#!/bin/sh\necho \"$@\" >> \"%1/patched\"\nexit %2\n")
+                        .arg(dir)
+                        .arg(rc)
+                        .toUtf8());
+            s.close();
+            QVERIFY(s.setPermissions(s.permissions() | QFileDevice::ExeOwner));
+        };
+        const auto run = [&](const QString &stubDir, const QString &payload, const QString &ctx) {
+            QProcess sh;
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert(QStringLiteral("PATH"), stubDir + QLatin1Char(':') + env.value("PATH"));
+            sh.setProcessEnvironment(env);
+            sh.start(QStringLiteral("sh"),
+                     {QStringLiteral("-c"),
+                      QStringLiteral(". \"$1/ndk-overlay.sh\"; stage_arm_layer \"$2\" \"$1\" \"$3\""),
+                      QStringLiteral("t"), sbuild, payload, ctx});
+            return sh.waitForFinished(15000) ? sh.exitCode() : -1;
+        };
+        const auto read = [](const QString &path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+        };
+
+        const QString okStub = tmp.path() + QStringLiteral("/ok"), ctx = tmp.path() + "/ctx";
+        stub(okStub, 0);
+        QCOMPARE(run(okStub, root, ctx), 0);
+        const QString sys = ctx + QStringLiteral("/ndkguest/system");
+        // The guest runtime and the host bridge libs, as a source build overlays them…
+        QVERIFY(QFile::exists(sys + "/bin/arm64/linker64"));
+        QVERIFY(QFile::exists(sys + "/lib64/arm64/libc.so"));
+        QVERIFY(QFile::exists(sys + "/etc/ld.config.arm64.txt"));
+        QVERIFY(QFile::exists(sys + "/lib64/libnb.so"));
+        QVERIFY(QFile::exists(sys + "/lib64/libndk_translation.so"));
+        // …what ndk.mk installs beside them, and not the binfmt_misc registrations, which a
+        // privileged container would register in the host kernel.
+        QVERIFY(QFile::exists(sys + "/bin/ndk_translation_program_runner_binfmt_misc_arm64"));
+        QVERIFY(QFile::exists(sys + "/etc/cpuinfo.arm64.txt"));
+        QVERIFY(!QDir(sys + "/etc/binfmt_misc").exists());
+        // The patcher ran on the STAGED copies, never the payload.
+        QCOMPARE(read(okStub + "/patched").trimmed(),
+                 QStringLiteral("%1/patch-arm-translation.py %2/bin/arm64/linker64 "
+                                "%2/lib64/libnb.so")
+                     .arg(sbuild, sys));
+        QVERIFY(read(sys + "/etc/init/remora-berberis.rc")
+                    .contains(QLatin1String("setprop ro.berberis.flags accurate-sigsegv")));
+        // The properties the public build pinned to "no bridge", undone by a file init reads
+        // after /vendor/build.prop.
+        const QString props = read(ctx + QStringLiteral("/ndkguest/odm_dlkm/etc/build.prop"));
+        for (const char *line : {"ro.product.cpu.abilist=x86_64,arm64-v8a\n",
+                                 "ro.product.cpu.abilist64=x86_64,arm64-v8a\n",
+                                 "ro.product.cpu.abilist32=\n",
+                                 "ro.dalvik.vm.native.bridge=libnb.so\n",
+                                 "ro.dalvik.vm.isa.arm64=x86_64\n"})
+            QVERIFY2(props.contains(QLatin1String(line)), line);
+        QVERIFY(!props.contains(QLatin1String("native.bridge.exec")));
+
+        // A re-stage replaces the context instead of nesting a second copy inside it.
+        QCOMPARE(run(okStub, root, ctx), 0);
+        QVERIFY(!QDir(sys + QStringLiteral("/system")).exists());
+
+        // The patcher refusing (a re-harvested binary) leaves NO context, so the recipe's stage
+        // check, which looks for the prop file, refuses rather than building an unpatched bridge.
+        const QString badStub = tmp.path() + QStringLiteral("/bad");
+        stub(badStub, 1);
+        QVERIFY(run(badStub, root, ctx) != 0);
+        QVERIFY(!QDir(ctx + QStringLiteral("/ndkguest")).exists());
+
+        // No payload: refused by name, nothing staged.
+        const QString empty = tmp.path() + QStringLiteral("/ctx-empty");
+        QVERIFY(run(okStub, tmp.path() + QStringLiteral("/no-payload"), empty) != 0);
+        QVERIFY(!QDir(empty + QStringLiteral("/ndkguest")).exists());
+    }
+
     // bd remora-mdq2. An A17 build ran with the A16 pin sitting in .repo/manifests/remora-pinned.xml
     // and `repo sync --force-sync` dragged 23 projects back to lineage-23.0 revisions; it then died
     // in kati on a missing file, with nothing anywhere pointing at the manifest. The guard added for

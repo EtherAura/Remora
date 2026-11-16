@@ -16,7 +16,18 @@ namespace remora {
 // generated file at all — its whole output is the 14 payload files, laid out already in their
 // install paths. Verified by sha256 against a booting source-built image: all 14 IDENTICAL. That
 // retires this bead's "whether anything needs dexopt that a layer cannot provide" as a no.
-static const QSet<QString> kOverlayable = {"widevine_l3", "gapps"};
+//
+// magisk_root joined it (bd remora-6laf.2) on the inventory in docs/ADDONS.md: the build only
+// PLACES its eleven files (seven BUILD_PREBUILT modules, four PRODUCT_COPY_FILES), with no
+// sepolicy, no property and no compiled module. The "boot-flow change" it was once kept out for
+// is magisk.rc itself, and init loads an rc from /system/etc/init/ whichever way it got there.
+//
+// arm_translate joined it (bd remora-6laf.5) once it was clear that the A17 tree builds none of
+// the ARM side: the guest runtime, the translator and its proxies are all payload files, the
+// staging assemble-image.sh does is already a COPY, and the only non-file part (the bridge
+// properties) is a prop file init reads after the base's (stage_arm_layer, ndk-overlay.sh).
+static const QSet<QString> kOverlayable = {"widevine_l3", "gapps", "magisk_root",
+                                           "arm_translate"};
 
 static QString fragment(const QString &feature) {
     if (feature == QLatin1String("widevine_l3"))
@@ -42,7 +53,75 @@ static QString fragment(const QString &feature) {
             "# sysconfig XMLs, byte-identical to what a source build installs.\n"
             "COPY gapps/product/ /system/product/\n"
             "COPY gapps/system_ext/ /system/system_ext/");
+    if (feature == QLatin1String("magisk_root"))
+        // The context's magisk/ is vendor/source-build/features/magisk after `fetch-payloads.sh
+        // magisk`, so these are that tree's paths. Named file by file because the payload
+        // directory also holds PROVENANCE.md, which a source build does not install either. No
+        // file needs an executable bit in the image: magisk.rc runs both scripts through
+        // /system/bin/sh, and magisk-setup.sh copies the binaries into its tmpfs and chmods them
+        // there.
+        return QStringLiteral(
+            "# Magisk v30.7 (su + DenyList), started from init: the upstream binaries, apks and\n"
+            "# scripts plus Remora's setup script, and the rc that runs them.\n"
+            "COPY magisk/magisk/magisk magisk/magisk/magiskboot magisk/magisk/magiskinit \\\n"
+            "     magisk/magisk/magiskpolicy magisk/magisk/busybox \\\n"
+            "     magisk/magisk/magisk.apk magisk/magisk/stub.apk \\\n"
+            "     magisk/magisk/util_functions.sh magisk/magisk/boot_patch.sh \\\n"
+            "     magisk/magisk-setup.sh /system/etc/init/magisk/\n"
+            "COPY magisk/magisk.rc /system/etc/init/magisk.rc");
+    if (feature == QLatin1String("arm_translate"))
+        // ndkguest/ is what vendor/source-build/stage-arm-layer.sh stages: the payload patched by
+        // the same function a source build uses (finish_ndk_overlay), so the two cannot drift.
+        return QStringLiteral(
+            "# ARM translation (arm64 native bridge): the translator, its guest runtime, the\n"
+            "# berberis flag, and the properties that turn the bridge on, from stage-arm-layer.sh.\n"
+            "COPY ndkguest/system/ /system/\n"
+            "COPY ndkguest/odm_dlkm/ /odm_dlkm/");
     return QString();
+}
+
+// Every file the magisk_root fragment copies, for the stage step to check before docker build
+// does. Listed per file, not as the directory: a public clone carries the scripts but not the
+// binaries (vendor/PAYLOADS.md), so the directory exists there and would pass.
+static QStringList magiskPayloads() {
+    QStringList p;
+    for (const char *f : {"magisk", "magiskboot", "magiskinit", "magiskpolicy", "busybox",
+                          "magisk.apk", "stub.apk", "util_functions.sh", "boot_patch.sh"})
+        p << QStringLiteral("magisk/magisk/") + QLatin1String(f);
+    p << QStringLiteral("magisk/magisk-setup.sh") << QStringLiteral("magisk/magisk.rc");
+    return p;
+}
+
+const QStringList &addonFeatures() {
+    static const QStringList a{QStringLiteral("arm_translate"), QStringLiteral("magisk_root"),
+                               QStringLiteral("widevine_l3")};
+    return a;
+}
+
+QString addonLayerDockerfile(const QStringList &addons, const QString &baseTag, int androidVersion,
+                             const QString &baseId, const QString &rootId, const QString &recipe) {
+    QSet<QString> want;
+    for (const QString &a : addons)
+        if (addonFeatures().contains(a)) want.insert(a);
+    QStringList sorted(want.begin(), want.end());
+    sorted.sort();
+    // baseOverride with a remora-local: base (the Play layer) finds no registry entry, so every
+    // add-on asked for is layered; the engine has already dropped the ones the registered base
+    // carries, asking the registry under the base's own name.
+    QString df = buildRecipe(want, androidVersion, QString(), QString(), QString(), baseTag).dockerfile;
+    df += QStringLiteral("LABEL org.remora.addons.local_only=\"true\"\n"
+                         "LABEL org.remora.addons.list=\"%1\"\n"
+                         "LABEL org.remora.addons.base=\"%2\"\n"
+                         "LABEL org.remora.addons.root=\"%3\"\n"
+                         "LABEL org.remora.addons.recipe=\"%4\"\n")
+              .arg(sorted.join(QLatin1Char(' ')), baseId, rootId, recipe);
+    return df;
+}
+
+QString addonLayerTag(const QString &baseId, const QString &recipe) {
+    QString b = baseId;
+    if (b.startsWith(QLatin1String("sha256:"))) b = b.mid(7);
+    return QStringLiteral("remora-local:addons-%1-%2").arg(b.left(12), recipe.left(12));
 }
 
 QString releaseConfigFor(int androidVersion) {
@@ -118,10 +197,24 @@ ImageRecipe buildRecipe(const QSet<QString> &featuresIn, int androidVersion, con
         if (f == QLatin1String("widevine_l3")) payloads << QStringLiteral("wv/vendor/");
         if (f == QLatin1String("gapps"))
             payloads << QStringLiteral("gapps/product/") << QStringLiteral("gapps/system_ext/");
+        if (f == QLatin1String("magisk_root")) payloads << magiskPayloads();
+        // The prop file is written last, only after the patcher has accepted both binaries, so
+        // its presence is what says the context was staged by stage-arm-layer.sh and not copied
+        // raw: an unpatched bridge boots and then segfaults every ARM app (bd remora-rve).
+        if (f == QLatin1String("arm_translate"))
+            payloads << QStringLiteral("ndkguest/system/lib64/libnb.so")
+                     << QStringLiteral("ndkguest/system/bin/arm64/linker64")
+                     << QStringLiteral("ndkguest/system/etc/init/remora-berberis.rc")
+                     << QStringLiteral("ndkguest/odm_dlkm/etc/build.prop");
     }
+    const bool needsBuild = !overlayMissing.isEmpty();
+    // A layer never inherits the public claim. Every overlay-able feature is one public_release
+    // conflicts with, so any overlay is a private image by construction, and the base's
+    // LABEL remora.public_release="true" would otherwise ride through into it — the label the
+    // catalog verifier and package-release.py accept as "this is the publishable image".
+    if (needsBuild) lines << QStringLiteral("LABEL remora.public_release=\"false\"");
     QString dockerfile = lines.join(QLatin1Char('\n')).trimmed() + "\n";
 
-    const bool needsBuild = !overlayMissing.isEmpty();
     const QString base0 = sel.tag.section(QLatin1Char(':'), 0, 0);
     const QString resultTag = !tag.isEmpty() ? tag : (base0 + ":custom");
 

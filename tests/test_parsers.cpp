@@ -577,6 +577,25 @@ private slots:
                               QStringLiteral("4: tun0    inet 10.8.0.2/24 scope global tun0\n"))
                      .has_value());
     }
+
+    // Only a global-scope address describes the LAN. A link-local address listed first on the
+    // chosen NIC must not become the macvlan subnet, and a NIC with nothing but one has no LAN.
+    void hostLanSkipsNonGlobalAddresses() {
+        const QString route = QStringLiteral("default via 10.0.0.1 dev eno1 metric 100\n");
+        const auto lan = parseHostLan(
+            route,
+            QStringLiteral(
+                "2: eno1    inet 169.254.7.7/16 brd 169.254.255.255 scope link eno1\n"
+                "2: eno1    inet 10.0.0.5/24 brd 10.0.0.255 scope global eno1\n"));
+        QVERIFY(lan.has_value());
+        QCOMPARE(lan->parent, QStringLiteral("eno1"));
+        QCOMPARE(lan->subnet, QStringLiteral("10.0.0.0/24"));
+        QCOMPARE(lan->hostIp, QStringLiteral("10.0.0.5"));
+        QVERIFY(!parseHostLan(route,
+                              QStringLiteral("2: eno1    inet 169.254.7.7/16 brd 169.254.255.255 "
+                                             "scope link eno1\n"))
+                     .has_value());
+    }
     // bd remora-d5v. An UNSET or unrecognised backend must mean the LOCAL host. It used to fall
     // through to Vm in both directions, so a profile that had never mentioned a backend silently
     // deployed to a KVM guest over ssh and failed at preflight with "no ssh host set" — which reads

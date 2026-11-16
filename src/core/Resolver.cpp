@@ -5,6 +5,7 @@
 
 #include "core/Features.h"
 #include "core/Gating.h"
+#include "core/ImageBuild.h"
 
 namespace remora {
 
@@ -631,6 +632,20 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
     if (r.googlePlay && !r.playIncluded && im.playOverlay && !im.playOverlay->isEmpty()) {
         r.playBaseTag = r.imageTag;
         r.imageTag = *im.playOverlay;
+    }
+
+    // ADD-ONS, AFTER PLAY (bd remora-6laf.10), and for the same reason: the layer adds files and
+    // properties to whatever image runs, and decides nothing above. It goes over the Play layer
+    // rather than under it so the Play installer only ever sees the clean base it validates, and
+    // toggling an add-on never rebuilds Google Play. An unknown name is dropped here and refused
+    // by the engine, which can say why.
+    for (const QString &a : addonFeatures())
+        if (im.addons.contains(a)) r.addons << a;
+    for (const QString &a : r.addons)
+        if (taggedImage && taggedImage->provides.contains(a)) r.addonsIncluded << a;
+    if (!r.addonsPending().isEmpty() && im.addonOverlay && !im.addonOverlay->isEmpty()) {
+        r.addonBaseTag = r.imageTag;
+        r.imageTag = *im.addonOverlay;
     }
 
     return r;

@@ -4,13 +4,13 @@ For each payload-carrying build feature: every path it installs, the properties 
 and runtime steps, what it needs from the build itself, where its payload comes from, and whether a
 Dockerfile `COPY` layer on the published base `remora24:x86_64-public` could carry it instead.
 
-Everything here is read from the sources named in each section. None of it has been checked by
-building, booting or deploying an image; a section saying a `COPY` layer *can* carry a file says
-only that nothing in the build does more than place that file.
+Everything here is read from the sources named in each section. A section saying a `COPY` layer
+*can* carry a file says only that nothing in the build does more than place that file. Where a
+layer has been built and booted, the section says so and records what was observed.
 
-Sections still to write: `shamiko`, `arm_translate`, the inventory half of `play_spoof` (which so
-far records only its acceptance target and limits), and the note that `webview_pairip_fix` has no
-implementation and so needs no add-on.
+Sections still to write: `shamiko`, the inventory half of `play_spoof` (which so far records only
+its acceptance target and limits), and the note that `webview_pairip_fix` has no implementation and
+so needs no add-on.
 
 ## magisk_root
 
@@ -132,22 +132,35 @@ built this way would also *work* is a separate, unproven question. The tmpfs, th
 tree, the app install and the guarded policy call are boot-time work done by init from the copied
 rc. A COPY layer cannot carry any of that, but it has no need to.
 
-Illustrative only. This has not been built, booted or deployed. The build context is
+This is the layer `remora recipe --base remora24:x86_64-public` prints for a profile with
+`magisk_root` (bd remora-6laf.2). The build context's `magisk/` is
 `vendor/source-build/features/magisk/` after `vendor/fetch-payloads.sh magisk`:
 
 ```dockerfile
 FROM remora24:x86_64-public
-COPY magisk/magisk magisk/magiskboot magisk/magiskinit magisk/magiskpolicy magisk/busybox \
-     magisk/magisk.apk magisk/stub.apk \
-     magisk/util_functions.sh magisk/boot_patch.sh magisk-setup.sh \
-     /system/etc/init/magisk/
-COPY magisk.rc /system/etc/init/magisk.rc
-# The result is no longer a public image: do not keep the public label or a -public tag.
+
+COPY magisk/magisk/magisk magisk/magisk/magiskboot magisk/magisk/magiskinit \
+     magisk/magisk/magiskpolicy magisk/magisk/busybox \
+     magisk/magisk/magisk.apk magisk/magisk/stub.apk \
+     magisk/magisk/util_functions.sh magisk/magisk/boot_patch.sh \
+     magisk/magisk-setup.sh /system/etc/init/magisk/
+COPY magisk/magisk.rc /system/etc/init/magisk.rc
+
 LABEL remora.public_release="false"
 ```
 
-That fragment copies the same eleven files as the table: ten into `/system/etc/init/magisk/` and
-the rc beside them.
+It copies the same eleven files as the table: ten into `/system/etc/init/magisk/` and the rc
+beside them. The label is on every layer Remora builds, so the result never carries the base's
+public claim.
+
+**Built and booted.** The layer above was built over `remora24:x86_64-public`
+(image `08c62ac56c4d`) and started on a throwaway container with an empty `/data`, the GPU in host
+mode on an Intel xe node. It reached `sys.boot_completed=1` with
+`sys.system_server.start_count=1`. `magiskd` was running, `/debug_ramdisk` held `magisk`,
+`magisk64`, `magiskpolicy`, `resetprop` and `su`, and `su -c id` returned `uid=0(root)`. `magisk
+-v` reported `30.7:MAGISK:R`, the Magisk app installed itself at boot completion, and `magisk
+--denylist enable` then reported the DenyList enforced. That boot did not include an app
+requesting `su` through the Magisk app's prompt, Play, or the hiding stack.
 
 Constraints the sources impose, which this document does not change:
 
@@ -155,19 +168,149 @@ Constraints the sources impose, which this document does not change:
   `src/core/Features.cpp` (as policy, not for licence reasons). `stage-features.sh` refuses
   `WITH_MAGISK=true` in a public build. The base carries `LABEL remora.public_release="true"`
   (`assemble-image.sh`), and the release tooling accepts only `remora24:x86_64-public…` tags for
-  public images. A derived image has to drop both the label and the tag.
-- **Remora's overlay recipe does not offer this.** `src/core/ImageBuild.h` lists `magisk_root` as
-  base-baked rather than overlay-able, and describes it as patching init and the boot flow. In
-  these sources that boot-flow change is the rc file shown above. Teaching the recipe to overlay
-  `magisk_root` would be a code change and is not part of this document.
+  public images. The layer sets the label to `"false"`; its tag is whatever `--tag` names, so do
+  not give it a `-public` one.
+- **The overlay recipe offers it.** `magisk_root` is in `kOverlayable` in
+  `src/core/ImageBuild.cpp`, so `remora recipe --base` and `remora build --base` layer it instead
+  of asking for a source build.
 - **File modes come from the build context.** A source build takes modes from the build's
   filesystem config; a COPY layer takes them from the context. From the sources, nothing needs an
   executable bit under `/system/etc/init/magisk/`: the rc runs both scripts through
   `/system/bin/sh`, and `magisk-setup.sh` copies the binaries into the tmpfs and `chmod`s them
   there.
-- **Unproven on a COPY-derived image:** that init on the public base loads the added rc, that the
-  `u:r:su:s0` execs succeed, and that root comes up. `PROVENANCE.md` says the root check is
-  `su -c id` inside the container.
+- **Proven on a COPY-derived image** by the boot recorded above: init on the public base loads the
+  added rc, the `u:r:su:s0` execs succeed, and `su -c id` inside the container returns uid 0, the
+  check `PROVENANCE.md` names.
+
+## arm_translate
+
+The arm64 native bridge: a proprietary berberis-derived translator (`libnb.so`,
+`libndk_translation.so`), its proxy libraries, and an arm64 guest userspace, which together let
+x86_64 Android run apps that ship only arm64 native code. Sources:
+`vendor/source-build/features/ndk_translation/` (`ndk.mk`, `Android.mk`), `ndk-overlay.sh`,
+`assemble-image.sh`, `patch-arm-translation.py`, `stage-arm-layer.sh`,
+`device-remora/remora_x86_64/{device.mk,BoardConfig.mk}`, and the A17 tree's
+`system/core/init/property_service.cpp`.
+
+### How it reaches the build
+
+`arm_translate` sets `WITH_NDK=true`. `stage-features.sh` writes `REMORA_NATIVE_BRIDGE_ENABLED`
+for the device tree, which then sets the bridge properties (below) and `TARGET_NATIVE_BRIDGE_*`.
+`ndk.mk` installs the host-side libraries, the runner and the cpuinfo file as prebuilts. Then
+`assemble-image.sh` copies the payload's guest tree and the same host libraries over `/system` in a
+`COPY` step of its own, byte-patching two of them and writing one rc on the way.
+
+**The tree builds no ARM code.** `ndk.mk` says the guest system libraries are built from source,
+but nothing builds them. The device product never includes
+`frameworks/libs/native_bridge_support/native_bridge_support.mk`, so the A17 tree produces no
+`/system/bin/arm64` and no `/system/lib64/arm64`. An experiment that did include it built a native
+A17 guest userspace, and the older translator could not drive it: zygote crash-looped. The guest
+runtime every working image runs is the payload's `guest/system` tree.
+
+### Installed paths
+
+93 files, all from the payload except two that Remora writes:
+
+| payload (`features/ndk_translation/…`) | image path | count |
+|---|---|---|
+| `guest/system/bin/arm64/{app_process64,linker64}` | `/system/bin/arm64/` | 2 |
+| `guest/system/lib64/arm64/*` (guest libc, libm, libdl, libEGL, …, `cpuinfo`) | `/system/lib64/arm64/` | 60 |
+| `guest/system/lib64/libberberis_exec_region.so` | `/system/lib64/` | 1 |
+| `guest/system/etc/ld.config.arm64.txt` | `/system/etc/` | 1 |
+| `lib64/*.so` (`libnb.so`, `libndk_translation.so`, its exec region, 22 proxies) | `/system/lib64/` | 25 |
+| `bin/ndk_translation_program_runner_binfmt_misc_arm64` | `/system/bin/` | 1 |
+| `etc/cpuinfo.arm64.txt` | `/system/etc/` | 1 |
+| written by `finish_ndk_overlay` | `/system/etc/init/remora-berberis.rc` | 1 |
+| written by `stage_arm_layer` (layer only) | `/odm_dlkm/etc/build.prop` | 1 |
+
+The payload's `lib64/arm64/` is a byte-identical duplicate of `guest/system/lib64/arm64/` and is not
+copied twice. Its `etc/binfmt_misc/arm64_{dyn,exe}` are not installed, in a source build or a
+layer. No image installs a binfmt_misc registration or the rc that would load one. If one did,
+the `--privileged` container would register an arm64 handler in the host kernel.
+
+`libnb.so` and the guest `linker64` are installed patched, never as vendored.
+`patch-arm-translation.py` checks a whole-file SHA-256 and the original bytes at every site, then
+neuters the guest linker's systrace hooks (guest bionic TLS is NULL under this translator), makes
+`AppProcessPostInit` exit with a raw syscall, and drops one guest-stack assertion. A different
+build of either file is refused, which is why only the payload `vendor/PAYLOADS.md` pins can be
+used.
+
+### Properties
+
+The source build sets these in `/vendor/build.prop` through `device.mk`, and derives the ABI list
+from `TARGET_NATIVE_BRIDGE_ABI`. A `public_release` build sets the opposite: `ro.dalvik.vm.native.bridge=0`
+in `/system/build.prop` and `/vendor/build.prop`, and `x86_64` alone in each partition's
+`ro.<partition>.product.cpu.abilist`.
+
+| property | with the bridge | public image |
+|---|---|---|
+| `ro.product.cpu.abilist`, `…abilist64` | `x86_64,arm64-v8a` | `x86_64` (derived) |
+| `ro.dalvik.vm.native.bridge` | `libnb.so` | `0` |
+| `ro.dalvik.vm.isa.arm64` | `x86_64` | unset |
+| `ro.berberis.flags` | `accurate-sigsegv`, set by `remora-berberis.rc` at `on init` | unset |
+
+`device.mk` also sets `ro.enable.native.bridge.exec=1` and `ro.dalvik.vm.isa.arm=x86`. The layer
+leaves both out. The first is read only by the binfmt_misc rc, which no image installs, and the
+second maps a 32-bit ABI that the 64-bit-only image does not advertise.
+
+### Init and runtime steps
+
+None beyond the berberis flag rc. zygote loads the bridge named by `ro.dalvik.vm.native.bridge`
+for any app whose primary ABI is `arm64-v8a`, and the guest linker resolves the app's libraries
+through `ld.config.arm64.txt`.
+
+### What it needs from the build, and what it does not
+
+Only the properties, and a layer can set those itself. In A17's `PropertyLoadBootDefaults`, a
+property read from a later file replaces the value from an earlier one, read-only properties
+included (the source says so in a comment). The order is `/system/build.prop`, the `system_ext`
+props, `/system_dlkm/etc/build.prop`, `/vendor/default.prop`, `/vendor/build.prop`,
+`/vendor_dlkm/etc/build.prop`, `/odm_dlkm/etc/build.prop`, then the `odm` and `product` props.
+The public image has an empty `/odm_dlkm/etc/`, so the layer adds `/odm_dlkm/etc/build.prop` and
+replaces none of the base's files. It sets `ro.product.cpu.abilist` and its 32- and 64-bit
+variants outright: `property_initialize_ro_cpu_abilist` derives them only when they are unset, and
+otherwise the odm list, read after this file, would win with `x86_64`.
+
+### Payload source
+
+**Supplied by the user.** The source is unrecorded, and one candidate archive is ruled out by hash
+(`vendor/PAYLOADS.md`). It is proprietary, cannot be redistributed, and is never fetched. The only
+Remora-authored parts are the rc, the prop file, the patcher and the staging functions.
+
+### A COPY layer
+
+The layer carries it all. `vendor/source-build/stage-arm-layer.sh <build_dir>` stages the payload
+into `<build_dir>/ndkguest`, runs the patcher on the staged copies and writes the rc. It writes the
+prop file last, so the stage check, which looks for that file, refuses a context that was copied
+raw or whose patching failed. The patch-and-rc step is `finish_ndk_overlay` in `ndk-overlay.sh`,
+the same function `assemble-image.sh` calls, so a source build and a layer cannot drift apart.
+`remora recipe --base remora24:x86_64-public` prints the layer for a profile with
+`arm_translate`:
+
+```dockerfile
+FROM remora24:x86_64-public
+
+COPY ndkguest/system/ /system/
+COPY ndkguest/odm_dlkm/ /odm_dlkm/
+
+LABEL remora.public_release="false"
+```
+
+**Built and booted.** The layer, together with the `magisk_root` one, was built over
+`remora24:x86_64-public` (image `08c62ac56c4d`) and started on a throwaway container with an empty
+`/data`. The GPU was in host mode on an Intel xe node. It reached `sys.boot_completed=1` with
+`sys.system_server.start_count=1`, `ro.product.cpu.abilist=x86_64,arm64-v8a`,
+`ro.dalvik.vm.native.bridge=libnb.so` and `ro.berberis.flags=accurate-sigsegv`, and
+`su -c id` returned uid 0. The test app was a NativeActivity APK whose only code is one
+`lib/arm64-v8a` library, built with NDK r27c. It installed with `primaryCpuAbi=arm64-v8a`.
+nativeloader loaded the library, and the app process mapped `libnb.so` and the translation
+proxies. The arm64 code logged and wrote a file in the app's data directory. The activity stayed
+resumed with no crash or tombstone. As a control, the same APK on the plain public image was
+refused with `INSTALL_FAILED_NO_MATCHING_ABIS`.
+
+That boot showed that translation runs. It did not run any of the apps the earlier fixes were for
+(TikTok, NIKKE, Amazon), or anything with Java code calling into arm64 JNI. The TikTok frame fix,
+`nb_sigfix`, is a Zygisk module, so it rides the `play_spoof` stack and is not in this layer.
 
 ## play_spoof
 

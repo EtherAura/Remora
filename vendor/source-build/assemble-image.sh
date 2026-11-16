@@ -297,43 +297,9 @@ if [ "$NDK_ON" = 1 ]; then
     echo "=== ndk_translation: tree has its own arm64 guest payload; overlaying host bridge libs only ==="
     rm -rf "$DFDIR/ndkguest/system/bin" "$DFDIR/ndkguest/system/lib64/arm64"
   fi
-  # ARM apps need two byte patches to these prebuilts on A17 (guest bionic_tls is
-  # NULL, and a native-bridge trampoline registers a NULL thread_local dtor) —
-  # without them every guest dlopen, and then every app startup, segfaults. The
-  # patcher runs on the STAGED copies so the vendored prebuilts stay exactly as
-  # harvested; it verifies a SHA-256 per file and the original bytes at every
-  # site, and fails the build if a prebuilt was re-harvested (bd remora-rve).
-  if [ -f "$DFDIR/ndkguest/system/bin/arm64/linker64" ] && \
-     [ -f "$DFDIR/ndkguest/system/lib64/libnb.so" ]; then
-    python3 "$(cd "$(dirname "$0")" && pwd)/patch-arm-translation.py" \
-        "$DFDIR/ndkguest/system/bin/arm64/linker64" \
-        "$DFDIR/ndkguest/system/lib64/libnb.so" || exit 1
-  fi
-  # berberis runtime flag (bd remora-4ei.100). Amazon's lost-SIGSEGV and NIKKE's GC-suspend race
-  # are signal deliveries landing on imprecise generated-code state; accurate-sigsegv synchronises
-  # all registers (not just PC) on recovery, and its own source comment says it "should be the
-  # default on emulators". Measured: it moves Amazon from dying on EVERY launch to ~5/6
-  # surviving — a real but PARTIAL, probabilistic mitigation, NOT a fix (the crash is a genuine
-  # race). NIKKE similarly improves. Sonar + Nintendo (translated apps that always worked) are
-  # unaffected. TikTok's deterministic :42 frame corruption is a DIFFERENT defect, fixed by the
-  # nb_sigfix Zygisk module below, not by this flag.
-  #
-  # ONLY accurate-sigsegv is set: the other precise-state flags in the AOSP berberis source
-  # (all-jumps-exit-gen-code, disable-link-jumps-between-regions) do NOT EXIST in this A16-vintage
-  # prebuilt libnb.so — it logs "Unrecognized config flag ... ignoring" and drops them. Verified by
-  # enumerating the flag strings actually present in the shipped binary. Do not add flags back
-  # without checking `strings libnb.so` first.
-  #
-  # Written as an on-the-fly init rc INSIDE the ndkguest overlay, not into the vendored payload
-  # (which stays exactly as harvested, same rule as the byte patcher above), and not by setprop
-  # (runtime-only: the first container recreate would silently shed it).
-  mkdir -p "$DFDIR/ndkguest/system/etc/init"
-  cat > "$DFDIR/ndkguest/system/etc/init/remora-berberis.rc" <<'RC'
-# Remora: precise-state signal delivery for the berberis native bridge (bd remora-4ei.100).
-# Only accurate-sigsegv is recognised by the shipped libnb.so — see assemble-image.sh.
-on init
-    setprop ro.berberis.flags accurate-sigsegv
-RC
+  # The byte patches and the berberis flag rc, shared with the arm_translate layer
+  # (stage-arm-layer.sh) so a source build and a layered image carry the same bridge.
+  finish_ndk_overlay "$(cd "$(dirname "$0")" && pwd)" "$DFDIR/ndkguest/system" || exit 1
   parts_extra="$parts_extra ndkguest"
 fi
 if [ -d "$DEVCOMPAT/product" ]; then

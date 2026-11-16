@@ -20,12 +20,12 @@ struct ImageRecipe {
 };
 
 // Reproduces the predecessor overlay model (IMAGE-RECIPE.md): a custom image is a Dockerfile-COPY
-// overlay on a base tag. widevine_l3 and gapps are overlay-able; the rest is base-baked.
-// gapps is what makes the clean-mirror policy deliver (docs/IMAGE_MIRROR.md, bd remora-sgkg): a user can take
-// a published GApps-free image and apply the proprietary half locally in seconds, instead of
-// being told to run an hour-scale source build. arm_translate is the same shape and the same
-// argument, but is not done here. magisk_root is NOT this shape at all — it patches init and the
-// boot flow rather than dropping files into a partition.
+// overlay on a base tag. widevine_l3, gapps, magisk_root and arm_translate are overlay-able; the
+// rest is base-baked. gapps is what makes the clean-mirror policy deliver (docs/IMAGE_MIRROR.md,
+// bd remora-sgkg): a user can take a published GApps-free image and apply the proprietary half
+// locally in seconds, instead of being told to run an hour-scale source build. magisk_root and
+// arm_translate are the same argument for root and ARM apps (bd remora-6laf.2, .5): Magisk's
+// boot-flow change is an rc file, and the bridge's properties are a prop file, so both are files.
 // sourceTree/sourceKind parameterize the source-rebuild hint for unbuildable features:
 // kind "lineage" (default) uses the do-build.sh wrapper, "aosp" the stock envsetup/lunch/m flow.
 // androidVersion picks the lunch release config (16→bp2a, 17→cp2a) in either flow.
@@ -39,6 +39,21 @@ ImageRecipe buildRecipe(const QSet<QString> &features, int androidVersion = 16,
                         const QString &tag = QString(), const QString &sourceTree = QString(),
                         const QString &sourceKind = QString(),
                         const QString &baseOverride = QString());
+
+// The add-ons a profile can ask for with addons= (bd remora-6laf.10): the overlay-able features
+// other than gapps, which has its own option (google_play) and its own installer.
+const QStringList &addonFeatures();
+// An add-on layer's Dockerfile: buildRecipe's COPY fragments for `addons` over `baseTag`, then the
+// labels a later deploy and the updater read. baseId is the ID of the image the layer is built
+// FROM; rootId is the registered image at the bottom of the stack (the Play layer's base when the
+// layer goes over Google Play), which is what an image update replaces. recipe is the layer's
+// input fingerprint; the engine hashes the text with it empty, then writes it in.
+QString addonLayerDockerfile(const QStringList &addons, const QString &baseTag, int androidVersion,
+                             const QString &baseId, const QString &rootId, const QString &recipe);
+// remora-local:addons-<base12>-<recipe12>, the way the Play layer is named: the image underneath
+// and the inputs both in the name, so a changed either is a different image and the old one is
+// never overwritten under a running device.
+QString addonLayerTag(const QString &baseId, const QString &recipe);
 
 // The AOSP release config (the middle field of remora_x86_64-<rel>-userdebug) for an Android
 // version. EXACT per version, empty for one we have not been told about.

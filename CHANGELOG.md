@@ -7,6 +7,42 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Added
+
+- **Root on the official image without a source build.** `magisk_root` can now be layered onto an
+  existing image, the official `remora24:x86_64-public` included, the way `gapps` and
+  `widevine_l3` already could: `remora recipe --base <image>` prints the layer and `remora build
+  --base <image>` builds it from the Magisk v30.7 payload that `vendor/fetch-payloads.sh magisk`
+  downloads. Before this, Remora said root needed a full source rebuild. Every layer Remora builds
+  is now labelled as not a public release, so a layered image can no longer carry the official
+  image's public label.
+
+- **ARM apps on the official image without a source build.** `arm_translate` can be layered onto an
+  existing image too. `vendor/source-build/stage-arm-layer.sh` stages the translator payload, which
+  you supply, patches it exactly as a source build does, and adds the properties that turn the
+  bridge on and advertise `arm64-v8a`. `remora build --base remora24:x86_64-public` then builds the
+  layer, alone or with root. Apps that ship only arm64 code, which the official image refuses to
+  install, can then install and run translated.
+
+- **Add-ons as a profile option.** The Image page's **Active image** card has an **Add-ons** row:
+  **Root (Magisk)**, **ARM app translation** and **Widevine L3**, saved as `addons=` in the
+  profile. Each Connect builds or reuses a private `remora-local:addons-` layer over the image the
+  profile deploys, or over its Google Play layer, on the profile's Docker host, so the add-ons
+  follow an image update without a manual build. Magisk is downloaded the first time, hash-checked;
+  the ARM translation and Widevine payloads are yours to supply, in
+  `~/.local/share/remora/payloads/`. `remora plan` names the add-ons, the in-Android updater
+  compares the image under the layer, and the Built images card nests each layer under the image
+  it was built over. `vendor/fetch-payloads.sh` takes `REMORA_PAYLOAD_DIR` to stage a payload
+  outside the vendor tree.
+
+### Fixed
+
+- **LAN detection skips link-local addresses.** When the interface of the default route listed
+  a link-local address (such as `169.254.x.x`) before its real one, Remora took the link-local
+  address as the LAN, so the macvlan network handed to docker got the wrong subnet and host
+  address. Only a global-scope address is used now, and an interface with no global address
+  gives no LAN rather than a wrong one.
+
 ## [2026.11.3] - 2026-11-16
 
 ### Fixed

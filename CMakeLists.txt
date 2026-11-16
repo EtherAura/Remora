@@ -60,6 +60,7 @@ target_link_libraries(remora_core PUBLIC Qt6::Core)
 add_library(remora_engine STATIC
     src/engine/PublicImages.cpp
     src/engine/PlayInstall.cpp
+    src/engine/Addons.cpp
     src/engine/SourceBuild.cpp
     src/engine/Spawner.cpp
     src/engine/Chain.cpp
@@ -235,6 +236,10 @@ endif()
 add_executable(test_play_engine tests/test_play_engine.cpp)
 target_link_libraries(test_play_engine PRIVATE remora_engine Qt6::Test)
 add_test(NAME play_engine COMMAND test_play_engine)
+add_executable(test_addons tests/test_addons.cpp)
+target_link_libraries(test_addons PRIVATE remora_engine Qt6::Test)
+target_compile_definitions(test_addons PRIVATE REMORA_SOURCE_VENDOR_DIR="${CMAKE_SOURCE_DIR}/vendor")
+add_test(NAME addons COMMAND test_addons)
 add_executable(test_builders tests/test_builders.cpp)
 target_link_libraries(test_builders PRIVATE remora_core Qt6::Test)
 target_compile_definitions(test_builders PRIVATE REMORA_VENDOR_DIR="${REMORA_VENDOR_PATH}" REMORA_SOURCE_VENDOR_DIR="${CMAKE_SOURCE_DIR}/vendor")

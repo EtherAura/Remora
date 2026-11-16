@@ -48,7 +48,10 @@ catalog, hashes and rollback are described in [Official images](docs/user/CLI-Re
 The published image is x86_64 only and carries no Google apps, ARM translation, Widevine or root,
 so apps that ship only ARM native code refuse to install on it. Google Play is optional: it is
 installed locally, on your own Docker host, as a separate image
-([Optional Google Play](docs/user/CLI-Reference.md#optional-google-play)).
+([Optional Google Play](docs/user/CLI-Reference.md#optional-google-play)). Root, ARM translation and
+Widevine can be added the same way, as a layer built on your own machine without a source build
+([Add-ons](docs/user/Image-Features.md#add-ons-root-arm-translation-and-widevine)); ARM
+translation and Widevine need payloads you supply yourself.
 
 [Full feature overview](docs/Overview.md) · [Configuration](docs/user/Configuration.md) · [Troubleshooting](docs/user/Troubleshooting.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Discussions](https://github.com/EtherAura/Remora/discussions)
 

@@ -757,8 +757,8 @@ private slots:
 
     // --- custom image recipe ---
     // A request Remora cannot serve from any registered tag must fall to a SOURCE build and say
-    // which features drove it, rather than overlaying onto whatever scores least-bad. widevine_l3
-    // remains the only overlay-able feature (native_vulkan was retired in bd remora-xqt1: a
+    // which features drove it, rather than overlaying onto whatever scores least-bad. shamiko is
+    // not overlay-able (native_vulkan, once overlay-able, was retired in bd remora-xqt1: a
     // build-time ro.hardware.vulkan is write-once and beat every runtime decision, so the ICD
     // became a boot arg).
     void recipeWithNoServableBaseGoesToSource() {
@@ -840,12 +840,90 @@ private slots:
     // what a hand-built or renamed image contains, and naming every requested feature is what an
     // operator can actually act on. The overlay-able half is still layered on.
     void recipeUnknownBaseProvidesNothing() {
-        const ImageRecipe r = buildRecipe({"gapps", "magisk_root"}, 17, QString(), QString(),
+        const ImageRecipe r = buildRecipe({"gapps", "hw_video_decode"}, 17, QString(), QString(),
                                           QString(), QStringLiteral("someones:homebrew"));
         QCOMPARE(r.baseTag, QString("someones:homebrew"));
         QCOMPARE(r.overlays, QStringList{"gapps"});
-        QVERIFY(r.unbuildable.contains(QStringLiteral("magisk_root")));
+        QVERIFY(r.unbuildable.contains(QStringLiteral("hw_video_decode")));
         QVERIFY(r.dockerfile.contains("FROM someones:homebrew"));
+    }
+
+    // bd remora-6laf.2: root on the published image without a source build. The layer is exactly
+    // the eleven files of docs/ADDONS.md#magisk_root, by COPY and nothing else — no RUN, which
+    // cannot work in these images (bd remora-sgkg: every Android binary links through a runtime
+    // APEX that only init mounts, so in a docker build it fails to exec).
+    void recipeOverlaysMagiskOntoThePublicBase() {
+        const ImageRecipe r = buildRecipe({"magisk_root"}, 17, QString(), QString(), QString(),
+                                          QStringLiteral("remora24:x86_64-public"));
+        QCOMPARE(r.overlays, QStringList{"magisk_root"});
+        QVERIFY(r.needsBuild);
+        QVERIFY(!r.needsSourceBuild);
+        QVERIFY(r.unbuildable.isEmpty());
+        QVERIFY(!r.sourceBuildHint.contains(QLatin1String("magisk_root")));
+        QVERIFY(r.dockerfile.startsWith(QLatin1String("FROM remora24:x86_64-public\n")));
+        QVERIFY(!r.dockerfile.contains(QLatin1String("RUN ")));
+        QVERIFY(r.dockerfile.contains(
+            "COPY magisk/magisk/magisk magisk/magisk/magiskboot magisk/magisk/magiskinit \\\n"
+            "     magisk/magisk/magiskpolicy magisk/magisk/busybox \\\n"
+            "     magisk/magisk/magisk.apk magisk/magisk/stub.apk \\\n"
+            "     magisk/magisk/util_functions.sh magisk/magisk/boot_patch.sh \\\n"
+            "     magisk/magisk-setup.sh /system/etc/init/magisk/\n"));
+        QVERIFY(r.dockerfile.contains("COPY magisk/magisk.rc /system/etc/init/magisk.rc\n"));
+        // The provenance record is not an install target, in a source build or here.
+        QVERIFY(!r.dockerfile.contains(QLatin1String("PROVENANCE")));
+        // Every copied file is checked at staging, so a public clone (scripts, no binaries) is
+        // refused there by name instead of failing inside docker build.
+        QCOMPARE(r.payloads.size(), 11);
+        QVERIFY(r.payloads.contains(QStringLiteral("magisk/magisk/magisk")));
+        QVERIFY(r.payloads.contains(QStringLiteral("magisk/magisk/magisk.apk")));
+        QVERIFY(r.payloads.contains(QStringLiteral("magisk/magisk-setup.sh")));
+        QVERIFY(r.payloads.contains(QStringLiteral("magisk/magisk.rc")));
+        for (const QString &p : r.payloads)
+            QVERIFY2(r.dockerfile.contains(p), qPrintable(p));
+    }
+
+    // bd remora-6laf.5: ARM apps on the published image without a source build. Two COPYs of what
+    // stage-arm-layer.sh staged, and the stage check names the prop file, which that script writes
+    // only once the patcher has accepted both binaries: a raw, unpatched copy of the payload has
+    // no prop file, so it is refused at staging instead of booting a bridge that segfaults.
+    void recipeOverlaysArmTranslationOntoThePublicBase() {
+        const ImageRecipe r = buildRecipe({"arm_translate"}, 17, QString(), QString(), QString(),
+                                          QStringLiteral("remora24:x86_64-public"));
+        QCOMPARE(r.overlays, QStringList{"arm_translate"});
+        QVERIFY(r.needsBuild);
+        QVERIFY(!r.needsSourceBuild);
+        QVERIFY(r.unbuildable.isEmpty());
+        QVERIFY(!r.dockerfile.contains(QLatin1String("RUN ")));
+        QVERIFY(r.dockerfile.contains("COPY ndkguest/system/ /system/\n"));
+        QVERIFY(r.dockerfile.contains("COPY ndkguest/odm_dlkm/ /odm_dlkm/\n"));
+        QVERIFY(r.payloads.contains(QStringLiteral("ndkguest/odm_dlkm/etc/build.prop")));
+        QVERIFY(r.payloads.contains(QStringLiteral("ndkguest/system/lib64/libnb.so")));
+        QVERIFY(r.payloads.contains(QStringLiteral("ndkguest/system/bin/arm64/linker64")));
+        // Root and ARM together, the device this exists for: one layer, both fragments.
+        const ImageRecipe both =
+            buildRecipe({"arm_translate", "magisk_root"}, 17, QString(), QString(), QString(),
+                        QStringLiteral("remora24:x86_64-public"));
+        QCOMPARE(both.overlays, (QStringList{"arm_translate", "magisk_root"}));
+        QVERIFY(!both.needsSourceBuild);
+        QVERIFY(both.dockerfile.contains("COPY ndkguest/system/ /system/\n"));
+        QVERIFY(both.dockerfile.contains("COPY magisk/magisk.rc /system/etc/init/magisk.rc\n"));
+    }
+
+    // A layer on the public base must not keep its public claim: the base's
+    // LABEL remora.public_release="true" is what the catalog verifier and package-release.py
+    // accept, and every overlay-able payload is one the public image excludes.
+    void recipeOverlayDropsThePublicLabel() {
+        for (const QString &f : {QStringLiteral("magisk_root"), QStringLiteral("gapps"),
+                                 QStringLiteral("widevine_l3"), QStringLiteral("arm_translate")}) {
+            const ImageRecipe r = buildRecipe({f}, 17, QString(), QString(), QString(),
+                                              QStringLiteral("remora24:x86_64-public"));
+            QVERIFY2(r.dockerfile.endsWith(QLatin1String("LABEL remora.public_release=\"false\"\n")),
+                     qPrintable(r.dockerfile));
+        }
+        // and a recipe with nothing to layer writes no layer, label included
+        const ImageRecipe none = buildRecipe(defaultBuildSet(16), 16);
+        QVERIFY(!none.needsBuild);
+        QVERIFY(!none.dockerfile.contains(QLatin1String("LABEL")));
     }
 
     void recipeDefaultsNeedNoBuild() {

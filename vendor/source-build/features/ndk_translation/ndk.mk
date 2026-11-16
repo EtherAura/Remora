@@ -1,6 +1,8 @@
 # libndk_translation (arm64 native bridge). ELF prebuilts (translator libs + runner) are
 # BUILD_PREBUILT modules (Android.mk) via PRODUCT_PACKAGES; only non-ELF config goes in
-# PRODUCT_COPY_FILES. arm64 guest system libs are built from source (not shipped). WITH_NDK=true.
+# PRODUCT_COPY_FILES. WITH_NDK=true. The arm64 guest system libs are NOT built here or anywhere
+# in the tree: they are the payload's guest/ tree, which assemble-image.sh overlays
+# (docs/ADDONS.md#arm_translate).
 NDK_ROOT := vendor/ndk_translation
 
 PRODUCT_PACKAGES += ndk_translation_program_runner_binfmt_misc_arm64

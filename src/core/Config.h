@@ -119,6 +119,16 @@ struct ImageConfig {
     // it in as the container image only after every capability decision has been made against
     // the registered base.
     std::optional<QString> playOverlay;
+    // Add-ons layered over the image this profile deploys, after Google Play (bd remora-6laf.10):
+    // any of addonFeatures() — magisk_root, arm_translate, widevine_l3. On, up/Connect builds or
+    // reuses a remora-local:addons- layer on the profile's Docker host and runs the container from
+    // it, so an image update takes the add-ons with it. Its own key, not features=: that list
+    // describes what an image BUILD contains, and the public image's public_release conflicts with
+    // root. Empty = none.
+    QStringList addons;
+    // NOT persisted: the layer ensureAddonOverlay materialized for THIS deploy, swapped in by
+    // resolve() after Google Play's, like playOverlay.
+    std::optional<QString> addonOverlay;
 };
 
 struct NetworkConfig {

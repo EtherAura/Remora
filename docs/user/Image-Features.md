@@ -97,10 +97,41 @@ play-install`; see [CLI Reference](CLI-Reference.md#build).
   location and Aurora installs work. Signature spoofing is not wired, so apps that verify the Play
   signature through the GMS client library still refuse. Source build only.
 
+## Add-ons: root, ARM translation and Widevine
+
+The official image leaves out root, ARM translation and Widevine. To give a profile any of them
+without building an image, tick it in the **Add-ons** row of the **Active image** card: **Root
+(Magisk)**, **ARM app translation** or **Widevine L3**. The next **Connect** builds a private
+`remora-local:addons-` layer over the image the profile deploys, or over its Google Play layer when
+that is on, on the profile's Docker host, and restarts the device on it. Later connects reuse the
+layer. When the image underneath changes, for example after an official image update, the next
+connect builds a new layer over it. The base image is never modified, and Android data is kept.
+Unticking an add-on runs the device without it. In a profile file the option is `addons`; see
+[Configuration](Configuration.md#root-and-play).
+
+Each add-on needs its payload on the computer running Remora:
+
+| add-on | payload | where it comes from |
+|---|---|---|
+| Root (Magisk) | Magisk v30.7 | downloaded from Magisk's GitHub release the first time, checked against a pinned hash |
+| ARM app translation | the arm64 native bridge | proprietary, and Remora cannot download it: put it in `~/.local/share/remora/payloads/ndk_translation` |
+| Widevine L3 | the Widevine L3 service | proprietary, and Remora cannot download it: put it in `~/.local/share/remora/payloads/widevine` |
+
+A payload directory is laid out like the matching `vendor/source-build/features/` directory. For
+ARM translation only the build [vendor/PAYLOADS.md](../../vendor/PAYLOADS.md) records works: the
+bridge is patched on the way in, and the patcher refuses any other build by its hash. The row says which
+payloads are missing, and a Connect without one stops and names the directory. Root asks before
+it is turned on: the Android container runs privileged, so an app you grant `su` to also has root
+on the computer running it. The layer is listed in the **Built images** card as an **Add-on
+layer**, and deleting one that no device uses is safe. What each layer carries is in
+[ADDONS.md](../ADDONS.md).
+
 ## Compatibility
 
 - **`arm_translate`** is the ARM native bridge that runs arm64-only apps on x86_64. Its caveat is
-  ABI-list ordering: an app can be started under the wrong ABI. The payload is proprietary.
+  ABI-list ordering: an app can be started under the wrong ABI. The payload is proprietary. It can
+  be layered onto an existing image, the official one included: see
+  [Building the Image](Building-the-Image.md#layer-a-feature-onto-an-existing-image).
 - **`system_updater`** adds *Settings, System, System updates*. *Download and apply* signals the
   host, where `remora update-watch` does the update, including new public releases. See
   [The in-Android updater](Android-Apps-on-the-Desktop.md#the-in-android-updater).
@@ -113,7 +144,11 @@ play-install`; see [CLI Reference](CLI-Reference.md#build).
 
 ## Root and hiding
 
-- **`magisk_root`** is upstream Magisk v30.7: `su` and the native DenyList unmount.
+- **`magisk_root`** is upstream Magisk v30.7: `su` and the native DenyList unmount. It can be
+  layered onto an existing image, the official one included: see
+  [Building the Image](Building-the-Image.md#layer-a-feature-onto-an-existing-image). The Android
+  container runs privileged, so an app you grant `su` to also has root on the host. Hiding root
+  from other apps does not contain it.
 - **`shamiko`** unmounts Magisk's modifications from denylisted processes. It is closed-source with
   no redistribution licence: supply the payload yourself, and do not share an image that contains
   it. It ships without the upstream service script that would take adb away.
@@ -129,8 +164,8 @@ The runtime side is the `root_hiding`, `denylist_packages` and `play_spoof` sett
 - **`usb_audio`** builds AOSP's USB audio HAL. Without it, the microphone Android reports records
   perfectly timed silence. It only works together with the `usb_audio_policy` patch, and a build
   with the patch but not the feature is refused because it breaks all audio.
-- **`widevine_l3`** is the Widevine L3 CDM, software DRM. L1 is impossible without a TEE. It is the
-  other feature that can be layered onto an existing image.
+- **`widevine_l3`** is the Widevine L3 CDM, software DRM. L1 is impossible without a TEE. It can be
+  layered onto an existing image.
 - **`mesa_source`** installs Mesa 26.x, built for Android, as the image's GL and Vulkan drivers.
   It is required for every source build, yet off by default so that the default feature set keeps
   resolving to a registered image tag. See [Building the Image](Building-the-Image.md#build-the-mesa-payload).

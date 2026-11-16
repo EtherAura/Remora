@@ -180,7 +180,10 @@ loads the source's current copy. [Official images](CLI-Reference.md#official-ima
 The image is x86_64 only, and carries no Google apps, ARM translation, Widevine or root, so apps
 that ship only ARM native code refuse to install on it. Google Play is optional:
 `remora play-install` installs it locally, on your own Docker host, as a separate image over this
-one (see [Optional Google Play](CLI-Reference.md#optional-google-play)).
+one (see [Optional Google Play](CLI-Reference.md#optional-google-play)). Root, ARM translation and
+Widevine can be added the same way, as a layer built on your own machine without a source build
+(see [Add-ons](Image-Features.md#add-ons-root-arm-translation-and-widevine)). ARM translation and
+Widevine need payloads you supply yourself.
 
 ### Build your own image
 

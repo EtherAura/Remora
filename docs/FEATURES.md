@@ -136,7 +136,7 @@ build starts.
   half of the mirror (capture, input, audio, app list), so an image without it cannot be mirrored.
   Default-on for Android 17. On 16 it is off by default because no registered Android 16 tag carries
   it; enable it for a 16 source build. See [MIRROR_AGENT.md](MIRROR_AGENT.md).
-- **`gapps`** — Play Store and Play services. One of the two overlayable features (§5).
+- **`gapps`** — Play Store and Play services. One of the four overlayable features (§5).
   [APK inspection](GOOGLE_PLAY_SOURCE_TERMS.md) found x86_64 native code; a fresh bridge-free
   Android 17 instance opened the unauthenticated Store. ARM translation is a separate app feature.
   The Image library and `remora play-install` provide the pinned optional installer for a
@@ -146,6 +146,9 @@ build starts.
   signature through the GMS client library still refuse. Source build only.
 - **`arm_translate`** — the ARM native bridge that runs arm64-only apps on x86_64. The caveat is
   ABI-list ordering: an app can be started under the wrong ABI. The payload is proprietary.
+  Overlayable onto an existing image, the official one included (§5), from a context
+  `vendor/source-build/stage-arm-layer.sh` stages; [ADDONS.md](ADDONS.md#arm_translate) lists what
+  it carries.
 - **`system_updater`** — adds *Settings → System → Remora Updater*; *Apply* signals the host, where
   `remora update-watch` does the update. Needs the patch that hides the stock *System update* entry,
   which would otherwise shadow it.
@@ -155,7 +158,9 @@ build starts.
 - **`webview_pairip_fix`** — a capability label inherited from earlier images. Remora carries no
   implementation of it: a source build installs nothing for it, and toggling it changes nothing
   about what a source build produces.
-- **`magisk_root`** — upstream Magisk v30.7: `su` and the native DenyList unmount.
+- **`magisk_root`** — upstream Magisk v30.7: `su` and the native DenyList unmount. Overlayable
+  onto an existing image, the official one included (§5); [ADDONS.md](ADDONS.md#magisk_root) lists
+  the files the layer carries.
 - **`shamiko`** — unmounts Magisk's modifications from denylisted processes. Staged into the
   play_spoof stack, hence the requirement. Shipped without upstream's `service.sh`, which would set
   `ro.debuggable=0` and `ro.adb.secure=1` and take adb with it. Shamiko is closed-source with no
@@ -168,8 +173,8 @@ build starts.
   perfectly timed silence from the stub HAL. The `usb_audio_policy` patch declares the module and
   the two only work together; a build with the patch but not the feature is refused, because it
   breaks all audio.
-- **`widevine_l3`** — the Widevine L3 CDM (software DRM). L1 is impossible without a TEE. The other
-  feature that can be layered onto an existing image.
+- **`widevine_l3`** — the Widevine L3 CDM (software DRM). L1 is impossible without a TEE. Overlayable
+  onto an existing image (§5).
 - **`mesa_source`** — Mesa 26.x built for Android and installed as the image's GL and Vulkan
   drivers (about 120 MB larger). **Required for every source build**: the device tree has no
   prebuilt GL or Vulkan stack to fall back on, so `remora build --source` refuses a profile without
@@ -254,10 +259,10 @@ is refused.
 2. Otherwise the requested features — or the version's default set when `features=` is unset — are
    closed under `requires` and matched against the registered tags for that Android version: the
    tag missing the fewest requested features wins, ties going to the one with the fewest extras.
-3. Whatever that tag still lacks decides what happens next. `gapps` and `widevine_l3` can be
-   layered on as a Docker overlay: `remora recipe` prints the Dockerfile and `remora build` builds
-   it. Anything else missing needs a **source build**: `remora build --source`, or *Build from
-   source…* on the Image page.
+3. Whatever that tag still lacks decides what happens next. `gapps`, `widevine_l3`,
+   `magisk_root` and `arm_translate` can be layered on as a Docker overlay: `remora recipe` prints
+   the Dockerfile and `remora build` builds it. Anything else missing needs a **source build**: `remora build
+   --source`, or *Build from source…* on the Image page.
 
 **Registered tags:**
 

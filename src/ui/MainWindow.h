@@ -65,6 +65,7 @@ private slots:
     void onPromoteImage();
     void onActiveImageChanged();
     void onGooglePlayToggled(bool on);
+    void onAddonToggled(const QString &feature, bool on);
     void onPushImage();
     void onFetchSourceImage();
     void onPruneImages();
@@ -288,6 +289,10 @@ private:
     // Google Play as a profile option (bd remora-6laf.8): the toggle, and what it would layer over.
     QCheckBox *googlePlayCheck_ = nullptr;
     QLabel *googlePlayNote_ = nullptr;
+    // The add-on toggles (bd remora-6laf.10), keyed by feature: magisk_root, arm_translate,
+    // widevine_l3. One note for the row says what is missing or already there.
+    QMap<QString, QCheckBox *> addonChecks_;
+    QLabel *addonsNote_ = nullptr;
     QString derivedImageTag() const;
     // Re-apply everything that depends on which image this profile deploys.
     void refreshImageGating();

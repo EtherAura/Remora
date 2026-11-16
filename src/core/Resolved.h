@@ -23,7 +23,24 @@ struct ResolvedConfig {
     // The tag every question about what the image CAN DO is asked of. A Play overlay adds Google's
     // apps and nothing else, so its answers are its base's — and its remora-local: name is in no
     // registry, which would otherwise answer "nothing".
-    QString capabilityTag() const { return playBaseTag.isEmpty() ? imageTag : playBaseTag; }
+    //
+    // The add-on layer (bd remora-6laf.10) goes over whatever Play left in imageTag, so with both
+    // on, playBaseTag is still the registered image and addonBaseTag is the Play layer.
+    QString capabilityTag() const {
+        if (!playBaseTag.isEmpty()) return playBaseTag;
+        return addonBaseTag.isEmpty() ? imageTag : addonBaseTag;
+    }
+    // Add-ons (bd remora-6laf.10): the profile's addons=, valid names only and sorted; the ones
+    // the registered base already carries, which there is nothing to add for; and, once the
+    // engine has built the layer, the tag it went over.
+    QStringList addons, addonsIncluded;
+    QString addonBaseTag;
+    QStringList addonsPending() const {
+        QStringList p;
+        for (const QString &a : addons)
+            if (!addonsIncluded.contains(a)) p << a;
+        return p;
+    }
     // The Android release the profile names (android_version=, default 16) — the same number the
     // image tag was derived from. Asked where the release changes what the HOST must provide.
     int androidVersion = 16;

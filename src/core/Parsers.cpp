@@ -538,7 +538,10 @@ std::optional<LanInterface> parseHostLan(const QString &routeOut, const QString 
         const QStringList f = raw.trimmed().split(QLatin1Char(' '), Qt::SkipEmptyParts);
         const int dev = f.indexOf(nic);
         const int inet = f.indexOf(QLatin1String("inet"));
+        const int scope = f.indexOf(QLatin1String("scope"));
         if (dev < 0 || inet < 0 || inet + 1 >= f.size()) continue;
+        if (scope < 0 || scope + 1 >= f.size() || f.at(scope + 1) != QLatin1String("global"))
+            continue;
         const QString subnet = ipv4NetworkCidr(f.at(inet + 1));
         if (subnet.isEmpty()) continue;
         return LanInterface{nic, subnet, gateway, f.at(inet + 1).section(QLatin1Char('/'), 0, 0)};

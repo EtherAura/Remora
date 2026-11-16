@@ -223,6 +223,22 @@ static int cmdPlan(const QStringList &a, QTextStream &out) {
                     : QStringLiteral("# Google Play: on — up builds or reuses a local overlay "
                                      "(remora-local:play-…) over %1 and runs the container from "
                                      "it in place of the image named below\n").arg(rc.imageTag));
+    // The add-ons the same way (bd remora-6laf.10): named, with the image they go over, and the
+    // layer's own name left to `up`.
+    if (!rc.addons.isEmpty()) {
+        const QStringList pending = rc.addonsPending();
+        if (!rc.addonsIncluded.isEmpty())
+            out << QStringLiteral("# Add-ons: %1 already in %2\n")
+                       .arg(rc.addonsIncluded.join(QStringLiteral(", ")), rc.capabilityTag());
+        if (!pending.isEmpty())
+            out << QStringLiteral("# Add-ons: %1 — up builds or reuses a local layer "
+                                  "(remora-local:addons-…) over %2 and runs the container from it "
+                                  "in place of the image named below\n")
+                       .arg(pending.join(QStringLiteral(", ")),
+                            rc.googlePlay && !rc.playIncluded
+                                ? QStringLiteral("the Google Play layer")
+                                : rc.imageTag);
+    }
     out << buildDockerRunArgv(rc).join(QLatin1Char(' ')) << "\n\n";
     // The in-house client takes flags, not environment — the argv IS the whole contract.
     Q_UNUSED(env);
@@ -718,13 +734,21 @@ static int cmdUpdateWatch(const QStringList &a) {
         // With Google Play on, the container runs an overlay whose image ID never equals the
         // base's (bd remora-6laf.8): compare the base the overlay was built on instead, or the
         // device would offer an update forever. Play off compares the image itself, so a device
-        // still on an overlay is pending — and Apply moves it back onto the base.
+        // still on an overlay is pending — and Apply moves it back onto the base. The add-on layer
+        // (bd remora-6laf.10) records the registered image at the bottom of its stack as its
+        // root, Play layer or not, so it is asked first.
+        const bool playLayered = rc.googlePlay && !rc.playIncluded;
+        const bool addonLayered = !rc.addonsPending().isEmpty();
+        const QString labels = addonLayered && playLayered
+                                   ? QStringLiteral("org.remora.addons.root org.remora.play.base")
+                               : addonLayered ? QStringLiteral("org.remora.addons.root")
+                                              : QStringLiteral("org.remora.play.base");
         const QString playBase =
-            rc.googlePlay && !rc.playIncluded
-                ? QStringLiteral("[ -n \"$C\" ] && B=$(docker image inspect -f "
-                                 "'{{index .Config.Labels \"org.remora.play.base\"}}' \"$C\" "
-                                 "2>/dev/null) && [ -n \"$B\" ] && [ \"$B\" != '<no value>' ] "
-                                 "&& C=$B; ")
+            playLayered || addonLayered
+                ? QStringLiteral("[ -n \"$C\" ] && for L in %1; do B=$(docker image inspect -f "
+                                 "\"{{index .Config.Labels \\\"$L\\\"}}\" \"$C\" 2>/dev/null); "
+                                 "if [ -n \"$B\" ] && [ \"$B\" != '<no value>' ]; then C=$B; "
+                                 "break; fi; done; ").arg(labels)
                 : QString();
         // One round trip: refresh the state AND report whether Apply is waiting. The signal is
         // only READ here — it stays until the update has finished, which is what keeps the app

@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 #include "engine/AppTransfer.h"
 #include "engine/PlayInstall.h"
+#include "engine/Addons.h"
 #include "engine/PublicImages.h"
 #include <algorithm>
 #ifdef Q_OS_UNIX
@@ -2302,6 +2303,47 @@ void MainWindow::buildUi() {
         pl->addSpacing(8);
         pl->addWidget(googlePlayNote_, 1);
         form->addRow(QStringLiteral("Google Play"), playRow);
+
+        // The add-ons (bd remora-6laf.10), a profile setting for the same reason Play is: each
+        // Connect layers them over whatever the rows above resolve to, so an image update brings
+        // them along, and nobody runs `remora build` by hand.
+        auto *addonRow = new QWidget();
+        auto *al = new QHBoxLayout(addonRow);
+        al->setContentsMargins(0, 0, 0, 0);
+        const struct {
+            const char *feature, *label, *tip;
+        } addons[] = {
+            {"magisk_root", "Root (Magisk)",
+             "Layer Magisk v30.7 (su and the DenyList) over this profile's image. Connect downloads "
+             "it from Magisk's GitHub release the first time, checked against a pinned hash, and "
+             "builds a private local image on this profile's Docker host. The device runs "
+             "privileged, so an app you grant su to also has root on that host."},
+            {"arm_translate", "ARM app translation",
+             "Layer the arm64 native bridge over this profile's image, so apps that ship only arm64 "
+             "code install and run translated. The translator is proprietary and Remora cannot "
+             "download it: put it in ~/.local/share/remora/payloads/ndk_translation."},
+            {"widevine_l3", "Widevine L3",
+             "Layer the Widevine L3 DRM service (software DRM) over this profile's image. "
+             "Proprietary, so Remora cannot download it: put it in "
+             "~/.local/share/remora/payloads/widevine."},
+        };
+        for (const auto &a : addons) {
+            const QString feature = QString::fromLatin1(a.feature);
+            auto *check = new QCheckBox(QString::fromLatin1(a.label));
+            check->setToolTip(QString::fromUtf8(a.tip) +
+                              QStringLiteral(" Turning it off runs the image without it; Android "
+                                             "data is kept."));
+            connect(check, &QCheckBox::toggled, this,
+                    [this, feature](bool on) { onAddonToggled(feature, on); });
+            addonChecks_[feature] = check;
+            al->addWidget(check);
+        }
+        addonsNote_ = new QLabel();
+        addonsNote_->setStyleSheet("color:#777;");
+        addonsNote_->setWordWrap(true);
+        al->addSpacing(8);
+        al->addWidget(addonsNote_, 1);
+        form->addRow(QStringLiteral("Add-ons"), addonRow);
     }
 
 
@@ -3063,6 +3105,10 @@ void MainWindow::loadConfig() {
         QSignalBlocker block(googlePlayCheck_);  // loading a profile is not the user accepting terms
         googlePlayCheck_->setChecked(cfg_.image.googlePlay.value_or(false));
     }
+    for (auto it = addonChecks_.cbegin(); it != addonChecks_.cend(); ++it) {
+        QSignalBlocker block(it.value());  // loading is not the user asking for root
+        it.value()->setChecked(cfg_.image.addons.contains(it.key()));
+    }
     if (buildJobsSpin_) buildJobsSpin_->setValue(cfg_.image.buildJobs.value_or(0));
     if (buildMemSpin_) buildMemSpin_->setValue(cfg_.image.buildMemGiB.value_or(0));
     if (soongMemSpin_) soongMemSpin_->setValue(cfg_.image.soongMemGiB.value_or(0));
@@ -3711,6 +3757,33 @@ void MainWindow::refreshImageGating() {
             : on              ? QStringLiteral("layered over %1 on each Connect").arg(base.imageTag)
                               : QString());
     }
+    // The add-ons against the same base, and against this computer's payloads: one the base already
+    // carries has nothing to add, and one whose payload is missing and cannot be fetched would only
+    // fail the next Connect. A toggle that is on stays switchable, so it can always be turned off.
+    if (addonsNote_ && !addonChecks_.isEmpty()) {
+        RemoraConfig probe = cfg_;
+        probe.image.features = QStringList(features_.begin(), features_.end());
+        probe.image.addons = addonFeatures();
+        const ResolvedConfig base = resolve(probe, currentBackend());
+        QStringList notes;
+        for (auto it = addonChecks_.cbegin(); it != addonChecks_.cend(); ++it) {
+            const bool on = cfg_.image.addons.contains(it.key());
+            const bool included = base.addonsIncluded.contains(it.key());
+            const AddonPayload p = locateAddonPayload(it.key());
+            const bool available = !p.dir.isEmpty() || p.fetchable;
+            it.value()->setEnabled(on || (!included && available));
+            if (included)
+                notes << QStringLiteral("%1 already in %2").arg(it.value()->text(), base.imageTag);
+            else if (p.dir.isEmpty() && !p.fetchable)
+                notes << QStringLiteral("%1 needs its payload in %2/%3")
+                             .arg(it.value()->text(), userPayloadDir(), p.name);
+        }
+        if (notes.isEmpty() && !cfg_.image.addons.isEmpty())
+            notes << QStringLiteral("layered over %1 on each Connect")
+                         .arg(base.googlePlay && !base.playIncluded ? QStringLiteral("Google Play")
+                                                                    : base.imageTag);
+        addonsNote_->setText(notes.join(QStringLiteral("; ")));
+    }
     // Grey the HW-encoder codecs when this profile's image can't deliver them: an explicit tag
     // must ship the encoder itself (-hwc2); feature-based A16 qualifies because the resolver
     // auto-bumps gapps images to -hwc2 when a HW codec is selected. Everything else → h264 only.
@@ -4306,12 +4379,17 @@ void MainWindow::onRefreshArchives() {
                 // installer's own prefix marks it, whichever profile's Connect built it, and its
                 // first hash is the short ID of the image it was layered over (install.py).
                 static const QLatin1String playPrefix("remora-local:play-");
+                // An add-on layer (bd remora-6laf.10) is named the same way, its first hash the
+                // image it went over: a base, or a Play layer when the profile has both.
+                static const QLatin1String addonPrefix("remora-local:addons-");
                 const auto addImageRow = [&](const DockerImage &im, QTreeWidgetItem *parent) {
                     auto *item = parent ? new QTreeWidgetItem(parent)
                                         : new QTreeWidgetItem(archivesTree_);
                     const bool playLayer = im.tag.startsWith(playPrefix);
-                    const QString kind = playLayer ? QStringLiteral("Google Play layer")
-                                                   : QStringLiteral("docker image");
+                    const bool addonLayer = im.tag.startsWith(addonPrefix);
+                    const QString kind = playLayer    ? QStringLiteral("Google Play layer")
+                                         : addonLayer ? QStringLiteral("Add-on layer")
+                                                      : QStringLiteral("docker image");
                     item->setText(0, im.hostLabel.isEmpty()
                                          ? QStringLiteral("(%1 · local)").arg(kind)
                                          : QStringLiteral("(%1 · %2)").arg(kind, im.hostLabel));
@@ -4320,6 +4398,11 @@ void MainWindow::onRefreshArchives() {
                             "Google Play layered over a base image by a profile's Google Play "
                             "option (Active image card). Connect builds it again whenever it is "
                             "missing, so deleting an unused one is safe."));
+                    if (addonLayer)
+                        item->setToolTip(0, QStringLiteral(
+                            "Root, ARM translation or Widevine layered over an image by a "
+                            "profile's Add-ons option (Active image card). Connect builds it again "
+                            "whenever it is missing, so deleting an unused one is safe."));
                     item->setText(1, im.aliases.isEmpty()
                                          ? imageLabel(settings, im.tag)
                                          : QStringLiteral("%1  (+%2 more %3)")
@@ -4350,16 +4433,24 @@ void MainWindow::onRefreshArchives() {
                 // rather than reading as a second image. Only its base's own row is offered in the
                 // Active image list — the Google Play option is how a profile runs the layer. A
                 // layer whose base is gone stays a top-level row, so Delete can still reach it.
+                // An add-on layer nests the same way, under the Play layer when it went over one.
                 QHash<QString, QTreeWidgetItem *> byImage;  // host|short ID → that image's row
+                const auto key = [](const DockerImage &im, const QString &id) {
+                    return im.hostLabel + QLatin1Char('|') + id;
+                };
+                const auto under = [](const DockerImage &im, const QLatin1String &prefix) {
+                    return im.tag.mid(prefix.size()).section(QLatin1Char('-'), 0, 0);
+                };
                 for (const DockerImage &im : images)
-                    if (!im.tag.startsWith(playPrefix))
-                        byImage.insert(im.hostLabel + QLatin1Char('|') + im.id,
-                                       addImageRow(im, nullptr));
+                    if (!im.tag.startsWith(playPrefix) && !im.tag.startsWith(addonPrefix))
+                        byImage.insert(key(im, im.id), addImageRow(im, nullptr));
                 for (const DockerImage &im : images)
                     if (im.tag.startsWith(playPrefix))
-                        addImageRow(im, byImage.value(
-                                            im.hostLabel + QLatin1Char('|') +
-                                            im.tag.mid(playPrefix.size()).section(QLatin1Char('-'), 0, 0)));
+                        byImage.insert(key(im, im.id),
+                                       addImageRow(im, byImage.value(key(im, under(im, playPrefix)))));
+                for (const DockerImage &im : images)
+                    if (im.tag.startsWith(addonPrefix))
+                        addImageRow(im, byImage.value(key(im, under(im, addonPrefix))));
                 const QString hostName = host.isEmpty() ? QStringLiteral("this host") : host;
                 if (!dockerError.isEmpty()) {
                     // Docker's images are not "none", they are unlisted — say which, and why.
@@ -4696,6 +4787,43 @@ void MainWindow::onActiveImageChanged() {
             : QStringLiteral("pinned %1 — press Connect to deploy it").arg(tag),
         8000);
     recompute();  // relabels entry 0 and re-runs the codec gate against the new image
+}
+
+// An add-on toggle (bd remora-6laf.10). Like Google Play's, it only edits the profile; the next
+// Connect builds the layer. Root alone asks first, because what it hands out is root on the Docker
+// host, not just inside Android: the container runs privileged.
+void MainWindow::onAddonToggled(const QString &feature, bool on) {
+    QCheckBox *check = addonChecks_.value(feature);
+    if (suppressAutosave_ || !check) return;
+    if (on && feature == QLatin1String("magisk_root")) {
+        const auto answer = QMessageBox::question(
+            this, QStringLiteral("Add root (Magisk)"),
+            QStringLiteral(
+                "On the next Connect, Remora downloads Magisk v30.7 from its GitHub release "
+                "(checked against a pinned hash), layers it over this profile's image as a private "
+                "local image, and restarts the device on it. Android data is kept.\n\n"
+                "The Android container runs privileged, so an app you grant su to also has root "
+                "on the computer running it. Hiding root from other apps does not contain it.\n\n"
+                "Add root to %1?")
+                .arg(instance_),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Yes) {
+            QSignalBlocker block(check);
+            check->setChecked(false);
+            return;
+        }
+    }
+    QStringList next;
+    for (const QString &a : addonFeatures())
+        if (a == feature ? on : cfg_.image.addons.contains(a)) next << a;
+    cfg_.image.addons = next;
+    autosave();
+    statusBar()->showMessage(
+        QStringLiteral("%1 %2 — press Connect to restart the device %3")
+            .arg(check->text(), on ? QStringLiteral("on") : QStringLiteral("off"),
+                 on ? QStringLiteral("with it") : QStringLiteral("without it")),
+        8000);
+    refreshImageGating();
 }
 
 // The Google Play toggle (bd remora-6laf.8). Turning it on is the user accepting the provider's

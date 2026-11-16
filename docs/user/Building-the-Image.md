@@ -45,9 +45,9 @@ Tick features on the **Image** page, or list them in the profile's `features=` k
 1. An explicit `image_tag=` wins outright.
 2. Otherwise the requested features (or the version's defaults) are matched against the registered
    tags for that Android version. The tag missing the fewest requested features wins.
-3. What that tag still lacks decides the rest. `gapps` and `widevine_l3` can be layered on as a
-   Docker overlay: `remora recipe` prints the Dockerfile and `remora build` builds it. Anything
-   else needs a source build.
+3. What that tag still lacks decides the rest. `gapps`, `widevine_l3`, `magisk_root` and
+   `arm_translate` can be layered on as a Docker overlay ([below](#layer-a-feature-onto-an-existing-image)): `remora
+   recipe` prints the Dockerfile and `remora build` builds it. Anything else needs a source build.
 
 The registered tags are `remora23:x86_64` (Android 16) and `remora24:x86_64` (Android 17), each
 with `-gapps`, `-gapps-wv` and `-gapps-wv-hwc2` variants. [FEATURES.md](../FEATURES.md) lists what
@@ -117,6 +117,60 @@ vendor/fetch-payloads.sh magisk     # stage one payload
 
 The script refuses to guess a URL for a payload whose source is unrecorded.
 [vendor/PAYLOADS.md](../../vendor/PAYLOADS.md) records the versions and hashes that are known.
+
+## Layer a feature onto an existing image
+
+For a profile, the **Add-ons** option on the Image page does all of this at every Connect, and
+follows the image when it updates: see
+[Image Features](Image-Features.md#add-ons-root-arm-translation-and-widevine). The rest of this
+section is the manual route, for an image you want to keep under your own name.
+
+A feature that can be layered needs no Android source tree. Remora builds a small Docker image
+over one you already have, such as the official `remora24:x86_64-public`, that copies the
+feature's files in and runs nothing. Copy each payload into the build directory (`build_dir`,
+`~/.cache/remora/image-build` by default) under the name the layer expects:
+
+| feature | copy into the build directory as |
+|---|---|
+| `magisk_root` | `magisk/`: all of `vendor/source-build/features/magisk`, after `vendor/fetch-payloads.sh magisk` |
+| `arm_translate` | `ndkguest/`: run `vendor/source-build/stage-arm-layer.sh <build_dir>` instead of copying |
+| `widevine_l3` | `wv/vendor/`: the Widevine payload's `vendor/` tree |
+| `gapps` | `gapps/product/` and `gapps/system_ext/` |
+
+For root on the official image, that is:
+
+```sh
+vendor/fetch-payloads.sh magisk
+mkdir -p ~/.cache/remora/image-build
+cp -a vendor/source-build/features/magisk ~/.cache/remora/image-build/magisk
+```
+
+Then add `magisk_root` to the profile's `features=`, build the layer, and set
+`image_tag=remora-local:root` in the profile to deploy it:
+
+```sh
+remora recipe --base remora24:x86_64-public                       # print the Dockerfile
+remora build --base remora24:x86_64-public --tag remora-local:root
+```
+
+For ARM translation, add `arm_translate` to `features=` and stage its directory with
+`stage-arm-layer.sh` instead of copying. The script takes the payload from
+`vendor/source-build/features/ndk_translation`, or from a directory you name as its second
+argument. It needs Python 3 and accepts only the build `vendor/PAYLOADS.md` pins, because it
+patches two of the binaries and checks their hashes first. It also writes the properties that turn
+the bridge on. With both features in the profile, one layer gives the official image root and arm64
+apps:
+
+```sh
+vendor/source-build/stage-arm-layer.sh ~/.cache/remora/image-build
+remora build --base remora24:x86_64-public --tag remora-local:root-arm
+```
+
+Before building, Remora checks that the payload is in the build directory and names what is
+missing. The result is labelled as not a public release. When the base image updates, build the
+layer again over the new one. For Google Play on the official image, the **Add Google Play
+services** option needs no payload of your own: see
+[Image Features](Image-Features.md#apps-and-google-services).
 
 ## Set the two host settings
 

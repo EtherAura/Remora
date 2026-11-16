@@ -158,6 +158,7 @@ Changing `shared_folders` or `companion_apps` recreates the container on the nex
 | `play_spoof` | off | activate the baked Play spoof stack (needs the `play_spoof` feature) |
 | `google_play` | off | layer Google Play over the profile's image at every connect, as a private local overlay. Set from the Image page, which asks for the provider terms |
 | `play_terms` | none | the provider terms version accepted for `google_play`. A connect refuses when it is missing or older than the installer's |
+| `addons` | none | `magisk_root`, `arm_translate` and/or `widevine_l3`, layered over the profile's image (over Google Play when that is on) at every connect, as a private local layer. Set from the Image page. See [Image Features](Image-Features.md#add-ons-root-arm-translation-and-widevine) |
 
 ## Image and source build
 
