@@ -25,7 +25,11 @@ NVIDIA, Intel and AMD [GPU acceleration](docs/user/GPU-Acceleration.md), with a 
 
 ## Before you start
 
-**You build your own Android image.** Allow about **450 GB free disk** and **32 GB RAM** (64 GB recommended) for the first build.
-Start with [requirements](docs/user/Requirements.md), [installation](docs/user/Installation.md) and [building the image](docs/user/Building-the-Image.md).
+Start with [requirements](docs/user/Requirements.md) and [installation](docs/user/Installation.md).
 
 [Full feature overview](docs/Overview.md) · [Configuration](docs/user/Configuration.md) · [Troubleshooting](docs/user/Troubleshooting.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Discussions](https://github.com/EtherAura/Remora/discussions)
+
+## Build your own image
+
+Building an Android image from source needs about **450 GB free disk** and **32 GB RAM** (64 GB recommended) for the first build.
+These figures are for [the image build](docs/user/Requirements.md#to-build-the-android-image), not for installing Remora. Follow [building the image](docs/user/Building-the-Image.md).
