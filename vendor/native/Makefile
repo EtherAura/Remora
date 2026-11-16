@@ -22,7 +22,7 @@ uinput-kbd: uinput-kbd.c
 # break the ordinary deploy — `remora up` reports it as a clear prerequisite
 # when host_encode is on. Not static: it needs the host's own ffmpeg and Vulkan.
 host-encoder: remora-frame-encoder
-remora-frame-encoder: remora-frame-encoder.c
+remora-frame-encoder: remora-frame-encoder.c remora-encoder-names.h
 	$(CC) -O2 -Wall -Wextra -o $@ $< \
 	    $(shell pkg-config --cflags --libs libavcodec libavfilter libavutil)
 

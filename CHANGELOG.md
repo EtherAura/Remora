@@ -32,6 +32,15 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   on. A connect refuses when the accepted terms are missing or older than the installer's, and
   does nothing for an image that already includes Google apps.
 
+### Changed
+
+- **The host frame encoder accepts only the encoders Remora uses.** `remora-frame-encoder
+  --codec` takes `hevc`, `h265`, `h264` or `avc`, or names one backend: `hevc_vulkan`,
+  `hevc_nvenc`, `h264_vulkan`, `h264_nvenc`, `av1_vulkan` or `av1_nvenc`. It used to hand any
+  other name to FFmpeg and open whatever encoder that FFmpeg had. Now it refuses the name before
+  it opens a GPU, `--bench` included. Remora's own deploys pass `hevc` or `h264`, so they are
+  unaffected.
+
 ### Removed
 
 - **The Image library's Install Google Play… and Remove Play overlay… buttons.** They made a

@@ -59,6 +59,8 @@
 #include <libavutil/pixdesc.h>
 #include <libavutil/time.h>
 
+#include "remora-encoder-names.h"
+
 #define FRAME_MAGIC 0x524d4632u /* "RMF2" — must match vkr_remora_track.h */
 #define FDREQ_MAGIC 0x524d4651u /* "RMFQ" — must match vkr_remora_track.h */
 
@@ -2263,7 +2265,8 @@ usage(void)
            "  --codec NAME          hevc (default) or h264 — the fastest backend for this GPU is\n"
            "                        picked automatically (NVENC on NVIDIA for hevc, Vulkan Video\n"
            "                        otherwise). An explicit ffmpeg encoder name (hevc_vulkan,\n"
-           "                        hevc_nvenc, h264_vulkan, ...) forces that backend\n"
+           "                        hevc_nvenc, h264_vulkan, h264_nvenc, av1_vulkan, av1_nvenc)\n"
+           "                        forces that backend; any other name is refused\n"
            "  --bit-rate BPS        default 30000000\n"
            "  --fps N               default 60\n"
            "  --frames N            stop after N encoded frames (0 = forever)\n"
@@ -2368,6 +2371,13 @@ main(int argc, char **argv)
       case 'L': bench_linear = true; break;
       default: usage();
       }
+   }
+   /* Before any device is opened, bench included: see remora-encoder-names.h. */
+   if (!remora_encoder_name_allowed(codec_name)) {
+      fprintf(stderr, "remora-frame-encoder: --codec %s is not an encoder Remora uses; pass hevc, "
+                      "h264, or one of their Vulkan or NVENC backends (or av1_vulkan, "
+                      "av1_nvenc)\n", codec_name);
+      usage();
    }
    if (bench_w) {
       signal(SIGINT, on_signal);

@@ -178,6 +178,7 @@ if(REMORA_ENCODER_DEPS_FOUND AND REMORA_HAVE_VULKAN_H)
                 remora-frame-encoder.c ${REMORA_ENCODER_DEPS_CFLAGS} ${REMORA_ENCODER_DEPS_LDFLAGS}
         WORKING_DIRECTORY "${REMORA_NATIVE_DIR}"
         DEPENDS "${REMORA_NATIVE_DIR}/remora-frame-encoder.c"
+                "${REMORA_NATIVE_DIR}/remora-encoder-names.h"
         COMMENT "Building vendor/native/remora-frame-encoder"
         VERBATIM)
     list(APPEND REMORA_NATIVE_OUTPUTS "${REMORA_NATIVE_DIR}/remora-frame-encoder")

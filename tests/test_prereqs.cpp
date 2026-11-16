@@ -2,7 +2,12 @@
 #include <QProcess>
 #include <QtTest>
 
+#include "core/Builders.h"
 #include "core/Prereqs.h"
+#include "core/Resolved.h"
+
+// The host encoder's own --codec gate, compiled here as it is there (it carries no ffmpeg).
+#include "../vendor/native/remora-encoder-names.h"
 
 using namespace remora;
 
@@ -381,6 +386,37 @@ private slots:
         QVERIFY2(p.waitForFinished(120000), "the receipt-retention regression did not finish");
         const QByteArray out = p.readAll();
         QVERIFY2(p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0, out.constData());
+    }
+
+    // bd remora-8tpz: --codec reached avcodec_find_encoder_by_name with any explicit name, so the
+    // host's ffmpeg could open an encoder Remora never uses — ffv1_vulkan among them. The encoder's
+    // main() runs this gate before it opens any device; this drives the same function.
+    void hostEncoderRefusesCodecsOutsideItsAllowList() {
+        QVERIFY(!remora_encoder_name_allowed("ffv1_vulkan"));
+        QVERIFY(!remora_encoder_name_allowed("ffv1"));
+        QVERIFY(!remora_encoder_name_allowed(""));
+        QVERIFY(!remora_encoder_name_allowed(nullptr));
+        // exact match only: neither a prefix nor a case variant of an allowed name gets through
+        QVERIFY(!remora_encoder_name_allowed("hevc_vulkan "));
+        QVERIFY(!remora_encoder_name_allowed("HEVC"));
+        // ...and every backend it already drove still passes, so the gate is not refusing all
+        for (const char *n : {"hevc", "h265", "h264", "avc", "hevc_vulkan", "hevc_nvenc",
+                              "h264_vulkan", "h264_nvenc", "av1_vulkan", "av1_nvenc"})
+            QVERIFY2(remora_encoder_name_allowed(n), n);
+    }
+
+    // Whatever a profile's video_codec says, the argv Remora builds for the encoder names a codec
+    // the gate accepts: a bad setting must not become an encoder that refuses to start.
+    void hostEncoderArgvCodecPassesTheGate() {
+        for (const char *vc : {"h264", "h265", "av1", "ffv1_vulkan", ""}) {
+            ResolvedConfig c;
+            c.hostEncode = true;
+            c.videoCodec = QString::fromLatin1(vc);
+            const QStringList a = buildHostEncoderArgv(c);
+            const qsizetype i = a.indexOf(QStringLiteral("--codec"));
+            QVERIFY2(i >= 0 && i + 1 < a.size(), vc);
+            QVERIFY2(remora_encoder_name_allowed(a.at(i + 1).toUtf8().constData()), vc);
+        }
     }
 };
 
