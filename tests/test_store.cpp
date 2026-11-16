@@ -350,6 +350,48 @@ private slots:
         QVERIFY(!s.childGroups().contains(QStringLiteral("Source-Self-built")));
     }
 
+    void imageSourcesRoundTripFields() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        ImageSource a;
+        a.name = QStringLiteral("a");
+        a.enabled = false;
+        a.tags = {QStringLiteral("x:1"), QStringLiteral("y:2")};
+        a.location = QStringLiteral("https://img.example");
+        ImageSource b;
+        b.name = QStringLiteral("b");
+        b.enabled = true;
+        b.tags = {QStringLiteral("z:3")};
+        saveImageSources(path, {a, b});
+        {
+            QSettings s(path, QSettings::IniFormat);
+            QVERIFY(s.contains(QStringLiteral("Source-a/location")));
+            QVERIFY(!s.contains(QStringLiteral("Source-b/location")));
+            // Hand-planted, as an older or hand-edited remorarc would have them: no enabled key.
+            s.setValue("Source-c/tags", QStringLiteral("t:1"));
+            s.setValue("Source-d/location", QStringLiteral("  https://pad.example  "));
+            s.sync();
+        }
+
+        QHash<QString, ImageSource> byName;
+        for (const ImageSource &src : loadImageSources(path)) byName.insert(src.name, src);
+        QCOMPARE(byName.size(), 4);
+        QVERIFY(byName.contains(QStringLiteral("a")));
+        QCOMPARE(byName[QStringLiteral("a")].enabled, false);
+        QCOMPARE(byName[QStringLiteral("a")].tags, a.tags);
+        QCOMPARE(byName[QStringLiteral("a")].location, a.location);
+        QVERIFY(byName.contains(QStringLiteral("b")));
+        QCOMPARE(byName[QStringLiteral("b")].enabled, true);
+        QCOMPARE(byName[QStringLiteral("b")].tags, b.tags);
+        QVERIFY(byName[QStringLiteral("b")].location.isEmpty());
+        QVERIFY(byName.contains(QStringLiteral("c")));
+        QCOMPARE(byName[QStringLiteral("c")].enabled, true);
+        QCOMPARE(byName[QStringLiteral("c")].tags, QStringList{QStringLiteral("t:1")});
+        QVERIFY(byName.contains(QStringLiteral("d")));
+        QCOMPARE(byName[QStringLiteral("d")].enabled, true);
+        QCOMPARE(byName[QStringLiteral("d")].location, QStringLiteral("https://pad.example"));
+    }
+
     void saveDeploymentsPreservesUnknownKeysAndDeletes() {
         QTemporaryDir dir;
         const QString path = rc(dir);
