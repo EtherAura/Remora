@@ -25,7 +25,7 @@ the unauthenticated Store. Google also documents custom-ROM registration; its sc
 installer/container and package source was not established. See the
 [source and terms record](GOOGLE_PLAY_SOURCE_TERMS.md).
 
-**Chosen workflow:** the owner selected the Genymotion-style model: a project-hosted
+**Chosen workflow:** the owner selected the opt-in local add-on model: a project-hosted
 base without Google payloads, plus a separate opt-in installer that downloads third-party packages
 directly to the user's execution host and applies them locally. This selects the product design;
 it does not establish a Google licence or accept every unresolved distribution/use risk. Windows
@@ -35,7 +35,7 @@ real local and SSH-host validation on a private fixture. The later
 limits. A fully audited public base and Google permission/certification are not established by
 those tests.
 
-**Subsequent owner decision:** do not contact Google; proceed with the Genymotion-style
+**Subsequent owner decision:** do not contact Google; proceed with the
 optional installer without awaiting a Google reply. Retain the published-terms limitations,
 explicit user opt-in and direct-provider/local-only boundaries. `remora-wzaa.2` is cancelled;
 implementation remains in `remora-wzaa`. This is a product decision, not a claim of Google approval.
@@ -170,11 +170,11 @@ download, verified import, boot, upgrade and rollback from a fresh host.
 
 ### Selected installer model and remaining risk
 
-[Genymotion documents](https://docs.genymotion.com/features/opengapps/) a base without GApps and a
+A commercial Android emulator documents a base without GApps and a
 built-in Open GApps download/install action after the user accepts a disclaimer. Its documentation
 explicitly disclaims liability for that download, installation and use. This is evidence of an
 established workflow, not a transferable permission for Remora.
-Genymotion's [support guidance](https://support.genymotion.com/hc/en-us/articles/4414586104977-I-can-t-find-Google-Play-Store-Where-is-it)
+The same vendor's support guidance
 also warns that the public Open GApps site has no packages for Android 12 and above and directs
 users to its own integration. Copying the workflow does not identify an Android 17 payload source.
 [Open GApps states](https://opengapps.org/) that its packages grant no licence to Google's APKs and

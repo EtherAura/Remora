@@ -72,7 +72,7 @@ not put the Google bytes in this repository or replace the legacy payload direct
 The package's MIT licence covers its own installer code and expressly leaves Google APK rights
 to Google's terms; it is not a grant from Google. Google separately documents registration for
 custom-ROM access, but the scope for Remora's third-party-download/local-copy flow remains to be
-clarified. The owner selected the Genymotion-style optional installer without Google outreach;
+clarified. The owner selected the optional local installer without Google outreach;
 that reply is not a prerequisite. The generic legacy fetcher remains separate from `play-install`.
 The legacy row stays UNRECORDED:
 only ContactsSync matches this new candidate, which does not prove the old distribution's origin.

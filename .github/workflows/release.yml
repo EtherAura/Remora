@@ -2,8 +2,9 @@ name: Release
 
 # Runs on a version tag (v*). Checks the tag against every place the version is written, builds the
 # source tarball with `git archive` and the .deb with CPack, stamps the tarball's sha256 into a copy
-# of the PKGBUILD, generates an SBOM, attests provenance for what this run built, and publishes the
-# GitHub release with CHANGELOG.md's section for the version as its notes.
+# of the PKGBUILD, renders the Gentoo ebuild, generates an SBOM, attests provenance for what this
+# run built, and publishes the GitHub release with CHANGELOG.md's section for the version as its
+# notes.
 #
 # Nothing is committed back. The PKGBUILD in the tree keeps sha256sums=('SKIP') and the release
 # carries the stamped copy, so a tag never needs a follow-up bot commit on main.
@@ -27,7 +28,7 @@ concurrency:
 
 jobs:
   release:
-    name: release (tarball, .deb, PKGBUILD)
+    name: release (tarball, .deb, PKGBUILD, ebuild)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     # contents: write creates the release and uploads its assets. id-token: write mints the
@@ -60,6 +61,7 @@ jobs:
             echo "version=$VERSION"
             echo "tarball=Remora-$VERSION.tar.gz"
             echo "sbom=Remora-$VERSION-linux-x64.cdx.json"
+            echo "ebuild=remora-$VERSION.ebuild"
           } >> "$GITHUB_OUTPUT"
 
       - name: Verify the tag matches every version in the tree
@@ -177,6 +179,20 @@ jobs:
           fi
           diff -u packaging/PKGBUILD PKGBUILD || true
 
+      # The ebuild is the template under this release's file name, unchanged: Portage reads ${PV}
+      # from the name, so SRC_URI and S follow it, and Gentoo keeps the tarball's sum in the
+      # overlay's Manifest, not in the ebuild. The offline test checks the template for this version
+      # first: SRC_URI is this release's tarball asset, S its archive prefix, no placeholder is left,
+      # and every package the PKGBUILD names has a Gentoo equivalent.
+      - name: Render the release ebuild
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          EBUILD: ${{ steps.version.outputs.ebuild }}
+        run: |
+          set -euo pipefail
+          bash tools/test-gentoo-ebuild.sh "$VERSION"
+          cp packaging/remora.ebuild.in "$EBUILD"
+
       # The same packages ci.yml builds and tests with.
       - name: Install build dependencies
         run: |
@@ -271,8 +287,9 @@ jobs:
       #     gh attestation verify remora_<version>_amd64.deb --repo EtherAura/Remora
       #
       # Provenance, not code signing. Only what this run BUILT is attested: the .sha256 files derive
-      # from the files beside them, and the PKGBUILD is a source file with one line stamped. Runs
-      # before publishing on purpose — a release without its attestation is a claim with no evidence.
+      # from the files beside them, the PKGBUILD is a source file with one line stamped, and the
+      # ebuild is a source file renamed. Runs before publishing on purpose — a release without its
+      # attestation is a claim with no evidence.
       - name: Attest build provenance (tarball, .deb, SBOM)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -292,5 +309,6 @@ jobs:
             ${{ steps.deb.outputs.deb }}
             ${{ steps.deb.outputs.deb }}.sha256
             PKGBUILD
+            ${{ steps.version.outputs.ebuild }}
             ${{ steps.version.outputs.sbom }}
           fail_on_unmatched_files: true

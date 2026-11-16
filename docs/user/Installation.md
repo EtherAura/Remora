@@ -1,8 +1,8 @@
 # Installation
 
-This page covers the three ways to install Remora (the `.deb`, the Arch `PKGBUILD`, and a build
-from source), how to verify what you downloaded, and the two steps that follow every install: the
-`docker` group and the first `remora check`. It ends with the Android image: the ready-made one,
+This page covers the four ways to install Remora (the `.deb`, the Arch `PKGBUILD`, the Gentoo
+ebuild, and a build from source), how to verify what you downloaded, and the two steps that follow
+every install: the `docker` group and the first `remora check`. It ends with the Android image: the ready-made one,
 fetched once Remora is installed, or one you build yourself.
 
 ## What a release contains
@@ -12,6 +12,7 @@ Every [release](https://github.com/EtherAura/Remora/releases/latest) carries:
 - a source tarball,
 - a `.deb` for Ubuntu 24.04 and later, and Debian (amd64),
 - a `PKGBUILD` for Arch Linux,
+- an ebuild for Gentoo, `remora-<version>.ebuild`,
 - SHA-256 checksums, an SBOM, and a Sigstore build-provenance attestation.
 
 Remora uses calendar versions, `YYYY.MM.PATCH`. `remora --version` prints the version you have.
@@ -48,6 +49,35 @@ release carries a copy with the real checksum filled in.
 
 A `PKGBUILD` is a recipe that your machine runs, and the provenance attestation does not cover what
 it does. Read it before you run `makepkg`.
+
+## Gentoo
+
+The ebuild goes in a local overlay. This uses `app-eselect/eselect-repository` to create one:
+
+```sh
+ver=$(curl -fsSL https://api.github.com/repos/EtherAura/Remora/releases/latest \
+      | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+sudo eselect repository create local   # once, if you have no local overlay yet
+sudo mkdir -p /var/db/repos/local/app-containers/remora
+cd /var/db/repos/local/app-containers/remora
+sudo curl -fLO "https://github.com/EtherAura/Remora/releases/download/v$ver/remora-$ver.ebuild"
+sudo ebuild "remora-$ver.ebuild" manifest
+echo 'app-containers/remora ~amd64' | sudo tee /etc/portage/package.accept_keywords/remora
+sudo emerge -av app-containers/remora
+```
+
+`ebuild ... manifest` downloads the release's source tarball into your distfiles directory and
+records its checksum in the overlay's `Manifest`. It trusts what it downloaded. To check the tarball
+came from the release workflow, run
+`gh attestation verify /var/cache/distfiles/Remora-$ver.tar.gz --repo EtherAura/Remora` before you
+emerge.
+
+The ebuild is keyworded `~amd64`, which is why the `package.accept_keywords` line is there. If
+`emerge` asks for USE flag changes on the Qt packages, add them to `/etc/portage/package.use`.
+After install, `emerge` lists the optional packages (Docker, OpenSSH, the NVIDIA driver and others)
+and what each one enables.
+
+Like a `PKGBUILD`, an ebuild is a recipe your machine runs. Read it before you emerge it.
 
 ## From source
 

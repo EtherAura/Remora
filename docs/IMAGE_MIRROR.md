@@ -156,7 +156,7 @@ client never sees an index naming assets that are not up yet. It is a separate, 
 
 ## Optional local add-ons
 
-**Chosen design:** use the Genymotion-style workflow: our audited prebuilt base, with
+**Chosen design:** use the opt-in local add-on workflow: our audited prebuilt base, with
 a separate opt-in action that downloads identified third-party packages directly to the user's
 execution host and installs a local derivative. Keep those payloads, caches and derivatives out
 of Remora's hosting/publication paths. This choice establishes the workflow, not Google approval
@@ -179,7 +179,7 @@ hosting. Legacy payload origins remain unrecorded in [PAYLOADS.md](../vendor/PAY
 
 Keeping payloads local can avoid Remora redistributing them; it does not itself establish
 permitted acquisition, installation or service use. The owner nevertheless selected the
-Genymotion-style integration without Google outreach: proceed with explicit user opt-in, the
+opt-in local integration without Google outreach: proceed with explicit user opt-in, the
 named provider's terms and limitations, verified direct downloads and local-only derivatives
 (`remora-wzaa`). A Google reply is not a project prerequisite. Do not claim Google approval,
 licensing or certification from this choice. Android ID registration and attestation spoofing

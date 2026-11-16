@@ -6,7 +6,7 @@ Google licensing opinion. The original machine-readable source evidence is
 was installed; the later implementation validation is recorded below. No third-party installer
 script was executed, no legacy payload was changed, and no external inquiry was sent.
 
-**Owner decision:** do not contact Google. Proceed with the Genymotion-style optional
+**Owner decision:** do not contact Google. Proceed with the optional
 direct-download/local-install approach using an audited Google-free public base, explicit user
 opt-in and third-party terms notice, and local-only proprietary derivatives. A Google reply is
 not a project prerequisite. The published-terms findings below remain documented limitations;
@@ -101,9 +101,9 @@ relicense Google's APKs. The archive also identifies GNU tar as GPLv3+ and XZdec
 Using our own data-only extractor avoids distributing or executing those installer tools.
 
 **Open GApps.** Its [published terms](https://opengapps.org/) grant no Google APK licence and
-restrict public mirroring of its prebuilts. Genymotion's one-click design is useful precedent,
-but its [disclaimer](https://docs.genymotion.com/features/opengapps/) is not a grant to Remora.
-The candidate above is LiteGapps, not an Open GApps archive or a Genymotion-owned package.
+restrict public mirroring of its prebuilts. A commercial Android emulator's one-click design is
+useful precedent, but that vendor's published disclaimer is not a grant to Remora.
+The candidate above is LiteGapps, not an Open GApps archive or a package owned by that vendor.
 
 **Google end-user software terms.** The US [Google terms](https://policies.google.com/terms?hl=en),
 effective July 30, 2026 when checked, provide a personal, non-assignable software-use licence

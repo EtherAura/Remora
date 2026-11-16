@@ -214,6 +214,15 @@ if grep -qF 'tarball=Remora-$VERSION.tar.gz' "$RELEASE_YML" \
 else
     fail "release.yml no longer builds the tarball name or prefix SRC_URI and S assume"
 fi
+# And it attaches the ebuild under the name Portage takes ${PV} from.
+# shellcheck disable=SC2016  # the literal $VERSION and ${{ }} text of the workflow
+if grep -qF 'ebuild=remora-$VERSION.ebuild' "$RELEASE_YML" \
+    && grep -qF 'cp packaging/remora.ebuild.in "$EBUILD"' "$RELEASE_YML" \
+    && grep -qxE '[[:space:]]+\$\{\{ steps\.version\.outputs\.ebuild \}\}' "$RELEASE_YML"; then
+    pass "release.yml attaches the template as remora-<version>.ebuild"
+else
+    fail "release.yml no longer renders and attaches remora-<version>.ebuild"
+fi
 
 check_ebuild "$VERSION"
 # A version that is not the tree's, so nothing above passes by matching a literal in the template.

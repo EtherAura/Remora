@@ -28,7 +28,8 @@ NVIDIA, Intel and AMD [GPU acceleration](docs/user/GPU-Acceleration.md), with a 
 The quickest way to Android is the ready-made image the project publishes. No source build needed.
 
 1. **Install Remora** and join the `docker` group: follow [Installation](docs/user/Installation.md)
-   (the `.deb`, the Arch `PKGBUILD`, or a build of the application from source).
+   (the `.deb`, the Arch `PKGBUILD`, the Gentoo ebuild, or a build of the application from
+   source).
 2. **Fetch the ready-made Android 17 image** into Docker:
 
    ```sh

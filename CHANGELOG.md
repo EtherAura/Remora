@@ -32,6 +32,11 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   on. A connect refuses when the accepted terms are missing or older than the installer's, and
   does nothing for an image that already includes Google apps.
 
+- **Releases attach a Gentoo ebuild.** Each release now carries `remora-<version>.ebuild` beside
+  the `PKGBUILD`, for a local overlay. The release workflow runs `tools/test-gentoo-ebuild.sh`
+  on the template for that version before attaching it. The ebuild has not yet been built by
+  Portage.
+
 ### Changed
 
 - **The host frame encoder accepts only the encoders Remora uses.** `remora-frame-encoder
