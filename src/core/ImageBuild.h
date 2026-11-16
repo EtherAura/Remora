@@ -20,8 +20,8 @@ struct ImageRecipe {
 };
 
 // Reproduces the predecessor overlay model (IMAGE-RECIPE.md): a custom image is a Dockerfile-COPY
-// overlay on a base tag. widevine_l3, gapps, magisk_root and arm_translate are overlay-able; the
-// rest is base-baked. gapps is what makes the clean-mirror policy deliver (docs/IMAGE_MIRROR.md,
+// overlay on a base tag. widevine_l3, gapps, magisk_root, arm_translate, play_spoof and shamiko
+// are overlay-able; the rest is base-baked. gapps is what makes the clean-mirror policy deliver (docs/IMAGE_MIRROR.md,
 // bd remora-sgkg): a user can take a published GApps-free image and apply the proprietary half
 // locally in seconds, instead of being told to run an hour-scale source build. magisk_root and
 // arm_translate are the same argument for root and ARM apps (bd remora-6laf.2, .5): Magisk's
@@ -41,7 +41,9 @@ ImageRecipe buildRecipe(const QSet<QString> &features, int androidVersion = 16,
                         const QString &baseOverride = QString());
 
 // The add-ons a profile can ask for with addons= (bd remora-6laf.10): the overlay-able features
-// other than gapps, which has its own option (google_play) and its own installer.
+// other than gapps, which has its own option (google_play) and its own installer. play_spoof
+// needs magisk_root and shamiko needs both (Features.cpp); the engine refuses a list that leaves a
+// requirement out rather than adding root on the user's behalf.
 const QStringList &addonFeatures();
 // An add-on layer's Dockerfile: buildRecipe's COPY fragments for `addons` over `baseTag`, then the
 // labels a later deploy and the updater read. baseId is the ID of the image the layer is built

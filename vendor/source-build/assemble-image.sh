@@ -153,6 +153,9 @@ HWFEAT="$(cd "$(dirname "$0")" && pwd)/features/hw_features"
 # dormant — bringup installs it to /data + activates only when the play_spoof runtime option is on.
 # Enabled at build time via WITH_PLAY_SPOOF=true (the play_spoof build feature).
 ZPIF="$(cd "$(dirname "$0")" && pwd)/features/zygisk_pif"
+# The staging itself is shared with the add-on layer (stage-spoof-layer.sh).
+# shellcheck source=vendor/source-build/spoof-overlay.sh
+. "$(cd "$(dirname "$0")" && pwd)/spoof-overlay.sh"
 PS_ON=0
 # Asked for and absent is a refusal, not a skip: the tag does not say whether the stack is in, so a
 # silent skip ships an image whose play_spoof option then does nothing. Checked by the binaries,
@@ -176,19 +179,14 @@ fi
 if [ "$PS_ON" = 1 ]; then
   PSDIR=$(mktemp -d)
   # Staged read-only under /system/etc/remora-spoof/; the presence of this dir IS the image gate.
-  mkdir -p "$PSDIR/system/etc/remora-spoof"
-  cp -a "$ZPIF/rez-mod"   "$PSDIR/system/etc/remora-spoof/rez-mod"
-  cp -a "$ZPIF/pifork"    "$PSDIR/system/etc/remora-spoof/playintegrityfix"
-  cp    "$ZPIF/pif.json"  "$PSDIR/system/etc/remora-spoof/pif.json"
-  cp    "$ZPIF/install.sh" "$PSDIR/system/etc/remora-spoof/install.sh"
-  [ -d "$ZPIF/devicespoof" ] && cp -a "$ZPIF/devicespoof" "$PSDIR/system/etc/remora-spoof/devicespoof"
+  stage_spoof_tree "$ZPIF" "$PSDIR/system/etc/remora-spoof" || exit 1
   # Shamiko — unmounts Magisk's modifications from denylisted processes, which is the one thing
   # devicespoof cannot do. install.sh has copied it conditionally since it was written; nothing
   # ever staged it, so that branch had never once been taken (bd remora-4ei.50).
   # Its OWN gate, not play_spoof's: bd remora-4ei.16 named Shamiko a prime suspect for breaking
   # Play Store verification on A16, so "PIF but no Shamiko" has to stay expressible.
   if [ "$WITH_SHAMIKO" = true ]; then
-    cp -a "$ZPIF/shamiko" "$PSDIR/system/etc/remora-spoof/shamiko"
+    stage_spoof_shamiko "$ZPIF" "$PSDIR/system/etc/remora-spoof/shamiko" || exit 1
     echo "=== play_spoof: + Shamiko (denylist unmount) ==="
   fi
   # nb_sigfix — the berberis app workarounds (bd remora-4ei.99 TikTok signal, bd remora-4ei.100
@@ -206,10 +204,7 @@ if [ "$PS_ON" = 1 ]; then
     # are not published), so there the module is left out — loudly.
     sh "$NBSIG/build.sh" "$TREE" \
       || echo "=== nb_sigfix: rebuild FAILED — using the committed .so if there is one ===" >&2
-    if [ -f "$NBSIG/zygisk/x86_64.so" ]; then
-      mkdir -p "$PSDIR/system/etc/remora-spoof/nb_sigfix/zygisk"
-      cp "$NBSIG/module.prop"      "$PSDIR/system/etc/remora-spoof/nb_sigfix/module.prop"
-      cp "$NBSIG/zygisk/x86_64.so" "$PSDIR/system/etc/remora-spoof/nb_sigfix/zygisk/x86_64.so"
+    if stage_spoof_nb_sigfix "$NBSIG" "$PSDIR/system/etc/remora-spoof/nb_sigfix"; then
       echo "=== play_spoof: + nb_sigfix (berberis app workarounds: TikTok signal, Amazon affinity) ==="
     else
       echo "=== nb_sigfix: NOT BAKED — no .so; TikTok and Amazon crash under translation ===" >&2

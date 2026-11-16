@@ -50,6 +50,12 @@ private slots:
         QVERIFY(door.fwdListening == std::optional<bool>(false));
         QVERIFY(door.adbdListening == std::optional<bool>(true));
 
+        // The probe counts LISTEN lines across /proc/net/tcp AND tcp6, so a dual-stack listener
+        // reads 2: any count above zero is listening, not just exactly one.
+        const auto dual = parseForwarderProbe(QStringLiteral("fwd_l=2\nadbd_l=2\nsvc=running\n"));
+        QVERIFY(dual.fwdListening == std::optional<bool>(true));
+        QVERIFY(dual.adbdListening == std::optional<bool>(true));
+
         // Pre-.rc container: the property line is present but empty — service is KNOWN-unset
         // (netfix's shell supervisor owns fwd), which is not the same as never probed.
         const auto shellOwned = parseForwarderProbe(QStringLiteral("fwd_l=1\nadbd_l=1\nsvc=\n"));

@@ -270,6 +270,51 @@ private slots:
         QVERIFY(none.calls.isEmpty());
     }
 
+    // bd remora-6laf.3: root is never added for the user, so a spoof list without it is refused
+    // before anything runs; the add-on also turns the runtime option on, unless the profile says no.
+    void spoofWithoutRootIsRefusedAndTheOptionFollowsTheAddon() {
+        AddonSpawner sp;
+        RemoraConfig c = profile({"play_spoof"});
+        const StepResult r = ensureAddonOverlay(sp, c, Backend::Bare, {}, paths());
+        QVERIFY(!r.ok);
+        QVERIFY2(r.detail.contains(QLatin1String("magisk_root")), qPrintable(r.detail));
+        QVERIFY(sp.calls.isEmpty());
+        QVERIFY(resolve(c, Backend::Bare).playSpoof);
+        c.advanced.playSpoof = false;
+        QVERIFY(!resolve(c, Backend::Bare).playSpoof);
+        QVERIFY(!resolve(profile({"magisk_root"}), Backend::Bare).playSpoof);
+    }
+
+    // The whole stack in one layer: the spoof tree and Shamiko staged by ONE call of the script the
+    // manual route uses, with nb_sigfix because ARM translation is in the same layer.
+    void spoofStackIsStagedOnceWithNbSigfixAlongsideArm() {
+        putArm();
+        const QString z = tmp_.path() + QStringLiteral("/payloads/zygisk_pif/");
+        for (const char *f : {"rez-mod/lib64/libzygisk.so", "rez-mod/bin/zygiskd64",
+                              "rez-mod/bin/zygisk-ptrace64", "pifork/zygisk/x86_64.so",
+                              "shamiko/zygisk/x86_64.so", "shamiko/module.prop"})
+            QVERIFY(AddonSpawner::put(z + QLatin1String(f)));
+        AddonSpawner::writeMagisk(tmp_.path() + QStringLiteral("/payloads"));
+        AddonSpawner sp;
+        RemoraConfig c = profile({"shamiko", "play_spoof", "magisk_root", "arm_translate"});
+        const StepResult r = ensureAddonOverlay(sp, c, Backend::Bare, {}, paths());
+        QVERIFY2(r.ok, qPrintable(r.detail + r.stderrTail));
+        int stagings = 0;
+        for (const QStringList &call : sp.calls)
+            if (call.join(QLatin1Char(' ')).contains(QLatin1String("stage-spoof-layer.sh"))) {
+                ++stagings;
+                QVERIFY(call.contains(QStringLiteral("--spoof")));
+                QVERIFY(call.contains(QStringLiteral("--shamiko")));
+                QVERIFY(call.contains(QStringLiteral("--nb-sigfix")));
+                QCOMPARE(call.count(QStringLiteral("--payload")), 1);  // one shared directory
+            }
+        QCOMPARE(stagings, 1);
+        QVERIFY(sp.dockerfile.contains("COPY spoof/ /system/etc/remora-spoof/\n"));
+        QVERIFY(sp.dockerfile.contains("COPY shamiko/ /system/etc/remora-spoof/shamiko/\n"));
+        QVERIFY(sp.dockerfile.contains(
+            "LABEL org.remora.addons.list=\"arm_translate magisk_root play_spoof shamiko\""));
+    }
+
     void buildFailureRecordsNoLayer() {
         putArm();
         AddonSpawner sp;

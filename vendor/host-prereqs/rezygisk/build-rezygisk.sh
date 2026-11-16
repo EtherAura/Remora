@@ -17,7 +17,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 FEATURE="$REPO/vendor/source-build/features/zygisk_pif"
-PATCH="$FEATURE/upstream/0001-monitor-bound-the-module.prop-status-appends-fixes-a.patch"
+# EVERY carried patch, in order: 0001 bounds the status appends, 0002 makes the monitor inject only
+# a process exec'd as a zygote (bd remora-6laf.3), so Remora's agent and pm/am are left alone.
+PATCHES=$(ls "$FEATURE"/upstream/[0-9][0-9][0-9][0-9]-*.patch 2>/dev/null)
 MOD="$FEATURE/rez-mod"
 
 WORK="${REMORA_REZYGISK_WORK:-${XDG_CACHE_HOME:-$HOME/.cache}/remora/rezygisk-src}"
@@ -36,7 +38,7 @@ head_() { printf '\n=== %s ===\n' "$*"; }
 die()  { printf 'rezygisk-build: %s\n' "$*" >&2; exit 1; }
 
 [ -d "$NDK" ] || die "no NDK at $NDK (set REMORA_REZYGISK_NDK)"
-[ -f "$PATCH" ] || die "no patch at $PATCH"
+[ -n "$PATCHES" ] || die "no patches in $FEATURE/upstream"
 [ -d "$MOD/bin" ] || die "no vendored module at $MOD"
 
 head_ "1. source at $PIN"
@@ -58,9 +60,11 @@ say "checked out $(git -C "$WORK" rev-parse --short HEAD)"
 git -C "$WORK" submodule update --init --recursive --depth 1 -q || die "submodule init failed"
 say "submodules: $(git -C "$WORK" submodule status | wc -l) initialised"
 
-head_ "2. apply the bounded-append patch"
-git -C "$WORK" apply "$PATCH" || die "patch did not apply to $PIN — the pin moved or the patch is stale"
-say "applied $(basename "$PATCH")"
+head_ "2. apply the carried patches"
+for PATCH in $PATCHES; do
+    git -C "$WORK" apply "$PATCH" || die "$(basename "$PATCH") did not apply to $PIN — the pin moved or the patch is stale"
+    say "applied $(basename "$PATCH")"
+done
 
 head_ "3. build (NDK $(basename "$NDK"), API $API)"
 # BUILD FROM THE TOP LEVEL, not `make -C loader`. The loader link needs libplti.a and libcsoloader.a,
@@ -71,7 +75,11 @@ head_ "3. build (NDK $(basename "$NDK"), API $API)"
 # `make release` also runs a module-packaging step that fails in this environment. That is packaging,
 # not compilation, and every binary we install below is produced before it — so the failure is
 # tolerated here and the GATE below is what decides whether the build was good.
-make -C "$WORK" release NDK_PATH="$NDK" API_LEVEL="$API" >/dev/null 2>&1 || \
+#
+# -k, because the packaging failure is not always last: it stopped make before the
+# x86_64 loader relinked, the stale libzygisk_ptrace.so from an earlier build passed the existence
+# check below, and only the 0002 gate caught it. Keep going, so every binary that can be built is.
+make -k -C "$WORK" release NDK_PATH="$NDK" API_LEVEL="$API" >/dev/null 2>&1 || \
     say "top-level make returned non-zero (module packaging); checking artifacts instead"
 
 L="$WORK/build/obj/release/loader"
@@ -103,6 +111,11 @@ lcat_sites=$("$NM" -d "$P64" 2>/dev/null | grep -cE 'call.*<__strlcat_chk' || tr
 say "zygisk-ptrace64: __strcat_chk $cat_sites, __strlcat_chk $lcat_sites"
 [ "$cat_sites" = "1" ] || die "expected exactly 1 __strcat_chk call site (the safe spawn_daemon one), got $cat_sites — the patch did not take"
 [ "$lcat_sites" -ge 1 ] || die "no __strlcat_chk call sites — the patch did not take"
+# 0002 by its log line, which exists only where the zygote check does. grep reads the binary itself:
+# `strings | grep -q` fails under pipefail exactly when it matches, since grep exits first.
+grep -aqF 'without --zygote: not a zygote, not injected' "$P64" \
+    || die "zygisk-ptrace64 lacks the zygote-arguments check — 0002 did not take"
+say "zygisk-ptrace64: zygote-arguments check present (0002)"
 
 head_ "5. install into $MOD"
 install -m755 "$L/x86_64/stripped/libzygisk_ptrace.so" "$MOD/bin/zygisk-ptrace64"

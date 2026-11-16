@@ -73,3 +73,26 @@ would read as a failed patch.
 
 `__strlcat_chk` is bionic's fortified `strlcat`. It aborts only when the caller lies about the
 destination size; every call here passes `sizeof` a real array, so the behaviour is truncation.
+
+## `0002-monitor-inject-only-processes-started-as-a-zygote.patch`
+
+bd `remora-6laf.3`. Makes the monitor in `loader/src/ptracer/monitor.c` treat an exec of
+`app_process` as a zygote only when `-Xzygote` or `--zygote` is among its arguments. Applies on top
+of `0001`.
+
+**Why we care.** Upstream matches on `/proc/<pid>/exe` alone, so every `app_process` a child of
+init runs is taken for a zygote restart: `am`, `pm`, `cmd`, and Remora's in-image mirror agent,
+which is an init service. Injection into the agent fails, since it runs as `shell` and cannot open
+`/data/adb/modules/rezygisk/lib64/libzygisk.so` (`-13`). The monitor kills it, init restarts it, and
+after four rounds `should_stop_inject64()` trips: "Zygote64 restart too much times, stop injecting",
+"Stopped tracing init". The agent then survives, but any later real zygote restart comes up without
+Zygisk. Observed on the public Android 17 image with the Play spoof add-on, with the
+agent killed four times, five seconds apart.
+
+**Fallback.** When `/proc/<pid>/cmdline` cannot be read, upstream's behaviour stands. Every zygote
+service in AOSP passes both flags (`app_process64 -Xzygote /system/bin --zygote …`).
+
+**Verified on device.** A skipped exec logs `<pid> runs /system/bin/app_process64 without --zygote:
+not a zygote, not injected`, and `build-rezygisk.sh` gates on that string being in the built
+`zygisk-ptrace64`. With the patched monitor, a restarted agent stayed up, and zygote was still
+injected after a later restart.

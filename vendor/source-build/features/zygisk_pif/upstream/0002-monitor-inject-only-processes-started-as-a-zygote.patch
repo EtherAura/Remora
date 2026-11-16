@@ -1,0 +1,78 @@
+From: Remora <noreply@localhost>
+Subject: [PATCH] monitor: inject only processes started as a zygote
+
+The monitor takes every exec of /system/bin/app_process{64,32} by a child of init for a zygote
+(restart), matching on /proc/<pid>/exe alone. On Android that binary also runs am, pm and cmd, and
+Remora runs its in-image mirror agent as an init service through it. Each such exec is stopped and
+handed to the injector, injection fails (the agent runs as shell and cannot open
+/data/adb/modules/rezygisk/lib64/libzygisk.so: -13), the process is killed, init restarts it, and
+after a few rounds should_stop_inject64() trips: "Zygote64 restart too much times, stop injecting",
+"Stopped tracing init". From then on a real zygote restart comes up without Zygisk.
+
+Observed on Remora's Android 17 image with the Play spoof stack (2026-11-16): the agent was killed
+four times, five seconds apart, before the monitor gave up on init.
+
+Require -Xzygote or --zygote among the exec'd process's arguments, which every zygote service in
+AOSP passes, before treating it as one. When /proc/<pid>/cmdline cannot be read, the upstream
+behaviour stands.
+
+Applies on top of 0001.
+---
+--- a/loader/src/ptracer/monitor.c
++++ b/loader/src/ptracer/monitor.c
+@@ -4,6 +4,7 @@
+ #include <errno.h>
+ 
+ #include <unistd.h>
++#include <fcntl.h>
+ #include <sys/epoll.h>
+ #include <sys/signalfd.h>
+ #include <sys/socket.h>
+@@ -470,8 +471,36 @@
+ #define APP_PROCESS_64 APP_PROCESS "64"
+ #define APP_PROCESS_32 APP_PROCESS "32"
+ 
++/* REMORA: a zygote is an app_process whose arguments say so. Android's zygote services exec
++ * app_process with -Xzygote and --zygote; everything else that execs it is an ordinary program run
++ * through the same binary: am, pm and cmd, and Remora's in-image agent, an init service. Matching
++ * the program path alone takes each of those for a zygote restart: injection fails (an app_process
++ * running as shell cannot open the module's library), the process is killed, init restarts it,
++ * and after a few rounds the restart counter trips and the monitor stops tracing init for good, so
++ * the next real zygote restart comes up without Zygisk. When the arguments cannot be read, the
++ * upstream behaviour stands. */
++static bool is_zygote_exec(int pid) {
++  char path[64];
++  snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
++
++  int fd = open(path, O_RDONLY | O_CLOEXEC);
++  if (fd == -1) return true;
++
++  char args[4096];
++  ssize_t len = read(fd, args, sizeof(args) - 1);
++  close(fd);
++  if (len <= 0) return true;
++
++  args[len] = '\0';
++  for (ssize_t i = 0; i < len; i += (ssize_t)strlen(args + i) + 1) {
++    if (strcmp(args + i, "--zygote") == 0 || strcmp(args + i, "-Xzygote") == 0) return true;
++  }
++
++  return false;
++}
++
+ #define PRE_INJECT(abi, is_64)                                        \
+-  if (strcmp(program, APP_PROCESS_ ## abi) == 0) {                    \
++  if (strcmp(program, APP_PROCESS_ ## abi) == 0 && zygote_args) {     \
+     tracer = "./bin/zygisk-ptrace" # abi;                             \
+     is_tango = false;                                                 \
+                                                                       \
+@@ -691,6 +720,9 @@
+ 
+           const char *tracer = NULL;
+           bool is_tango = false;
++          const bool zygote_args = is_zygote_exec(pid);
++          if (!zygote_args && strncmp(program, APP_PROCESS, strlen(APP_PROCESS)) == 0)
++            LOGI("%d runs %s without --zygote: not a zygote, not injected", pid, program);
+ 
+           do {
+             if (tracing_state != TRACING) {

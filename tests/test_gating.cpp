@@ -757,12 +757,12 @@ private slots:
 
     // --- custom image recipe ---
     // A request Remora cannot serve from any registered tag must fall to a SOURCE build and say
-    // which features drove it, rather than overlaying onto whatever scores least-bad. shamiko is
-    // not overlay-able (native_vulkan, once overlay-able, was retired in bd remora-xqt1: a
+    // which features drove it, rather than overlaying onto whatever scores least-bad. microg is
+    // source-only (native_vulkan, once overlay-able, was retired in bd remora-xqt1: a
     // build-time ro.hardware.vulkan is write-once and beat every runtime decision, so the ICD
     // became a boot arg).
     void recipeWithNoServableBaseGoesToSource() {
-        const ImageRecipe r = buildRecipe({"shamiko", "widevine_l3"}, 16);
+        const ImageRecipe r = buildRecipe({"microg", "widevine_l3"}, 16);
         // needsBuild is specifically "an OVERLAY can add the missing features" (!overlayMissing
         // .isEmpty()). With no registered A16 base left to overlay onto there is nothing to layer,
         // so it is correctly FALSE here and needsSourceBuild is what carries the request. Asserting
@@ -907,6 +907,27 @@ private slots:
         QVERIFY(!both.needsSourceBuild);
         QVERIFY(both.dockerfile.contains("COPY ndkguest/system/ /system/\n"));
         QVERIFY(both.dockerfile.contains("COPY magisk/magisk.rc /system/etc/init/magisk.rc\n"));
+    }
+
+    // bd remora-6laf.3/.4: the Play spoof stack and Shamiko on the published image. One tree at
+    // /system/etc/remora-spoof, Shamiko a subdirectory of it; the requirement on root closes the
+    // request, so Magisk is layered with them rather than asked for separately.
+    void recipeOverlaysTheSpoofStackOntoThePublicBase() {
+        const ImageRecipe r = buildRecipe({"play_spoof", "shamiko"}, 17, QString(), QString(),
+                                          QString(), QStringLiteral("remora24:x86_64-public"));
+        QCOMPARE(r.overlays, (QStringList{"magisk_root", "play_spoof", "shamiko"}));
+        QVERIFY(!r.needsSourceBuild);
+        QVERIFY(r.unbuildable.isEmpty());
+        QVERIFY(!r.dockerfile.contains(QLatin1String("RUN ")));
+        QVERIFY(r.dockerfile.contains("COPY spoof/ /system/etc/remora-spoof/\n"));
+        QVERIFY(r.dockerfile.contains("COPY shamiko/ /system/etc/remora-spoof/shamiko/\n"));
+        // the spoof tree before Shamiko's subdirectory of it
+        QVERIFY(r.dockerfile.indexOf(QLatin1String("COPY spoof/")) <
+                r.dockerfile.indexOf(QLatin1String("COPY shamiko/")));
+        QVERIFY(r.payloads.contains(QStringLiteral("spoof/rez-mod/lib64/libzygisk.so")));
+        QVERIFY(r.payloads.contains(QStringLiteral("spoof/playintegrityfix/zygisk/x86_64.so")));
+        QVERIFY(r.payloads.contains(QStringLiteral("shamiko/zygisk/x86_64.so")));
+        QVERIFY(!r.sourceBuildHint.contains(QLatin1String("play_spoof")));
     }
 
     // A layer on the public base must not keep its public claim: the base's

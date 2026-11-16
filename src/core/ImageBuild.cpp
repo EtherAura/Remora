@@ -26,8 +26,13 @@ namespace remora {
 // the ARM side: the guest runtime, the translator and its proxies are all payload files, the
 // staging assemble-image.sh does is already a COPY, and the only non-file part (the bridge
 // properties) is a prop file init reads after the base's (stage_arm_layer, ndk-overlay.sh).
-static const QSet<QString> kOverlayable = {"widevine_l3", "gapps", "magisk_root",
-                                           "arm_translate"};
+//
+// play_spoof and shamiko joined it (bd remora-6laf.3/.4): the image half of both is one tree,
+// /system/etc/remora-spoof, which the build only copies (assemble-image.sh, through the same
+// spoof-overlay.sh functions the layer's staging calls) and the deploy only tests for and installs
+// from. Everything else they do happens at boot, from /data.
+static const QSet<QString> kOverlayable = {"widevine_l3", "gapps",   "magisk_root",
+                                           "arm_translate", "play_spoof", "shamiko"};
 
 static QString fragment(const QString &feature) {
     if (feature == QLatin1String("widevine_l3"))
@@ -69,6 +74,17 @@ static QString fragment(const QString &feature) {
             "     magisk/magisk/util_functions.sh magisk/magisk/boot_patch.sh \\\n"
             "     magisk/magisk-setup.sh /system/etc/init/magisk/\n"
             "COPY magisk/magisk.rc /system/etc/init/magisk.rc");
+    if (feature == QLatin1String("play_spoof"))
+        // spoof/ is what vendor/source-build/stage-spoof-layer.sh --spoof stages. Dormant in the
+        // image: the deploy installs it to /data/adb/modules only when play_spoof=true.
+        return QStringLiteral(
+            "# Play spoof (ReZygisk, PlayIntegrityFork, the device spoof, and nb_sigfix when the\n"
+            "# image has ARM translation), dormant until play_spoof=true, from stage-spoof-layer.sh.\n"
+            "COPY spoof/ /system/etc/remora-spoof/");
+    if (feature == QLatin1String("shamiko"))
+        return QStringLiteral(
+            "# Shamiko (closed source, supplied by the user), installed with the Play spoof stack.\n"
+            "COPY shamiko/ /system/etc/remora-spoof/shamiko/");
     if (feature == QLatin1String("arm_translate"))
         // ndkguest/ is what vendor/source-build/stage-arm-layer.sh stages: the payload patched by
         // the same function a source build uses (finish_ndk_overlay), so the two cannot drift.
@@ -94,6 +110,7 @@ static QStringList magiskPayloads() {
 
 const QStringList &addonFeatures() {
     static const QStringList a{QStringLiteral("arm_translate"), QStringLiteral("magisk_root"),
+                               QStringLiteral("play_spoof"),    QStringLiteral("shamiko"),
                                QStringLiteral("widevine_l3")};
     return a;
 }
@@ -201,6 +218,15 @@ ImageRecipe buildRecipe(const QSet<QString> &featuresIn, int androidVersion, con
         // The prop file is written last, only after the patcher has accepted both binaries, so
         // its presence is what says the context was staged by stage-arm-layer.sh and not copied
         // raw: an unpatched bridge boots and then segfaults every ARM app (bd remora-rve).
+        // The binaries, which only the payload carries: the scripts beside them are in every
+        // checkout, so their presence would say nothing about whether the stack was staged.
+        if (f == QLatin1String("play_spoof"))
+            payloads << QStringLiteral("spoof/install.sh")
+                     << QStringLiteral("spoof/rez-mod/lib64/libzygisk.so")
+                     << QStringLiteral("spoof/rez-mod/bin/zygiskd64")
+                     << QStringLiteral("spoof/playintegrityfix/zygisk/x86_64.so");
+        if (f == QLatin1String("shamiko"))
+            payloads << QStringLiteral("shamiko/zygisk/x86_64.so");
         if (f == QLatin1String("arm_translate"))
             payloads << QStringLiteral("ndkguest/system/lib64/libnb.so")
                      << QStringLiteral("ndkguest/system/bin/arm64/linker64")

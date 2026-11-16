@@ -35,7 +35,24 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   it was built over. `vendor/fetch-payloads.sh` takes `REMORA_PAYLOAD_DIR` to stage a payload
   outside the vendor tree.
 
+- **Play spoof and Shamiko as add-ons.** The Add-ons row also offers **Play spoof**, the stack that
+  makes Google Play see a certified Pixel inside Play services only, and **Shamiko**, which hides
+  Magisk's changes from apps on the DenyList. Both are layered over the image like the other
+  add-ons, so the official image gets them without a source build, and ticking Play spoof turns on
+  the `play_spoof` setting too. Play spoof needs Root and Shamiko needs both; the page offers each
+  only once what it needs is ticked. With ARM translation, the Play spoof layer also carries the
+  module that keeps TikTok and Amazon running under translation. The binaries are yours to supply
+  in `~/.local/share/remora/payloads/zygisk_pif`. `vendor/source-build/stage-spoof-layer.sh`
+  stages the same layer for `remora build --base`.
+
 ### Fixed
+
+- **The mirror stays up with the Play spoof stack on.** On a device's first boot with the stack,
+  the mirror failed to connect with `DeadSystemException`: the framework restart that brings the
+  stack up left the in-image agent talking to the old system server. The deploy now restarts the
+  agent after it. Restarting it exposed a second fault: ReZygisk took the agent for a zygote,
+  killed it four times, then stopped injecting for good, so a later framework restart came back
+  without the stack. Remora's ReZygisk build now injects only processes started as a zygote.
 
 - **LAN detection skips link-local addresses.** When the interface of the default route listed
   a link-local address (such as `169.254.x.x`) before its real one, Remora took the link-local

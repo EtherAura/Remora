@@ -84,8 +84,9 @@ with Android 17 zygote hooks.
 
 ## Remora integration — two gates, automatic
 1. **IMAGE gate** (build): the `play_spoof` build feature bakes this stack into
-   `/system/etc/remora-spoof` (`assemble-image.sh`, `WITH_PLAY_SPOOF`; source rebuild).
-   "Enabled in the image" = you built it in.
+   `/system/etc/remora-spoof` (`assemble-image.sh`, `WITH_PLAY_SPOOF`; source rebuild), or the
+   Play spoof add-on layers the same tree onto an existing image (`stage-spoof-layer.sh`; both go
+   through `spoof-overlay.sh`). "Enabled in the image" = it is in that directory.
 2. **RUNTIME gate** (option): `play_spoof=true` in the profile.
 3. **Auto**: the deploy (`src/engine/Deployers.cpp`, for `bare` and `remote` alike)
    acts ONLY when BOTH gates hold. It installs the baked modules into `/data/adb/modules`

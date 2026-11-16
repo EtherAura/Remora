@@ -5056,6 +5056,74 @@ private slots:
         }
     }
 
+    // bd remora-6laf.3/.4. The Play spoof layer's context, staged by the real script against a
+    // fixture payload. The vendored zygisk_pif is laid first and never overwritten, so Remora's
+    // installer is always this checkout's whatever a payload carries, and the payload fills in only
+    // what the vendored tree lacks: in a public clone, every binary.
+    void spoofLayerLaysThePayloadUnderTheVendoredTree() {
+        const QString sbuild =
+            QDir::cleanPath(QStringLiteral(FIXTURES_DIR "/../../vendor/source-build"));
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        const auto put = [](const QString &path, const QByteArray &body) {
+            if (!QDir().mkpath(QFileInfo(path).path())) return false;
+            QFile f(path);
+            return f.open(QIODevice::WriteOnly) && f.write(body) == body.size();
+        };
+        const QString pay = tmp.path() + QStringLiteral("/zygisk_pif");
+        for (const char *f : {"/rez-mod/lib64/libzygisk.so", "/rez-mod/bin/zygiskd64",
+                              "/rez-mod/bin/zygisk-ptrace64", "/pifork/zygisk/x86_64.so",
+                              "/shamiko/zygisk/x86_64.so", "/shamiko/module.prop"})
+            QVERIFY(put(pay + QLatin1String(f), "payload\n"));
+        QVERIFY(put(pay + QStringLiteral("/install.sh"), "a payload's own installer\n"));
+        const QString nb = tmp.path() + QStringLiteral("/nb_sigfix");
+        QVERIFY(put(nb + QStringLiteral("/module.prop"), "id=nb_sigfix\n"));
+        QVERIFY(put(nb + QStringLiteral("/zygisk/x86_64.so"), "nb\n"));
+        const auto run = [&](const QString &ctx, const QStringList &args) {
+            QProcess sh;
+            sh.start(QStringLiteral("sh"),
+                     QStringList{sbuild + QStringLiteral("/stage-spoof-layer.sh"), ctx} + args);
+            return sh.waitForFinished(30000) ? sh.exitCode() : -1;
+        };
+        const auto read = [](const QString &path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+
+        const QString ctx = tmp.path() + QStringLiteral("/ctx");
+        QCOMPARE(run(ctx, {"--payload", pay, "--spoof", "--shamiko", "--nb-sigfix", nb}), 0);
+        const QString spoof = ctx + QStringLiteral("/spoof");
+        // the tree the deploy installs from, as assemble-image.sh lays it
+        for (const char *f : {"/rez-mod/lib64/libzygisk.so", "/rez-mod/bin/zygiskd64",
+                              "/playintegrityfix/zygisk/x86_64.so", "/pif.json", "/install.sh",
+                              "/devicespoof/post-fs-data.sh", "/nb_sigfix/zygisk/x86_64.so"})
+            QVERIFY2(QFile::exists(spoof + QLatin1String(f)), f);
+        QVERIFY(QFile::exists(ctx + QStringLiteral("/shamiko/zygisk/x86_64.so")));
+        QVERIFY(!QDir(spoof + QStringLiteral("/shamiko")).exists());  // its own COPY
+        // Remora's installer wins over the payload's
+        QCOMPARE(read(spoof + QStringLiteral("/install.sh")),
+                 read(sbuild + QStringLiteral("/features/zygisk_pif/install.sh")));
+        // no merge directory left behind, and a re-stage replaces rather than nests
+        QCOMPARE(QDir(ctx).entryList(QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot),
+                 (QStringList{"shamiko", "spoof"}));
+        QCOMPARE(run(ctx, {"--payload", pay, "--spoof"}), 0);
+        QVERIFY(!QDir(spoof + QStringLiteral("/rez-mod/rez-mod")).exists());
+        QVERIFY(!QDir(ctx + QStringLiteral("/shamiko")).exists());  // not asked for this time
+        QVERIFY(!QDir(spoof + QStringLiteral("/nb_sigfix")).exists());
+
+        // Shamiko asked for and absent from every payload: refused by name, nothing staged. (The
+        // vendored tree carries it only on a machine that has it, so this uses a payload-free
+        // checkout's view: a payload directory that lacks it, and a check of the message.)
+        QFile::remove(pay + QStringLiteral("/shamiko/zygisk/x86_64.so"));
+        QFile::remove(pay + QStringLiteral("/shamiko/module.prop"));
+        if (!QFile::exists(sbuild + QStringLiteral("/features/zygisk_pif/shamiko/zygisk/x86_64.so"))) {
+            const QString bad = tmp.path() + QStringLiteral("/ctx-bad");
+            QVERIFY(run(bad, {"--payload", pay, "--shamiko"}) != 0);
+            QVERIFY(!QDir(bad + QStringLiteral("/shamiko")).exists());
+        }
+        QVERIFY(run(tmp.path() + "/ctx-x", {"--payload", tmp.path() + "/nope", "--spoof"}) != 0);
+    }
+
     // bd remora-6laf.5. The arm_translate layer's context, staged by the SAME shell function the
     // stage script runs, against a fixture payload. python3 is a stub on PATH that records its
     // arguments: the real patcher refuses anything but the harvested binaries by hash, so the

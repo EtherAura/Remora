@@ -2326,6 +2326,16 @@ void MainWindow::buildUi() {
              "Layer the Widevine L3 DRM service (software DRM) over this profile's image. "
              "Proprietary, so Remora cannot download it: put it in "
              "~/.local/share/remora/payloads/widevine."},
+            {"play_spoof", "Play spoof",
+             "Layer the Play spoof stack (ReZygisk, PlayIntegrityFork and the device spoof) and "
+             "turn it on, so Google Play sees a certified Pixel inside Play services only. Aimed "
+             "at the basic integrity verdict and Play sign-in; apps that need device or strong "
+             "integrity are not expected to work, and no attestation keybox is ever used. With ARM "
+             "translation it also carries the TikTok and Amazon fixes. Needs Root."},
+            {"shamiko", "Shamiko",
+             "Layer Shamiko, which unmounts Magisk's changes from apps on the DenyList. Closed "
+             "source with no licence, so Remora never downloads it: put it in "
+             "~/.local/share/remora/payloads/zygisk_pif/shamiko. Needs Root and Play spoof."},
         };
         for (const auto &a : addons) {
             const QString feature = QString::fromLatin1(a.feature);
@@ -3771,7 +3781,14 @@ void MainWindow::refreshImageGating() {
             const bool included = base.addonsIncluded.contains(it.key());
             const AddonPayload p = locateAddonPayload(it.key());
             const bool available = !p.dir.isEmpty() || p.fetchable;
-            it.value()->setEnabled(on || (!included && available));
+            // Play spoof needs Root, Shamiko both: offered once they are ticked, never ticked
+            // for the user, since root is a consent of its own.
+            QStringList missing;
+            if (const Feature *f = findFeature(it.key()))
+                for (const QString &req : f->requires_)
+                    if (!cfg_.image.addons.contains(req) && addonChecks_.contains(req))
+                        missing << addonChecks_.value(req)->text();
+            it.value()->setEnabled(on || (!included && available && missing.isEmpty()));
             if (included)
                 notes << QStringLiteral("%1 already in %2").arg(it.value()->text(), base.imageTag);
             else if (p.dir.isEmpty() && !p.fetchable)
@@ -4816,6 +4833,21 @@ void MainWindow::onAddonToggled(const QString &feature, bool on) {
     QStringList next;
     for (const QString &a : addonFeatures())
         if (a == feature ? on : cfg_.image.addons.contains(a)) next << a;
+    // Turning a requirement off takes what needs it with it (Root takes Play spoof and Shamiko),
+    // rather than leaving a list the next Connect would refuse.
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (const QString &a : QStringList(next))
+            if (const Feature *f = findFeature(a))
+                for (const QString &req : f->requires_)
+                    if (addonFeatures().contains(req) && !next.contains(req) && next.removeAll(a))
+                        changed = true;
+    }
+    for (const QString &a : addonFeatures())
+        if (QCheckBox *c = addonChecks_.value(a)) {
+            QSignalBlocker block(c);
+            c->setChecked(next.contains(a));
+        }
     cfg_.image.addons = next;
     autosave();
     statusBar()->showMessage(

@@ -109,6 +109,14 @@ connect builds a new layer over it. The base image is never modified, and Androi
 Unticking an add-on runs the device without it. In a profile file the option is `addons`; see
 [Configuration](Configuration.md#root-and-play).
 
+**Play spoof** layers the stack that makes Google Play see a certified Pixel inside Play services
+only, and turns on the `play_spoof` setting with it, unless the profile sets `play_spoof=false`.
+It is aimed at the basic integrity verdict and Play sign-in. Apps that require device or strong
+integrity are not expected to work, and Remora never uses an attestation keybox. With ARM
+translation it also carries the fixes TikTok and Amazon need under translation. It needs Root, and
+**Shamiko**, which hides Magisk's changes from apps on the DenyList, needs both: each is offered
+once what it needs is ticked, and unticking Root takes them off too.
+
 Each add-on needs its payload on the computer running Remora:
 
 | add-on | payload | where it comes from |
@@ -116,6 +124,8 @@ Each add-on needs its payload on the computer running Remora:
 | Root (Magisk) | Magisk v30.7 | downloaded from Magisk's GitHub release the first time, checked against a pinned hash |
 | ARM app translation | the arm64 native bridge | proprietary, and Remora cannot download it: put it in `~/.local/share/remora/payloads/ndk_translation` |
 | Widevine L3 | the Widevine L3 service | proprietary, and Remora cannot download it: put it in `~/.local/share/remora/payloads/widevine` |
+| Play spoof | ReZygisk and PlayIntegrityFork | the binaries are left out of the public tree and not downloaded: put them in `~/.local/share/remora/payloads/zygisk_pif` (`vendor/host-prereqs/rezygisk/build-rezygisk.sh` builds ReZygisk's 64-bit ones) |
+| Shamiko | Shamiko | closed source with no licence, never downloaded: put it in `~/.local/share/remora/payloads/zygisk_pif/shamiko` |
 
 A payload directory is laid out like the matching `vendor/source-build/features/` directory. For
 ARM translation only the build [vendor/PAYLOADS.md](../../vendor/PAYLOADS.md) records works: the

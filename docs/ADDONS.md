@@ -8,9 +8,9 @@ Everything here is read from the sources named in each section. A section saying
 *can* carry a file says only that nothing in the build does more than place that file. Where a
 layer has been built and booted, the section says so and records what was observed.
 
-Sections still to write: the inventory half of `play_spoof` (which so far records only its
-acceptance target and limits), and the note that `webview_pairip_fix` has no implementation and so
-needs no add-on.
+Every feature here is also an add-on: the `addons=` profile option layers it at each connect
+(bd remora-6laf.10), and `remora recipe --base` / `remora build --base` print and build the same
+layer by hand.
 
 ## magisk_root
 
@@ -314,11 +314,129 @@ That boot showed that translation runs. It did not run any of the apps the earli
 
 ## play_spoof
 
-This section records the acceptance target and its limits only. Installed paths, properties, init
-steps, payload source and a COPY layer are still to write. Sources: `docs/FEATURES.md`,
-`vendor/source-build/features/zygisk_pif/` (`README.md`, `devicespoof/post-fs-data.sh`),
+The Play spoof stack: ReZygisk (a ptrace-based Zygisk), PlayIntegrityFork, which spoofs `Build.*`
+inside Play services only, Remora's system-wide device spoof, and, with ARM translation, Remora's
+`nb_sigfix` module. Baked dormant: nothing runs until the `play_spoof` runtime option is on.
+Sources: `vendor/source-build/features/zygisk_pif/` (`README.md`, `install.sh`, `pif.json`,
+`devicespoof/`, `upstream/`), `vendor/source-build/{spoof-overlay.sh,stage-spoof-layer.sh,
+assemble-image.sh}`, `vendor/source-build/features/nb_sigfix/`,
+`vendor/host-prereqs/rezygisk/build-rezygisk.sh`, `src/engine/Deployers.cpp`,
 `src/core/Features.cpp`, `src/core/Gating.h`, and Google's
 [verdict definitions](https://developer.android.com/google/play/integrity/verdicts).
+
+### How it reaches the build
+
+`play_spoof` requires `magisk_root` and sets `WITH_PLAY_SPOOF=true`. `assemble-image.sh` refuses
+unless `rez-mod/lib64/libzygisk.so`, `rez-mod/bin/zygiskd64` and `pifork/zygisk/x86_64.so` exist,
+then stages the tree with `stage_spoof_tree` from `spoof-overlay.sh`. It adds `nb_sigfix` when the
+ARM payload has `libnb.so`, rebuilding its `.so` from source with the tree as the toolchain and
+falling back to the committed one. The tree goes into the image as `COPY ps/system /system`. There
+is no `.mk`: nothing in the Android build itself knows about the stack.
+
+### Installed paths
+
+Everything is under `/system/etc/remora-spoof/`, 37 files with ARM translation and 35 without:
+
+| staged from (`features/…`) | image path (`remora-spoof/…`) | files |
+|---|---|---|
+| `zygisk_pif/rez-mod/` | `rez-mod/`: the ReZygisk module as upstream's installer would leave it: `bin/zygisk-ptrace{64,32}`, `bin/zygiskd{64,32}`, `lib64/libzygisk.so`, `lib/libzygisk.so`, `machikado.x86{,_64}`, its scripts and `module.prop` | 13 |
+| `zygisk_pif/pifork/` | `playintegrityfix/`: PlayIntegrityFork whole, its scripts, `classes.dex` and `zygisk/{x86_64,x86,arm64-v8a,armeabi-v7a}.so` | 18 |
+| `zygisk_pif/pif.json` | `pif.json`: the Pixel profile (Pixel 8 Pro canary) | 1 |
+| `zygisk_pif/install.sh` | `install.sh`: Remora's installer into `/data/adb/modules` | 1 |
+| `zygisk_pif/devicespoof/` | `devicespoof/`: `module.prop`, `post-fs-data.sh` | 2 |
+| `nb_sigfix/{module.prop,zygisk/x86_64.so}` | `nb_sigfix/`, only with ARM translation | 2 |
+
+`zygisk_pif/shamiko/` lands beside these as `shamiko/` (see `shamiko`). `50-rezygisk-pif.sh` and
+`60-hide-magisk-applets.sh` are not in the image: the deploy writes them into `/data/adb` from the
+host's vendor tree.
+
+### Properties
+
+None in the image. At runtime, after the framework is up, `devicespoof/post-fs-data.sh` rewrites
+the identity properties apps read (model, brand, fingerprint and the boot-state values) with
+`resetprop`, and PlayIntegrityFork's `service.sh` does its sensitive-property pass. Both write to
+the live property area, never to a file in the image. Observed on the layer below:
+`ro.product.model` read `Pixel 8 Pro` and the fingerprint `google/husky/husky:17/…`.
+
+### Init and runtime steps
+
+No init rc. All of it is the deploy's, only while `play_spoof` is on, and the add-on turns that on
+unless the profile says `play_spoof=false`:
+
+1. **Arm before zygote** (`spoof-arm`). Polls from the container's first moment for the ReZygisk
+   module in `/data/adb/modules` and starts its monitor before zygote. On a fresh `/data` the
+   modules are not installed yet, so this misses and step 3 covers it.
+2. **Install** (`play-spoof`). `install.sh` copies each module into `/data/adb/modules`, and does
+   so again whenever the image's copy has drifted from `/data`'s. It sets Magisk's `zygisk=0` and
+   `denylist=1` and adds the DenyList entries (see `shamiko`). The root gate from `magisk_root`
+   must pass.
+3. **Framework restart, when step 1 missed.** `stop`, arm, `start`, then wait for a new
+   `system_server`. Then the mirror agent is restarted: it is an init service started on
+   `sys.boot_completed`, which `stop` neither stops nor clears, so it would keep binder handles into
+   the old `system_server` and every session would die with `DeadSystemException`.
+4. **Module scripts**, the post-start pass described under `shamiko`, then PlayIntegrityFork's
+   `service.sh`, then netfix and an end-to-end adb check.
+
+**ReZygisk and the agent.** Upstream's monitor takes every exec of `/system/bin/app_process64` by a
+child of init for a zygote. The mirror agent is such an exec, as are `pm`, `am` and `cmd`.
+Injection fails (the agent runs as `shell` and cannot read `/data/adb`), the process is killed,
+init restarts it, and after four rounds the monitor logs "Zygote64 restart too much times, stop
+injecting" and stops tracing init for good. Remora's ReZygisk carries
+`upstream/0002-monitor-inject-only-processes-started-as-a-zygote.patch`, which requires `-Xzygote`
+or `--zygote` among the arguments. Observed after it: `1320 runs /system/bin/app_process64 without
+--zygote: not a zygote, not injected`, with the agent left running and the monitor still tracing.
+
+**Restarts Remora does not start.** After a `docker restart` from outside Remora, Magisk did not run
+`/data/adb/post-fs-data.d/50-rezygisk-pif.sh`, and the stack stayed down until the next deploy.
+Every `remora up` of a stopped container arms it in step 1.
+
+### What it needs from the build, and what it does not
+
+Only file placement: the image half is the tree above, which the deploy tests for by its directory
+alone (`spoofModulesReady`) and installs from. No property, no rc, no sepolicy and no compiled
+module come from the Android build.
+
+### Payload source
+
+- **ReZygisk:** GPL-3.0, `PerformanC/ReZygisk` at `e42886f4`. The 64-bit binaries are built from
+  source by `build-rezygisk.sh` with Remora's patches `0001` (bounded status appends) and `0002`
+  (zygote arguments). The 32-bit ones are upstream's CI build of the same commit.
+- **PlayIntegrityFork:** GPL-3.0, osm0sis v17.
+- **Remora's own:** `install.sh`, `pif.json`, `devicespoof/`, `nb_sigfix/` (source and the built
+  `.so`), the two `/data/adb` hooks and the patches.
+- **Supplied by the user** for a layer: the binaries, which the public tree leaves out. Neither the
+  add-on nor `fetch-payloads.sh` downloads them. `stage-spoof-layer.sh` lays a payload directory
+  under the vendored tree, so the scripts are always this checkout's and the payload fills in only
+  what is missing.
+
+### A COPY layer
+
+The layer carries it all. `vendor/source-build/stage-spoof-layer.sh <build_dir> --spoof
+[--nb-sigfix <dir>]` stages the tree into `<build_dir>/spoof` with the same `spoof-overlay.sh`
+functions `assemble-image.sh` uses, so a source build and a layer cannot differ. The recipe is:
+
+```dockerfile
+COPY spoof/ /system/etc/remora-spoof/
+```
+
+with `magisk_root`'s fragment beside it, which the requirement adds.
+
+**Built and booted.** A layer of all five add-ons (`arm_translate`, `magisk_root`,
+`play_spoof`, `shamiko`, `widevine_l3`) over the Google Play layer of `remora24:x86_64-public`
+(image `08c62ac56c4d`), deployed with `remora up` on a throwaway profile:
+
+- **Fresh `/data`:** step 1 missed as expected and step 3 ran ("play spoof injected after a
+  framework restart"). The agent was restarted and the mirror connected on its first attempt, with
+  `zygiskd64`, the Shamiko and PlayIntegrityFork companions, and `magiskd` running.
+- **Stopped and started again with `remora up`:** "injector armed 100 ms into the container's
+  life", "play spoof already active — no framework restart needed", the monitor skipped the agent,
+  and the mirror connected.
+- `/data/adb/modules` held `rezygisk`, `playintegrityfix`, `remora_devicespoof`, `nb_sigfix` and
+  `zygisk_shamiko`. The DenyList held Play services, its DroidGuard process, the Play Store and GSF.
+  `su -c id` returned uid 0.
+
+That establishes the stack runs on the layer. It is not the acceptance target below: no Play
+sign-in, Store install or Integrity verdict was attempted.
 
 ### The acceptance target, which is not a result
 
@@ -545,32 +663,27 @@ runtime step is done by `install.sh` and the deploy, both shipped by `play_spoof
 
 ### A COPY layer
 
-No complete fragment is possible on `remora24:x86_64-public` today. Shamiko's own files can be
-carried by a COPY layer, but on their own they install and activate nothing:
-
-- **The play_spoof stack is a prerequisite and has no layer.** The install path is `install.sh`
-  under `/system/etc/remora-spoof/`, and `spoofModulesReady` gates on that directory. The public
-  base has neither, because a public release refuses `WITH_PLAY_SPOOF`. `install.sh` also
-  needs ReZygisk, PlayIntegrityFork and `pif.json` beside it, and that inventory is still to write
-  (see `play_spoof`). `play_spoof` and `shamiko` are not in `kOverlayable` (`ImageBuild.cpp`), so
-  `remora recipe --base` prints no fragment for either and asks for a source build.
-- **`magisk_root` is a prerequisite**, and its layer is above.
-- **What COPY cannot supply:** the copy into `/data/adb/modules/zygisk_shamiko`, the ownership and
-  mode reset, the removed files, the cleared `disable` marker, the Magisk database settings and
-  DenyList entries, and the boot-generated cleanup script. All of these are runtime writes to
-  `/data`, which is a volume and not part of the image. None needs a base-file edit.
-- **Redistribution:** any image carrying these files is private by construction.
-
-Shamiko's own part of such a layer would look like this. It is illustrative, not something Remora
-prints. The build context's `zygisk_pif/` is `vendor/source-build/features/zygisk_pif/` with the
-payload supplied:
+The layer carries it, beside the `play_spoof` and `magisk_root` layers its requirement adds
+(bd remora-6laf.4). `stage-spoof-layer.sh <build_dir> --shamiko` stages the ten files into
+`<build_dir>/shamiko` with `stage_spoof_shamiko`, the function `assemble-image.sh` uses. Its payload
+is taken from a `--payload` directory, since no Shamiko file is in the public tree. The recipe is:
 
 ```dockerfile
-# Illustrative only: needs the magisk_root layer and a play_spoof layer that does not exist yet.
-COPY zygisk_pif/shamiko/ /system/etc/remora-spoof/shamiko/
+COPY shamiko/ /system/etc/remora-spoof/shamiko/
 ```
 
-It places the same ten files as the image column of the table, with modes taken from the build
-context. Like every Remora layer, the complete one would also need
-`LABEL remora.public_release="false"`. No layer carrying Shamiko has been built or booted for
-this document.
+What COPY does not supply it does not need to. The copy into `/data/adb/modules/zygisk_shamiko`,
+the mode reset, the removed files, the cleared `disable` marker, the Magisk database settings and
+DenyList entries, and the boot-generated cleanup script are all runtime writes to `/data`, done by
+`install.sh` and the deploy as above. Any image carrying these files is private by construction.
+
+**Built and booted, **, in the five-add-on layer recorded under `play_spoof`:
+`zygisk_shamiko` was installed and enabled, its companion `zygiskd64-zygisk_shamiko` ran, and the
+DenyList held the four entries above. Whether it hides Magisk from a denylisted app was not tested.
+
+## webview_pairip_fix
+
+Nothing to layer. The feature records a capability of images built before Remora carried its own
+build, and no Remora build installs anything for it (`Features.cpp`: "RECORDED, NOT IMPLEMENTED
+HERE"). It is not an add-on, and `remora recipe` still lists it under a source build that would
+add nothing.

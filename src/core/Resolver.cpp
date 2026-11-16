@@ -407,7 +407,11 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
     r.proxyPort = n.proxyPort;
     r.rootHiding = adv.rootHiding;
     r.denylistPackages = adv.denylistPackages;
-    r.playSpoof = adv.playSpoof.value_or(false);  // default off — spoofing is opt-in
+    // Default off — spoofing is opt-in — unless the profile asked for the Play spoof add-on
+    // (bd remora-6laf.3), which is opting in: the stack it layers does nothing until this is on, and
+    // two switches for one choice is one more way to end up with a stack that never runs. An
+    // explicit play_spoof=false still wins.
+    r.playSpoof = adv.playSpoof.value_or(im.addons.contains(QStringLiteral("play_spoof")));
 
     // Custom-image pipeline. Paths are on the build host when build_host is set — keep them
     // $HOME-relative-friendly defaults that exist on any machine.

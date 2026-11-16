@@ -702,6 +702,14 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
             break;
         sp.waitMs(1000);
     }
+    // The mirror agent rides through that restart and must not. It is an init service started on
+    // sys.boot_completed, which `stop` neither stops nor clears, so it keeps its binder handles into
+    // the system_server that just went away, and every session then dies opening its encoder with
+    // DeadSystemException (a fresh /data on the public image with the Play spoof
+    // add-on, which always takes this path on its first boot). Restarted against the new one. The
+    // ReZygisk monitor armed above leaves it alone since 0002 (it is not exec'd as a zygote);
+    // before that, this restart is what got the agent killed until the monitor gave up on init.
+    sp.run({"docker", "exec", c, "setprop", "ctl.restart", "remora_agent"}, {}, log);
     }
     // The remaining modules' post-fs-data.sh, AFTER `start` — never before. devicespoof rewrites
     // ro.hardware / ro.hardware.egl / ro.board.platform, and those SELECT THE HAL IMPLEMENTATIONS:

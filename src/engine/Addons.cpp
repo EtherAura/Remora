@@ -8,6 +8,7 @@
 #include <QTemporaryDir>
 
 #include "core/Builders.h"
+#include "core/Features.h"
 #include "core/ImageBuild.h"
 #include "core/Resolver.h"
 #include "engine/SourceBuild.h"  // shellQuote
@@ -39,6 +40,15 @@ const QVector<Spec> &specs() {
          {"lib64/libnb.so", "lib64/libndk_translation.so", "guest/system/bin/arm64/linker64",
           "bin/ndk_translation_program_runner_binfmt_misc_arm64", "etc/cpuinfo.arm64.txt"},
          false},
+        // The Play spoof stack and Shamiko share a payload directory, zygisk_pif, as they share
+        // the source build's. Their scripts are in every checkout; these files are not.
+        {QStringLiteral("play_spoof"), QStringLiteral("zygisk_pif"),
+         {"rez-mod/lib64/libzygisk.so", "rez-mod/bin/zygiskd64", "rez-mod/bin/zygisk-ptrace64",
+          "pifork/zygisk/x86_64.so"},
+         false},
+        {QStringLiteral("shamiko"), QStringLiteral("zygisk_pif"),
+         {"shamiko/zygisk/x86_64.so", "shamiko/module.prop"},
+         false},
         {QStringLiteral("widevine_l3"), QStringLiteral("widevine"),
          {"vendor/lib64/libwvaidl.so", "vendor/bin/hw/android.hardware.drm-service-lazy.widevine"},
          false},
@@ -51,8 +61,10 @@ const Spec *specFor(const QString &feature) {
     return nullptr;
 }
 
-// Remora's own files each add-on stages beside its payload. In the fingerprint, so a change to how
-// the layer is made rebuilds it, as a change to the payload does.
+// Remora's own files (or whole directories) each add-on stages beside its payload. In the
+// fingerprint, so a change to how the layer is made rebuilds it, as a change to the payload does.
+// The Play spoof stack's are the vendored zygisk_pif tree its payload is laid under, and nb_sigfix,
+// which it carries when the image has ARM translation.
 QStringList ownFiles(const QString &feature, const QString &vendorDir) {
     const QString sb = vendorDir + QStringLiteral("/source-build");
     if (feature == QLatin1String("magisk_root"))
@@ -60,6 +72,11 @@ QStringList ownFiles(const QString &feature, const QString &vendorDir) {
     if (feature == QLatin1String("arm_translate"))
         return {sb + "/stage-arm-layer.sh", sb + "/ndk-overlay.sh",
                 sb + "/patch-arm-translation.py"};
+    if (feature == QLatin1String("play_spoof"))
+        return {sb + "/stage-spoof-layer.sh", sb + "/spoof-overlay.sh",
+                sb + "/features/zygisk_pif", sb + "/features/nb_sigfix"};
+    if (feature == QLatin1String("shamiko"))
+        return {sb + "/stage-spoof-layer.sh", sb + "/spoof-overlay.sh"};
     return {};
 }
 
@@ -74,21 +91,28 @@ bool addFile(QCryptographicHash &h, const QString &path, const QString &label) {
     return true;
 }
 
-// Every file under the payload, in a fixed order, and Remora's own files: the layer's inputs.
-bool fingerprint(QCryptographicHash &h, const AddonPayload &p, const QString &vendorDir) {
+// A file, or every file under a directory in a fixed order, labelled by its path under `label`.
+bool addPath(QCryptographicHash &h, const QString &path, const QString &label) {
+    if (!QFileInfo(path).isDir()) return addFile(h, path, label);
     QStringList rel;
-    QDirIterator it(p.dir, QDir::Files | QDir::Hidden | QDir::NoSymLinks,
+    QDirIterator it(path, QDir::Files | QDir::Hidden | QDir::NoSymLinks,
                     QDirIterator::Subdirectories);
     while (it.hasNext()) {
-        const QString f = QDir(p.dir).relativeFilePath(it.next());
+        const QString f = QDir(path).relativeFilePath(it.next());
         if (!f.contains(QLatin1String("__pycache__"))) rel << f;
     }
     rel.sort();
-    h.addData(p.feature.toUtf8());
     for (const QString &f : rel)
-        if (!addFile(h, p.dir + QLatin1Char('/') + f, f)) return false;
+        if (!addFile(h, path + QLatin1Char('/') + f, label + QLatin1Char('/') + f)) return false;
+    return true;
+}
+
+// Every file under the payload and Remora's own files: the layer's inputs.
+bool fingerprint(QCryptographicHash &h, const AddonPayload &p, const QString &vendorDir) {
+    h.addData(p.feature.toUtf8());
+    if (!addPath(h, p.dir, QStringLiteral("payload"))) return false;
     for (const QString &f : ownFiles(p.feature, vendorDir))
-        if (!addFile(h, f, QFileInfo(f).fileName())) return false;
+        if (!addPath(h, f, QFileInfo(f).fileName())) return false;
     return true;
 }
 
@@ -150,6 +174,15 @@ StepResult ensureAddonOverlay(Spawner &sp, RemoraConfig &cfg, Backend backend,
                                         .arg(a, addonFeatures().join(QStringLiteral(", "))));
     const ResolvedConfig rc = resolve(cfg, backend);
     if (rc.addons.isEmpty()) return StepResult::good(QStringLiteral("no add-ons"));
+    // A requirement (play_spoof needs magisk_root, shamiko both) is never added on the user's
+    // behalf: root is a consent of its own (the Image page asks), so a list without it is refused.
+    for (const QString &a : rc.addons)
+        if (const Feature *f = findFeature(a))
+            for (const QString &req : f->requires_)
+                if (!rc.addons.contains(req))
+                    return StepResult::fail(QStringLiteral("the %1 add-on needs %2 — add %2 to "
+                                                           "addons= too, or take %1 out")
+                                                .arg(a, req));
     const QStringList pending = rc.addonsPending();
     if (pending.isEmpty())
         return StepResult::good(QStringLiteral("%1 already carries %2 — nothing to add")
@@ -239,6 +272,7 @@ StepResult ensureAddonOverlay(Spawner &sp, RemoraConfig &cfg, Backend backend,
                                     .arg(paths.stageParent));
     const QString c = ctx.path();
     const QString sb = paths.vendorDir + QStringLiteral("/source-build");
+    bool spoofStaged = false;
     for (const AddonPayload &p : payloads) {
         ProcResult r{0, {}, {}};
         if (p.feature == QLatin1String("magisk_root")) {
@@ -253,6 +287,22 @@ StepResult ensureAddonOverlay(Spawner &sp, RemoraConfig &cfg, Backend backend,
             // The script the manual route uses, so the patched bridge is the same either way.
             r = sp.run({QStringLiteral("sh"), sb + QStringLiteral("/stage-arm-layer.sh"), c, p.dir},
                        {}, log);
+        } else if (p.feature == QLatin1String("play_spoof") ||
+                   p.feature == QLatin1String("shamiko")) {
+            // One call stages both, so it runs for whichever comes first and is skipped for the
+            // other. nb_sigfix rides the stack only where there is a bridge for it to hook.
+            if (spoofStaged) continue;
+            spoofStaged = true;
+            QStringList argv{QStringLiteral("sh"), sb + QStringLiteral("/stage-spoof-layer.sh"), c};
+            for (const AddonPayload &q : payloads)
+                if (q.name == p.name && !argv.contains(q.dir)) argv << QStringLiteral("--payload") << q.dir;
+            if (pending.contains(QLatin1String("play_spoof"))) {
+                argv << QStringLiteral("--spoof");
+                if (rc.addons.contains(QLatin1String("arm_translate")))
+                    argv << QStringLiteral("--nb-sigfix") << sb + QStringLiteral("/features/nb_sigfix");
+            }
+            if (pending.contains(QLatin1String("shamiko"))) argv << QStringLiteral("--shamiko");
+            r = sp.run(argv, {}, log);
         } else if (p.feature == QLatin1String("widevine_l3")) {
             QDir().mkpath(c + QStringLiteral("/wv"));
             r = sp.run({QStringLiteral("cp"), QStringLiteral("-a"), p.dir + QStringLiteral("/vendor"),

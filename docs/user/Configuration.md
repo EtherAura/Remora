@@ -155,10 +155,10 @@ Changing `shared_folders` or `companion_apps` recreates the container on the nex
 |---|---|---|
 | `root_hiding` | off | `denylist` (Magisk DenyList), `shamiko` (needs the `shamiko` feature) or `full` (both) |
 | `denylist_packages` | none | packages root is hidden from |
-| `play_spoof` | off | activate the baked Play spoof stack (needs the `play_spoof` feature) |
+| `play_spoof` | off, or on with the `play_spoof` add-on | activate the Play spoof stack (needs the `play_spoof` feature or add-on) |
 | `google_play` | off | layer Google Play over the profile's image at every connect, as a private local overlay. Set from the Image page, which asks for the provider terms |
 | `play_terms` | none | the provider terms version accepted for `google_play`. A connect refuses when it is missing or older than the installer's |
-| `addons` | none | `magisk_root`, `arm_translate` and/or `widevine_l3`, layered over the profile's image (over Google Play when that is on) at every connect, as a private local layer. Set from the Image page. See [Image Features](Image-Features.md#add-ons-root-arm-translation-and-widevine) |
+| `addons` | none | any of `magisk_root`, `arm_translate`, `widevine_l3`, `play_spoof` and `shamiko`, layered over the profile's image (over Google Play when that is on) at every connect, as a private local layer. `play_spoof` needs `magisk_root`, and `shamiko` needs both. Set from the Image page. See [Image Features](Image-Features.md#add-ons-root-arm-translation-and-widevine) |
 
 ## Image and source build
 
