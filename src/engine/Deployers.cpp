@@ -710,6 +710,17 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     // ReZygisk monitor armed above leaves it alone since 0002 (it is not exec'd as a zygote);
     // before that, this restart is what got the agent killed until the monitor gave up on init.
     sp.run({"docker", "exec", c, "setprop", "ctl.restart", "remora_agent"}, {}, log);
+    // The Magisk app is the other first-boot casualty. magisk.rc installs it with `pm install` on
+    // sys.boot_completed — the same moment this step bounces the framework — and a package caught
+    // half-installed by `stop` comes back with no permission state, which PackageManager answers by
+    // deleting it (user's device: "Missing permission state for package
+    // com.topjohnwu.magisk", then deletePackageX). Without the app, root works from a shell and no
+    // app can ever be granted su. Put back as magisk.rc would, only where it is missing.
+    sp.run({"docker", "exec", c, "sh", "-c",
+            "[ -f /system/etc/init/magisk/magisk.apk ] || exit 0; "
+            "pm path com.topjohnwu.magisk >/dev/null 2>&1 && exit 0; "
+            "pm install /system/etc/init/magisk/magisk.apk"},
+           {}, log);
     }
     // The remaining modules' post-fs-data.sh, AFTER `start` — never before. devicespoof rewrites
     // ro.hardware / ro.hardware.egl / ro.board.platform, and those SELECT THE HAL IMPLEMENTATIONS:

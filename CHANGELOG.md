@@ -54,6 +54,11 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   killed it four times, then stopped injecting for good, so a later framework restart came back
   without the stack. Remora's ReZygisk build now injects only processes started as a zygote.
 
+- **The Magisk app survives the first boot with the Play spoof stack.** The same framework restart
+  could catch Magisk installing its app at boot completion, and Android then deleted the
+  half-installed package. Root kept working from a shell, but no app could ask for `su`. The deploy
+  now puts the Magisk app back when it is missing after that restart.
+
 - **LAN detection skips link-local addresses.** When the interface of the default route listed
   a link-local address (such as `169.254.x.x`) before its real one, Remora took the link-local
   address as the LAN, so the macvlan network handed to docker got the wrong subnet and host
