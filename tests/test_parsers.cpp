@@ -126,6 +126,28 @@ private slots:
         QVERIFY(noMtime.certified == std::optional<bool>(true));
     }
 
+    // The pending window is [0, one verdict cycle): exactly one cycle old is certified again, an
+    // identity minted this second is pending, and a negative age (mtime ahead of the clock) is not
+    // young — it keeps the certified reading and its age is reported as read, sign included.
+    void playCertificationPendingBoundaries() {
+        const auto edge = parsePlayCertification(
+            QStringLiteral("1111111111111111111\n1\n2222222222222222222\n1785728597\n1785771797\n"));
+        QVERIFY(edge.certified == std::optional<bool>(true));
+        QVERIFY(!edge.pendingEvaluation);
+        QCOMPARE(edge.identityAgeSec.value_or(-1), qint64(43200));
+
+        const auto fresh = parsePlayCertification(
+            QStringLiteral("1111111111111111111\n1\n2222222222222222222\n1785771797\n1785771797\n"));
+        QVERIFY(fresh.pendingEvaluation);
+        QVERIFY(!fresh.certified.has_value());
+
+        const auto skewed = parsePlayCertification(
+            QStringLiteral("1111111111111111111\n1\n2222222222222222222\n1785771802\n1785771797\n"));
+        QVERIFY(skewed.certified == std::optional<bool>(true));
+        QVERIFY(!skewed.pendingEvaluation);
+        QCOMPARE(skewed.identityAgeSec.value_or(0), qint64(-5));
+    }
+
     // Shell noise on line 0 must NOT become an id: it would be shown to the user as the number to
     // paste into Google's registration form. An unreachable container yields no verdict either,
     // which has to stay unknown rather than collapse to "uncertified".
