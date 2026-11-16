@@ -7,6 +7,8 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+## [2026.11.2] - 2026-11-16
+
 ### Added
 
 - **New public releases reach the device through its own updater.** For a profile that deploys
@@ -260,7 +262,8 @@ First public release.
   then mirror with Remora's own Qt/FFmpeg client and an agent baked into the image — video, audio,
   input, clipboard, desktop-mode displays and app listing.
 
-[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.1...HEAD
+[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.2...HEAD
+[2026.11.2]: https://github.com/EtherAura/Remora/compare/v2026.11.1...v2026.11.2
 [2026.11.1]: https://github.com/EtherAura/Remora/compare/v2026.11.0...v2026.11.1
 [2026.11.0]: https://github.com/EtherAura/Remora/compare/v2026.10.0...v2026.11.0
 [2026.10.0]: https://github.com/EtherAura/Remora/compare/edf8471e0a38447667502e70c19115ee6c014083...v2026.10.0
