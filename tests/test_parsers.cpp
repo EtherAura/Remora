@@ -267,6 +267,38 @@ private slots:
         QVERIFY(!ks.first().phys.isEmpty());
     }
 
+    // Host device sharing lists every device, not just keyboards, and offers a pointer or a pad on
+    // its REL/ABS axes — so the unfiltered parser must return all five and flag the axes. Keyed by
+    // event node, since the order of the dump is not the contract.
+    void inputDevicesReturnsEveryDeviceWithAxes() {
+        const QList<KbdIdentity> all = parseInputDevices(fx("proc_input_devices.txt"));
+        QCOMPARE(all.size(), 5);
+        QHash<QString, KbdIdentity> byNode;
+        for (const KbdIdentity &k : all) byNode.insert(k.node, k);
+        QCOMPARE(byNode.size(), 5);
+        for (const char *node : {"event1", "event2", "event5", "event7", "event22"})
+            QVERIFY2(byNode.contains(QLatin1String(node)), node);
+
+        const KbdIdentity cc = byNode.value(QStringLiteral("event5"));
+        QCOMPARE(cc.name, QStringLiteral("Logitech USB Receiver Consumer Control"));
+        QVERIFY(cc.hasRel);
+        QVERIFY(cc.hasAbs);
+        QVERIFY(!cc.alphabetic);
+
+        for (const char *node : {"event1", "event2"}) {
+            const KbdIdentity pb = byNode.value(QLatin1String(node));
+            QCOMPARE(pb.name, QStringLiteral("Power Button"));
+            QVERIFY2(!pb.hasRel, node);
+            QVERIFY2(!pb.hasAbs, node);
+        }
+
+        QCOMPARE(byNode.value(QStringLiteral("event7")).name, QStringLiteral("PC Speaker"));
+        QCOMPARE(byNode.value(QStringLiteral("event22")).name,
+                 QStringLiteral("Keychron K8 Pro Keyboard"));
+        for (const KbdIdentity &k : all)
+            QCOMPARE(k.alphabetic, k.node == QStringLiteral("event22"));
+    }
+
     void inputDevicesKeyboardsHandlesEmptyAndGarbage() {
         QVERIFY(parseInputDevicesKeyboards(QString()).isEmpty());
         QVERIFY(parseInputDevicesKeyboards(QStringLiteral("not a device dump")).isEmpty());
