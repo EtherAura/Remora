@@ -10,7 +10,7 @@
 [![GPLv3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 ![Linux x86_64](https://img.shields.io/badge/platform-Linux%20x86__64-5a8868)
 
-Build Android 16 or 17 from source, deploy it in Docker, and open each app in its own window.
+Fetch the ready-made Android 17 image or build Android 16 or 17 from source, deploy it in Docker, and open each app in its own window.
 
 [**Get started**](docs/user/Getting-Started.md) · [**Requirements**](docs/user/Requirements.md) · [**User guide**](https://github.com/EtherAura/Remora/wiki) · [**Downloads**](https://github.com/EtherAura/Remora/releases)
 
@@ -23,22 +23,36 @@ Build Android 16 or 17 from source, deploy it in Docker, and open each app in it
 
 NVIDIA, Intel and AMD [GPU acceleration](docs/user/GPU-Acceleration.md), with a shared Qt workspace and CLI.
 
-## Before you start
+## Quick start
 
-Start with [requirements](docs/user/Requirements.md) and [installation](docs/user/Installation.md).
+The quickest way to Android is the ready-made image the project publishes. No source build needed.
 
-[Full feature overview](docs/Overview.md) · [Configuration](docs/user/Configuration.md) · [Troubleshooting](docs/user/Troubleshooting.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Discussions](https://github.com/EtherAura/Remora/discussions)
+1. **Install Remora** and join the `docker` group: follow [Installation](docs/user/Installation.md)
+   (the `.deb`, the Arch `PKGBUILD`, or a build of the application from source).
+2. **Fetch the ready-made Android 17 image** into Docker:
 
-## The ready-made image
+   ```sh
+   remora images fetch --tag remora24:x86_64-public
+   ```
 
-Remora publishes an audited Android 17 image, `remora24:x86_64-public`, that `remora images fetch`
-downloads from the project's release ([Official images](docs/user/CLI-Reference.md#official-images)).
-It is x86_64 only, and the published base image carries no Google apps, ARM translation, Widevine
-or root. Those omissions describe the image Remora distributes: Google Play is optional and is
+3. **Check the host, select the image and deploy**: continue with
+   [Getting Started](docs/user/Getting-Started.md). It covers fetching onto a remote Docker host
+   over ssh, naming the fetched image in your profile (the default feature selection does not
+   resolve to it), `remora check` and `remora up`.
+
+Fetching the image does not install Remora, satisfy what `remora check` asks for, or start Android
+([Requirements](docs/user/Requirements.md#to-run-android) lists what the host needs). The signed
+catalog, hashes and rollback are described in [Official images](docs/user/CLI-Reference.md#official-images).
+
+The published image is x86_64 only and carries no Google apps, ARM translation, Widevine or root,
+so apps that ship only ARM native code refuse to install on it. Google Play is optional: it is
 installed locally, on your own Docker host, as a separate image
 ([Optional Google Play](docs/user/CLI-Reference.md#optional-google-play)).
 
+[Full feature overview](docs/Overview.md) · [Configuration](docs/user/Configuration.md) · [Troubleshooting](docs/user/Troubleshooting.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Discussions](https://github.com/EtherAura/Remora/discussions)
+
 ## Build your own image
 
+Optional: instead of fetching the ready-made image, you can build an Android image from source, for example with features it leaves out. This is not the same as building the Remora application.
 Building an Android image from source needs about **450 GB free disk** and **32 GB RAM** (64 GB recommended) for the first build.
 These figures are for [the image build](docs/user/Requirements.md#to-build-the-android-image), not for installing Remora. Follow [building the image](docs/user/Building-the-Image.md).
