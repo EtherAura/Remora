@@ -116,6 +116,70 @@ class InstallerTests(unittest.TestCase):
                 with self.assertRaises(play.InstallError):
                     play.extract_payload(a, m, root / 'out')
 
+    def test_malicious_members_write_nothing_outside_destination(self):
+        # Through the real extract_payload: every attack carries bytes and aims at a sentinel
+        # beside the destination, placed both before and after the allowlisted member.
+        name = 'system/product/etc/permissions/test.xml'
+        allowed = 'x86_64/37/' + name
+        payload = b'<permissions/>'
+
+        def snapshot(top):
+            return {str(p.relative_to(top)): (p.is_symlink(), p.read_bytes() if p.is_file() else None)
+                    for p in sorted(top.rglob('*')) if 'out' not in p.relative_to(top).parts}
+
+        def attacks(sentinel):
+            def member(n, kind=tarfile.REGTYPE, link=''):
+                i = tarfile.TarInfo(n)
+                i.type, i.linkname = kind, link
+                return i
+            return {
+                'symlink to outside file': member('evil', tarfile.SYMTYPE, str(sentinel)),
+                'symlink named as payload': member(allowed, tarfile.SYMTYPE, str(sentinel)),
+                'symlink parent dir': member('x86_64/37/system', tarfile.SYMTYPE, str(sentinel.parent)),
+                'hardlink to outside file': member('evil', tarfile.LNKTYPE, str(sentinel)),
+                'hardlink named as payload': member(allowed, tarfile.LNKTYPE, '../outside.txt'),
+                'parent traversal': member('../outside.txt'),
+                'prefixed traversal': member('x86_64/37/../../../outside.txt'),
+                'absolute name': member(str(sentinel)),
+            }
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            archive, m = fixture(root)
+            play.extract_payload(archive, m, root / 'out')  # positive control
+            self.assertEqual((root / 'out' / name).read_bytes(), payload)
+            self.assertFalse((root / 'out' / name).is_symlink())
+
+        for label, evil in attacks(Path('/nonexistent')).items():
+            for first in [True, False]:
+                with self.subTest(attack=label, before_payload=first), tempfile.TemporaryDirectory() as d:
+                    top = Path(d)
+                    work = top / 'work'
+                    work.mkdir()
+                    sentinel = top / 'outside.txt'
+                    sentinel.write_bytes(b'original')
+                    evil = attacks(sentinel)[label]
+                    evil.size = len(b'attacker') if evil.isfile() else 0
+                    b = io.BytesIO()
+                    with tarfile.open(fileobj=b, mode='w:xz') as tar:
+                        good = tarfile.TarInfo(allowed)
+                        good.size = len(payload)
+                        members = [(good, payload), (evil, b'attacker')]
+                        for info, data in (members[::-1] if first else members):
+                            tar.addfile(info, io.BytesIO(data) if info.isfile() else None)
+                    archive = work / 'package.zip'
+                    with zipfile.ZipFile(archive, 'w') as z:
+                        z.writestr('files/files.tar.xz', b.getvalue())
+                    m = {'files': {name: {'bytes': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}},
+                         'apks': [], 'tar_entry': 'files/files.tar.xz', 'tar_prefix': 'x86_64/37/'}
+                    before = snapshot(top)
+                    with self.assertRaises(play.InstallError):
+                        play.extract_payload(archive, m, work / 'out')
+                    self.assertEqual(snapshot(top), before)
+                    self.assertEqual(sentinel.read_bytes(), b'original')
+                    out = work / 'out'
+                    self.assertFalse(any(p.is_symlink() for p in out.rglob('*')) if out.exists() else False)
+
     def test_reject_https_downgrade(self):
         with self.assertRaises(play.InstallError):
             play.HttpsOnly().redirect_request(None, None, 302, '', {}, 'http://example.com/pkg')
