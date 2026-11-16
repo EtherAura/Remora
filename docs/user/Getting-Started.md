@@ -35,8 +35,9 @@ remora images fetch --tag remora24:x86_64-public
 ```
 
 This downloads the audited Android 17 image the project publishes and loads it into Docker under
-the tag `remora24:x86_64-public`. The signature, validity window, archive hash, Docker identity and
-tag are checked before Docker loads it, and an image it replaces is kept for rollback. To deploy to
+the tag `remora24:x86_64-public`. The download is 716 MB and the image takes 2.4 GB in Docker. The
+signature, validity window, archive hash, Docker identity and tag are checked before Docker loads
+it, and an image it replaces is kept for rollback. To deploy to
 a docker host over ssh, fetch onto that host by adding `--host user@host`. In the workspace,
 **Official downloads** adds the same source to the Image library.
 [Official images](CLI-Reference.md#official-images) covers `list`, `check` and `rollback`.

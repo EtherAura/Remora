@@ -12,6 +12,8 @@
 
 Fetch the ready-made Android 17 image or build Android 16 or 17 from source, deploy it in Docker, and open each app in its own window.
 
+The ready-made image is a 716 MB download and takes 2.4 GB in Docker; a freshly started device uses about 1 GB of RAM. No source build is needed: see [Quick start](#quick-start).
+
 [**Get started**](docs/user/Getting-Started.md) · [**Requirements**](docs/user/Requirements.md) · [**User guide**](https://github.com/EtherAura/Remora/wiki) · [**Downloads**](https://github.com/EtherAura/Remora/releases)
 
 <img src="docs/workspace.png" alt="Remora workspace for composing an Android image, choosing a deployment target and connecting" width="1000" />
@@ -26,6 +28,10 @@ NVIDIA, Intel and AMD [GPU acceleration](docs/user/GPU-Acceleration.md), with a 
 ## Quick start
 
 The quickest way to Android is the ready-made image the project publishes. No source build needed.
+It is a 716 MB download and takes 2.4 GB in Docker (allow about 3.1 GB of free disk while it is
+fetched). A freshly started device used about 1 GB of RAM at its home screen, measured with
+software rendering; the apps you install add to both
+([Requirements](docs/user/Requirements.md#to-run-android)).
 
 1. **Install Remora** and join the `docker` group: follow [Installation](docs/user/Installation.md)
    (the `.deb`, the Arch `PKGBUILD`, the Gentoo ebuild, or a build of the application from

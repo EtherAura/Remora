@@ -8,8 +8,10 @@ payload and the third-party payloads), the two host settings that make builds di
 
 ## Why you build it yourself
 
-Remora ships no prebuilt images. It compiles LineageOS from source with exactly the features you
-pick, once per Android release and feature set. Some features bake in third-party binaries that
+You do not have to: the project publishes a ready-made Android 17 image, which
+`remora images fetch` downloads (see [Getting Started](Getting-Started.md)). Build your own for
+Android 16, or for features that image leaves out. A build compiles LineageOS from source with
+exactly the features you pick, once per Android release and feature set. Some features bake in third-party binaries that
 nobody may redistribute, so an image you build can be yours to run without being yours to share:
 [NOTICE](../../NOTICE) and [IMAGE_MIRROR.md](../IMAGE_MIRROR.md) spell that out.
 

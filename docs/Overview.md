@@ -12,7 +12,7 @@ container, GPU-accelerated on NVIDIA, Intel and AMD, with every app in a window 
 Remora is a desktop control plane for Android in Docker: one place to compose the image, deploy it
 and mirror it — *with every knob actually exposed.* It is **not an emulator**: Android runs
 natively in a container on your own kernel, with no virtual machine and no CPU emulation, and
-arm64-only apps run through ARM translation.
+arm64-only apps run through ARM translation, which the ready-made image leaves out.
 
 Remora is **configure-first**: compose your Android image à-la-carte, pick **where** to run it
 (this machine, or any docker host over ssh), check the target is ready, then **deploy + connect**
@@ -20,10 +20,11 @@ Remora is **configure-first**: compose your Android image à-la-carte, pick **wh
 
 ![The Remora config workspace](workspace.png)
 
-> **You build your own Android image.** Remora does not download one: it compiles LineageOS from
-> source with exactly the features you pick. Plan on **about 450 GB of free disk**, **32 GB of RAM
-> (64 GB recommended)** and an afternoon for the first build — see
-> [What you need](#what-you-need).
+> **The quickest way to an image is the ready-made one.** `remora images fetch` downloads the
+> audited Android 17 image the project publishes: a 716 MB download, 2.4 GB in Docker, no source
+> build. Building your own image is optional: it compiles LineageOS from source with exactly the
+> features you pick, and needs **about 450 GB of free disk**, **32 GB of RAM (64 GB recommended)**
+> and an afternoon for the first build — see [What you need](#what-you-need).
 
 Written in **C++20 / Qt 6** — a headless CLI and a QtWidgets workspace over one shared, unit-tested core.
 
@@ -91,12 +92,14 @@ render nodes are used directly, NVIDIA's proprietary driver through the Venus re
 with no GPU Android renders in software. Android 17 needs no kernel module; an Android 16 image
 also needs the IBT-fixed `ashmem_linux.ko`. For NVIDIA, `remora venus-build` builds and installs the
 render server (see `vendor/host-prereqs/venus-nvidia/`). A `remote` target needs the same on the
-docker host. Each image takes about 3 GB in Docker, and each instance's Android data grows with the
+docker host. The ready-made image is a 716 MB download and takes 2.4 GB in Docker; a freshly started
+device used about 1 GB of RAM at its home screen, and each instance's Android data grows with the
 apps you install. `remora check` probes all of this read-only and names what is missing; the full
 table is in [docs/FEATURES.md](FEATURES.md).
 
-**To build the Android image** — needed once per Android release and feature set, because Remora
-ships no prebuilt images. Two inputs come from you rather than from the download: the Mesa graphics
+**To build the Android image** — optional, because the project publishes a ready-made Android 17
+image (`remora images fetch`); build your own for Android 16 or for features that image leaves
+out, once per Android release and feature set. Two inputs come from you rather than from the download: the Mesa graphics
 stack, built on the host once by `vendor/host-prereqs/mesa-android/build-mesa.sh`, and the
 third-party payloads behind features like Google apps, ARM translation and Widevine, which Remora
 does not redistribute — [vendor/PAYLOADS.md](../vendor/PAYLOADS.md) says what each one is and where it
@@ -253,8 +256,10 @@ Config is stored per-instance in `~/.config/remorarc` (standard INI; hand-editab
 1. `remora check` → confirm the target is READY, and fix what it names.
 2. `remora gui` → pick the Android version, tick the image features you want, choose the target, tune
    runtime/mirror.
-3. **Build the image** (the Image page, or `remora build --source`) — the long step. Build the Mesa
-   payload and supply any third-party payloads first; see [What you need](#what-you-need).
+3. **Get the image.** `remora images fetch --tag remora24:x86_64-public` downloads the ready-made
+   one; name it in the profile with `image_tag=remora24:x86_64-public`. Or **build your own** (the
+   Image page, or `remora build --source`) — the long step. Build the Mesa payload and supply any
+   third-party payloads first; see [What you need](#what-you-need).
 4. **Deploy & Connect** (or `remora up`) → watch the checklist, get a mirror window. Installed apps
    appear in your desktop's application menu, grouped per profile.
 

@@ -1,15 +1,17 @@
 # Remora user guide
 
-This guide explains how to install Remora, build an Android image with it, run that image on your
-own machine or on another docker host, and use Android apps from your Linux desktop. This page says
+This guide explains how to install Remora, get an Android image (the ready-made one, or one you
+build), run that image on your own machine or on another docker host, and use Android apps from
+your Linux desktop. This page says
 what Remora is and lists every other page.
 
 ## What Remora is
 
 Remora is a desktop control plane for Android in Docker. It does three jobs from one place:
 
-- **Compose and build the image.** You pick Android 16 or 17 (LineageOS 23 or 24) and the features
-  you want, and Remora builds that image from source.
+- **Fetch or build the image.** `remora images fetch` downloads the ready-made Android 17 image
+  the project publishes. Or you pick Android 16 or 17 (LineageOS 23 or 24) and the features you
+  want, and Remora builds that image from source.
 - **Deploy it.** The same container runs on this machine (`bare`) or on any docker host you reach
   over ssh (`remote`). A read-only check tells you what the target still needs before you deploy.
 - **Mirror it.** Remora's own client talks to an agent baked into the image: video, audio, input,
@@ -23,10 +25,13 @@ command line.
 ## What Remora is not
 
 - **It is not an emulator.** Android runs natively in a container on your own kernel. There is no
-  virtual machine and no CPU emulation. Apps that exist only for arm64 run through ARM translation.
-- **It does not download an Android image.** There are no prebuilt images to fetch. You build your
-  own, which takes about 450 GB of free disk, 32 GB of RAM (64 GB recommended) and an afternoon for
-  the first build. See [Requirements](Requirements.md).
+  virtual machine and no CPU emulation. Apps that exist only for arm64 run through ARM translation,
+  which the ready-made image leaves out.
+- **The ready-made image is not every feature.** It is x86_64 only and carries no Google apps, ARM
+  translation, Widevine or root. Google Play, root, ARM translation and Widevine are added locally,
+  on your own machine, or come with an image you build yourself. Building one takes about 450 GB of
+  free disk, 32 GB of RAM (64 GB recommended) and an afternoon for the first build. See
+  [Requirements](Requirements.md).
 - **There is no phone companion app.** That is future work.
 
 Remora runs on Linux x86_64 and is licensed under the GPL v3. An image you build is not

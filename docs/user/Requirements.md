@@ -12,9 +12,13 @@ and time before you start.
 | Docker | and membership of the `docker` group on the machine that runs the containers |
 | A kernel that provides binder (binderfs) | most desktop kernels do. `remora check` does not probe this |
 | `adb` | Remora reaches every device it deploys through adb. Install your distribution's android-tools package |
-| An Android image | the ready-made one the project publishes (`remora images fetch`), or one you build. Each image takes about 3 GB in Docker |
+| An Android image | the ready-made one the project publishes (`remora images fetch`), or one you build. The ready-made image is a 716 MB download and takes 2.4 GB in Docker. Fetching it needs about 3.1 GB free, because the downloaded archive is removed only once the image is loaded |
+| Memory | a freshly started device on the ready-made image used about 1 GB at its home screen and peaked at about 1.4 GB while booting. Running apps add to that: a device with Google Play and several large apps in use measured about 4 GB |
 | `python3` and `openssl`, for the ready-made image | on the machine that runs the containers. Fetching the image and checking for its updates run both, and adding Google Play runs `python3` |
-| Disk for Android's data | each instance's data grows with the apps you install |
+| Disk for Android's data | a fresh device's data starts at about 20 MB and grows with the apps you install |
+
+The sizes and memory figures are the ones the project measured, on one machine, with software
+rendering.
 
 Two things depend on the Android release:
 

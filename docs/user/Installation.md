@@ -171,7 +171,9 @@ With Remora installed, fetch the audited Android 17 image the project publishes:
 remora images fetch --tag remora24:x86_64-public
 ```
 
-The signature, validity window, archive hash, Docker identity and tag are checked before Docker
+The download is 716 MB and the image takes 2.4 GB in Docker
+([Requirements](Requirements.md#to-run-android) has the memory and disk figures). The signature,
+validity window, archive hash, Docker identity and tag are checked before Docker
 loads it, and an image it replaces is kept for rollback. Add `--host user@host` to fetch onto a
 remote Docker host. In the workspace, **Official downloads** adds the same source to the Image
 library. A fetched image is one row there, with the source named on it, and Fetch on that row
