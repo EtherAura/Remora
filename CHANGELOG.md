@@ -56,6 +56,12 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   `.service.d` drop-in directory. It no longer reports success when a unit could not be stopped
   or disabled: that unit's files are kept, the reason is printed, and the command exits non-zero.
   A name whose units would include another existing profile's units is refused.
+- **Deleting a profile in the workspace also removes its services.** Its login unit and its two
+  watchers, with their `.service.d` drop-ins, used to stay behind, so every login started
+  `remora up` for a profile that no longer existed. Delete now disables and removes them first,
+  the same way `remora service <profile> --remove` does, and says so in its confirmation. If any
+  of them cannot be removed, the profile is kept and the reason is shown, so the delete can be
+  retried. Images, containers and device data are still untouched.
 
 - **A release update no longer leaves its download behind.** Every fetch of an official image —
   `remora images fetch`, the workspace's Official downloads and Android's *Download and apply* —

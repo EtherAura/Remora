@@ -6714,14 +6714,29 @@ void MainWindow::onDeleteProfile() {
         return;
     }
     if (QMessageBox::question(this, QStringLiteral("Delete profile"),
-                              QStringLiteral("Delete profile '%1'? Its settings are removed from "
-                                             "remorarc (built images/containers are untouched).")
+                              QStringLiteral("Delete profile '%1'? Its login and watcher services "
+                                             "(and their drop-ins) are disabled and removed, then "
+                                             "its settings are removed from remorarc. Built "
+                                             "images, containers and device data are untouched.")
                                   .arg(name))
         != QMessageBox::Yes)
         return;
-    // Same reason as the rename: once the profile is gone its menu folder is unreachable.
-    removeAppMenuFolder(name);
-    deleteInstance(path_, name);
+    // The units go first, while the profile still exists (bd remora-lhnd): an enabled login unit
+    // left behind starts `remora up` for a profile that is gone at every login. Synchronous on the
+    // GUI thread for the same reason as removeAppMenuFolder — remorarc is rewritten right after.
+    RealSpawner sp;
+    const ProfileDeletionResult del = deleteProfileAndServices(
+        path_, QDir::homePath() + QStringLiteral("/.config/systemd/user"), name,
+        [&sp](const QStringList &v) {
+            const ProcResult p = sp.run(v, {}, {});
+            return UnitCommandResult{p.rc, p.out, p.stderrTail};
+        },
+        // Same reason as the rename: once the profile is gone its menu folder is unreachable.
+        [this](const QString &profile) { removeAppMenuFolder(profile); });
+    if (!del.deleted) {
+        QMessageBox::warning(this, QStringLiteral("Delete profile"), del.error);
+        return;
+    }
     noteRemorarcWritten();
     profileCert_.remove(name);
     if (instance_ == name) {

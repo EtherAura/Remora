@@ -629,4 +629,29 @@ UnitRemovalResult removeServiceUnits(const QString &unitDir, const QString &prof
     return res;
 }
 
+ProfileDeletionResult deleteProfileAndServices(
+    const QString &path, const QString &unitDir, const QString &profile,
+    const UnitCommandRunner &run, const std::function<void(const QString &)> &beforeSectionDelete) {
+    ProfileDeletionResult res;
+    const QString refusal = serviceRemovalRefusal(profile, listInstances(path));
+    if (!refusal.isEmpty()) {
+        res.error = QStringLiteral("Profile '%1' was kept: %2").arg(profile, refusal);
+        return res;
+    }
+    res.units = removeServiceUnits(unitDir, profile, run);
+    if (!res.units.ok) {
+        res.error = QStringLiteral("Profile '%1' was kept because its services were not all "
+                                   "removed:\n%2")
+                        .arg(profile, res.units.errors.join(QLatin1Char('\n')));
+        if (!res.units.removed.isEmpty())
+            res.error += QStringLiteral("\nAlready removed (not restored):\n%1")
+                             .arg(res.units.removed.join(QLatin1Char('\n')));
+        return res;
+    }
+    if (beforeSectionDelete) beforeSectionDelete(profile);
+    deleteInstance(path, profile);
+    res.deleted = true;
+    return res;
+}
+
 }  // namespace remora

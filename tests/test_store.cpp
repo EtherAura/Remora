@@ -683,7 +683,204 @@ private slots:
         QVERIFY(QFileInfo::exists(root.path() + QStringLiteral("/etc.service.d/k")));
     }
 
+    // ─── workspace Delete profile: deleteProfileAndServices, the coordinator onDeleteProfile runs ───
+    // The app-menu step is the GUI's callback (removeAppMenuFolder); here it only records when it
+    // ran, so what is proven is its ordering, not the menu files themselves.
+
+    // The named regression: every disable and the reload run while the section still exists, the
+    // callback runs after the reload, and then exactly that section goes.
+    void deleteProfileRemovesServicesBeforeSection() {
+        QTemporaryDir dir;
+        const QString unitDir = dir.filePath(QStringLiteral("units"));
+        const QString path = rc(dir);
+        seedProfiles(path, unitDir);
+        FakeManager m;
+        m.unitDir = unitDir;
+        m.allPresent(QStringLiteral("p"));
+        bool sectionThroughout = true;
+        const UnitCommandRunner inner = m.runner();
+        const UnitCommandRunner run = [&](const QStringList &v) {
+            if (!listInstances(path).contains(QStringLiteral("p"))) sectionThroughout = false;
+            return inner(v);
+        };
+        QStringList hookRan;
+        bool hookSawSection = false, hookAfterReload = false;
+        const ProfileDeletionResult r = deleteProfileAndServices(
+            path, unitDir, QStringLiteral("p"), run, [&](const QString &profile) {
+                hookRan << profile;
+                hookSawSection = listInstances(path).contains(QStringLiteral("p"));
+                hookAfterReload =
+                    m.calls.last() == QStringList{"systemctl", "--user", "daemon-reload"};
+            });
+        QVERIFY2(r.deleted, qPrintable(r.error));
+        QVERIFY(r.error.isEmpty());
+        QVERIFY(sectionThroughout);
+        QCOMPARE(hookRan, QStringList{QStringLiteral("p")});
+        QVERIFY(hookSawSection);
+        QVERIFY(hookAfterReload);
+        for (const QString &u : serviceUnitNames(QStringLiteral("p"))) {
+            QVERIFY2(m.ran(QStringLiteral("disable"), u), qPrintable(u));
+            QVERIFY2(m.fileExistedAtDisable.value(u), qPrintable(u));
+            QVERIFY(!QFileInfo::exists(unitDir + '/' + u));
+            QVERIFY(!QFileInfo::exists(unitDir + '/' + u + QStringLiteral(".d")));
+        }
+        QCOMPARE(r.units.removed.size(), 6);
+        QCOMPARE(listInstances(path), QStringList{QStringLiteral("other")});
+        expectUnrelatedIntact(path, unitDir);
+    }
+
+    // A profile that never installed a service: every unit is confirmed not-found and inactive.
+    void deleteProfileWithoutServicesSucceeds() {
+        QTemporaryDir dir;
+        const QString unitDir = dir.filePath(QStringLiteral("units"));
+        const QString path = rc(dir);
+        seedProfiles(path, unitDir);
+        for (const QString &u : serviceUnitNames(QStringLiteral("p"))) {
+            QVERIFY(QFile::remove(unitDir + '/' + u));
+            QVERIFY(QDir(unitDir + '/' + u + QStringLiteral(".d")).removeRecursively());
+        }
+        FakeManager m;
+        m.absent(QStringLiteral("p"));
+        int hooks = 0;
+        const ProfileDeletionResult r = deleteProfileAndServices(
+            path, unitDir, QStringLiteral("p"), m.runner(), [&](const QString &) { ++hooks; });
+        QVERIFY2(r.deleted, qPrintable(r.error));
+        QCOMPARE(hooks, 1);
+        QVERIFY(r.units.removed.isEmpty());
+        QCOMPARE(listInstances(path), QStringList{QStringLiteral("other")});
+        expectUnrelatedIntact(path, unitDir);
+    }
+
+    // Any cleanup failure keeps the profile, skips the menu step and explains itself.
+    void deleteProfileKeepsSectionWhenCleanupFails_data() {
+        QTest::addColumn<int>("kind");
+        QTest::newRow("loaded unit disable fails") << 0;
+        QTest::newRow("running orphan stop fails") << 1;
+        QTest::newRow("manager unreachable") << 2;
+        QTest::newRow("daemon-reload fails") << 3;
+    }
+    void deleteProfileKeepsSectionWhenCleanupFails() {
+        QFETCH(int, kind);
+        QTemporaryDir dir;
+        const QString unitDir = dir.filePath(QStringLiteral("units"));
+        const QString path = rc(dir);
+        seedProfiles(path, unitDir);
+        FakeManager m;
+        m.allPresent(QStringLiteral("p"));
+        const QString main = QStringLiteral("remora-p.service");
+        const QString updater = QStringLiteral("remora-updater-p.service");
+        QString expect;
+        if (kind == 0) {
+            m.units[main].disableRc = 1;
+            expect = QStringLiteral("LoadState=loaded");
+        } else if (kind == 1) {
+            m.units[updater] = {QStringLiteral("not-found"), QStringLiteral("active"), 1, 1};
+            m.units[updater].stopErr = QStringLiteral("Failed to stop: Access denied");
+            expect = QStringLiteral("Access denied");
+        } else if (kind == 2) {
+            m.units[main].disableRc = 1;
+            m.units[main].overrideQuery = true;
+            m.units[main].queryRc = 1;
+            expect = QStringLiteral("manager state unknown");
+        } else {
+            m.reloadRc = 1;
+            expect = QStringLiteral("daemon-reload failed");
+        }
+        int hooks = 0;
+        const ProfileDeletionResult r = deleteProfileAndServices(
+            path, unitDir, QStringLiteral("p"), m.runner(), [&](const QString &) { ++hooks; });
+        QVERIFY(!r.deleted);
+        QCOMPARE(hooks, 0);
+        QVERIFY(r.error.contains(QStringLiteral("'p' was kept")));
+        QVERIFY2(r.error.contains(expect), qPrintable(r.error));
+        QVERIFY(m.ran(QStringLiteral("daemon-reload"), {}));
+        QCOMPARE(listInstances(path), (QStringList{QStringLiteral("other"), QStringLiteral("p")}));
+        QSettings s(path, QSettings::IniFormat);
+        QCOMPARE(s.value("Instance-p/width").toInt(), 720);
+        // units removed before the failure stay removed, and the message does not hide it
+        if (!r.units.removed.isEmpty())
+            QVERIFY(r.error.contains(QStringLiteral("Already removed (not restored)")));
+        if (kind == 3) QCOMPARE(r.units.removed.size(), 6);
+        if (kind == 0 || kind == 2)
+            QCOMPARE(read(unitDir + '/' + main), QByteArray("[Unit]\n"));
+        if (kind == 1)
+            QCOMPARE(read(unitDir + '/' + updater + QStringLiteral(".d/override.conf")),
+                     QByteArray("o\n"));
+        expectUnrelatedIntact(path, unitDir);
+    }
+
+    // The CLI's collision refusal applies to the workspace too, before any side effect.
+    void deleteProfileRefusesSharedUnits_data() {
+        QTest::addColumn<QString>("victim");
+        QTest::addColumn<QString>("owner");
+        QTest::newRow("escaping") << QStringLiteral("a b") << QStringLiteral("a-b");
+        QTest::newRow("family") << QStringLiteral("updater-x") << QStringLiteral("x");
+    }
+    void deleteProfileRefusesSharedUnits() {
+        QFETCH(QString, victim);
+        QFETCH(QString, owner);
+        QTemporaryDir dir;
+        const QString unitDir = dir.filePath(QStringLiteral("units"));
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue(QStringLiteral("Instance-%1/width").arg(victim), 1);
+            s.setValue(QStringLiteral("Instance-%1/width").arg(owner), 2);
+            s.sync();
+        }
+        for (const QString &u : serviceUnitNames(victim) + serviceUnitNames(owner))
+            write(unitDir + '/' + u, "[Unit]\n");
+        FakeManager m;
+        m.allPresent(victim);
+        m.allPresent(owner);
+        int hooks = 0;
+        const ProfileDeletionResult r = deleteProfileAndServices(
+            path, unitDir, victim, m.runner(), [&](const QString &) { ++hooks; });
+        QVERIFY(!r.deleted);
+        QCOMPARE(hooks, 0);
+        QVERIFY(m.calls.isEmpty());
+        QVERIFY2(r.error.contains(QStringLiteral("belongs to profile '%1'").arg(owner)),
+                 qPrintable(r.error));
+        QVERIFY(listInstances(path).contains(victim));
+        QVERIFY(listInstances(path).contains(owner));
+        for (const QString &u : serviceUnitNames(victim) + serviceUnitNames(owner))
+            QVERIFY(QFileInfo::exists(unitDir + '/' + u));
+    }
+
 private:
+    // Profiles p (to delete) and other, [Defaults], p's three units each with a drop-in, other's
+    // units, and lookalikes that must survive.
+    static void seedProfiles(const QString &path, const QString &unitDir) {
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Instance-p/width", 720);
+            s.setValue("Instance-other/width", 800);
+            s.setValue("Defaults/fps", 60);
+            s.sync();
+        }
+        for (const QString &u : serviceUnitNames(QStringLiteral("p"))) {
+            write(unitDir + '/' + u, "[Unit]\n");
+            write(unitDir + '/' + u + QStringLiteral(".d/override.conf"), "o\n");
+        }
+        for (const QString &u : serviceUnitNames(QStringLiteral("other"))) {
+            write(unitDir + '/' + u, "[Unit]\n");
+            write(unitDir + '/' + u + QStringLiteral(".d/override.conf"), "o\n");
+        }
+        write(unitDir + QStringLiteral("/remora-pp.service"), "k\n");
+        write(unitDir + QStringLiteral("/unrelated.service"), "k\n");
+    }
+    static void expectUnrelatedIntact(const QString &path, const QString &unitDir) {
+        QSettings s(path, QSettings::IniFormat);
+        QCOMPARE(s.value("Instance-other/width").toInt(), 800);
+        QCOMPARE(s.value("Defaults/fps").toInt(), 60);
+        for (const QString &u : serviceUnitNames(QStringLiteral("other"))) {
+            QCOMPARE(read(unitDir + '/' + u), QByteArray("[Unit]\n"));
+            QCOMPARE(read(unitDir + '/' + u + QStringLiteral(".d/override.conf")), QByteArray("o\n"));
+        }
+        QVERIFY(QFileInfo::exists(unitDir + QStringLiteral("/remora-pp.service")));
+        QVERIFY(QFileInfo::exists(unitDir + QStringLiteral("/unrelated.service")));
+    }
+
     static void write(const QString &p, const QByteArray &data) {
         QVERIFY(QDir().mkpath(QFileInfo(p).absolutePath()));
         QFile f(p);
@@ -720,6 +917,10 @@ private:
             for (const QString &u : all)
                 if (!units.contains(u))
                     units[u] = {QStringLiteral("not-found"), QStringLiteral("inactive"), 1, 0};
+        }
+        void absent(const QString &profile) {
+            for (const QString &u : serviceUnitNames(profile))
+                units[u] = {QStringLiteral("not-found"), QStringLiteral("inactive"), 1, 0};
         }
         void allPresent(const QString &profile) {
             for (const QString &u : serviceUnitNames(profile))

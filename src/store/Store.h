@@ -80,4 +80,18 @@ struct UnitRemovalResult {
 UnitRemovalResult removeServiceUnits(const QString &unitDir, const QString &profile,
                                      const UnitCommandRunner &run);
 
+// The workspace's Delete profile, in the order that leaves no unit behind: the same refusal as
+// `service --remove` (against every profile in path), then removeServiceUnits, and only once that
+// fully succeeded — reload included — beforeSectionDelete (the app-menu folder) and the profile's
+// section. Any failure keeps the section so the deletion can be retried; units already removed
+// by then stay removed, and error says so.
+struct ProfileDeletionResult {
+    bool deleted = false;
+    QString error;  // for display; empty once deleted
+    UnitRemovalResult units;
+};
+ProfileDeletionResult deleteProfileAndServices(
+    const QString &path, const QString &unitDir, const QString &profile,
+    const UnitCommandRunner &run, const std::function<void(const QString &)> &beforeSectionDelete);
+
 }  // namespace remora
