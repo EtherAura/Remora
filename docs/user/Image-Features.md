@@ -81,7 +81,8 @@ needs an Android 17 x86_64 image without Google apps, such as the public image. 
 image already includes Google Play shows that instead. In a profile file the option is
 `google_play` and `play_terms`; see [Configuration](Configuration.md#root-and-play).
 
-The overlay is listed in the **Built images** card as a **Google Play layer**. Deleting one that
+The overlay is listed in the **Built images** card as a **Google Play layer**, collapsed under the
+image it was built over. Deleting one that
 no device uses is safe: the next connect of a profile that needs it builds it again. Download and
 verification happen directly on the Docker host, the installer rejects an image that already
 contains Google apps or microG, and it never runs the third-party scripts. Remora does not log

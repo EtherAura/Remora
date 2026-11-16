@@ -2493,7 +2493,8 @@ void MainWindow::buildUi() {
         archivesTree_->setColumnCount(4);
         archivesTree_->setHeaderLabels({QStringLiteral("archive"), QStringLiteral("image tag"),
                                         QStringLiteral("built"), QStringLiteral("size")});
-        archivesTree_->setRootIsDecorated(false);
+        // Decorated: a Google Play layer is a collapsed child of the image it was built over.
+        archivesTree_->setRootIsDecorated(true);
         archivesTree_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
         archivesTree_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
         archivesTree_->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
@@ -4298,13 +4299,17 @@ void MainWindow::onRefreshArchives() {
                     item->setText(2, built);
                     item->setText(3, humanSize(a.size));
                     item->setData(0, Qt::UserRole, a.path);
+                    if (!a.tag.isEmpty()) item->setData(0, Qt::UserRole + 7, QStringList{a.tag});
                     total += a.size;
                 }
-                for (const DockerImage &im : images) {
-                    auto *item = new QTreeWidgetItem(archivesTree_);
-                    // A Google Play layer's tag is two hashes; name what it is instead. The
-                    // installer's own prefix marks it, whichever profile's Connect built it.
-                    const bool playLayer = im.tag.startsWith(QLatin1String("remora-local:play-"));
+                // A Google Play layer's tag is two hashes; name what it is instead. The
+                // installer's own prefix marks it, whichever profile's Connect built it, and its
+                // first hash is the short ID of the image it was layered over (install.py).
+                static const QLatin1String playPrefix("remora-local:play-");
+                const auto addImageRow = [&](const DockerImage &im, QTreeWidgetItem *parent) {
+                    auto *item = parent ? new QTreeWidgetItem(parent)
+                                        : new QTreeWidgetItem(archivesTree_);
+                    const bool playLayer = im.tag.startsWith(playPrefix);
                     const QString kind = playLayer ? QStringLiteral("Google Play layer")
                                                    : QStringLiteral("docker image");
                     item->setText(0, im.hostLabel.isEmpty()
@@ -4336,7 +4341,25 @@ void MainWindow::onRefreshArchives() {
                     item->setData(0, Qt::UserRole + 1, im.tag);      // docker rmi target
                     item->setData(0, Qt::UserRole + 3, im.aliases);  // its other names
                     item->setData(0, Qt::UserRole + 2, im.hostLabel);  // where it lives (push src)
-                }
+                    // Every name it answers to: a source offering one of them folds into this row.
+                    item->setData(0, Qt::UserRole + 7, QStringList{im.tag} + im.aliases);
+                    return item;
+                };
+                // One row per image, a Play layer included: it is that image plus Google Play,
+                // rebuilt by Connect whenever it is missing, so it sits collapsed under its base
+                // rather than reading as a second image. Only its base's own row is offered in the
+                // Active image list — the Google Play option is how a profile runs the layer. A
+                // layer whose base is gone stays a top-level row, so Delete can still reach it.
+                QHash<QString, QTreeWidgetItem *> byImage;  // host|short ID → that image's row
+                for (const DockerImage &im : images)
+                    if (!im.tag.startsWith(playPrefix))
+                        byImage.insert(im.hostLabel + QLatin1Char('|') + im.id,
+                                       addImageRow(im, nullptr));
+                for (const DockerImage &im : images)
+                    if (im.tag.startsWith(playPrefix))
+                        addImageRow(im, byImage.value(
+                                            im.hostLabel + QLatin1Char('|') +
+                                            im.tag.mid(playPrefix.size()).section(QLatin1Char('-'), 0, 0)));
                 const QString hostName = host.isEmpty() ? QStringLiteral("this host") : host;
                 if (!dockerError.isEmpty()) {
                     // Docker's images are not "none", they are unlisted — say which, and why.
@@ -4367,7 +4390,10 @@ void MainWindow::onRefreshArchives() {
         QSet<QString> here;
         for (const ImageArchive &a : found)
             if (!a.tag.isEmpty()) here << a.tag;
-        for (const DockerImage &im : images) here << im.tag;
+        for (const DockerImage &im : images) {
+            here << im.tag;
+            for (const QString &alias : im.aliases) here << alias;
+        }
         for (const ImageSource &src : srcs) {
             if (!src.enabled || src.location.isEmpty()) continue;
             const QList<SourceImage> offered = scanSourceLocation(src, settings);
@@ -4379,13 +4405,46 @@ void MainWindow::onRefreshArchives() {
                     if (!offered.isEmpty() && archivesTree_->topLevelItemCount() == 1 &&
                         archivesTree_->topLevelItem(0)->flags() == Qt::NoItemFlags)
                         delete archivesTree_->takeTopLevelItem(0);
-                    // Marked by whether the tag is already HERE — a docker image or archive the
-                    // scans above found — or would need a fetch. A tag appearing twice (its local
-                    // row and its source row saying "local") is the point: it says the mirror
-                    // carries what this machine runs. Selectable for Fetch (bd remora-pht9);
-                    // delete/rename/push ignore these rows because their own data roles (path,
-                    // docker tag) stay empty here.
+                    // A tag already HERE — a docker image or archive the scans above found — is
+                    // not a second entry: the source is named on that image's own row, which then
+                    // carries the fetch roles too. Two rows for one image used to say "the mirror
+                    // carries what this machine runs" and read as a duplicate. Only a
+                    // tag that would need a fetch gets a row of its own. Selectable for Fetch (bd
+                    // remora-pht9); delete/rename/push ignore source-only rows because their own
+                    // data roles (path, docker tag) stay empty there.
                     for (const SourceImage &si : offered) {
+                        if (si.error.isEmpty() && !si.tag.isEmpty()) {
+                            QTreeWidgetItem *mine = nullptr;  // a docker image row wins an archive
+                            for (int i = 0; i < archivesTree_->topLevelItemCount(); ++i) {
+                                QTreeWidgetItem *row = archivesTree_->topLevelItem(i);
+                                if (row->data(0, Qt::UserRole + 7).toStringList().contains(si.tag)
+                                    && (!mine || !row->data(0, Qt::UserRole + 1).isNull()))
+                                    mine = row;
+                            }
+                            // A second source offering the same tag keeps a row of its own, so
+                            // what Fetch on a row would fetch stays one answer.
+                            if (mine && mine->data(0, Qt::UserRole + 5).toString().isEmpty()) {
+                                // "(docker image · local)" → "(… · <source>)"; an archive's
+                                // file name gets the source beside it.
+                                const QString where = mine->text(0);
+                                mine->setText(0, where.endsWith(QLatin1Char(')'))
+                                                     ? where.chopped(1) +
+                                                           QStringLiteral(" · %1)").arg(si.source)
+                                                     : QStringLiteral("%1  (%2)").arg(where, si.source));
+                                mine->setToolTip(0, si.location == kPublicImageSource
+                                    ? QStringLiteral("Also published by ‘%1’. Fetch on this row "
+                                                     "verifies and loads its current copy; the "
+                                                     "one replaced is kept for rollback.")
+                                          .arg(si.source)
+                                    : QStringLiteral("Also offered by ‘%1’, and already here.")
+                                          .arg(si.source));
+                                mine->setData(0, Qt::UserRole + 4, si.file);
+                                mine->setData(0, Qt::UserRole + 5, si.location);
+                                mine->setData(0, Qt::UserRole + 6, si.source);
+                                mine->setData(0, Qt::UserRole + 8, si.tag);
+                                continue;
+                            }
+                        }
                         auto *item = new QTreeWidgetItem(archivesTree_);
                         if (!si.error.isEmpty()) {
                             item->setText(0, QStringLiteral("(source · %1)").arg(si.source));
@@ -4402,10 +4461,11 @@ void MainWindow::onRefreshArchives() {
                         item->setText(2, local ? QStringLiteral("local ✓")
                                                : QStringLiteral("needs fetch ↓"));
                         if (si.size > 0) item->setText(3, humanSize(si.size));
-                        item->setData(0, Qt::UserRole + 3, si.tag);
+                        item->setData(0, Qt::UserRole + 3, si.tag);  // the Active image list's
                         item->setData(0, Qt::UserRole + 4, si.file);
                         item->setData(0, Qt::UserRole + 5, si.location);
                         item->setData(0, Qt::UserRole + 6, si.source);
+                        item->setData(0, Qt::UserRole + 8, si.tag);  // what Fetch fetches
                         item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
                     }
                 },
@@ -8099,13 +8159,18 @@ void MainWindow::onFetchSourceImage() {
             QStringLiteral("select a source row (marked ‘needs fetch ↓’) first"), 4000);
         return;
     }
-    const QString tag = item->data(0, Qt::UserRole + 3).toString();
+    // Its own role, not the source row's +3: an image row the source folded into keeps its other
+    // names there.
+    const QString tag = item->data(0, Qt::UserRole + 8).toString();
     const QString file = item->data(0, Qt::UserRole + 4).toString();
     const QString sourceName = item->data(0, Qt::UserRole + 6).toString();
     const bool http = loc.startsWith(QLatin1String("http://"))
                       || loc.startsWith(QLatin1String("https://"));
     const bool official = loc == kPublicImageSource;
-    if (item->text(2).startsWith(QLatin1String("local")) && !official) {
+    // A local row (names set) the source folded into, or a source row that says it is here.
+    const bool local = !item->data(0, Qt::UserRole + 7).isNull()
+                       || item->text(2).startsWith(QLatin1String("local"));
+    if (local && !official) {
         statusBar()->showMessage(QStringLiteral("%1 is already local").arg(tag), 4000);
         return;
     }

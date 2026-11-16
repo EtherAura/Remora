@@ -174,7 +174,8 @@ remora images fetch --tag remora24:x86_64-public
 The signature, validity window, archive hash, Docker identity and tag are checked before Docker
 loads it, and an image it replaces is kept for rollback. Add `--host user@host` to fetch onto a
 remote Docker host. In the workspace, **Official downloads** adds the same source to the Image
-library. [Official images](CLI-Reference.md#official-images) covers `list`, `check` and `rollback`.
+library. A fetched image is one row there, with the source named on it, and Fetch on that row
+loads the source's current copy. [Official images](CLI-Reference.md#official-images) covers `list`, `check` and `rollback`.
 
 The image is x86_64 only, and carries no Google apps, ARM translation, Widevine or root, so apps
 that ship only ARM native code refuse to install on it. Google Play is optional:

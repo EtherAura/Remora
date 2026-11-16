@@ -7,7 +7,18 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+## [2026.11.3] - 2026-11-16
+
 ### Fixed
+
+- **A fetched image is one row in the image library.** An official image showed up twice once
+  it was fetched: as the local Docker image, and again as the source's listing marked
+  `local ✓`. The Google Play layer over that image was a third row. The source is now named on
+  the image's own row, and Fetch on that row still loads the source's current copy. The Play
+  layer is collapsed under the image it was built over, and the Active image list no longer
+  offers it, since the Google Play option is how a profile runs it. A tag that is offered but not
+  yet fetched still gets its own `needs fetch ↓` row. A source that offers one of an image's
+  other names now marks it `local ✓` too, where it used to say it needed a fetch.
 
 - **Remora builds without Python again.** Since 2026.11.1 configuring the build required a
   Python 3 interpreter, although only the test suites run it, so a machine or a clean chroot
@@ -279,7 +290,8 @@ First public release.
   then mirror with Remora's own Qt/FFmpeg client and an agent baked into the image — video, audio,
   input, clipboard, desktop-mode displays and app listing.
 
-[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.2...HEAD
+[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.3...HEAD
+[2026.11.3]: https://github.com/EtherAura/Remora/compare/v2026.11.2...v2026.11.3
 [2026.11.2]: https://github.com/EtherAura/Remora/compare/v2026.11.1...v2026.11.2
 [2026.11.1]: https://github.com/EtherAura/Remora/compare/v2026.11.0...v2026.11.1
 [2026.11.0]: https://github.com/EtherAura/Remora/compare/v2026.10.0...v2026.11.0
