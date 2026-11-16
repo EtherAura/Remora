@@ -296,6 +296,37 @@ private slots:
         QVERIFY(c.backend.retiredVmBackend);
     }
 
+    // The loader trims adb_bind and gpu_mode, so a padded value reads cleanly. QSettings quotes a
+    // padded value on write and keeps the padding on read, which the first block checks: without
+    // it the store's trim would have nothing to do. gpuModeFromString trims too, so a padded valid
+    // mode alone cannot tell whether the store trimmed; a padded unrecognised one, kept aside for
+    // preflight to quote back, can.
+    void loadInstanceTrimsAdbBindAndGpuMode() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Instance-x/adb_bind", QStringLiteral(" 127.0.0.1 "));
+            s.setValue("Instance-x/gpu_mode", QStringLiteral(" host "));
+            s.setValue("Instance-y/gpu_mode", QStringLiteral(" hots "));
+            s.sync();
+        }
+        {
+            QSettings s(path, QSettings::IniFormat);
+            QCOMPARE(s.value("Instance-x/adb_bind").toString(), QStringLiteral(" 127.0.0.1 "));
+            QCOMPARE(s.value("Instance-x/gpu_mode").toString(), QStringLiteral(" host "));
+            QCOMPARE(s.value("Instance-y/gpu_mode").toString(), QStringLiteral(" hots "));
+        }
+        const RemoraConfig c = loadInstance(path, QStringLiteral("x"));
+        QCOMPARE(c.backend.adbBindAddress, std::optional<QString>(QStringLiteral("127.0.0.1")));
+        QCOMPARE(c.gpu.mode, std::optional<GpuMode>(GpuMode::Host));
+        QVERIFY(!c.gpu.unrecognisedMode.has_value());
+
+        const RemoraConfig y = loadInstance(path, QStringLiteral("y"));
+        QVERIFY(!y.gpu.mode.has_value());
+        QCOMPARE(y.gpu.unrecognisedMode, std::optional<QString>(QStringLiteral("hots")));
+    }
+
     // bd remora-82c.5 — source_patches is a pin, so the loader maps a retired key onto the entry
     // that absorbed it; the profile keeps the capability, in order, and the next save writes the
     // canonical spelling back.
