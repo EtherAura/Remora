@@ -29,6 +29,15 @@ Start with [requirements](docs/user/Requirements.md) and [installation](docs/use
 
 [Full feature overview](docs/Overview.md) · [Configuration](docs/user/Configuration.md) · [Troubleshooting](docs/user/Troubleshooting.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Discussions](https://github.com/EtherAura/Remora/discussions)
 
+## The ready-made image
+
+Remora publishes an audited Android 17 image, `remora24:x86_64-public`, that `remora images fetch`
+downloads from the project's release ([Official images](docs/user/CLI-Reference.md#official-images)).
+It is x86_64 only, and the published base image carries no Google apps, ARM translation, Widevine
+or root. Those omissions describe the image Remora distributes: Google Play is optional and is
+installed locally, on your own Docker host, as a separate image
+([Optional Google Play](docs/user/CLI-Reference.md#optional-google-play)).
+
 ## Build your own image
 
 Building an Android image from source needs about **450 GB free disk** and **32 GB RAM** (64 GB recommended) for the first build.
