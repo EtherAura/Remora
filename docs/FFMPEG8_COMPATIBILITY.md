@@ -88,9 +88,45 @@ ctest --test-dir build --output-on-failure -R prereqs
   and 749. They come from Qt's `[[nodiscard]]` on `QFile::open` in the test's fixture setup and
   do not involve FFmpeg.
 
+## The CI job (`.github/workflows/ffmpeg8.yml`)
+
+`ci.yml` runs on Ubuntu 24.04, whose FFmpeg 6.1 skips the encoder. A separate read-only job builds
+all three FFmpeg consumers against FFmpeg 8:
+
+- **Environment.** An Arch Linux image pinned by digest, on the same `ubuntu-24.04` hosted
+  runner. Every enabled pacman repository is frozen to one dated
+  `archive.archlinux.org` snapshot, and the job fails if any repository resolves elsewhere or does
+  not require package signatures. `pacman -Syyuu` then moves every package, including the ones
+  already in the image, to that snapshot's version, so the job never mixes package dates. That
+  snapshot carries FFmpeg 8.1.2.
+- **Version guard (after configure).** For libavcodec, libavformat, libavutil, libswscale,
+  libswresample and libavfilter, the job reads the pkg-config version that configure recorded in
+  `CMakeCache.txt` and the `LIB*_VERSION_MAJOR` macro from the headers in the same include
+  directory. Both must match the FFmpeg 8 majors 62, 62, 60, 9, 6 and 11. `FFMPEG_VERSION` in
+  `libavutil/ffversion.h` must be 8.x, with or without a tag's leading `n`. The job also prints
+  the libva version and whether `vulkan/vulkan.h` was found.
+- **Target guard (after configure).** Configure only prints `NOT built` when a helper's
+  dependencies are missing, so the job looks in `build.ninja` for the encoder's and the decoder's
+  build statements. Both must exist, both must be part of `remora_native`, and their commands
+  must link `-lavfilter` or `-lva` respectively. `remora` must link `libremora_mirror.a`. Neither
+  helper binary may exist before the build.
+- **Build.** A fresh configure, then `cmake --build build --clean-first`. Warnings and errors go
+  to the log unfiltered. The job continues past no failure.
+- **Link guard (after the build).** The job reads `DT_NEEDED` from `remora`, `remora-frame-encoder`
+  and `remora-frame-decoder`. They must load `libavcodec.so.62`, `libavutil.so.60` and their own
+  libraries: libavformat, libswscale and libswresample for `remora`, `libavfilter.so.11` for the
+  encoder and `libva.so.2` for the decoder.
+- **Tests.** `ctest --output-on-failure --no-tests=error` runs every registered test with
+  `QT_QPA_PLATFORM=offscreen` and a fresh `HOME`.
+
+The guard expects FFmpeg 8 exactly. When the job moves to another snapshot, change the snapshot
+URL, the image (if it is older than the new snapshot) and the expected majors together. The job
+does not set or change the supported minimum, which is still the one in `CMakeLists.txt`.
+
 ## Not verified
 
-- CI, distribution packages (the Gentoo ebuild included) and containers.
+- Distribution packages (the Gentoo ebuild included) and containers. The CI job above is defined,
+  but this page records no hosted run of it.
 - Any FFmpeg 8.x release other than 8.1.3, and any other set of FFmpeg configure options.
 - Live decoding, encoding, audio playback or mirroring, the optional GPU paths (VA-API, Vulkan,
   CUDA interop) and runtime performance. A clean offline build does not exercise any of them.

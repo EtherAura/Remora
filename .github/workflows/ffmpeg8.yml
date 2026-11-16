@@ -1,0 +1,282 @@
+name: FFmpeg 8
+
+# The host side against FFmpeg 8.x: remora_mirror (linked into remora) and both native frame
+# helpers, built from a clean tree and tested offline. ci.yml's Ubuntu runner has FFmpeg 6.1, which
+# skips the encoder entirely, so this is the only job that compiles all three FFmpeg consumers. It
+# runs in an Arch Linux image pinned by digest, with every pacman repository frozen to one archive
+# snapshot, so each run resolves the same FFmpeg 8 release. docs/FFMPEG8_COMPATIBILITY.md has what
+# the job proves and what it does not.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only, like ci.yml: nothing here writes, comments or publishes.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ffmpeg8:
+    name: build + test (FFmpeg 8, Arch snapshot)
+    runs-on: ubuntu-24.04
+    container:
+      # archlinux base-20260726.0.562117, linux/amd64.
+      image: docker.io/library/archlinux@sha256:5c0a4c06b4aca92db11a9db181461d9e412fbee3aa3561d318aec2df2f318769
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The snapshot whose extra repository carries FFmpeg 8.1.2. Moving the job to another FFmpeg
+      # is a change to this line, the image above if it is older than the new snapshot, and the
+      # majors the guard below expects.
+      ARCH_SNAPSHOT: https://archive.archlinux.org/repos/2026/07/29
+    steps:
+      # Every enabled repository takes its servers from the one mirrorlist, so writing the
+      # snapshot there freezes all of them; the check fails the job if any repository resolves
+      # anywhere else, or if a repository would accept an unsigned package.
+      - name: Freeze pacman to the archive snapshot
+        run: |
+          printf 'Server = %s/$repo/os/$arch\n' "$ARCH_SNAPSHOT" > /etc/pacman.d/mirrorlist
+          rc=0
+          repos=$(pacman-conf --repo-list)
+          [ -n "$repos" ] || { echo "::error::pacman has no enabled repository"; exit 1; }
+          for repo in $repos; do
+            servers=$(pacman-conf --repo="$repo" Server)
+            echo "$repo: $servers"
+            if [ "$servers" != "$ARCH_SNAPSHOT/$repo/os/x86_64" ]; then
+              echo "::error::repository $repo is not frozen to the snapshot"; rc=1
+            fi
+            siglevel=$(pacman-conf --repo="$repo" SigLevel | tr '\n' ' ')
+            echo "$repo SigLevel: $siglevel"
+            case " $siglevel " in
+              *' Never '*|*' Optional '*|*' PackageNever '*|*' PackageOptional '*|*' TrustAll '*|*' PackageTrustAll '*)
+                echo "::error::repository $repo does not require package signatures"; rc=1 ;;
+            esac
+          done
+          exit $rc
+
+      # Ordinary distro provisioning, signatures checked against the image's keyring. -uu takes
+      # every installed package to the snapshot's version too, so nothing from the image's own
+      # date is mixed in. The list is ci.yml's, in Arch names: ffnvcodec-headers is what the
+      # mirror's CUDA interop includes, vulkan-headers and libavfilter (in ffmpeg) are the
+      # encoder's, libva is the decoder's; git, python and openssl are what the offline suites
+      # run.
+      - name: Install dependencies
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syyuu --noconfirm --needed \
+            base-devel cmake ninja pkgconf git python openssl \
+            qt6-base qt6-multimedia qt6-webengine \
+            ffmpeg ffnvcodec-headers vulkan-headers libva
+          pacman -Q ffmpeg libva vulkan-headers ffnvcodec-headers qt6-base gcc cmake
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure
+        run: cmake --fresh -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      # What configure actually found, read back from what it wrote. The pkg-config versions in
+      # CMakeCache.txt are the ones the targets were configured with; the headers in their include
+      # directory are the ones they will compile against, and the two must agree on every
+      # library's FFmpeg 8 major. The CLI's version string would prove neither. Both helpers are
+      # optional in CMakeLists (a missing dependency is a configure message, not an error), so
+      # their build statements are required here by name, along with remora's link of
+      # libremora_mirror.a.
+      - name: FFmpeg 8 versions and targets
+        shell: python3 -I {0}
+        run: |
+          import os, re, sys
+
+          # libavutil keeps its major in version.h; the others moved theirs to version_major.h.
+          EXPECTED = {
+              'libavcodec': ('FFMPEG', 62), 'libavformat': ('FFMPEG', 62),
+              'libavutil': ('FFMPEG', 60), 'libswscale': ('FFMPEG', 9),
+              'libswresample': ('FFMPEG', 6), 'libavfilter': ('REMORA_ENCODER_DEPS', 11),
+          }
+          build = os.environ.get('REMORA_BUILD_DIR', 'build')
+          errors = []
+
+          def fail(msg):
+              errors.append(msg)
+              print(f'::error::{msg}')
+
+          cache = {}
+          with open(os.path.join(build, 'CMakeCache.txt'), encoding='utf-8') as f:
+              for line in f:
+                  m = re.match(r'([A-Za-z0-9_]+):[A-Z]+=(.*)$', line.rstrip('\n'))
+                  if m:
+                      cache[m.group(1)] = m.group(2)
+          source = cache.get('CMAKE_HOME_DIRECTORY', '')
+
+          def header_define(path, name):
+              try:
+                  with open(path, encoding='utf-8') as f:
+                      text = f.read()
+              except OSError:
+                  return None
+              m = re.search(r'^#define\s+' + name + r'\s+(\S+)', text, re.M)
+              return m.group(1) if m else None
+
+          for lib, (prefix, major) in EXPECTED.items():
+              version = cache.get(f'{prefix}_{lib}_VERSION', '')
+              incdir = cache.get(f'{prefix}_{lib}_INCLUDEDIR', '')
+              macro = f'LIB{lib[3:].upper()}_VERSION_MAJOR'
+              header = None
+              for name in ('version_major.h', 'version.h'):
+                  header = header_define(os.path.join(incdir, lib, name), macro)
+                  if header is not None:
+                      break
+              print(f'{lib}: pkg-config {version or "(not found)"}, '
+                    f'{macro} {header or "(not found)"} in {incdir or "(no include dir)"}')
+              if not re.fullmatch(r'\d+(\.\d+)*', version) or int(version.split('.')[0]) != major:
+                  fail(f'{lib} {version or "is missing"}: FFmpeg 8 has major {major}')
+              if header != str(major):
+                  fail(f'{lib} headers say major {header}: FFmpeg 8 has major {major}')
+
+          incdir = cache.get('FFMPEG_libavutil_INCLUDEDIR', '')
+          release = header_define(os.path.join(incdir, 'libavutil', 'ffversion.h'), 'FFMPEG_VERSION')
+          release = (release or '').strip('"')
+          print(f'FFmpeg release (libavutil/ffversion.h): {release or "(not found)"}')
+          # A build from a release tag carries the tag's n prefix.
+          if not re.match(r'n?8\.\d', release):
+              fail(f'FFmpeg release {release or "is missing"}: not 8.x')
+          print(f'libva: {cache.get("REMORA_DECODER_DEPS_libva_VERSION") or "(not found)"}')
+          print(f'vulkan/vulkan.h: {"found" if cache.get("REMORA_HAVE_VULKAN_H") == "1" else "not found"}')
+
+          # Ninja escapes $, space and colon in paths.
+          def ninja_path(p):
+              return p.replace('$', '$$').replace(' ', '$ ').replace(':', '$:')
+
+          with open(os.path.join(build, 'build.ninja'), encoding='utf-8') as f:
+              ninja = f.read().splitlines()
+
+          def statement(output):
+              for i, line in enumerate(ninja):
+                  if line.startswith(f'build {output}:'):
+                      body = []
+                      for more in ninja[i + 1:]:
+                          if not more.startswith('  '):
+                              break
+                          body.append(more)
+                      return line, body
+              return None, []
+
+          native = os.path.join(source, 'vendor', 'native')
+          phony, _ = statement('remora_native')
+          for helper, libs in (('remora-frame-encoder', ('-lavfilter', '-lavcodec', '-lavutil')),
+                               ('remora-frame-decoder', ('-lavcodec', '-lavutil', '-lva'))):
+              output = ninja_path(os.path.join(native, helper))
+              line, body = statement(output)
+              if line is None:
+                  fail(f'{helper} has no build statement: configure skipped it')
+                  continue
+              command = ' '.join(b for b in body if b.lstrip().startswith('COMMAND ='))
+              print(f'{helper}:{command[command.find("=") + 1:]}')
+              missing = [lib for lib in libs if lib not in command.split()]
+              if missing:
+                  fail(f'{helper} command does not link {" ".join(missing)}')
+              if phony is None or output not in phony.split():
+                  fail(f'{helper} is not part of remora_native')
+              if os.path.exists(os.path.join(native, helper)):
+                  fail(f'{helper} exists before the build: the tree is not clean')
+
+          line, _ = statement('libremora_mirror.a')
+          if line is None:
+              fail('remora_mirror has no build statement')
+          line, _ = statement('remora')
+          if line is None or 'libremora_mirror.a' not in line.split():
+              fail('remora does not link libremora_mirror.a')
+
+          sys.exit(1 if errors else 0)
+
+      - name: Build
+        run: cmake --build build --clean-first
+
+      # The sonames each binary records are what it will load: FFmpeg 8's majors, and libva's.
+      - name: Built binaries link FFmpeg 8
+        shell: python3 -I {0}
+        run: |
+          import os, re, struct, sys
+
+          NEEDED = {
+              'remora': ('libavformat.so.62', 'libavcodec.so.62', 'libavutil.so.60',
+                         'libswscale.so.9', 'libswresample.so.6'),
+              'remora-frame-encoder': ('libavfilter.so.11', 'libavcodec.so.62', 'libavutil.so.60'),
+              'remora-frame-decoder': ('libavcodec.so.62', 'libavutil.so.60', 'libva.so.2'),
+          }
+          build = os.environ.get('REMORA_BUILD_DIR', 'build')
+          errors = []
+
+          def fail(msg):
+              errors.append(msg)
+              print(f'::error::{msg}')
+
+          source = ''
+          with open(os.path.join(build, 'CMakeCache.txt'), encoding='utf-8') as f:
+              for line in f:
+                  m = re.match(r'CMAKE_HOME_DIRECTORY:INTERNAL=(.*)$', line.rstrip('\n'))
+                  if m:
+                      source = m.group(1)
+
+          # DT_NEEDED from a little-endian ELF64 file's dynamic section; None if it is not one.
+          def needed(path):
+              with open(path, 'rb') as f:
+                  data = f.read()
+              if data[:4] != b'\x7fELF' or data[4] != 2 or data[5] != 1:
+                  return None
+              shoff, = struct.unpack_from('<Q', data, 0x28)
+              shentsize, shnum = struct.unpack_from('<HH', data, 0x3a)
+              sections = [struct.unpack_from('<IIQQQQIIQQ', data, shoff + i * shentsize)
+                          for i in range(shnum)]
+              names = []
+              for s in sections:
+                  if s[1] != 6:  # SHT_DYNAMIC
+                      continue
+                  strtab = sections[s[6]]
+                  for off in range(s[4], s[4] + s[5], 16):
+                      tag, val = struct.unpack_from('<qQ', data, off)
+                      if tag == 0:
+                          break
+                      if tag == 1:  # DT_NEEDED
+                          start = strtab[4] + val
+                          names.append(data[start:data.index(b'\0', start)].decode())
+              return names
+
+          paths = {
+              'remora': os.path.join(build, 'remora'),
+              'remora-frame-encoder': os.path.join(source, 'vendor', 'native', 'remora-frame-encoder'),
+              'remora-frame-decoder': os.path.join(source, 'vendor', 'native', 'remora-frame-decoder'),
+          }
+          if not os.path.isfile(os.path.join(build, 'libremora_mirror.a')):
+              fail('libremora_mirror.a was not built')
+          for name, path in paths.items():
+              if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+                  fail(f'{name} was not built ({path})')
+                  continue
+              libs = needed(path)
+              if libs is None:
+                  fail(f'{name} is not an ELF64 executable')
+                  continue
+              print(f'{name}: {" ".join(libs)}')
+              missing = [lib for lib in NEEDED[name] if lib not in libs]
+              if missing:
+                  fail(f'{name} does not load {" ".join(missing)}')
+
+          sys.exit(1 if errors else 0)
+
+      # Every registered test. CMake already points each one's HOME and XDG directories into the
+      # build tree; the job's own HOME is a fresh directory too, so nothing reads the image's root
+      # home. Qt needs a platform plugin even for non-GUI tests; offscreen keeps it headless.
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          ctest --test-dir build --output-on-failure --no-tests=error
