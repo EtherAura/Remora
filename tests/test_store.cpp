@@ -296,6 +296,32 @@ private slots:
         QVERIFY(c.backend.retiredVmBackend);
     }
 
+    // bd remora-82c.5 — source_patches is a pin, so the loader maps a retired key onto the entry
+    // that absorbed it; the profile keeps the capability, in order, and the next save writes the
+    // canonical spelling back.
+    void loadInstanceCanonicalisesPinnedSourcePatches() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Instance-x/source_patches",
+                       QStringLiteral("minigbm_rendernode statusbar_clock_hide soong_gomemlimit"));
+            s.sync();
+        }
+        const QStringList canonical{QStringLiteral("minigbm_rendernode"),
+                                    QStringLiteral("statusbar_hide_list"),
+                                    QStringLiteral("soong_gomemlimit")};
+        const RemoraConfig c = loadInstance(path, QStringLiteral("x"));
+        QCOMPARE(c.image.sourcePatches, canonical);
+
+        saveInstance(path, QStringLiteral("x"), c);
+        QSettings s(path, QSettings::IniFormat);
+        s.beginGroup(QStringLiteral("Instance-x"));
+        QCOMPARE(s.value("source_patches").toString(),
+                 QStringLiteral("minigbm_rendernode statusbar_hide_list soong_gomemlimit"));
+        QCOMPARE(loadInstance(path, QStringLiteral("x")).image.sourcePatches, canonical);
+    }
+
     void saveImageSourcesPreservesUnknownKeysAndDeletes() {
         QTemporaryDir dir;
         const QString path = rc(dir);
