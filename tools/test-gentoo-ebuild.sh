@@ -50,7 +50,8 @@ render() {
 }
 
 # ebuild_eval <ebuild> <version> <snippet>: runs <snippet> with the ebuild sourced as Portage would
-# see it for that version. inherit and the eclass functions pkg_postinst calls are stubs.
+# see it for that version. inherit and the eclass functions pkg_postinst calls are stubs, and an
+# inherited python-any-r1 leaves PYTHON_DEPS_MARK where its PYTHON_DEPS would expand.
 ebuild_eval() {
     bash -c '
         set -eu
@@ -58,7 +59,10 @@ ebuild_eval() {
         P="$PN-$PV" PF="$PN-$PV" PVR="$PV"
         WORKDIR=/portage-workdir
         INHERITED=""
-        inherit() { INHERITED="$*"; }
+        inherit() {
+            INHERITED="$*"
+            case " $* " in *" python-any-r1 "*) PYTHON_DEPS="$PYTHON_DEPS_MARK" ;; esac
+        }
         xdg_pkg_postinst() { :; }
         optfeature() { shift; printf "%s\n" "$@"; }
         # shellcheck disable=SC1090
@@ -67,9 +71,18 @@ ebuild_eval() {
     ' ebuild_eval "$1" "$2" "$3"
 }
 
+# What the python-any-r1 stub expands PYTHON_DEPS to: one word that is no atom.
+export PYTHON_DEPS_MARK=python-any-r1:PYTHON_DEPS
+
 # words <text>: one whitespace-separated word per line.
 words() { printf '%s\n' "$1" | tr -s '[:space:]' '\n' | sed '/^$/d'; }
 has_word() { words "$1" | grep -qxF -- "$2"; }
+# test_group <deps>: the words inside its test? ( ... ) group, nested groups included.
+test_group() {
+    words "$1" | awk '!t && $0 == "test?" { t = 1; next }
+        t == 1 { if ($0 == "(") { t = 2; d = 1; next } t = 0 }
+        t == 2 { if ($0 == "(") d++; else if ($0 == ")" && !--d) exit; print }'
+}
 
 # pkgbuild_eval <snippet> [<arg>]: the PKGBUILD's own arrays, read the way makepkg reads them.
 # <arg> reaches the snippet as $3.
@@ -78,8 +91,18 @@ pkgbuild_eval() {
 }
 
 # The Gentoo side of each PKGBUILD package: "<variables> <atom>", "eclass <name>" (pulled in by an
-# inherited eclass), "system" (the toolchain every Gentoo system has) or "optfeature <atom>".
+# inherited eclass), "system" (the toolchain every Gentoo system has), "optfeature <atom>" or
+# "test <atom>" (inside BDEPEND's test? group). gentoo_for <name> <PKGBUILD array>.
 gentoo_for() {
+    if [ "$2" = checkdepends ]; then
+        case "$1" in
+            git)     echo "test dev-vcs/git" ;;
+            python)  echo "test $PYTHON_DEPS_MARK" ;;
+            openssl) echo "test dev-libs/openssl" ;;
+            *)       return 1 ;;
+        esac
+        return
+    fi
     case "$1" in
         gcc-libs|glibc)      echo "system" ;;
         qt6-base)            echo "DEPEND,RDEPEND dev-qt/qtbase:6[dbus,gui,network,opengl,widgets]" ;;
@@ -91,7 +114,6 @@ gentoo_for() {
         cmake|ninja)         echo "eclass cmake" ;;
         ffnvcodec-headers)   echo "DEPEND media-libs/nv-codec-headers" ;;
         vulkan-headers)      echo "DEPEND dev-util/vulkan-headers" ;;
-        git)                 echo "BDEPEND dev-vcs/git" ;;
         docker)              echo "optfeature app-containers/docker" ;;
         openssh)             echo "optfeature virtual/openssh" ;;
         nvidia-utils)        echo "optfeature x11-drivers/nvidia-drivers" ;;
@@ -144,22 +166,17 @@ check_ebuild() {  # check_ebuild <version>
         "$(ebuild_eval "$ebuild" "$version" 'printf "%s" "$HOMEPAGE"')" \
         "$(pkgbuild_eval 'printf "%s" "$url"')"
     expect "$version: eclasses" "$(ebuild_eval "$ebuild" "$version" 'printf "%s" "$INHERITED"')" \
-        "cmake optfeature xdg"
+        "cmake optfeature python-any-r1 xdg"
     expect "$version: arch is x86_64 only" "$(pkgbuild_eval 'printf "%s" "${arch[*]}"')" "x86_64"
 
     local -A deps
-    local BDEPEND INHERITED OPTFEATURES BDEPEND_FLAT
+    local BDEPEND INHERITED OPTFEATURES
     deps[DEPEND]=$(ebuild_eval "$ebuild" "$version" 'printf "%s" "$DEPEND"')
     deps[RDEPEND]=$(ebuild_eval "$ebuild" "$version" 'printf "%s" "$RDEPEND"')
     BDEPEND=$(ebuild_eval "$ebuild" "$version" 'printf "%s" "$BDEPEND"')
     deps[BDEPEND]=$BDEPEND
     INHERITED=$(ebuild_eval "$ebuild" "$version" 'printf "%s" "$INHERITED"')
     OPTFEATURES=$(ebuild_eval "$ebuild" "$version" 'pkg_postinst')
-    BDEPEND_FLAT=$(words "$BDEPEND" | tr '\n' ' ')
-    case "$BDEPEND_FLAT" in
-        *"test? ( dev-vcs/git )"*) pass "$version: git is a test-only build dependency" ;;
-        *) fail "$version: BDEPEND does not carry test? ( dev-vcs/git ): $BDEPEND_FLAT" ;;
-    esac
     expect "$version: tests are restricted unless USE=test" \
         "$(ebuild_eval "$ebuild" "$version" 'printf "%s|%s" "$IUSE" "$RESTRICT"')" "test|!test? ( test )"
     if has_word "$BDEPEND" virtual/pkgconfig; then
@@ -173,7 +190,7 @@ check_ebuild() {  # check_ebuild <version>
         while IFS= read -r name; do
             [ -n "$name" ] || continue
             name=${name%%:*}
-            if ! mapping=$(gentoo_for "$name"); then
+            if ! mapping=$(gentoo_for "$name" "$kind"); then
                 fail "$version: PKGBUILD $kind '$name' has no Gentoo equivalent in this test"
                 continue
             fi
@@ -181,6 +198,12 @@ check_ebuild() {  # check_ebuild <version>
             atom=${mapping#* }
             case "$vars" in
                 system) pass "$version: $kind $name: part of every Gentoo system" ;;
+                test)
+                    if test_group "$BDEPEND" | grep -qxF -- "$atom"; then
+                        pass "$version: $kind $name: BDEPEND test? ( $atom )"
+                    else
+                        fail "$version: $kind $name: BDEPEND's test? group lacks $atom"
+                    fi ;;
                 eclass)
                     if has_word "$INHERITED" "$atom"; then
                         pass "$version: $kind $name: from the $atom eclass"

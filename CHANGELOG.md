@@ -7,6 +7,23 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Fixed
+
+- **Remora builds without Python again.** Since 2026.11.1 configuring the build required a
+  Python 3 interpreter, although only the test suites run it, so a machine or a clean chroot
+  without Python could not build Remora. CMake now looks for Python instead of requiring it.
+  Without it, Remora still configures and builds: the three Python suites are left out and
+  configure says so, and the prereqs suite skips its two image-helper cases. The `PKGBUILD` lists
+  `python` and `openssl` in `checkdepends`, and the ebuild lists them as `USE=test` build
+  dependencies through `python-any-r1`. Their test runs and CI's configure with
+  `-DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON`, so a missing interpreter fails there instead of
+  quietly dropping suites.
+- **The packages say what Python is for.** The `PKGBUILD`'s optional `python`, the ebuild's
+  optfeature and the Requirements page named only input sharing. Fetching official images,
+  checking for their updates and adding Google Play run it too, on the machine that runs the
+  containers, and the image fetch and update check also run `openssl`. The Requirements page no
+  longer says that Remora ships no image.
+
 ## [2026.11.2] - 2026-11-16
 
 ### Added

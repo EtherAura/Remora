@@ -5,7 +5,8 @@
 #
 # <build-dir> is a tree configured with --coverage in the C++ flags and already built:
 #
-#   cmake -B build/coverage -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=--coverage
+#   cmake -B build/coverage -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=--coverage \
+#       -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON
 #   cmake --build build/coverage
 #   QT_QPA_PLATFORM=offscreen tools/coverage.sh build/coverage
 #

@@ -37,12 +37,14 @@ optdepends=(
   'docker: run Android on this machine (the bare target)'
   'openssh: deploy to a docker host over ssh (the remote target)'
   'nvidia-utils: NVIDIA acceleration through the Venus render server'
-  'python: share host input devices with the container'
+  'python: fetch official images and their updates, add Google Play and share host input devices on this machine (the bare target)'
   'unzip: show the boot animation in the mirror while Android starts'
   "polkit: open a device's storage from the workspace (the access grant runs under pkexec)"
 )
-# The test suites build throwaway git repositories to apply patch series against.
-checkdepends=('git')
+# The test suites build throwaway git repositories to apply patch series against. The image and
+# Play helpers' regressions are Python, and the image one signs its fixtures with openssl. Neither
+# is needed to build: Python is found only to register those tests.
+checkdepends=('git' 'python' 'openssl')
 source=("${url}/releases/download/v${pkgver}/Remora-${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
@@ -60,8 +62,10 @@ check() {
   # The suites read the vendor tree their build was configured against, and build/ points at
   # /usr/share/remora/vendor, which does not exist until this package is installed. So they run from
   # a development tree of the same source, which reads Remora-${pkgver}/vendor directly. Offline by
-  # design (no docker, device or Android image); Qt still wants a platform plugin.
-  cmake -S "Remora-${pkgver}" -B build-check -G Ninja -DCMAKE_BUILD_TYPE=Release
+  # design (no docker, device or Android image); Qt still wants a platform plugin. Python is
+  # required here, so a missing checkdepend fails configure instead of dropping its suites.
+  cmake -S "Remora-${pkgver}" -B build-check -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON
   cmake --build build-check
   QT_QPA_PLATFORM=offscreen ctest --test-dir build-check --output-on-failure
 }

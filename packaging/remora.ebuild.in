@@ -8,7 +8,10 @@
 
 EAPI=8
 
-inherit cmake optfeature xdg
+# Only the tests run Python (see BDEPEND), so an interpreter is set up only under USE=test.
+PYTHON_COMPAT=( python3_{12..14} )
+
+inherit cmake optfeature python-any-r1 xdg
 
 DESCRIPTION="Build, deploy and mirror Android running in Docker"
 HOMEPAGE="https://github.com/EtherAura/Remora"
@@ -44,11 +47,20 @@ RDEPEND="
 	${COMMON_DEPEND}
 	dev-util/android-tools
 "
-# The test suites build throwaway git repositories to apply patch series against.
+# The test suites build throwaway git repositories to apply patch series against. The image and
+# Play helpers' regressions are Python, and the image one signs its fixtures with openssl.
 BDEPEND="
 	virtual/pkgconfig
-	test? ( dev-vcs/git )
+	test? (
+		${PYTHON_DEPS}
+		dev-libs/openssl
+		dev-vcs/git
+	)
 "
+
+pkg_setup() {
+	use test && python-any-r1_pkg_setup
+}
 
 src_configure() {
 	# Points the binary at /usr/share/remora/vendor, where the install puts the scripts and native
@@ -64,8 +76,11 @@ src_test() {
 	# points at /usr/share/remora/vendor, which does not exist until this package is installed. So
 	# they run from a development build of the same source, which reads ${S}/vendor directly.
 	# Offline by design (no docker, device or Android image); Qt still wants a platform plugin.
+	# Python is required here, so the suites that need it fail configure rather than drop out.
 	local mycmakeargs=(
 		-DREMORA_INSTALLED_VENDOR=OFF
+		-DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON
+		-DPython3_EXECUTABLE="${PYTHON}"
 	)
 	local BUILD_DIR="${WORKDIR}/${P}_check"
 	cmake_src_configure
@@ -78,7 +93,7 @@ pkg_postinst() {
 	optfeature "running Android on this machine (the bare target)" app-containers/docker
 	optfeature "deploying to a docker host over ssh (the remote target)" virtual/openssh
 	optfeature "NVIDIA acceleration through the Venus render server" x11-drivers/nvidia-drivers
-	optfeature "sharing host input devices with the container" dev-lang/python
+	optfeature "fetching official images and their updates, adding Google Play and sharing host input devices (the bare target)" dev-lang/python
 	optfeature "showing the boot animation in the mirror while Android starts" app-arch/unzip
 	optfeature "opening a device's storage from the workspace (pkexec)" sys-auth/polkit
 }

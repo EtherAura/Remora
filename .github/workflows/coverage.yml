@@ -59,7 +59,8 @@ jobs:
       # alone: the build files stay free of a coverage mode nobody else uses.
       - name: Configure (Debug, instrumented)
         run: |
-          cmake -B build/coverage -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=--coverage
+          cmake -B build/coverage -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=--coverage \
+            -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON
 
       - name: Build
         run: cmake --build build/coverage

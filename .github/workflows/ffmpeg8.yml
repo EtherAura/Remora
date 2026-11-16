@@ -79,7 +79,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Configure
-        run: cmake --fresh -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake --fresh -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON
 
       # What configure actually found, read back from what it wrote. The pkg-config versions in
       # CMakeCache.txt are the ones the targets were configured with; the headers in their include

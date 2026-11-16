@@ -217,10 +217,21 @@ set(REMORA_TEST_ENV
     "XDG_STATE_HOME=${REMORA_TEST_HOME}/.local/state")
 file(MAKE_DIRECTORY "${REMORA_TEST_HOME}/.config" "${REMORA_TEST_HOME}/.local/share"
      "${REMORA_TEST_HOME}/.cache" "${REMORA_TEST_HOME}/.local/state")
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
-add_test(NAME play_install COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_play_install.py)
-add_test(NAME public_images COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_public_images.py)
-add_test(NAME public_audit COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_public_audit.py)
+# Python runs three suites and two prereqs cases, and nothing that is built or installed, so a
+# machine without it still configures and builds Remora; those tests then do not run, and this
+# says so. -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON turns a missing interpreter into a configure
+# error instead: CI and the packages' own test runs pass it, so the suites cannot drop out quietly.
+find_package(Python3 COMPONENTS Interpreter)
+set(REMORA_TEST_PYTHON "")
+if(Python3_Interpreter_FOUND)
+    set(REMORA_TEST_PYTHON "${Python3_EXECUTABLE}")
+    add_test(NAME play_install COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_play_install.py)
+    add_test(NAME public_images COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_public_images.py)
+    add_test(NAME public_audit COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_public_audit.py)
+else()
+    message(STATUS "tests: Python 3 not found — play_install, public_images and public_audit are "
+        "not registered, and prereqs skips its two image-helper cases")
+endif()
 add_executable(test_play_engine tests/test_play_engine.cpp)
 target_link_libraries(test_play_engine PRIVATE remora_engine Qt6::Test)
 add_test(NAME play_engine COMMAND test_play_engine)
@@ -244,8 +255,9 @@ add_test(NAME mirrorproto COMMAND test_mirrorproto)
 
 add_executable(test_prereqs tests/test_prereqs.cpp)
 target_link_libraries(test_prereqs PRIVATE remora_core Qt6::Test)
-# The image-fetch cache regression is the helper's own Python; this suite runs it.
-target_compile_definitions(test_prereqs PRIVATE REMORA_PYTHON="${Python3_EXECUTABLE}" REMORA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+# The image-fetch cache regression is the helper's own Python; this suite runs it. REMORA_PYTHON is
+# empty when no interpreter was found, and those cases skip.
+target_compile_definitions(test_prereqs PRIVATE REMORA_PYTHON="${REMORA_TEST_PYTHON}" REMORA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 add_test(NAME prereqs COMMAND test_prereqs)
 
 add_executable(test_engine tests/test_engine.cpp)

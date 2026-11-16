@@ -365,6 +365,8 @@ private slots:
     // imported and promoted, and only then. The lifecycle is the helper's own Python, so is its
     // regression; it runs from here, under this suite's isolated HOME.
     void imageFetchReleasesItsArchiveOnlyAfterImport() {
+        if (QStringLiteral(REMORA_PYTHON).isEmpty())
+            QSKIP("no Python 3 interpreter was found at configure time");
         QProcess p;
         p.setProcessChannelMode(QProcess::MergedChannels);
         p.start(QStringLiteral(REMORA_PYTHON),
@@ -378,6 +380,8 @@ private slots:
     // The receipt preflight any release prune would need first: a receipt that lacks its
     // rollback fields is unknown rollback state, never a first install that holds nothing back.
     void imageReceiptRetentionRefusesMissingRollbackFields() {
+        if (QStringLiteral(REMORA_PYTHON).isEmpty())
+            QSKIP("no Python 3 interpreter was found at configure time");
         QProcess p;
         p.setProcessChannelMode(QProcess::MergedChannels);
         p.start(QStringLiteral(REMORA_PYTHON),

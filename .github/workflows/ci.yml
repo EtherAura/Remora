@@ -46,8 +46,10 @@ jobs:
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             libva-dev
 
+      # Python is required here, not just found: CMake registers the Python suites only when it
+      # finds an interpreter, so a runner without one would otherwise pass with them missing.
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON
 
       - name: Build
         run: cmake --build build
@@ -57,6 +59,12 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir build --output-on-failure
+
+      # Only the tests use Python, so a machine without it (a packager's clean chroot, say) must
+      # still configure. CMake refuses a disabled package that is REQUIRED, so making Python3 a
+      # hard requirement again fails this step.
+      - name: Configure without Python
+        run: cmake -B build-no-python -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_DISABLE_FIND_PACKAGE_Python3=ON
 
   # The same eight suites with the compiler's runtime checkers switched on: AddressSanitizer (reads
   # and writes outside an object, use after free, leaks) and UndefinedBehaviorSanitizer, which stops
@@ -83,7 +91,7 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -B build/sanitize -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+          cmake -B build/sanitize -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
 
       - name: Build

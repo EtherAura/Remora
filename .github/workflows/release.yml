@@ -213,7 +213,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           set -euo pipefail
-          cmake -S . -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON
           cmake --build build/test --parallel
           ctest --test-dir build/test --output-on-failure
 

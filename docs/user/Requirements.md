@@ -12,7 +12,8 @@ and time before you start.
 | Docker | and membership of the `docker` group on the machine that runs the containers |
 | A kernel that provides binder (binderfs) | most desktop kernels do. `remora check` does not probe this |
 | `adb` | Remora reaches every device it deploys through adb. Install your distribution's android-tools package |
-| An Android image you built | Remora ships none. Each image takes about 3 GB in Docker |
+| An Android image | the ready-made one the project publishes (`remora images fetch`), or one you build. Each image takes about 3 GB in Docker |
+| `python3` and `openssl`, for the ready-made image | on the machine that runs the containers. Fetching the image and checking for its updates run both, and adding Google Play runs `python3` |
 | Disk for Android's data | each instance's data grows with the apps you install |
 
 Two things depend on the Android release:
@@ -51,7 +52,7 @@ distribution:
 | docker | running Android on this machine (the `bare` target) |
 | openssh | deploying to a docker host over ssh (the `remote` target) |
 | NVIDIA userspace utilities | NVIDIA acceleration through the Venus render server |
-| python | sharing host input devices with the container (`shared_inputs`) |
+| python | fetching official images and their updates, adding Google Play, and sharing host input devices with the container (`shared_inputs`) |
 | unzip | showing the boot animation in the mirror while Android starts |
 | polkit | opening a device's storage from the workspace |
 
@@ -91,6 +92,7 @@ built.
 | FFmpeg development libraries | `libavcodec`, `libavformat`, `libavutil`, `libswscale`, `libswresample` |
 | FFmpeg's NVIDIA codec headers (`ffnvcodec`) | headers only. The mirror loads the driver at runtime, so you do not need an NVIDIA GPU to build |
 | Your C library's static archive (`libc.a`) | two of the small native helpers in `vendor/native` are static. On most distributions it is part of glibc's development files |
+| Python 3 and `openssl` | only to run the test suites. Without Python, CMake still builds Remora and says which suites it left out |
 
 Two more helpers are optional and are built when their libraries are found. CMake says which it
 built.
