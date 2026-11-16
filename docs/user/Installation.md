@@ -2,7 +2,8 @@
 
 This page covers the three ways to install Remora (the `.deb`, the Arch `PKGBUILD`, and a build
 from source), how to verify what you downloaded, and the two steps that follow every install: the
-`docker` group and the first `remora check`.
+`docker` group and the first `remora check`. It ends with the Android image: the ready-made one,
+fetched once Remora is installed, or one you build yourself.
 
 ## What a release contains
 
@@ -15,8 +16,8 @@ Every [release](https://github.com/EtherAura/Remora/releases/latest) carries:
 
 Remora uses calendar versions, `YYYY.MM.PATCH`. `remora --version` prints the version you have.
 
-A release never contains an Android image. You build your own: see
-[Building the Image](Building-the-Image.md).
+A Remora release never contains an Android image. The ready-made image is published separately
+and fetched by Remora itself once it is installed; see [The Android image](#the-android-image).
 
 ## Ubuntu 24.04+ and Debian
 
@@ -102,7 +103,9 @@ A pass means the file came from the project's release workflow and has not been 
 | the SBOM | what went into the release |
 
 Provenance is not code signing, and it covers only what the workflow built. Android images are not
-release assets at all. [SECURITY.md](../../SECURITY.md) has the full statement.
+assets of a Remora release: `remora images fetch` checks the ready-made image against its signed
+catalog instead ([Official images](CLI-Reference.md#official-images)).
+[SECURITY.md](../../SECURITY.md) has the full statement.
 
 ## After installing
 
@@ -123,5 +126,38 @@ with a verdict. Fix what it names and run it again until it reports that the tar
 [Deploy Targets](Deploy-Targets.md#checking-readiness) explains every row.
 
 The install also adds a **Remora** entry to your application menu. It runs `remora gui`.
+
+## The Android image
+
+Remora needs an Android image to deploy. Getting one is separate from installing Remora: it does
+not replace Remora's own dependencies, the `docker` group or what `remora check` asks for (see
+[Requirements](Requirements.md#to-run-android)).
+
+### The ready-made image
+
+With Remora installed, fetch the audited Android 17 image the project publishes:
+
+```sh
+remora images fetch --tag remora24:x86_64-public
+```
+
+The signature, validity window, archive hash, Docker identity and tag are checked before Docker
+loads it, and an image it replaces is kept for rollback. Add `--host user@host` to fetch onto a
+remote Docker host. In the workspace, **Official downloads** adds the same source to the Image
+library. [Official images](CLI-Reference.md#official-images) covers `list`, `check` and `rollback`.
+
+The image is x86_64 only, and carries no Google apps, ARM translation, Widevine or root, so apps
+that ship only ARM native code refuse to install on it. Google Play is optional:
+`remora play-install` installs it locally, on your own Docker host, as a separate image over this
+one (see [Optional Google Play](CLI-Reference.md#optional-google-play)).
+
+### Build your own image
+
+To build an Android image from source instead, for example with features the ready-made image
+leaves out, see [Building the Image](Building-the-Image.md) and its
+[requirements](Requirements.md#to-build-the-android-image); they apply to the image build only,
+not to installing Remora or to the ready-made image. [Image Features](Image-Features.md) lists
+what a build can include. This is not the same as [building Remora from source](#from-source),
+which builds the application only.
 
 Continue with [Getting Started](Getting-Started.md).
