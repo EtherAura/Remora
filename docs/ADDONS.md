@@ -8,9 +8,9 @@ Everything here is read from the sources named in each section. A section saying
 *can* carry a file says only that nothing in the build does more than place that file. Where a
 layer has been built and booted, the section says so and records what was observed.
 
-Sections still to write: `shamiko`, the inventory half of `play_spoof` (which so far records only
-its acceptance target and limits), and the note that `webview_pairip_fix` has no implementation and
-so needs no add-on.
+Sections still to write: the inventory half of `play_spoof` (which so far records only its
+acceptance target and limits), and the note that `webview_pairip_fix` has no implementation and so
+needs no add-on.
 
 ## magisk_root
 
@@ -390,3 +390,187 @@ met:
 3. **Sign-in and installs**: a Google account signed in to the Play Store, and at least one app
    installed from it and launched.
 4. **The record**: all of the above attached to `remora-6laf.6`, a failure recorded as a failure.
+
+## shamiko
+
+Shamiko v1.2.5 (414), a closed-source Zygisk module from LSPosed. It unmounts Magisk's module
+modifications from processes on the DenyList. Sources: `vendor/source-build/features/zygisk_pif/`
+(`shamiko/REMORA.md`, `shamiko/{module.prop,post-fs-data.sh,cleanup.sh,uninstall.sh,sepolicy.rule,
+service.sh.disabled}`, `install.sh`, `60-hide-magisk-applets.sh`), `vendor/source-build/assemble-image.sh`,
+`vendor/source-build/stage-features.sh`, `vendor/PAYLOADS.md`, `src/core/Features.cpp`,
+`src/core/ImageBuild.cpp`, `src/engine/Deployers.cpp`, `.gitattributes`.
+
+### How it reaches the build
+
+`shamiko` requires `magisk_root` and `play_spoof` (`Features.cpp`). It sets `WITH_SHAMIKO=true`,
+and only `assemble-image.sh` acts on it. There is no `.mk` and no `Android.mk` for it, and
+`stage-features.sh` reads `WITH_SHAMIKO` only to refuse it in a public build. When
+`WITH_PLAY_SPOOF=true`, `assemble-image.sh` refuses unless `shamiko/zygisk/x86_64.so` exists. If it
+does, it runs `cp -a` on the whole `zygisk_pif/shamiko/` directory into the play_spoof staging
+tree. That tree goes into the image as `COPY ps/system /system`. With `WITH_PLAY_SPOOF` unset the
+block never runs, so `WITH_SHAMIKO` alone stages nothing. A public release refuses
+`WITH_SHAMIKO=true` in both scripts.
+
+### Installed paths
+
+There are three stages, and only the first is image content. The image carries the directory as
+it is. At deploy time, `install.sh` copies it into `/data` under the module id. At boot, the module's
+own script generates more files.
+
+| payload file (`zygisk_pif/shamiko/…`) | image path (`/system/etc/remora-spoof/shamiko/…`) | `/data` path after `install.sh` (`/data/adb/modules/zygisk_shamiko/…`) |
+|---|---|---|
+| `module.prop` | `module.prop` | `module.prop` |
+| `post-fs-data.sh` | `post-fs-data.sh` | `post-fs-data.sh` |
+| `cleanup.sh` | `cleanup.sh` | `cleanup.sh` |
+| `uninstall.sh` | `uninstall.sh` | `uninstall.sh` |
+| `sepolicy.rule` | `sepolicy.rule` | `sepolicy.rule` |
+| `machikado` | `machikado` | `machikado` |
+| `zygisk/x86.so` | `zygisk/x86.so` | `zygisk/x86.so` |
+| `zygisk/x86_64.so` | `zygisk/x86_64.so` | `zygisk/x86_64.so` |
+| `service.sh.disabled` | `service.sh.disabled` | removed by `install.sh` |
+| `REMORA.md` | `REMORA.md` | removed by `install.sh` |
+
+The image gets ten files in two directories. `/data` keeps eight of them. Of the ten, nine
+are upstream bytes. `REMORA.md` notes two renames: `machikado` was `machikado.x86` in the zip,
+and `service.sh.disabled` was `service.sh`. `REMORA.md` itself is Remora's own. `assemble-image.sh`
+does not filter the directory, so the note and the disabled script reach the image. `install.sh`
+is the step that drops them.
+
+**Ownership and modes.** In the image, the tree is copied with `cp -a` and then through a
+Dockerfile `COPY` with no `--chown`, so it is owned by 0:0. Modes are whatever the staged files had.
+Git records all ten as `100644`. On `/data`, `install.sh` runs `chown -R 0:0`, sets every
+directory to 0755 and every file to 0644, then removes any `disable` marker. That reproduces the
+`set_perm_recursive "$MODPATH" 0 0 0755 0644` that `REMORA.md` quotes from upstream's
+`customize.sh`. No file needs an executable bit, because the deploy runs `post-fs-data.sh` through
+`sh`.
+
+**Dropped from the upstream zip** (per `REMORA.md`): `META-INF/`, `customize.sh`, `verify.sh`, the
+`.sha256` files, `README.md`, and `zygisk/{arm64-v8a,armeabi-v7a,riscv64}.so`. The container has
+no ARM zygote for an ARM Zygisk library to load into.
+
+**Generated at boot, never in the image.** `post-fs-data.sh` writes
+`/data/adb/post-fs-data.d/.shamiko_cleanup.sh` from `cleanup.sh` (and `chmod +x`) if it is absent.
+That copy runs only while `disable` exists. It resets `module.prop`'s `description` and then
+deletes itself. `post-fs-data.sh` also touches `disable` when its version gate fails, below. It
+creates `/data/adb/zygisksu/no_mount_znctl` only if `/data/adb/modules/zygisksu` exists. This image
+installs ReZygisk as `rezygisk`, so that branch is not taken. `uninstall.sh` removes
+`/data/adb/shamiko` and the cleanup copy. Nothing in Remora runs it: `install.sh` replaces the
+module with `rm -rf` and `cp -a`. These sources do not show what creates `/data/adb/shamiko`.
+
+**A checkout without the large-file objects.** `.gitattributes` stores `**/*.so` under the
+features tree in git LFS. A clone that has not fetched those objects holds two 132-byte pointer
+files at `zygisk/*.so`. `assemble-image.sh`'s check is `[ -f ]`, so a pointer passes it.
+`machikado` is not an LFS path.
+
+### Properties
+
+None. Nothing that runs sets an Android property:
+
+- `post-fs-data.sh` only reads versions (`magisk -V`, `su -V`) and writes files.
+- Upstream's `service.sh`, the one script that would set properties (`resetprop -n` on
+  `ro.debuggable`, `ro.secure`, `ro.adb.secure`, `ro.build.type`, `ro.build.tags`, the boot-state
+  properties and more), ships only as `service.sh.disabled`. It never runs: `install.sh` deletes it
+  from `/data`, and the deploy loop in `Deployers.cpp` starts a module's `service.sh` only if
+  `[ -f ]` finds one. `remora_devicespoof` is the single source of property spoofing (`REMORA.md`).
+- `module.prop` is Magisk module metadata, not a property file.
+
+**Not to be confused with the above:** `install.sh` also writes two Magisk *database* settings
+through `magisk --sqlite`: `zygisk=0` (ReZygisk replaces Magisk's built-in Zygisk) and
+`denylist=1`. It adds the DenyList entries `com.google.android.gms`, its
+`com.google.android.gms.unstable` process, `com.android.vending` and `com.google.android.gsf`.
+These live in Magisk's database, not in the property area. They are written for the whole
+play_spoof stack, with or without Shamiko.
+
+### Init and runtime steps
+
+Shamiko has no init rc, and the image adds nothing to `/system/etc/init/` for it. All activation
+happens at deploy time and after, and only when the `play_spoof` runtime option is on
+(`ctx.rc.playSpoof` in `Deployers.cpp`):
+
+1. **Install.** `spoofModulesReady` requires `/system/etc/remora-spoof`, then runs a drift check.
+   For `shamiko/` that check compares `post-fs-data.sh` byte for byte, compares the `versionCode`
+   in `module.prop`, and compares each `zygisk/*` file against `/data/adb/modules/zygisk_shamiko`.
+   On any difference, or if that directory is missing, it runs `install.sh`.
+2. **Re-enable.** Every deploy removes a `disable` marker from `zygisk_shamiko` and the other spoof
+   modules, and reports how many it cleared.
+3. **Root gate.** The step fails unless `magisk` resolves, `magiskd` runs and `su -c true`
+   succeeds. These are the `magisk_root` runtime steps.
+4. **Module scripts.** After the framework is up, the deploy runs `post-fs-data.sh` for every
+   enabled module except `rezygisk` and `playintegrityfix`, with
+   `PATH=/debug_ramdisk:/sbin:$PATH`. Shamiko's is among them. Its version gate passes with
+   Magisk 30.7: it disables the module below `27005`. If `magisk -V` printed nothing, it would take
+   the Zygisk Next branch and disable itself. That is why the deploy puts the Magisk tmpfs on
+   `PATH`, and why `60-hide-magisk-applets.sh` waits until `service.d` before it removes the `su`
+   links.
+5. **Loading.** The Zygisk implementation loads `zygisk/x86_64.so` and `zygisk/x86.so`, the two
+   x86 builds. Here that implementation is ReZygisk, which comes from `play_spoof`. No Remora source loads it
+   directly. `sepolicy.rule` has no Remora consumer. With SELinux disabled in the container it
+   would have no effect anyway (see `magisk_root`).
+
+The sources disagree on one point and do not settle it. `magisk.rc` runs `magisk --post-fs-data`
+at boot, which upstream uses to run module scripts. A comment in `Deployers.cpp` says "this
+container has no module lifecycle at all". Whether Magisk also runs Shamiko's `post-fs-data.sh` at
+boot is not shown here.
+
+On effect, the record is source comments from earlier sessions, not a test run for this document.
+`60-hide-magisk-applets.sh` records that Shamiko loaded (the ReZygisk daemon logged its companion
+socket) but did not remove the Magisk core mounts, because it only unmounts module modifications.
+Neither `denylist=0`, `denylist=1` nor `no_mount_znctl` changed a mount.
+
+### What it needs from the build, and what it does not
+
+Only file placement. There is no compiled module, no sepolicy, no property and no init rc. Every
+runtime step is done by `install.sh` and the deploy, both shipped by `play_spoof`, on top of the
+`magisk_root` stack.
+
+### Payload source
+
+- **Supplied by the user.** `vendor/fetch-payloads.sh` has no Shamiko entry, and nothing fetches
+  it. `REMORA.md` records that the vendored copy was taken from a copy of the release zip already
+  at hand, not downloaded.
+- **Recorded hash: the release archive only.** `Shamiko.zip` sha256
+  `308d31b2f52a80e49eb58f46bc4c764a6588a79e4b8d101b44860832023f88b4`, with `module.prop` reading
+  `id=zygisk_shamiko`, `version=v1.2.5 (414)`, `versionCode=414`. `REMORA.md` says all 18
+  `.sha256` files in the zip were checked against the extracted contents (18 verified, 0
+  mismatches) and the vendored files are byte-identical to the archive. Those per-file hashes are
+  not recorded. The repository's LFS pointers record a sha256 and size for the two libraries:
+  `zygisk/x86_64.so` `acaee7aa…`, 3434016 bytes, and `zygisk/x86.so` `c1e83a16…`, 2644456 bytes.
+  Those identify the committed objects. They have not been checked against the zip's `.sha256`
+  files here.
+- **Licence: none.** `REMORA.md`, `vendor/PAYLOADS.md` and `NOTICE` record that there is no
+  published source and no licence. Nothing grants redistribution. No Shamiko file except
+  `REMORA.md` is in the public tree, and no mirrored image may carry it.
+- **Remora's own:** `REMORA.md`, plus `install.sh`'s Shamiko branch and the deploy steps above,
+  which belong to `play_spoof`.
+
+### A COPY layer
+
+No complete fragment is possible on `remora24:x86_64-public` today. Shamiko's own files can be
+carried by a COPY layer, but on their own they install and activate nothing:
+
+- **The play_spoof stack is a prerequisite and has no layer.** The install path is `install.sh`
+  under `/system/etc/remora-spoof/`, and `spoofModulesReady` gates on that directory. The public
+  base has neither, because a public release refuses `WITH_PLAY_SPOOF`. `install.sh` also
+  needs ReZygisk, PlayIntegrityFork and `pif.json` beside it, and that inventory is still to write
+  (see `play_spoof`). `play_spoof` and `shamiko` are not in `kOverlayable` (`ImageBuild.cpp`), so
+  `remora recipe --base` prints no fragment for either and asks for a source build.
+- **`magisk_root` is a prerequisite**, and its layer is above.
+- **What COPY cannot supply:** the copy into `/data/adb/modules/zygisk_shamiko`, the ownership and
+  mode reset, the removed files, the cleared `disable` marker, the Magisk database settings and
+  DenyList entries, and the boot-generated cleanup script. All of these are runtime writes to
+  `/data`, which is a volume and not part of the image. None needs a base-file edit.
+- **Redistribution:** any image carrying these files is private by construction.
+
+Shamiko's own part of such a layer would look like this. It is illustrative, not something Remora
+prints. The build context's `zygisk_pif/` is `vendor/source-build/features/zygisk_pif/` with the
+payload supplied:
+
+```dockerfile
+# Illustrative only: needs the magisk_root layer and a play_spoof layer that does not exist yet.
+COPY zygisk_pif/shamiko/ /system/etc/remora-spoof/shamiko/
+```
+
+It places the same ten files as the image column of the table, with modes taken from the build
+context. Like every Remora layer, the complete one would also need
+`LABEL remora.public_release="false"`. No layer carrying Shamiko has been built or booted for
+this document.
