@@ -148,6 +148,24 @@ private slots:
         QCOMPARE(skewed.identityAgeSec.value_or(0), qint64(-5));
     }
 
+    // The one sentence both certify surfaces print for a pending identity. An age under a minute
+    // (the callers pass 0 when it is unknown) still reads as one minute, minutes run up to 119,
+    // and from two hours on the age is whole hours, truncated. The advice to register is always there.
+    void pendingEvaluationNoteFormatsAge() {
+        const QString zero = pendingEvaluationNote(0);
+        const QString underMinute = pendingEvaluationNote(59);
+        const QString lastMinute = pendingEvaluationNote(7199);
+        const QString twoHours = pendingEvaluationNote(7200);
+        const QString lastHour = pendingEvaluationNote(43199);
+        QVERIFY2(zero.contains(QLatin1String("1 min old")), qPrintable(zero));
+        QVERIFY2(underMinute.contains(QLatin1String("1 min old")), qPrintable(underMinute));
+        QVERIFY2(lastMinute.contains(QLatin1String("119 min old")), qPrintable(lastMinute));
+        QVERIFY2(twoHours.contains(QLatin1String("2 h old")), qPrintable(twoHours));
+        QVERIFY2(lastHour.contains(QLatin1String("11 h old")), qPrintable(lastHour));
+        for (const QString &note : {zero, underMinute, lastMinute, twoHours, lastHour})
+            QVERIFY2(note.contains(QLatin1String("register it now")), qPrintable(note));
+    }
+
     // Shell noise on line 0 must NOT become an id: it would be shown to the user as the number to
     // paste into Google's registration form. An unreachable container yields no verdict either,
     // which has to stay unknown rather than collapse to "uncertified".
