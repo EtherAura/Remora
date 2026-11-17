@@ -38,6 +38,13 @@ QString retiredVmBackendMessage() {
         "5555); remote defaults to guest and bridge, with adb published on host port 5555.");
 }
 
+QString bareNeedsLinuxMessage() {
+    return QStringLiteral(
+        "backend=bare runs Android in docker on this machine, and that needs a Linux kernel: the "
+        "container shares it for binder and memfd. Windows does not have one. Deploy to a Linux "
+        "docker host instead: backend=remote with ssh_host=<user>@<host>.");
+}
+
 QString gpuModeToString(GpuMode m) {
     switch (m) {
         case GpuMode::Host: return QStringLiteral("host");

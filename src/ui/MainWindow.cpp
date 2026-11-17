@@ -73,9 +73,11 @@
 #include <QVariantAnimation>
 #include <QVBoxLayout>
 
+#ifndef Q_OS_WIN
 #include <QDBusConnection>
 #include <QDBusInterface>
 #include <QDBusMessage>
+#endif
 
 #include "core/Builders.h"  // buildStorageAclArgv — the storage ACL grant behind pkexec
 #include "core/Features.h"
@@ -87,7 +89,9 @@
 #include "engine/SourceBuild.h"
 #include "core/SourcePatches.h"
 #include "store/Store.h"
+#ifdef REMORA_HAVE_WEBENGINE
 #include "ui/RedditLoginWindow.h"
+#endif
 #include "ui/Workers.h"
 
 namespace remora {
@@ -7560,6 +7564,7 @@ void MainWindow::refreshAppsPage() {
 // Open the embedded reddit.com login window for a profile. Runs inside the workspace's own
 // QApplication (no separate process); the window owns the transplant worker and self-deletes.
 void MainWindow::openRedditLogin(const QString &profileName) {
+#ifdef REMORA_HAVE_WEBENGINE
     RemoraConfig cfg = loadInstance(path_, profileName);
     const Backend backend = inferBackend(cfg);
     auto *w = new RedditLoginWindow(cfg, backend);
@@ -7567,6 +7572,15 @@ void MainWindow::openRedditLogin(const QString &profileName) {
     w->setWindowTitle(QStringLiteral("Remora — Reddit login (%1)").arg(profileName));
     w->resize(920, 840);
     w->show();
+#else
+    QMessageBox::information(
+        this, QStringLiteral("Reddit login"),
+        QStringLiteral("This build has no embedded browser (Qt WebEngine) to sign in with. "
+                       "Sign in on reddit.com in your own browser, copy the reddit_session "
+                       "cookie's value, then run this and paste the value when it waits:\n\n"
+                       "remora reddit-login \"%1\" --user <username> --cookie -")
+            .arg(profileName));
+#endif
 }
 
 // All desktop → every entry a desktop window; all freeform → every entry a popup.
@@ -7683,7 +7697,10 @@ void MainWindow::refreshDataDirLock() {
 // this mime type" — and Dolphin, Nautilus, Thunar and Nemo all implement it. It also takes URIs,
 // so the remote backend's sftp:// path goes through the same call. Fall back to the mime route
 // only when nobody implements the interface, where a wrong-app open still beats no open at all.
+//
+// Windows has no freedesktop bus and no such mime trap: a folder opens in Explorer.
 static void showFolder(const QUrl &url) {
+#ifndef Q_OS_WIN
     QDBusInterface fm(QStringLiteral("org.freedesktop.FileManager1"),
                       QStringLiteral("/org/freedesktop/FileManager1"),
                       QStringLiteral("org.freedesktop.FileManager1"),
@@ -7693,6 +7710,7 @@ static void showFolder(const QUrl &url) {
                                        QStringList{url.toString(QUrl::FullyEncoded)}, QString());
         if (r.type() != QDBusMessage::ErrorMessage) return;
     }
+#endif
     QDesktopServices::openUrl(url);
 }
 
@@ -7736,6 +7754,12 @@ void MainWindow::offerDeviceStorageAccess(const QString &media, const QUrl &pend
     // own dialog. A Remora dialog explaining that a dialog is coming is one click of nothing.
     // <dataDir>[/upper]/media — the parent, so one recursive pass covers it and the /0 below it.
     const QString mediaRoot = QFileInfo(media).absolutePath();
+#ifdef Q_OS_WIN
+    // Only bare reaches here, and bare does not deploy on Windows (bareNeedsLinuxMessage).
+    Q_UNUSED(mediaRoot);
+    Q_UNUSED(pending);
+    statusBar()->showMessage(bareNeedsLinuxMessage(), 10000);
+#else
     const QStringList argv = buildStorageAclArgv(mediaRoot, getuid());
     auto *p = new QProcess(this);
     p->setProcessChannelMode(QProcess::MergedChannels);
@@ -7769,6 +7793,7 @@ void MainWindow::offerDeviceStorageAccess(const QString &media, const QUrl &pend
     });
     statusBar()->showMessage(QStringLiteral("waiting for authorisation…"));
     p->start(argv.first(), argv.mid(1));
+#endif
 }
 
 // Fetch an app's ARM64 build from Play — reusing the device's own Google login — and sideload

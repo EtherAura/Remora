@@ -4,11 +4,16 @@
 
 #include <QAtomicInt>
 #include <QCoreApplication>
+#include <QDir>
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QThread>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 namespace remora {
 
@@ -120,7 +125,12 @@ QStringList Spawner::scopedArgv(const QStringList &argv, bool haveSystemdUser,
 
 // A systemd user manager is only reachable if systemd-run exists AND the per-user socket is there.
 // Checking $XDG_RUNTIME_DIR alone is not enough — it is set in plenty of sessions with no manager.
+// Windows has neither, and needs no scope: a detached child outlives its parent there unless it
+// was put in a job that says otherwise.
 static bool systemdUserAvailable() {
+#ifdef Q_OS_WIN
+    return false;
+#endif
     if (QStandardPaths::findExecutable(QStringLiteral("systemd-run")).isEmpty()) return false;
     const QByteArray rt = qgetenv("XDG_RUNTIME_DIR");
     if (rt.isEmpty()) return false;
@@ -154,7 +164,20 @@ Detached RealSpawner::spawnDetached(const QStringList &argv, const QMap<QString,
     // stderr lines already at those offsets. That clobbering ate the mirror's whole initializeGL
     // block while later lines survived, which read as "these lines never printed" during the
     // bd remora-j6yf autopsy (bd remora-cpzc).
+    //
+    // /tmp by name on Linux, not QDir::tempPath(): parseDetachedLogPath rebuilds this path from the
+    // scope name alone, so honouring $TMPDIR here would put the log where nothing looks for it.
+    // Windows has no /tmp, and no scope to rebuild a path from.
+#ifdef Q_OS_WIN
+    const QString ownLog = QDir(QDir::tempPath()).filePath(unit + QStringLiteral(".log"));
+    // No console window: the output goes to the log, and startDetached would otherwise open a
+    // fresh console for every console-subsystem child — remora.exe itself is one.
+    p.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
+        a->flags = (a->flags & ~DWORD(CREATE_NEW_CONSOLE)) | CREATE_NO_WINDOW;
+    });
+#else
     const QString ownLog = QStringLiteral("/tmp/%1.log").arg(unit);
+#endif
     p.setStandardOutputFile(ownLog, QIODevice::Append);
     p.setStandardErrorFile(ownLog, QIODevice::Append);
     qint64 pid = 0;
@@ -164,7 +187,16 @@ Detached RealSpawner::spawnDetached(const QStringList &argv, const QMap<QString,
 
 bool RealSpawner::detachedAlive(const Detached &d) {
     if (d.pid <= 0) return false;
+#ifdef Q_OS_WIN
+    HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, DWORD(d.pid));
+    if (!h) return false;
+    DWORD code = 0;
+    const bool alive = ::GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+    ::CloseHandle(h);
+    return alive;
+#else
     return ::kill(static_cast<pid_t>(d.pid), 0) == 0;
+#endif
 }
 
 }  // namespace remora

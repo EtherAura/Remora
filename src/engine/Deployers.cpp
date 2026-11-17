@@ -54,7 +54,6 @@ static LineSink mkLog(LogSink &sink, const QString &step) {
 // host that HAS the module — there, without it, WebView renders black as measured above.
 static StepResult ensureAshmemNode(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     auto log = mkLog(sink, "ashmem-node");
-    const QString c = ctx.rc.containerName;
     // Derive boot_id INSIDE the container: it is the same kernel, so the value matches the host's,
     // and reading it there keeps the whole thing one shell round-trip with no host/guest skew.
     const QString script = QStringLiteral(
@@ -64,7 +63,7 @@ static StepResult ensureAshmemNode(Spawner &sp, const RunContext &ctx, LogSink &
         "[ -e /dev/ashmem ] || { echo NO_ASHMEM; exit 0; }; "
         "ln -sf /dev/ashmem \"/dev/ashmem$b\" && echo LINKED || echo FAILED");
     const QString out =
-        sp.run({"docker", "exec", c, "sh", "-c", script}, {}, log).out.trimmed();
+        containerExec(sp, ctx, script, log).out.trimmed();
     // Never fail the deploy on this. Without ashmem at all an Android 17 image runs on memfd, and
     // preflight has already refused an Android 16 one, so there is nothing left here to refuse.
     if (out.contains(QLatin1String("LINKED")))
@@ -137,7 +136,7 @@ static StepResult ensureCameraNodes(Spawner &sp, const RunContext &ctx, LogSink 
                        "echo \"FIXED $n\"")
             .arg(quoted.join(QLatin1Char(' ')));
     const QString out =
-        sp.run({"docker", "exec", ctx.rc.containerName, "sh", "-c", script}, {}, log).out.trimmed();
+        containerExec(sp, ctx, script, log).out.trimmed();
     // Advisory, like the ashmem node: a device with an unusable camera still boots and mirrors, so
     // failing the deploy here would cost far more than the feature is worth.
     if (out.startsWith(QLatin1String("FIXED 0")))
@@ -186,7 +185,7 @@ static StepResult ensureAudioNodes(Spawner &sp, const RunContext &ctx, LogSink &
         "chown 0:1005 \"$d\" 2>/dev/null && chmod 0660 \"$d\" 2>/dev/null && n=$((n+1)); done; "
         "[ \"$n\" -gt 0 ] && setprop ctl.restart audioserver; echo \"FIXED $n\"");
     const QString out =
-        sp.run({"docker", "exec", ctx.rc.containerName, "sh", "-c", script}, {}, log).out.trimmed();
+        containerExec(sp, ctx, script, log).out.trimmed();
     // Advisory like the camera and ashmem steps: an image whose microphone does not work still
     // boots and mirrors, and failing the deploy over it would cost far more than the capability.
     if (out.startsWith(QLatin1String("FIXED 0")))
@@ -397,19 +396,18 @@ static QString rezygiskArmCmd() {
 
 // An explicitly marked private image may let Magisk own the Zygisk lifecycle.
 // Its modules and boot settings must not be replaced by the ReZygisk installer.
-static bool bootManagedZygisk(Spawner &sp, const QString &container, const LineSink &log) {
-    return sp.run({"docker", "exec", container, "sh", "-c",
-                   "cat /system/etc/remora-spoof/zygisk-runtime 2>/dev/null || true"}, {}, log)
+static bool bootManagedZygisk(Spawner &sp, const RunContext &ctx, const LineSink &log) {
+    return containerExec(sp, ctx,
+                         "cat /system/etc/remora-spoof/zygisk-runtime 2>/dev/null || true", log)
                .out.trimmed() == QLatin1String("magisk");
 }
 
 // Install the spoof modules into /data if the image carries newer ones. Returns false when this
 // image has no spoof payload at all.
 static bool spoofModulesReady(Spawner &sp, const RunContext &ctx, const LineSink &log) {
-    const QString c = ctx.rc.containerName;
     // IMAGE gate: the modules are baked at /system/etc/remora-spoof by the play_spoof build
     // feature. Without them there is nothing to install, and saying so beats a silent no-op.
-    if (sp.run({"docker", "exec", c, "test", "-d", "/system/etc/remora-spoof"}, {}, log).rc != 0)
+    if (containerExec(sp, ctx, QStringLiteral("test -d /system/etc/remora-spoof"), log).rc != 0)
         return false;
     // Re-install whenever the IMAGE carries a module /data lacks, or whose content drifted. /data
     // is a persistent volume, so "first boot" effectively never happens again: presence alone would
@@ -453,8 +451,8 @@ static bool spoofModulesReady(Spawner &sp, const RunContext &ctx, const LineSink
         "[ -f /system/etc/remora-spoof/pif.json ] && "
         "! cmp -s /system/etc/remora-spoof/pif.json /data/adb/modules/playintegrityfix/pif.json && exit 1; "
         "exit 0");
-    if (sp.run({"docker", "exec", c, "sh", "-c", driftCheck}, {}, log).rc != 0)
-        sp.run({"docker", "exec", c, "sh", "/system/etc/remora-spoof/install.sh"}, {}, log);
+    if (containerExec(sp, ctx, driftCheck, log).rc != 0)
+        containerExec(sp, ctx, QStringLiteral("sh /system/etc/remora-spoof/install.sh"), log);
 
     // Clear stray `disable` markers, every deploy.
     //
@@ -474,7 +472,7 @@ static bool spoofModulesReady(Spawner &sp, const RunContext &ctx, const LineSink
         "[ -f /data/adb/modules/$m/disable ] && { rm -f /data/adb/modules/$m/disable; n=$((n+1)); }; "
         "done; echo $n");
     const QString cleared =
-        sp.run({"docker", "exec", c, "sh", "-c", enable}, {}, log).out.trimmed();
+        containerExec(sp, ctx, enable, log).out.trimmed();
     if (!cleared.isEmpty() && cleared != QLatin1String("0"))
         log(QStringLiteral("stderr"),
             QStringLiteral("re-enabled %1 spoof module(s) that had been disabled — Magisk does this "
@@ -513,7 +511,7 @@ static bool installSpoofBootHook(Spawner &sp, const RunContext &ctx, const LineS
                                        "cat > %1 <<'REMORA_EOF'\n%2\nREMORA_EOF\n"
                                        "chmod 755 %1")
                             .arg(dst, body);
-    return sp.run({"docker", "exec", ctx.rc.containerName, "sh", "-c", cmd}, {}, log).rc == 0;
+    return containerExec(sp, ctx, cmd, log).rc == 0;
 }
 
 // Take `su` off the app PATH (bd remora-4ei.101). Same install shape as the hook above — vendored
@@ -532,7 +530,7 @@ static bool installAppletHideHook(Spawner &sp, const RunContext &ctx, const Line
                                        "cat > %1 <<'REMORA_EOF'\n%2\nREMORA_EOF\n"
                                        "chmod 755 %1")
                             .arg(dst, body);
-    return sp.run({"docker", "exec", ctx.rc.containerName, "sh", "-c", cmd}, {}, log).rc == 0;
+    return containerExec(sp, ctx, cmd, log).rc == 0;
 }
 
 // Arm the injector before Android's first zygote, by WAITING for the moment rather than guessing it.
@@ -554,7 +552,6 @@ static bool installAppletHideHook(Spawner &sp, const RunContext &ctx, const Line
 // idempotence check inside rezygiskArmCmd makes the second start a no-op.
 static StepResult playSpoofArm(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     auto log = mkLog(sink, "spoof-arm");
-    const QString c = ctx.rc.containerName;
     if (!ctx.rc.playSpoof) return StepResult::good("play_spoof off");
     constexpr int kPollMs = 100;
     constexpr int kBudgetMs = 3000;
@@ -564,8 +561,8 @@ static StepResult playSpoofArm(Spawner &sp, const RunContext &ctx, LogSink &sink
     int waited = 0;
     bool armed = false;
     for (; waited < kBudgetMs; waited += kPollMs) {
-        if (sp.run({"docker", "exec", c, "sh", "-c", ready}, {}, log).rc == 0) {
-            if (bootManagedZygisk(sp, c, log))
+        if (containerExec(sp, ctx, ready, log).rc == 0) {
+            if (bootManagedZygisk(sp, ctx, log))
                 return StepResult::good("Magisk manages the image's Zygisk startup");
             armed = true;
             break;
@@ -576,16 +573,15 @@ static StepResult playSpoofArm(Spawner &sp, const RunContext &ctx, LogSink &sink
         return StepResult::good(
             "the spoof modules were not ready before zygote — the boot hook or the framework "
             "restart will cover it");
-    sp.run({"docker", "exec", c, "sh", "-c", rezygiskArmCmd()}, {}, log);
+    containerExec(sp, ctx, rezygiskArmCmd(), log);
     return StepResult::good(
         QStringLiteral("injector armed %1 ms into the container's life").arg(waited));
 }
 
 static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     auto log = mkLog(sink, "play-spoof");
-    const QString c = ctx.rc.containerName;
     if (!ctx.rc.playSpoof) return StepResult::good("play_spoof off");
-    const bool magiskManaged = bootManagedZygisk(sp, c, log);
+    const bool magiskManaged = bootManagedZygisk(sp, ctx, log);
     if (!magiskManaged && !spoofModulesReady(sp, ctx, log))
         return StepResult::good(
             "play_spoof is on but this image was not built with the play_spoof feature — rebuild "
@@ -616,7 +612,7 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
         "su -c true >/dev/null 2>&1 || { echo NO_SU; exit 1; }; echo OK");
     QString rootGap;
     for (int i = 0; i < 3; ++i) {
-        const ProcResult r = sp.run({"docker", "exec", c, "sh", "-c", rootProbe}, {}, log);
+        const ProcResult r = containerExec(sp, ctx, rootProbe, log);
         rootGap = r.out.trimmed();
         if (r.rc == 0) break;
         sp.waitMs(1000);
@@ -649,7 +645,7 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
             "p=$(pgrep -x zygiskd64 | head -1); [ -n \"$p\" ] || exit 1; "
             "test \"/proc/$p/exe\" -ef \"$(command -v magisk)\" || exit 1; "
             "magisk --sqlite \"SELECT value FROM settings WHERE key='zygisk'\" | grep -qx 'value=1'");
-        if (sp.run({"docker", "exec", c, "sh", "-c", probe}, {}, log).rc != 0)
+        if (containerExec(sp, ctx, probe, log).rc != 0)
             return StepResult::fail(
                 "the image selects Magisk's built-in Zygisk, but its injector is not running; "
                 "check the image's module setup and restart the container");
@@ -689,13 +685,13 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
         "cur=$(pgrep -f 'system_serve[r]' | head -1); [ -n \"$cur\" ] || exit 0; "
         "[ \"$cur\" = \"$(cat /dev/.remora-spoof-gen 2>/dev/null)\" ] && exit 1; exit 0");
     const bool freshGeneration =
-        sp.run({"docker", "exec", c, "sh", "-c", genCheck}, {}, log).rc == 0;
+        containerExec(sp, ctx, genCheck, log).rc == 0;
 
     // Any process carrying libzygisk means a live ReZygisk.
     const QString injected = QStringLiteral(
         "for p in /proc/[0-9]*; do grep -ql libzygisk \"$p/maps\" 2>/dev/null && exit 0; done; exit 1");
     const bool isInjected =
-        sp.run({"docker", "exec", c, "sh", "-c", injected}, {}, log).rc == 0;
+        containerExec(sp, ctx, injected, log).rc == 0;
     if (isInjected && !freshGeneration)
         return StepResult::good("play spoof already injected");
     if (!isInjected) {
@@ -706,9 +702,9 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     log(QStringLiteral("stderr"),
         QStringLiteral("the pre-boot injector did not take — restarting the framework to catch a "
                        "fresh zygote (this costs a second boot)"));
-    sp.run({"docker", "exec", c, "sh", "-c", "stop; sleep 2"}, {}, log);
-    sp.run({"docker", "exec", c, "sh", "-c", rezygiskArmCmd()}, {}, log);
-    sp.run({"docker", "exec", c, "sh", "-c", "start"}, {}, log);
+    containerExec(sp, ctx, "stop; sleep 2", log);
+    containerExec(sp, ctx, rezygiskArmCmd(), log);
+    containerExec(sp, ctx, "start", log);
     // Wait for the framework that `start` spawns — identified by a NEW system_server, not by
     // sys.boot_completed. `stop` does not clear that property, so the obvious poll matched the
     // OUTGOING boot's value and returned instantly: the step reported success with the framework
@@ -716,12 +712,12 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     // account for. Same 60 s budget, and it now measures the thing it names.
     const QString ssPid = QStringLiteral("pgrep -f 'system_serve[r]' | head -1");
     const QString before =
-        sp.run({"docker", "exec", c, "sh", "-c", ssPid}, {}, log).out.trimmed();
+        containerExec(sp, ctx, ssPid, log).out.trimmed();
     for (int i = 0; i < 60; ++i) {
         const QString now =
-            sp.run({"docker", "exec", c, "sh", "-c", ssPid}, {}, log).out.trimmed();
+            containerExec(sp, ctx, ssPid, log).out.trimmed();
         if (!now.isEmpty() && now != before
-            && sp.run({"docker", "exec", c, "getprop", "sys.boot_completed"}, {}, log)
+            && containerExec(sp, ctx, QStringLiteral("getprop sys.boot_completed"), log)
                        .out.trimmed() == QLatin1String("1"))
             break;
         sp.waitMs(1000);
@@ -733,18 +729,18 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     // add-on, which always takes this path on its first boot). Restarted against the new one. The
     // ReZygisk monitor armed above leaves it alone since 0002 (it is not exec'd as a zygote);
     // before that, this restart is what got the agent killed until the monitor gave up on init.
-    sp.run({"docker", "exec", c, "setprop", "ctl.restart", "remora_agent"}, {}, log);
+    containerExec(sp, ctx, QStringLiteral("setprop ctl.restart remora_agent"), log);
     // The Magisk app is the other first-boot casualty. magisk.rc installs it with `pm install` on
     // sys.boot_completed — the same moment this step bounces the framework — and a package caught
     // half-installed by `stop` comes back with no permission state, which PackageManager answers by
     // deleting it (user's device: "Missing permission state for package
     // com.topjohnwu.magisk", then deletePackageX). Without the app, root works from a shell and no
     // app can ever be granted su. Put back as magisk.rc would, only where it is missing.
-    sp.run({"docker", "exec", c, "sh", "-c",
-            "[ -f /system/etc/init/magisk/magisk.apk ] || exit 0; "
-            "pm path com.topjohnwu.magisk >/dev/null 2>&1 && exit 0; "
-            "pm install /system/etc/init/magisk/magisk.apk"},
-           {}, log);
+    containerExec(sp, ctx,
+                  "[ -f /system/etc/init/magisk/magisk.apk ] || exit 0; "
+                  "pm path com.topjohnwu.magisk >/dev/null 2>&1 && exit 0; "
+                  "pm install /system/etc/init/magisk/magisk.apk",
+                  log);
     }
     // The remaining modules' post-fs-data.sh, AFTER `start` — never before. devicespoof rewrites
     // ro.hardware / ro.hardware.egl / ro.board.platform, and those SELECT THE HAL IMPLEMENTATIONS:
@@ -757,39 +753,39 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     // DISABLES ITSELF when the lookup fails (bd remora-ckl). Both candidates are listed because
     // magisk.rc moved MAGISKTMP to /debug_ramdisk (bd remora-4ei.94) while images built before
     // that still use /sbin, and this binary drives both.
-    sp.run({"docker", "exec", c, "sh", "-c",
-            "export PATH=/debug_ramdisk:/sbin:$PATH; for m in /data/adb/modules/*/; do "
-            "case \"$m\" in */rezygisk/|*/playintegrityfix/) continue ;; esac; "
-            "[ -f \"${m}disable\" ] && continue; "
-            "[ -f \"${m}post-fs-data.sh\" ] && sh \"${m}post-fs-data.sh\" >/dev/null 2>&1; "
-            // service.sh too, which nothing ran until now (bd remora-82c.7). Magisk normally runs
-            // both; this container has no module lifecycle at all, so whatever is not invoked here
-            // simply never happens. That is not a cosmetic gap: service.sh is where a module does
-            // its LATE work, after boot_completed. PIF's does the whole sensitive-property pass
-            // (lockstate, vbmeta.device_state, verifiedbootstate, veritymode, oem_unlock_allowed,
-            // and `resetprop --compact` to hide that properties were touched at all), and Tricky
-            // Store starts its keystore daemon from it — which is why that daemon "would not stay
-            // up" when it was tried, a symptom then attributed to a container ptrace limit.
-            //
-            // Backgrounded: these scripts deliberately block on `until getprop sys.boot_completed`,
-            // so running them in the foreground would hang the deploy until the timeout.
-            //
-            // A module that must NOT run one ships it as service.sh.disabled and is skipped by the
-            // -f test — Shamiko's is exactly that, because upstream's sets ro.debuggable=0 and
-            // ro.adb.secure=1 and takes adb down with it (bd remora-4ei.50).
-            "[ -f \"${m}service.sh\" ] && setsid sh \"${m}service.sh\" >/dev/null 2>&1 </dev/null &"
-            " done"},
-           {}, log);
+    const QString runModuleScripts = QStringLiteral(
+        "export PATH=/debug_ramdisk:/sbin:$PATH; for m in /data/adb/modules/*/; do "
+        "case \"$m\" in */rezygisk/|*/playintegrityfix/) continue ;; esac; "
+        "[ -f \"${m}disable\" ] && continue; "
+        "[ -f \"${m}post-fs-data.sh\" ] && sh \"${m}post-fs-data.sh\" >/dev/null 2>&1; "
+        // service.sh too, which nothing ran until now (bd remora-82c.7). Magisk normally runs
+        // both; this container has no module lifecycle at all, so whatever is not invoked here
+        // simply never happens. That is not a cosmetic gap: service.sh is where a module does
+        // its LATE work, after boot_completed. PIF's does the whole sensitive-property pass
+        // (lockstate, vbmeta.device_state, verifiedbootstate, veritymode, oem_unlock_allowed,
+        // and `resetprop --compact` to hide that properties were touched at all), and Tricky
+        // Store starts its keystore daemon from it — which is why that daemon "would not stay
+        // up" when it was tried, a symptom then attributed to a container ptrace limit.
+        //
+        // Backgrounded: these scripts deliberately block on `until getprop sys.boot_completed`,
+        // so running them in the foreground would hang the deploy until the timeout.
+        //
+        // A module that must NOT run one ships it as service.sh.disabled and is skipped by the
+        // -f test — Shamiko's is exactly that, because upstream's sets ro.debuggable=0 and
+        // ro.adb.secure=1 and takes adb down with it (bd remora-4ei.50).
+        "[ -f \"${m}service.sh\" ] && setsid sh \"${m}service.sh\" >/dev/null 2>&1 </dev/null &"
+        " done");
+    containerExec(sp, ctx, runModuleScripts, log);
     // PIF explicitly, because the loop above SKIPS it — its post-fs-data.sh has to run pre-start
     // (it is what seeds the injector), so the whole module is excluded there. Its service.sh is the
     // opposite: it blocks on boot_completed and then does the sensitive-property pass that is the
     // entire point of this exercise. Skipping the module wholesale meant that half never ran.
-    sp.run({"docker", "exec", c, "sh", "-c",
-            "export PATH=/debug_ramdisk:/sbin:$PATH; "
-            "[ -f /data/adb/modules/playintegrityfix/service.sh ] && "
-            "[ ! -f /data/adb/modules/playintegrityfix/disable ] && "
-            "setsid sh /data/adb/modules/playintegrityfix/service.sh >/dev/null 2>&1 </dev/null &"},
-           {}, log);
+    const QString runPifService = QStringLiteral(
+        "export PATH=/debug_ramdisk:/sbin:$PATH; "
+        "[ -f /data/adb/modules/playintegrityfix/service.sh ] && "
+        "[ ! -f /data/adb/modules/playintegrityfix/disable ] && "
+        "setsid sh /data/adb/modules/playintegrityfix/service.sh >/dev/null 2>&1 </dev/null &");
+    containerExec(sp, ctx, runPifService, log);
     // Re-run netfix AFTER the framework restart, then VERIFY adb end-to-end before handing off.
     // `stop`/`start` restarts netd (flushing the legacy route tables netfix populated) and adbd,
     // and the exact moment everything is genuinely reachable again is not observable from any one
@@ -800,11 +796,10 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     // stack that is still settling. Both fresh-container deploys failed their first
     // connect in exactly that race and succeeded on a manual retry ~25s later; this folds that
     // retry into the chain (bd remora-e5x.16).
-    sp.run({"docker", "exec", c, "sh", "-c", "sh /remora/netfix.sh"}, {}, log);
+    containerExec(sp, ctx, "sh /remora/netfix.sh", log);
     // Stamp the generation the module work just ran for, so a reconnect against this same framework
     // does not repeat it.
-    sp.run({"docker", "exec", c, "sh", "-c",
-            "pgrep -f 'system_serve[r]' | head -1 > /dev/.remora-spoof-gen"}, {}, log);
+    containerExec(sp, ctx, "pgrep -f 'system_serve[r]' | head -1 > /dev/.remora-spoof-gen", log);
     // Deliberately not naming WHICH of the two got there first — the pre-zygote arm step and the
     // post-fs-data hook both aim at the same instant and either is a good outcome. What matters
     // here is only that no framework restart was needed.
@@ -868,8 +863,13 @@ static StepResult ensureImageOn(Spawner &sp, const QString &host, const QString 
 // Every backend's connect launches the local adb + mirror clients — catch missing tools in
 // preflight, not as a confusing late failure inside the connect step.
 static std::optional<StepResult> missingHostTools(Spawner &sp, const LineSink &log) {
+#ifdef Q_OS_WIN
+    if (sp.run({"where", "/q", "adb"}, {}, log).rc != 0)
+        return StepResult::fail("adb not found on PATH — install Android SDK Platform-Tools");
+#else
     if (sp.run({"sh", "-c", "command -v adb >/dev/null 2>&1"}, {}, log).rc != 0)
         return StepResult::fail("adb not found on PATH — install android-tools");
+#endif
     // No external-client check since the cutover: the mirror client is the remora binary itself.
     return std::nullopt;
 }
@@ -881,6 +881,17 @@ static std::optional<StepResult> missingHostTools(Spawner &sp, const LineSink &l
 static std::optional<StepResult> retiredVmBackend(const RunContext &ctx) {
     if (!ctx.retiredVmBackend) return std::nullopt;
     return StepResult::fail(retiredVmBackendMessage());
+}
+
+// bare is docker on THIS machine sharing THIS kernel, so it exists only where that kernel is Linux.
+// Refused first on Windows (bd remora-7oih): every later bare check is a Linux probe that would
+// only fail more confusingly.
+static std::optional<StepResult> bareNeedsLinux() {
+#ifdef Q_OS_WIN
+    return StepResult::fail(bareNeedsLinuxMessage());
+#else
+    return std::nullopt;
+#endif
 }
 
 // Same rule for gpu_mode: a value that is neither host nor guest is refused, not defaulted.
@@ -988,6 +999,7 @@ private:
     StepResult preflight(const RunContext &ctx, LogSink &sink) {
         auto log = mkLog(sink, "preflight");
         if (auto retired = retiredVmBackend(ctx)) return *retired;
+        if (auto linuxOnly = bareNeedsLinux()) return *linuxOnly;
         if (auto bad = unrecognisedGpuMode(ctx)) return *bad;
         if (auto miss = missingHostTools(sp_, log)) return *miss;
         if (!groups(sp_, log).contains("docker"))

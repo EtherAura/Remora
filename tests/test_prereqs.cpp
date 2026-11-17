@@ -392,6 +392,21 @@ private slots:
         QVERIFY2(p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0, out.constData());
     }
 
+    // The release-tag decision a prune would act on: only an image fetch replaced, by its own
+    // rollback alias, that no receipt and no container holds; anything unknown selects nothing.
+    void imageReleaseRetentionSelectsOnlyOwnedObsoleteTags() {
+        if (QStringLiteral(REMORA_PYTHON).isEmpty())
+            QSKIP("no Python 3 interpreter was found at configure time");
+        QProcess p;
+        p.setProcessChannelMode(QProcess::MergedChannels);
+        p.start(QStringLiteral(REMORA_PYTHON),
+                {QStringLiteral(REMORA_SOURCE_DIR "/tests/test_public_images.py"),
+                 QStringLiteral("ReleaseRetention")});
+        QVERIFY2(p.waitForFinished(120000), "the release-retention regression did not finish");
+        const QByteArray out = p.readAll();
+        QVERIFY2(p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0, out.constData());
+    }
+
     // bd remora-8tpz: --codec reached avcodec_find_encoder_by_name with any explicit name, so the
     // host's ffmpeg could open an encoder Remora never uses — ffv1_vulkan among them. The encoder's
     // main() runs this gate before it opens any device; this drives the same function.

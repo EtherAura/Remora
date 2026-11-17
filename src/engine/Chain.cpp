@@ -841,9 +841,9 @@ static QString waitFirstBootSettled(Spawner &sp, const RunContext &ctx, const QS
                                       : QString());
 }
 
-// One command inside the container, whichever backend owns it.
-static ProcResult containerExec(Spawner &sp, const RunContext &ctx, const QString &inner,
-                                const LineSink &log) {
+// One command inside the container, whichever backend owns it (declared in Engine.h).
+ProcResult containerExec(Spawner &sp, const RunContext &ctx, const QString &inner,
+                         const LineSink &log) {
     if (ctx.backend == Backend::Bare)
         return sp.run({"docker", "exec", ctx.rc.containerName, "sh", "-c", inner}, {}, log);
     return sp.run(Spawner::sshArgv(ctx.guest, QStringLiteral("docker exec %1 sh -c %2")

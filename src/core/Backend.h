@@ -21,6 +21,8 @@ Backend backendFromString(const QString &s);  // defaults to Bare on unknown/uns
 bool isRetiredVmBackend(const QString &s);
 // The refusal itself — what to edit instead — worded once for preflight and the CLI's --backend.
 QString retiredVmBackendMessage();
+// backend=bare on a Windows desktop (bd remora-7oih): there is no Linux kernel there to run it on.
+QString bareNeedsLinuxMessage();
 
 QString gpuModeToString(GpuMode m);
 // host | guest, and nothing else: an unrecognised spelling is nullopt, NOT a default. "auto" used

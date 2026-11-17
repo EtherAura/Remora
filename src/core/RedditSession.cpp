@@ -83,7 +83,12 @@ QList<DsPref> decodeDataStorePrefs(const QByteArray &data) {
     while (i < data.size()) {
         const quint64 tag = getVarint(data, i);
         if ((tag & 7) != 2) break;  // every top-level entry is length-delimited
-        const int end = i + int(getVarint(data, i));
+        // Length first, then the offset it starts at: getVarint ADVANCES i, and C++ does not order
+        // the operands of `i + getVarint(data, i)` or the arguments of `mid(i, getVarint(…, i))`.
+        // GCC happened to take the length first; Clang reads i first and every entry came back
+        // empty, which is how the Windows (llvm-mingw) build found it (bd remora-7oih).
+        const int len = int(getVarint(data, i));
+        const int end = i + len;
         QString key;
         DsPref pref;
         bool haveKey = false, haveVal = false;
@@ -96,7 +101,8 @@ QList<DsPref> decodeDataStorePrefs(const QByteArray &data) {
                 else if (wt == 1) i += 8;
                 continue;
             }
-            QByteArray seg = data.mid(i, int(getVarint(data, i)));
+            const int segLen = int(getVarint(data, i));
+            QByteArray seg = data.mid(i, segLen);
             i += seg.size();
             if (f == 1) {
                 key = QString::fromUtf8(seg);
@@ -107,7 +113,8 @@ QList<DsPref> decodeDataStorePrefs(const QByteArray &data) {
                     const quint64 vt = getVarint(seg, j);
                     const int vf = int(vt >> 3), vw = int(vt & 7);
                     if (vw == 2) {
-                        const QByteArray v = seg.mid(j, int(getVarint(seg, j)));
+                        const int vLen = int(getVarint(seg, j));
+                        const QByteArray v = seg.mid(j, vLen);
                         j += v.size();
                         if (vf == 5) {
                             pref = DsPref::string(QString(), QString::fromUtf8(v));

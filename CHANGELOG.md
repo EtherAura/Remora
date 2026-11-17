@@ -50,7 +50,22 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   in `~/.local/share/remora/payloads/zygisk_pif`. `vendor/source-build/stage-spoof-layer.sh`
   stages the same layer for `remora build --base`.
 
+- **The client builds for Windows (early).** Remora now cross-compiles to a Windows executable
+  with llvm-mingw against Qt's official Windows build: `tools/windows-sdk.sh` fetches the pinned
+  SDK and `cmake/windows-llvm-mingw.cmake` is the toolchain file. Under Wine, `remora mirror`
+  streams and records from an Android instance on a Linux host. There is no Windows package yet,
+  and it has not been tested on Windows itself. `backend=bare` is refused on Windows with a pointer
+  to `backend=remote`, because a local container needs a Linux kernel. A build without Qt WebEngine,
+  which includes this one, explains how to sign in to Reddit with a cookie instead of opening a
+  window it cannot show.
+
 ### Fixed
+
+- **Remote deploys set up the container they deployed.** Several deploy steps ran `docker exec`
+  on this machine instead of on the remote docker host: the boot-id ashmem link for Android 17
+  WebViews, handing camera and USB audio nodes to their Android services, and the whole Play spoof
+  stack. A remote container got none of them. A deploy with `play_spoof` on reported that the
+  image was built without it, and a local container with the same name could be changed instead.
 
 - **App windows check their own video path.** Sonar and other separate displays no longer wait
   for a packet from the main mirror's host encoder or report a false `serve unconfirmed` warning.

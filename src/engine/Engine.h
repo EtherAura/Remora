@@ -182,6 +182,12 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
 // the container, which kills the helper outright. Without this on those paths the physical
 // keyboard silently disappears mid-session and the on-screen IME comes back.
 StepResult phantomKeyboard(Spawner &sp, const RunContext &ctx, LogSink &sink);
+// One shell command inside the profile's container, on whichever host owns it: `docker exec … sh
+// -c` here for bare, the same through ssh for remote. Every step shared by both deployers goes
+// through this — a bare `docker exec` in one of them reached THIS machine's docker on a remote
+// deploy, where the container is not (bd remora-7oih).
+ProcResult containerExec(Spawner &sp, const RunContext &ctx, const QString &inner,
+                         const LineSink &log);
 // Expose the profile's shared_inputs devices inside the container and leave a replug watcher
 // behind (bd remora-4ei.36). Advisory like the phantom keyboard: it never fails the deploy.
 StepResult shareInputDevices(Spawner &sp, const RunContext &ctx, LogSink &sink);

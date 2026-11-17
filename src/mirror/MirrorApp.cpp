@@ -5,7 +5,11 @@
 #include <QRandomGenerator>
 #include <QSocketNotifier>
 #include <csignal>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "core/Branding.h"
 #include "CudaInterop.h"
@@ -23,11 +27,21 @@ namespace remora::mirror {
 // The engine reaps a mirror with TERM (then KILL), and teardown — removing the adb tunnel,
 // stopping the server — only runs if TERM leads back to the event loop. Async-signal-safe
 // self-pipe: the handler writes a byte, the notifier quits the app, destructors do the rest.
+// Windows has no TERM: a console's Ctrl-C, close and shutdown arrive as control events, on a
+// thread of their own, so the handler queues the quit onto the event loop instead.
+#ifdef Q_OS_WIN
+static BOOL WINAPI onConsoleCtrl(DWORD) {
+    QMetaObject::invokeMethod(QCoreApplication::instance(), &QCoreApplication::quit,
+                              Qt::QueuedConnection);
+    return TRUE;
+}
+#else
 static int sigPipe[2] = {-1, -1};
 static void onTermSignal(int) {
     const char c = 1;
     (void)!::write(sigPipe[1], &c, 1);
 }
+#endif
 
 int runMirrorMain(QApplication &app) {
     // Present without waiting for vsync. A blocking swap costs the ONE thing that also decodes
@@ -309,6 +323,9 @@ int runMirrorMain(QApplication &app) {
                          [&session] { session.startAsync(); });
     }
 
+#ifdef Q_OS_WIN
+    ::SetConsoleCtrlHandler(onConsoleCtrl, TRUE);
+#else
     if (::pipe(sigPipe) != 0) return 1;
     QSocketNotifier sigNotifier(sigPipe[0], QSocketNotifier::Read);
     QObject::connect(&sigNotifier, &QSocketNotifier::activated, &app, [] {
@@ -319,6 +336,7 @@ int runMirrorMain(QApplication &app) {
     std::signal(SIGTERM, onTermSignal);
     std::signal(SIGINT, onTermSignal);
     std::signal(SIGHUP, onTermSignal);
+#endif
 
     if (splash) {
         // Pay for the hw decoder's device context HERE, in the dead time before the animation

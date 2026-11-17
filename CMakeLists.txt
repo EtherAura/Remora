@@ -21,9 +21,20 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)  # for Q_OBJECT (Qt Test; later the UI/engine QObjects)
 
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Widgets Test Network OpenGLWidgets Multimedia)
 # DBus: org.freedesktop.FileManager1, so "show this folder" is asked as itself rather than as an
 # inode/directory mime lookup that any media player can win (see showFolder in MainWindow.cpp).
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Widgets Test WebEngineWidgets Network DBus OpenGLWidgets Multimedia)
+# A freedesktop session bus is a Linux desktop's, so the Windows client (bd remora-7oih) asks
+# Explorer instead and needs no DBus. WebEngine is required on Linux, where every package carries
+# it; Qt ships it for Windows only in the MSVC flavour, so an llvm-mingw build has no Reddit
+# sign-in window and says so when asked for one.
+if(WIN32)
+    find_package(Qt6 6.4 QUIET COMPONENTS WebEngineWidgets)
+    set(REMORA_HAVE_WEBENGINE ${Qt6WebEngineWidgets_FOUND})
+else()
+    find_package(Qt6 6.4 REQUIRED COMPONENTS DBus WebEngineWidgets)
+    set(REMORA_HAVE_WEBENGINE ON)
+endif()
 
 include(GNUInstallDirs)
 
@@ -118,11 +129,18 @@ add_library(remora_gui STATIC
     src/ui/MainWindow.cpp
     src/ui/Workers.cpp
     src/ui/App.cpp
-    src/ui/RedditLoginWindow.cpp
 )
 target_include_directories(remora_gui PUBLIC src)
 target_link_libraries(remora_gui PUBLIC remora_engine remora_store remora_core
-    Qt6::Widgets Qt6::WebEngineWidgets Qt6::Network Qt6::DBus)
+    Qt6::Widgets Qt6::Network)
+if(NOT WIN32)
+    target_link_libraries(remora_gui PUBLIC Qt6::DBus)
+endif()
+if(REMORA_HAVE_WEBENGINE)
+    target_sources(remora_gui PRIVATE src/ui/RedditLoginWindow.cpp)
+    target_link_libraries(remora_gui PUBLIC Qt6::WebEngineWidgets)
+    target_compile_definitions(remora_gui PUBLIC REMORA_HAVE_WEBENGINE=1)
+endif()
 target_compile_definitions(remora_gui PRIVATE REMORA_VENDOR_DIR="${REMORA_VENDOR_PATH}")
 
 # --- binary: CLI (QCoreApplication) + `gui` subcommand (QApplication) ---
@@ -140,6 +158,13 @@ target_compile_definitions(remora PRIVATE REMORA_VERSION_STRING="${REMORA_VERSIO
 #
 # fwd and uinput-kbd run INSIDE the container, which has no host libc to link against, so they are
 # static and required: no static libc is a configure error here, not a link error halfway through.
+#
+# Every one of them is a LINUX binary — two run in the container, two beside docker on the host —
+# so a Windows build (bd remora-7oih) cannot make them with its own compiler. It skips them; the
+# Windows package has to carry the ones a Linux build made.
+if(WIN32)
+    message(STATUS "vendor/native: NOT built — these are Linux binaries, and this is a Windows build")
+else()
 set(REMORA_NATIVE_DIR "${CMAKE_SOURCE_DIR}/vendor/native")
 include(CheckCSourceCompiles)
 include(CheckIncludeFile)
@@ -204,6 +229,7 @@ else()
         "libavutil and libva")
 endif()
 add_custom_target(remora_native ALL DEPENDS ${REMORA_NATIVE_OUTPUTS})
+endif()
 
 # --- tests ---
 # Every test runs with HOME and the XDG base directories inside the build tree (set below, once

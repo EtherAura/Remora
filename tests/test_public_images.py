@@ -837,5 +837,258 @@ class ReleaseReceiptRetention(unittest.TestCase):
             self.assertTrue(self.check([self.receipts['C']])['complete'])
 
 
+def rollback_alias(iid):
+    return 'remora-rollback:public-' + iid[7:]
+
+
+class ReleaseRetention(unittest.TestCase):
+    """The offline decision of which release tags a prune may drop: the rollback alias and the
+    version tags of an image fetch replaced, which no receipt and no container holds. The receipts
+    and the tags are what fetch itself leaves after importing releases A, B and C in turn over the
+    fake Docker, each under its own version tag; nothing is removed by the decision."""
+    VERSIONS = {n: TAG + '-00000000.00000' + str(i) for i, n in enumerate('ABC', 1)}
+
+    @classmethod
+    def setUpClass(cls):
+        d = tempfile.TemporaryDirectory()
+        cache = Path(d.name) / 'images'
+        cache.mkdir()
+        docker = FakeDocker(None)
+        cls.ids, cls.receipts = {}, {}
+        for name in 'ABC':
+            src = Path(d.name) / (name + '.tar')
+            iid = docker_archive(src, labels={'remora.public_release': 'true', 'n': name})
+            body = src.read_bytes()
+            image = image_entry(iid, ref(name + '.tar', body))
+            docker.local = iid
+
+            class Opener:
+                def open(_, url, timeout):
+                    return io.BytesIO(body)
+            with patch.object(catalog.urllib.request, 'build_opener', lambda *a: Opener()), \
+                    patch.object(catalog, 'check_local_docker', lambda: None), \
+                    patch.object(catalog, 'image_id', docker.image_id), \
+                    patch.object(catalog, 'run', docker.run):
+                path = catalog.fetch('https://h/x', image, {'sequence': 1}, cache)['receipt']
+            # The fake loads every archive under the one fixture version tag; each release keeps
+            # its own, as the real ones do.
+            docker.tags[cls.VERSIONS[name]] = docker.tags.pop(VTAG)
+            cls.ids[name] = iid
+            cls.receipts[name] = json.loads(Path(path).read_text())
+        cls.tags = dict(docker.tags)
+        d.cleanup()
+
+    def setUp(self):
+        self.a_tags = (rollback_alias(self.ids['A']), self.VERSIONS['A'])
+        self.other = 'sha256:' + 'd' * 64
+
+    def inventory(self, tags=None, extra=()):
+        by = {}
+        for t, iid in (self.tags if tags is None else tags).items():
+            by.setdefault(iid, []).append(t)
+        return [{'Id': i, 'RepoTags': sorted(ts)} for i, ts in sorted(by.items())] + list(extra)
+
+    def decide(self, receipts=None, images=None, containers=(), tag=TAG):
+        receipts = [self.receipts['C']] if receipts is None else receipts
+        images = self.inventory() if images is None else images
+        return catalog.obsolete_release_tags(tag, receipts, images, list(containers))
+
+    def assertIncomplete(self, result):
+        self.assertFalse(result['complete'], result)
+        self.assertEqual(result['tags'], ())
+        self.assertIsNone(result['retain'])
+        self.assertTrue(result['reason'])
+
+    def test_the_fixtures_are_what_three_fetches_leave(self):
+        a, b, c = (self.ids[n] for n in 'ABC')
+        self.assertEqual(self.tags, {TAG: c, rollback_alias(a): a, rollback_alias(b): b,
+                                     self.VERSIONS['A']: a, self.VERSIONS['B']: b,
+                                     self.VERSIONS['C']: c})
+
+    def test_only_the_release_two_updates_back_is_selected(self):
+        result = self.decide()
+        self.assertTrue(result['complete'], result)
+        self.assertIsNone(result['reason'])
+        self.assertEqual(result['tags'], tuple(sorted(self.a_tags)))
+        # C is current and B is what images rollback restores; every tag of both stays.
+        self.assertEqual(set(result['retain']), {self.ids['B'], self.ids['C']})
+
+    def test_a_staged_version_only_image_is_never_selected(self):
+        staged = {'Id': self.other, 'RepoTags': [TAG + '-00000000.000009']}
+        result = self.decide(images=self.inventory(extra=[staged]))
+        self.assertTrue(result['complete'], result)
+        self.assertEqual(result['tags'], tuple(sorted(self.a_tags)))
+        self.assertIn(self.other, result['retain'])
+
+    def test_a_version_tag_without_its_images_own_alias_is_not_ownership(self):
+        # A's version tag alone, its alias gone: nothing shows fetch replaced it.
+        tags = {t: i for t, i in self.tags.items() if t != rollback_alias(self.ids['A'])}
+        result = self.decide(images=self.inventory(tags))
+        self.assertTrue(result['complete'], result)
+        self.assertEqual(result['tags'], ())
+        self.assertIn(self.ids['A'], result['retain'])
+
+    def test_a_rollback_alias_on_the_wrong_image_stops_the_decision(self):
+        e = 'sha256:' + 'e' * 64
+        for where in (self.other, self.ids['C'], self.ids['B'], self.ids['A']):
+            with self.subTest(image=where):
+                tags = dict(self.tags, **{rollback_alias(e): where})
+                self.assertIncomplete(self.decide(images=self.inventory(tags)))
+        # Any tag in the reserved repository counts, not only the public- form.
+        self.assertIncomplete(self.decide(images=self.inventory(
+            dict(self.tags, **{'remora-rollback:latest': self.ids['C']}))))
+
+    def test_a_foreign_tag_holds_the_whole_image(self):
+        for foreign in ('user/keep:1', TAG + '-gamma-00000000.000007', TAG + '-custom',
+                        'remora24:x86_64-public-0000.00'):
+            with self.subTest(tag=foreign):
+                result = self.decide(images=self.inventory(dict(self.tags, **{foreign: self.ids['A']})))
+                self.assertTrue(result['complete'], result)
+                self.assertEqual(result['tags'], ())
+                self.assertIn(self.ids['A'], result['retain'])
+
+    def test_a_container_running_or_stopped_holds_its_image(self):
+        for running in (True, False):
+            with self.subTest(running=running):
+                c = {'Id': 'c' * 64, 'Image': self.ids['A'], 'State': {'Running': running}}
+                result = self.decide(containers=[c])
+                self.assertTrue(result['complete'], result)
+                self.assertEqual(result['tags'], ())
+                self.assertIn(self.ids['A'], result['retain'])
+
+    def test_every_channel_and_the_signed_alias_are_retained(self):
+        # Another channel that replaced A holds it, since rollback aliases are shared.
+        beta = dict(self.receipts['B'], tag=TAG + '-beta')
+        tags = dict(self.tags, **{TAG + '-beta': self.ids['B']})
+        result = self.decide([self.receipts['C'], beta], self.inventory(tags))
+        self.assertEqual((result['complete'], result['tags']), (True, ()), result)
+        # Another channel at C: its version tags on A go with A's, being that channel's own.
+        beta = dict(self.receipts['C'], tag=TAG + '-beta')
+        tags = dict(self.tags, **{TAG + '-beta': self.ids['C'],
+                                  TAG + '-beta-00000000.000007': self.ids['A']})
+        result = self.decide([self.receipts['C'], beta], self.inventory(tags))
+        self.assertEqual(result['tags'], tuple(sorted(self.a_tags + (TAG + '-beta-00000000.000007',))))
+        # A receipt whose signed ID names A, as a containerd store's local ID can differ.
+        signed = dict(self.receipts['C'], signed_image_id=self.ids['A'])
+        result = self.decide([signed])
+        self.assertEqual((result['complete'], result['tags']), (True, ()), result)
+        self.assertIn(self.ids['A'], result['retain'])
+
+    def test_the_current_image_and_its_active_tag_must_match_the_receipt(self):
+        c = self.receipts['C']
+        without_tag = {t: i for t, i in self.tags.items() if t != TAG}
+        cases = {
+            'null current, tag absent': ([dict(c, image=None)], self.inventory(without_tag)),
+            'null current, tag present': ([dict(c, image=None)], self.inventory()),
+            'missing current': ([{k: v for k, v in c.items() if k != 'image'}], self.inventory()),
+            'malformed current': ([dict(c, image=self.ids['C'][7:])], self.inventory()),
+            'active tag absent': ([c], self.inventory(without_tag)),
+            'active tag on another image': ([c], self.inventory(dict(self.tags, **{TAG: self.ids['B']}))),
+            'malformed signed ID': ([dict(c, signed_image_id='sha256:' + 'F' * 64)], self.inventory()),
+            'null signed ID': ([dict(c, signed_image_id=None)], self.inventory()),
+        }
+        for name, (receipts, images) in cases.items():
+            with self.subTest(name):
+                self.assertIncomplete(self.decide(receipts, images))
+
+    def test_missing_rollback_fields_stand_cleanup_down(self):
+        self.assertIn(self.ids['B'], self.decide()['retain'])
+        for keys in (['previous'], ['backup'], ['previous', 'backup']):
+            with self.subTest(missing=keys):
+                c = {k: v for k, v in self.receipts['C'].items() if k not in keys}
+                self.assertIncomplete(self.decide([c]))
+
+    def test_explicit_null_rollback_fields_stand_cleanup_down(self):
+        c = self.receipts['C']
+        # The preflight accepts both shapes as fetch writes them; cleanup does not.
+        for previous, backup in ((None, None), (self.ids['C'], None)):
+            with self.subTest(previous=previous, backup=backup):
+                r = dict(c, previous=previous, backup=backup)
+                self.assertTrue(catalog.release_retention_receipts(TAG, [r])['complete'])
+                self.assertIncomplete(self.decide([r]))
+        for previous, backup in ((None, rollback_alias(self.ids['B'])), (self.ids['B'], None)):
+            with self.subTest(previous=previous, backup=backup):
+                self.assertIncomplete(self.decide([dict(c, previous=previous, backup=backup)]))
+        # On every channel, not only the requested one; A's own first-install receipt included.
+        beta = dict(self.receipts['A'], tag=TAG + '-beta')
+        tags = dict(self.tags, **{TAG + '-beta': self.ids['A']})
+        self.assertIncomplete(self.decide([c, beta], self.inventory(tags)))
+        self.assertIncomplete(self.decide([self.receipts['A']]))
+
+    def test_the_backup_alias_must_be_on_the_replaced_image(self):
+        b_alias = rollback_alias(self.ids['B'])
+        self.assertIncomplete(self.decide(images=self.inventory(
+            {t: i for t, i in self.tags.items() if t != b_alias})))
+
+    def test_missing_inventory_is_not_an_empty_one(self):
+        self.assertIncomplete(self.decide(images='inventory'))
+        self.assertIncomplete(catalog.obsolete_release_tags(TAG, [self.receipts['C']], None, []))
+        self.assertIncomplete(catalog.obsolete_release_tags(TAG, [self.receipts['C']],
+                                                            self.inventory(), None))
+        # An empty image inventory cannot hold the active tag; an empty container one is real.
+        self.assertIncomplete(self.decide(images=[]))
+        self.assertTrue(self.decide(containers=[])['complete'])
+
+    def test_malformed_duplicate_or_ambiguous_inventory_is_refused(self):
+        good = self.inventory()
+        a = next(im for im in good if im['Id'] == self.ids['A'])
+        for images in ({im['Id']: im for im in good}, good + [None], good + [{'RepoTags': []}],
+                       good + [{'Id': 'd' * 64, 'RepoTags': []}],
+                       good + [{'Id': self.other, 'RepoTags': None}],
+                       good + [{'Id': self.other, 'RepoTags': 'user/keep:1'}],
+                       good + [{'Id': self.other, 'RepoTags': [1]}],
+                       good + [{'Id': self.other, 'RepoTags': ['']}],
+                       good + [dict(a)], good + [{'Id': self.other, 'RepoTags': [self.VERSIONS['A']]}],
+                       [im for im in good if im is not a] + [dict(a, RepoTags=a['RepoTags'] * 2)]):
+            with self.subTest(images=images):
+                self.assertIncomplete(self.decide(images=images))
+        c = {'Id': 'c' * 64, 'Image': self.other}
+        for containers in ([None], [{'Id': 'c' * 64}], [dict(c, Image=self.other[7:])],
+                           [dict(c, Id='C' * 64)], [dict(c, Id=None)], [c, c]):
+            with self.subTest(containers=containers):
+                self.assertIncomplete(self.decide(containers=containers))
+        self.assertIncomplete(catalog.obsolete_release_tags(TAG, [self.receipts['C']], good,
+                                                            {'c': c}))
+
+    def test_nothing_obsolete_selects_nothing(self):
+        tags = {t: i for t, i in self.tags.items() if i != self.ids['A']}
+        result = self.decide(images=self.inventory(tags))
+        self.assertEqual((result['complete'], result['tags']), (True, ()), result)
+
+    def test_the_answer_is_deterministic(self):
+        first = self.decide()
+        beta = dict(self.receipts['C'], tag=TAG + '-beta')
+        tags = dict(self.tags, **{TAG + '-beta': self.ids['C']})
+        containers = [{'Id': str(i) * 64, 'Image': self.ids[n]} for i, n in ((1, 'B'), (2, 'C'))]
+        forward = self.decide([self.receipts['C'], beta], self.inventory(tags), containers)
+        images = [dict(im, RepoTags=im['RepoTags'][::-1]) for im in self.inventory(tags)[::-1]]
+        backward = self.decide([beta, self.receipts['C']], images, containers[::-1])
+        self.assertEqual(forward, backward)
+        self.assertEqual(first, self.decide())
+        self.assertEqual(forward['tags'], first['tags'])
+
+    def test_dropping_the_selected_tags_leaves_nothing_more_to_drop(self):
+        first = self.decide()
+        tags = {t: i for t, i in self.tags.items() if t not in first['tags']}
+        dangling = [{'Id': self.ids['A'], 'RepoTags': []}]
+        again = self.decide(images=self.inventory(tags, dangling))
+        self.assertEqual((again['complete'], again['tags']), (True, ()), again)
+        self.assertEqual(again['retain'], first['retain'])
+
+    def test_the_decision_touches_no_docker_files_processes_or_network(self):
+        def refuse(*a, **k):
+            raise AssertionError('impure call')
+        with patch.object(catalog, 'run', refuse), patch.object(catalog, 'image_id', refuse), \
+                patch.object(catalog.subprocess, 'run', refuse), \
+                patch.object(catalog.subprocess, 'Popen', refuse), patch('builtins.open', refuse), \
+                patch.object(catalog.Path, 'read_text', refuse), \
+                patch.object(catalog.Path, 'exists', refuse), \
+                patch.object(catalog.Path, 'unlink', refuse), \
+                patch.object(catalog.os, 'replace', refuse), patch.object(catalog.os, 'remove', refuse), \
+                patch.object(catalog.urllib.request, 'build_opener', refuse), \
+                patch.object(catalog.urllib.request, 'urlopen', refuse):
+            self.assertEqual(self.decide()['tags'], tuple(sorted(self.a_tags)))
+
+
 if __name__ == '__main__':
     unittest.main()

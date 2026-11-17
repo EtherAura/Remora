@@ -1527,6 +1527,36 @@ private slots:
         QVERIFY(hasCall(sp, "/system/etc/remora-spoof"));  // image gate consulted
     }
 
+    // The steps both deployers share act INSIDE the container, so on remote they have to reach the
+    // docker host over ssh. They used to run a plain `docker exec`, which aimed a remote deploy at
+    // THIS machine's docker: the remote container's ashmem link, camera and audio nodes and Play
+    // spoof were never touched, and play_spoof reported an image without the feature
+    // (bd remora-7oih). Matching substrings alone could not see it — the command was there, on
+    // the wrong machine — so this pins where each one runs.
+    void remoteDeployRunsContainerStepsOnTheDockerHost() {
+        FakeSpawner sp;
+        RemoraConfig cfg = withGuest();
+        cfg.advanced.playSpoof = true;
+        cfg.input.cameraDevices = QStringList{QStringLiteral("/dev/video0")};
+        auto ctx = makeContext(cfg, Backend::Remote);
+        ctx.rc.usbAudio = true;
+        RecordingSink sink;
+        QVERIFY(runChain(makeDeployer(Backend::Remote, sp, 24, 0)->steps(ctx), sink));
+        for (const char *step : {"ashmem-node", "camera-nodes", "audio-nodes", "spoof-arm",
+                                 "play-spoof"})
+            QCOMPARE(sink.of(QString::fromLatin1(step)), StepState::Ok);
+        for (const QString &c : sp.calls)
+            QVERIFY2(!c.startsWith(QLatin1String("docker exec")), qPrintable(c));
+        for (const char *sub : {"/dev/ashmem", "chown 0:1006", "chown 0:1005",
+                                "/system/etc/remora-spoof"}) {
+            bool overSsh = false;
+            for (const QString &c : sp.calls)
+                if (c.startsWith(QLatin1String("ssh ")) && c.contains(QLatin1String(sub)))
+                    overSsh = true;
+            QVERIFY2(overSsh, sub);
+        }
+    }
+
     void markedMagiskImageKeepsItsModulesAndInjector() {
         FakeSpawner sp;
         sp.bootManagedZygisk = true;

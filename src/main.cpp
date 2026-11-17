@@ -41,7 +41,9 @@ using namespace remora;
 namespace remora {
 int runGui(int argc, char **argv);  // ui/App.cpp — constructs its own QApplication
 int runMirror(int argc, char **argv);  // mirror/MirrorApp.cpp — its own QApplication
+#ifdef REMORA_HAVE_WEBENGINE
 int runRedditLoginGui(int argc, char **argv);  // ui/RedditLoginWindow.cpp — its own QApplication
+#endif
 }
 
 static Backend backendArg(const QStringList &a, Backend def = Backend::Bare) {
@@ -2557,7 +2559,17 @@ int main(int argc, char **argv) {
         bool hasCookie = false;
         for (int i = 2; i < argc; ++i)
             if (QLatin1String(argv[i]) == QLatin1String("--cookie")) hasCookie = true;
+#ifdef REMORA_HAVE_WEBENGINE
         if (!hasCookie) return runRedditLoginGui(argc, argv);
+#else
+        if (!hasCookie) {
+            QTextStream(stderr) << "reddit-login: this build has no embedded browser (Qt WebEngine) "
+                                   "to sign in with. Sign in on reddit.com in your own browser, "
+                                   "then: remora reddit-login [<profile>] --user <username> "
+                                   "--cookie - and paste the reddit_session cookie value\n";
+            return 2;
+        }
+#endif
     }
 
     // `app` may show the first-launch desktop/freeform prompt — give it a QApplication when a

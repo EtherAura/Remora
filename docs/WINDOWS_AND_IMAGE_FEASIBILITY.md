@@ -16,6 +16,9 @@ service terms. [IMAGE_MIRROR.md](IMAGE_MIRROR.md) is the current policy.
 WSL route or local VM appliance investigation is active. The existing research below is retained
 for reference only. Current work concerns Linux image distribution and permitted local add-ons.
 
+**Scope update:** the owner reopened Windows (`remora-7oih`). WSL stays out. See
+[Windows](#windows) for the chosen direction and where the port stands.
+
 Google Play is technically layerable without compiling Android; Remora already implements the
 GApps part. **That does not establish a permitted Google Play offering.** A later APK audit
 corrected this evaluation's original ARM64 claim: the current GmsCore and Phonesky support x86_64.
@@ -56,10 +59,37 @@ implementation remains in `remora-wzaa`. This is a product decision, not a claim
 | [MainWindow.cpp](../src/ui/MainWindow.cpp), `scanSourceLocation` / `onFetchImage` | HTTPS mirrors already use `index.txt` rows of `tag [archive [bytes]]`. Import streams `curl` into `docker load` without expected digest/signature verification. |
 | [release.yml](../.github/workflows/release.yml) | The existing release pipeline publishes the application. Its SBOM/provenance does not audit an Android image. |
 
-## Deferred Windows research
+## Windows
 
-> Shelved at the owner's request. The following is historical research, not an active
-> recommendation or implementation plan. `remora-7oih` is deferred indefinitely.
+> **Reopened (`remora-7oih`).** The owner wants Android on Windows with no VM the user
+> sees or manages, and no WSL. Android needs a Linux kernel (binder, memfd, cgroups, SELinux), and
+> every shipping Android-on-Windows product found takes it from a hypervisor. A layer that runs
+> Android directly on the Windows kernel has no working precedent. So the chosen direction is an
+> **app-managed hidden Linux guest**: Remora on Windows provisions and runs it, and reaches it as
+> `backend=remote`. That is not the removed `vm` backend. The guest's lifecycle belongs to the
+> Windows app, and deploys go through the existing remote path.
+>
+> **Client port, first milestone .** The whole `remora` binary and its suites
+> cross-compile with llvm-mingw against Qt 6.11.3's official Windows build
+> (`tools/windows-sdk.sh`, `cmake/windows-llvm-mingw.cmake`). Under Wine
+> (`tools/windows-wine.sh`), `remora mirror` connected to a running Android 17 instance, recorded
+> 21.7 s of 3760×1992 H.264 that decodes without error, and removed its adb forward on Ctrl-C.
+> `backend=bare` is refused on Windows. Qt ships WebEngine for Windows only in its MSVC build, so
+> this build has no Reddit sign-in window. Not yet done:
+>
+> - **Local commands.** The engine runs about 77 local `sh -c` commands and about 100 Unix tools
+>   directly. Wine hides this, because it runs the host's Linux binaries when asked. The remote
+>   path has to be audited and made native first.
+> - **Tests on Windows.** Bare-backend and Linux build-pipeline tests need skipping there, and the
+>   store suite's `HOME`/XDG isolation needs a Windows equivalent.
+> - **Packaging.** That means DLL staging, the Linux `vendor/native` helpers built on Linux, and a
+>   Windows CI job.
+> - **Decode and display.** There is no D3D11VA decode yet. Window behaviour, audio and GPU decode
+>   still need sign-off on a real Windows machine.
+> - **The hidden guest.** It is not started.
+>
+> The research below dates. Its appliance section is the starting point for the
+> guest.
 
 **WSL is out of scope at the owner's request.** There are two separable pieces: the Windows
 application and the Linux execution environment. A native GUI is plausible because much of the
@@ -264,7 +294,7 @@ Implementation and validation are tracked in Beads:
 - `remora-qksj`: verified hosting/import metadata; depends on the image audit.
 - `remora-wzaa`: permitted GApps/ARM acquisition and use, then conditional add-on design.
 
-`remora-7oih` (Windows feasibility) is deferred indefinitely at the owner's request.
+`remora-7oih` covers Windows: the native client port, then the app-managed Linux guest.
 
 This evaluation changes documentation only. It does not approve existing private tags for public
 release, change runtime defaults, establish Google permission or claim a Windows test.

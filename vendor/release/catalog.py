@@ -405,6 +405,91 @@ def release_retention_receipts(tag, receipts):
     return {'complete': True, 'reason': None, 'retain': frozenset(retain)}
 
 
+def obsolete_release_tags(tag, receipts, images, containers):
+    """Name the tags release updates left behind that a prune may drop: the rollback alias fetch
+    gave an image it replaced, with that same image's immutable version tags, once no receipt
+    holds the image and no container uses it. Pure: it decides over what it is given and removes
+    nothing; untagging alone frees no layer and no builder cache.
+
+    `receipts` is what release_retention_receipts takes, which this calls first. `images` is the
+    whole image inventory as `docker image inspect` gives it ({'Id': <full image ID>, 'RepoTags':
+    [...]}), the daemon's own IDs, which are the ones fetch records; `containers` is every
+    container, running or stopped, as `docker inspect` gives it ({'Id': <64 hex>, 'Image': <full
+    image ID>}). None is an inventory nobody collected, never an empty one.
+
+    Stricter than the preflight, for cleanup only: every receipt must record the image it replaced
+    and its backup alias, and the inventory must hold the active tag on the receipt's image and the
+    backup alias on the replaced one. A null previous or backup (a first install, an import over
+    the same image) stands cleanup down rather than becoming a default a rollback tag could match.
+    Every remora-rollback: tag must be its own image's remora-rollback:public-<hex>. An image is
+    selectable only if it carries that alias of its own, so fetch replaced it, and no tag but
+    receipt channels' <channel>-<stamp> version tags: a version-only image may be a release being
+    staged, and any other tag is someone's hold on the whole image.
+
+    Returns {'complete': True, 'reason': None, 'tags': sorted tuple of tags, 'retain': sorted tuple
+    of the image IDs held: the receipts', the containers' and every tagged image not selected}, or
+    {'complete': False, 'reason': <why>, 'tags': (), 'retain': None}."""
+    def incomplete(reason):
+        return {'complete': False, 'reason': reason, 'tags': (), 'retain': None}
+    held = release_retention_receipts(tag, receipts)
+    if not held['complete']:
+        return incomplete(held['reason'])
+    is_id = lambda v: type(v) is str and re.fullmatch(r'sha256:[0-9a-f]{64}', v) is not None
+    alias = lambda iid: 'remora-rollback:public-' + iid[7:]
+    if type(images) not in (list, tuple):
+        return incomplete('No image inventory')
+    if type(containers) not in (list, tuple):
+        return incomplete('No container inventory')
+    owner, tags_of = {}, {}
+    for im in images:
+        if type(im) is not dict or not is_id(im.get('Id')) or type(im.get('RepoTags')) is not list \
+                or not all(type(t) is str and t for t in im['RepoTags']):
+            return incomplete('An image inventory entry is malformed')
+        iid = im['Id']
+        if iid in tags_of:
+            return incomplete('The image inventory lists ' + iid + ' twice')
+        tags_of[iid] = set(im['RepoTags'])
+        for t in im['RepoTags']:
+            if t in owner:
+                return incomplete('The image inventory gives ' + t + ' to more than one image')
+            owner[t] = iid
+            if t.startswith('remora-rollback:') and t != alias(iid):
+                return incomplete('Rollback tag ' + t + ' is not the alias of the image it names')
+    used, seen = set(), set()
+    for c in containers:
+        if type(c) is not dict or type(c.get('Id')) is not str \
+                or not re.fullmatch(r'[0-9a-f]{64}', c['Id']) or not is_id(c.get('Image')):
+            return incomplete('A container inventory entry is malformed')
+        if c['Id'] in seen:
+            return incomplete('The container inventory lists ' + c['Id'] + ' twice')
+        seen.add(c['Id'])
+        used.add(c['Image'])
+    channels = set()
+    for r in receipts:
+        if r['previous'] is None or r['backup'] is None:
+            return incomplete('Receipt for ' + r['tag'] + ' records no replaced image')
+        if r['tag'] not in owner or owner[r['tag']] != r['image']:
+            return incomplete('Tag ' + r['tag'] + ' is absent or not on its receipt\'s image')
+        if r['backup'] not in owner or owner[r['backup']] != r['previous']:
+            return incomplete('Rollback tag ' + r['backup'] + ' is absent or not on its receipt\'s image')
+        channels.add(r['tag'])
+
+    def version_tag(t):
+        channel, dash, stamp = t.rpartition('-')
+        return bool(dash) and channel in channels and re.fullmatch(r'\d{8}\.\d{6}', stamp) is not None
+    retain, candidates = set(held['retain']) | used, []
+    for iid in sorted(tags_of):
+        tags = tags_of[iid]
+        if iid in retain or not tags:
+            continue
+        if alias(iid) in tags and all(t == alias(iid) or version_tag(t) for t in tags):
+            candidates += tags
+        else:
+            retain.add(iid)
+    return {'complete': True, 'reason': None, 'tags': tuple(sorted(candidates)),
+            'retain': tuple(sorted(retain))}
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('action',choices=['list','check','fetch','rollback'])
