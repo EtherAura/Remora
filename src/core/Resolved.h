@@ -26,10 +26,21 @@ struct ResolvedConfig {
     //
     // The add-on layer (bd remora-6laf.10) goes over whatever Play left in imageTag, so with both
     // on, playBaseTag is still the registered image and addonBaseTag is the Play layer.
+    //
+    // A profile pinned to a local layer the registry does not know (bd remora-3czv) answers
+    // through the registered image it was built on, once the engine has asked the docker host:
+    // imageRootTag.
+    // It is the bottom of the whole stack, so it wins over the two above, which with such a pin
+    // can only name the pin or a layer over it.
     QString capabilityTag() const {
+        if (!imageRootTag.isEmpty()) return imageRootTag;
         if (!playBaseTag.isEmpty()) return playBaseTag;
         return addonBaseTag.isEmpty() ? imageTag : addonBaseTag;
     }
+    // The image the profile names when the registry does not know it — what the engine asks the
+    // docker host about — and the registered root learned for it (ImageLineage.h). Both empty for
+    // a registered image.
+    QString unregisteredImage, imageRootTag;
     // Add-ons (bd remora-6laf.10): the profile's addons=, valid names only and sorted; the ones
     // the registered base already carries, which there is nothing to add for; and, once the
     // engine has built the layer, the tag it went over.

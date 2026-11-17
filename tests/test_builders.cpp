@@ -17,6 +17,7 @@
 #include <QtEndian>
 #include "core/Gating.h"
 #include "core/Guest.h"
+#include "core/ImageLineage.h"
 #include "core/ManagedHost.h"
 #include "core/SourcePatches.h"
 #include "core/StartMenu.h"
@@ -1293,10 +1294,19 @@ private slots:
                  + QStringLiteral("/container-scripts/remora.props.rc"));
         QVERIFY(rc.open(QIODevice::ReadOnly));
         const QStringList lines = QString::fromUtf8(rc.readAll()).split(QLatin1Char('\n'));
-        const qsizetype mount =
-            lines.indexOf(QStringLiteral("    mount none /dev/null /proc/sysrq-trigger bind"));
-        QVERIFY2(mount > 0, "remora.props.rc no longer masks /proc/sysrq-trigger");
-        QCOMPARE(lines.at(mount - 1), QStringLiteral("on early-init"));
+        const qsizetype mount = lines.indexOf(
+            QStringLiteral("    mount none /dev/.remora-sysrq /proc/sysrq-trigger bind"));
+        QVERIFY2(mount > 1, "remora.props.rc no longer masks /proc/sysrq-trigger");
+        // over a file init makes for it, in the same action — never /dev/null. A bind shares the
+        // inode, and init.rc's post-fs chmod 0220 of the trigger then lands on /dev/null and
+        // shuts every app and adb shell out of it.
+        QCOMPARE(lines.at(mount - 1), QStringLiteral("    write /dev/.remora-sysrq 0"));
+        QCOMPARE(lines.at(mount - 2), QStringLiteral("on early-init"));
+        for (const QString &line : lines)
+            if (!line.trimmed().startsWith(QLatin1Char('#')))
+                QVERIFY2(!(line.contains(QStringLiteral("mount"))
+                           && line.contains(QStringLiteral("/dev/null"))),
+                         qPrintable(line));
         // and the mount that delivers it is in every deploy's argv (both backends set the path)
         RemoraConfig c;
         ResolvedConfig r = resolve(c, Backend::Bare);
@@ -1976,6 +1986,118 @@ private slots:
         QVERIFY(imageCarriesC2Va(QStringLiteral("remora24:x86_64-gapps-wv-hwc2-alderlake")));
         QVERIFY(!imageCarriesC2Va(QStringLiteral("remora24:x86_64")));
         QVERIFY(!imageCarriesC2Va(overlay));
+    }
+
+    // bd remora-3czv — a profile pinned to a layer built by hand over a registered image
+    // (image_tag=remora-local:…, no registry entry) answers through the registered image its labels
+    // name, once the engine has read them. Before, it answered "nothing": the Viewer page greyed
+    // h265 out of an image that ships the encoder and reset the profile's codec to h264.
+    void pinnedLocalLayerAnswersThroughItsRecordedRoot() {
+        forgetImageRoots();
+        RemoraConfig cfg;
+        cfg.image.androidVersion = 17;
+        const QString pin = QStringLiteral("remora-local:shamiko-native-68e16ba0-075");
+        const QString root = QStringLiteral("remora24:x86_64-public");
+        cfg.image.imageTag = pin;
+        // never asked: named for the engine to ask about, and still answering nothing
+        ResolvedConfig r = resolve(cfg, Backend::Bare);
+        QCOMPARE(r.unregisteredImage, pin);
+        QVERIFY(r.imageRootTag.isEmpty());
+        QCOMPARE(r.capabilityTag(), pin);
+        QVERIFY(!r.agentBaked);
+        QVERIFY(r.updaterDir.isEmpty());
+        // asked, and the image names no root: the same
+        recordImageRoot(QString(), pin, QString());
+        r = resolve(cfg, Backend::Bare);
+        QVERIFY(r.imageRootTag.isEmpty());
+        QCOMPARE(r.capabilityTag(), pin);
+        // the root learned: every capability question follows it, and the pin is still what runs
+        recordImageRoot(QString(), pin, root);
+        r = resolve(cfg, Backend::Bare);
+        QCOMPARE(r.imageTag, pin);
+        QCOMPARE(r.imageRootTag, root);
+        QCOMPARE(r.capabilityTag(), root);
+        QVERIFY(r.agentBaked);
+        QVERIFY(!r.updaterDir.isEmpty());
+        QVERIFY(imageCarriesC2Va(r.capabilityTag()));
+        QVERIFY(buildDockerRunArgv(r).contains(pin));
+        r.videoCodec = QStringLiteral("h265");
+        const auto [e, a] = buildMirrorArgv(r, r.target);
+        QVERIFY(a.contains("--video-encoder=c2.remora.vaapi.hevc.encoder"));
+        // …through a Play layer over the pin as well: the root is the bottom of the whole stack
+        cfg.image.googlePlay = true;
+        cfg.image.playOverlay = QStringLiteral("remora-local:play-ef9798c4d406-07db5d1f5dc7");
+        r = resolve(cfg, Backend::Bare);
+        QCOMPARE(r.playBaseTag, pin);
+        QCOMPARE(r.capabilityTag(), root);
+        cfg.image.googlePlay.reset();
+        cfg.image.playOverlay.reset();
+        // keyed by docker host: the same name on another daemon is another image
+        cfg.backend.sshHost = QStringLiteral("user@host");
+        r = resolve(cfg, Backend::Remote);
+        QCOMPARE(r.unregisteredImage, pin);
+        QVERIFY(r.imageRootTag.isEmpty());
+        recordImageRoot(QStringLiteral("user@host"), pin, root);
+        QCOMPARE(resolve(cfg, Backend::Remote).capabilityTag(), root);
+        // a registered tag is never asked about
+        cfg.image.imageTag = root;
+        QVERIFY(resolve(cfg, Backend::Remote).unregisteredImage.isEmpty());
+        forgetImageRoots();
+    }
+
+    // The root image's tags come back from the docker host; the registry speaks in names.
+    void registeredTagAmongPrefersExactThenTheLongestRegisteredPrefix() {
+        const QString pub = QStringLiteral("remora24:x86_64-public");
+        QCOMPARE(registeredTagAmong({pub, pub + "-20261113.035540", pub + "-src"}), pub);
+        QCOMPARE(registeredTagAmong({pub + "-20261113.035540", pub}), pub);  // exact wins anywhere
+        // an older release keeps only its dated tag once the plain name has moved on
+        QCOMPARE(registeredTagAmong({pub + "-20261101.010101"}), pub);
+        // a CPU-tuned variant is its registered build, and the longest name wins over gapps-wv
+        QCOMPARE(registeredTagAmong({QStringLiteral("remora24:x86_64-gapps-wv-hwc2-alderlake")}),
+                 QStringLiteral("remora24:x86_64-gapps-wv-hwc2"));
+        // a prefix counts only at a '-': "public2" is not "public"
+        QCOMPARE(registeredTagAmong({QStringLiteral("remora24:x86_64-public2")}),
+                 QStringLiteral("remora24:x86_64"));
+        QCOMPARE(registeredTagAmong({QStringLiteral("example/android:16.0.0-latest")}), QString());
+        QCOMPARE(registeredTagAmong({}), QString());
+    }
+
+    // What probeImageRoot's script prints (bd remora-3czv): the labels first, and without them the
+    // layers — a layer built over a registered image starts with exactly that image's layers.
+    void imageRootProbeReadsLabelsThenLayers() {
+        const QString pin = QStringLiteral("remora-local:mine");
+        const QString pub = QStringLiteral("remora24:x86_64-public");
+        // labels: the root's tags come back, and the registered one is picked
+        QCOMPARE(parseImageRootProbe("ROOT\n" + pub + "-20261113.035540\nLAYERS\n", pin), pub);
+        // no labels: the registered image the pin's layers start with, the deepest of them
+        const QString layers = QStringLiteral(
+            "LAYERS\n"
+            "sha256:a,sha256:b,sha256:c,sha256:d remora-local:mine\n"
+            "sha256:a remora24:x86_64\n"
+            "sha256:a,sha256:b,sha256:c remora24:x86_64-public,remora24:x86_64-public-src\n"
+            "sha256:a,sha256:x remora24:x86_64-gapps\n");
+        QCOMPARE(parseImageRootProbe("ROOT\n" + layers, pin), pub);
+        // the labels win when both answer
+        QCOMPARE(parseImageRootProbe("ROOT\nremora24:x86_64-gapps-wv-hwc2\n" + layers, pin),
+                 QStringLiteral("remora24:x86_64-gapps-wv-hwc2"));
+        // the pin under a registered name too is that image, retagged
+        QCOMPARE(parseImageRootProbe("ROOT\nLAYERS\nsha256:a remora-local:mine," + pub + "\n", pin),
+                 pub);
+        // a name given without a tag is name:latest to docker
+        QCOMPARE(parseImageRootProbe("ROOT\nLAYERS\nsha256:a,sha256:b mine:latest\n"
+                                     "sha256:a " + pub + "\n", QStringLiteral("mine")),
+                 pub);
+        // layers are evidence: a registered image they do not start with is not the base
+        QCOMPARE(parseImageRootProbe("ROOT\nLAYERS\nsha256:z remora-local:mine\nsha256:a " + pub +
+                                     "\n", pin),
+                 QString());
+        // …and the name-suffix rule is the label path's alone
+        QCOMPARE(parseImageRootProbe("ROOT\nLAYERS\nsha256:a,sha256:b remora-local:mine\n"
+                                     "sha256:a " + pub + "-20261101.000000\n", pin),
+                 QString());
+        // the pin not on the host, or nothing printed at all
+        QCOMPARE(parseImageRootProbe("ROOT\nLAYERS\nsha256:a " + pub + "\n", pin), QString());
+        QCOMPARE(parseImageRootProbe(QString(), pin), QString());
     }
 
     // The in-Android updater's channel (it was a VM-only bind until the vm backend retired): one

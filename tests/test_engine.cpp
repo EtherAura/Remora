@@ -18,6 +18,7 @@
 #include "core/Features.h"
 #include "core/Gating.h"
 #include "core/ImageBuild.h"
+#include "core/ImageLineage.h"
 #include "core/ManagedHost.h"
 #include "core/Resolver.h"
 #include "core/SourcePatches.h"
@@ -98,6 +99,10 @@ public:
     // pre-existing deploy test acquires a CPU or an ISA requirement it never declared.
     QString imageArchVariant;
     QString hostCpuFlags;
+    // What the image-lineage probe reports (bd remora-3czv): the tags of the image an unregistered
+    // pin's labels name, one per line, and no layers. Empty by default — an image naming no root,
+    // which is what every image a test pins without saying otherwise has always been treated as.
+    QString imageRootTags;
     // What the play_spoof content-drift gate reports (bd remora-4ei.86). false = /data already
     // matches the image, the answer of a device that needs no re-install and the default every
     // pre-existing test was written against.
@@ -284,6 +289,8 @@ public:
         // one rule answers bare (a local `sh -c`) and remote (the same script as an ssh payload),
         // and it must sit AHEAD of the generic `docker image inspect` rules below, which would
         // otherwise answer it with "present" and leave both halves unparsed.
+        if (cmd.contains("org.remora.addons.root org.remora.play.base") && cmd.contains("RepoTags"))
+            return R(0, QStringLiteral("ROOT\n") + imageRootTags + QStringLiteral("LAYERS\n"));
         if (cmd.contains("remora.arch_variant")) {
             QString out;
             if (!imageArchVariant.isEmpty())
@@ -3317,6 +3324,45 @@ private slots:
                 && c.contains(QLatin1String("--record=/tmp/r.mp4")))
                 spawnedWithRecord = true;
         QVERIFY(spawnedWithRecord);
+    }
+
+    // bd remora-3czv. A profile pinned to a layer built by hand over a registered image answers
+    // through that image, on whichever host it lives: the mirror the reconnect launches pins the
+    // HEVC encoder the root ships, where it used to be launched without one. The root is asked on
+    // the docker host, not this machine — over ssh for a remote profile.
+    void pinnedLocalLayerPinsItsRootsEncoder() {
+        forgetImageRoots();
+        RemoraConfig cfg;
+        cfg.image.androidVersion = 17;
+        const QString pin = QStringLiteral("remora-local:shamiko-native-68e16ba0-075");
+        cfg.image.imageTag = pin;
+        cfg.mirror.videoCodec = QStringLiteral("h265");
+        cfg.gpu.mode = GpuMode::Host;  // guest rendering downgrades h265 on its own (remora-hsdz)
+        const QString hevc = QStringLiteral("--video-encoder=c2.remora.vaapi.hevc.encoder");
+        {
+            FakeSpawner sp;  // the image names no root: nothing is pinned, as before
+            RecordingSink sink;
+            QVERIFY(reconnectRun(Backend::Bare, cfg, sink, sp));
+            QVERIFY(hasCall(sp, "org.remora.addons.root"));
+            QVERIFY(hasCall(sp, "mirror -s"));
+            QVERIFY(!hasCall(sp, hevc));
+        }
+        for (const Backend b : {Backend::Bare, Backend::Remote}) {
+            const RemoraConfig c = b == Backend::Remote ? withGuest(cfg) : cfg;
+            FakeSpawner sp;
+            sp.imageRootTags =
+                QStringLiteral("remora24:x86_64-public\nremora24:x86_64-public-20261113.035540\n");
+            RecordingSink sink;
+            QVERIFY(reconnectRun(b, c, sink, sp));
+            QVERIFY(hasCall(sp, hevc));
+            const QString host = b == Backend::Remote ? *c.backend.sshHost : QString();
+            QCOMPARE(recordedImageRoot(host, pin), QStringLiteral("remora24:x86_64-public"));
+            bool overSsh = false;
+            for (const QString &call : sp.calls)
+                if (call.contains("org.remora.addons.root")) overSsh = call.startsWith("ssh");
+            QCOMPARE(overSsh, b == Backend::Remote);
+        }
+        forgetImageRoots();
     }
 
     void reconnectRunsOnlyConnect() {

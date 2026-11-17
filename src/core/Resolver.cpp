@@ -7,6 +7,7 @@
 #include "core/Features.h"
 #include "core/Gating.h"
 #include "core/ImageBuild.h"
+#include "core/ImageLineage.h"
 
 namespace remora {
 
@@ -548,6 +549,18 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
     if (!archVariant.isEmpty() && registryTag.endsWith(QLatin1Char('-') + archVariant))
         registryTag.chop(archVariant.size() + 1);
     const ImageTag *taggedImage = findImageTag(registryTag);
+    // A pin the registry does not know is asked about through the registered image it was built
+    // on, once the engine has asked the docker host (bd remora-3czv) — for everything below and
+    // for capabilityTag(), the same way a Play or add-on layer Remora built answers through its
+    // base. Until then, or when the host names none, it answers "nothing", as it always did.
+    if (!taggedImage && !r.imageTag.isEmpty() && !isPlaceholderImageTag(r.imageTag)) {
+        r.unregisteredImage = r.imageTag;
+        if (const auto root = recordedImageRoot(imageHostKey(r), r.imageTag);
+            root && !root->isEmpty()) {
+            r.imageRootTag = *root;
+            taggedImage = findImageTag(*root);
+        }
+    }
     r.agentBaked =
         im.features.contains(QStringLiteral("mirror_agent")) ||
         (taggedImage && taggedImage->provides.contains(QStringLiteral("mirror_agent")));

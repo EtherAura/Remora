@@ -9,10 +9,13 @@
 #include <QStandardPaths>
 #include <QTextStream>
 
+#include "core/Features.h"  // imageTags
 #include "core/Gating.h"
+#include "core/ImageLineage.h"
 #include "core/Parsers.h"
 #include "core/Prereqs.h"
 #include "core/Resolver.h"
+#include "engine/SourceBuild.h"  // shellQuote
 
 namespace remora {
 
@@ -396,6 +399,44 @@ ArchVariantProbe probeArchVariant(Spawner &sp, Backend backend, const QString &i
     const auto r = backend == Backend::Bare ? sp.run({"sh", "-c", script}, {}, {})
                                             : sp.run(Spawner::sshArgv(sshHost, script), {}, {});
     return parseArchVariantProbe(r.out);
+}
+
+std::optional<QString> probeImageRoot(Spawner &sp, Backend backend, const QString &imageTag,
+                                      const QString &sshHost) {
+    if (imageTag.isEmpty() || isPlaceholderImageTag(imageTag)) return QString();
+    if (backend != Backend::Bare && sshHost.isEmpty()) return std::nullopt;
+    // One round trip, both answers (parseImageRootProbe reads them): the root the labels name, by
+    // image ID, comes back as that image's tags, since the registry speaks in names; and the
+    // layers of the pin and of every registered image on the host, for a layer with no labels.
+    // Every miss — no such image, no label, a root since deleted, a registered image never pulled
+    // — prints nothing and exits 0, which is the answer "no root"; only a transport failure is
+    // "could not ask".
+    QStringList registered;
+    for (const ImageTag &t : imageTags()) registered << shellQuote(t.tag);
+    const QString script =
+        QStringLiteral("R=; for L in org.remora.addons.root org.remora.play.base; do "
+                       "R=$(docker image inspect -f \"{{index .Config.Labels \\\"$L\\\"}}\" %1 "
+                       "2>/dev/null); case \"$R\" in ''|'<no value>') R= ;; *) break ;; esac; "
+                       "done; echo ROOT; [ -n \"$R\" ] && docker image inspect -f "
+                       "'{{range .RepoTags}}{{println .}}{{end}}' \"$R\" 2>/dev/null; echo LAYERS; "
+                       "docker image inspect -f '{{join .RootFS.Layers \",\"}} "
+                       "{{join .RepoTags \",\"}}' %1 %2 2>/dev/null; exit 0")
+            .arg(shellQuote(imageTag), registered.join(QLatin1Char(' ')));
+    const auto r = backend == Backend::Bare ? sp.run({"sh", "-c", script}, {}, {})
+                                            : sp.run(Spawner::sshArgv(sshHost, script), {}, {});
+    if (r.rc != 0) return std::nullopt;
+    return parseImageRootProbe(r.out, imageTag);
+}
+
+bool learnImageRoot(Spawner &sp, const ResolvedConfig &rc) {
+    if (rc.unregisteredImage.isEmpty()) return false;
+    const auto root =
+        probeImageRoot(sp, rc.backend, rc.unregisteredImage, rc.sshHost.value_or(QString()));
+    if (!root) return false;
+    const QString host = imageHostKey(rc);
+    const bool changed = recordedImageRoot(host, rc.unregisteredImage).value_or(QString()) != *root;
+    recordImageRoot(host, rc.unregisteredImage, *root);
+    return changed;
 }
 
 // Nth line — NB not trimmed() first: an empty leading line is meaningful here (it is how

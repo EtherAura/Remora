@@ -788,6 +788,18 @@ DataDirShape probeDataDirShape(Spawner &sp, Backend backend, const QString &data
 ArchVariantProbe probeArchVariant(Spawner &sp, Backend backend, const QString &imageTag,
                                   const QString &sshHost = QString());
 
+// The registered image an image the registry does not know was built on (bd remora-3czv), asked
+// of the docker host: its own labels first — the add-on layer's root, then the Play layer's base,
+// as the updater probe reads them — and for a layer without them, the registered image its layers
+// start with (parseImageRootProbe). Empty when neither names one; nullopt when the host could not
+// be asked at all.
+std::optional<QString> probeImageRoot(Spawner &sp, Backend backend, const QString &imageTag,
+                                      const QString &sshHost = QString());
+// Asks about rc.unregisteredImage and records the answer for resolve() (ImageLineage.h). Fresh on
+// every call: a tag can be re-pointed between two runs. True when the record changed, i.e. when a
+// context resolved before the call is stale and must be made again.
+bool learnImageRoot(Spawner &sp, const ResolvedConfig &rc);
+
 // Google's uncertified-device registration form — the only way to certify a GSF android_id, and it
 // needs a Google login, so Remora can present it but never complete it. One definition so the CLI
 // text and the GUI button cannot drift apart.

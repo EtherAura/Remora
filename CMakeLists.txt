@@ -59,6 +59,7 @@ add_library(remora_core STATIC
     src/core/Gating.cpp
     src/core/ImageBuild.cpp
     src/core/Guest.cpp
+    src/core/ImageLineage.cpp
     src/core/ManagedHost.cpp
     src/core/MirrorHwDecode.cpp
     src/core/MirrorInput.cpp

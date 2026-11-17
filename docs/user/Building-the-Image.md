@@ -169,7 +169,9 @@ remora build --base remora24:x86_64-public --tag remora-local:root-arm
 ```
 
 Before building, Remora checks that the payload is in the build directory and names what is
-missing. The result is labelled as not a public release. When the base image updates, build the
+missing. The result is labelled as not a public release. A profile pinned to the layer keeps what
+its base can do, such as the hardware HEVC encoder: Remora asks the docker host which registered
+image the layer was built on, and `remora plan` names it. When the base image updates, build the
 layer again over the new one. For Google Play on the official image, the **Add Google Play
 services** option needs no payload of your own: see
 [Image Features](Image-Features.md#apps-and-google-services).

@@ -29,6 +29,15 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- **A profile pinned to a local image built on one of Remora's keeps that image's hardware
+  encoder.** Remora decides what an image can do, such as encode HEVC in hardware, carry the
+  mirror agent or carry the updater, from the list of images it builds. A local image built on
+  one of them was on no list: a layer from `remora build`, an add-on layer, or one made by hand.
+  Pinned with `image_tag`, it counted as carrying nothing. The Viewer page greyed out h265 and
+  switched the page to h264, and Connect offered h264 instead. Remora now asks the docker host
+  which of its images such an image was built on, from the labels its own layers carry or else
+  from the image's layers, and answers as that image does. `remora plan` names it.
+
 - **An Android shutdown can no longer hit the docker host.** When a shutdown goes wrong, Android's
   init writes to the kernel's sysrq trigger: it tells every process to stop or kills it, remounts
   every filesystem read-only and finally crashes the kernel. That trigger is the host's, not the

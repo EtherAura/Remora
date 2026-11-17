@@ -51,8 +51,15 @@ on early-init && property:ro.boot.remora_vulkan=*
 # desktop session, and 'u' or 'c' would be the whole machine.
 #
 # Docker cannot mask it for a privileged container, and runc refuses a bind mount inside /proc
-# from the docker argv, so init does it, first thing, in the container's own mount namespace:
-# /dev/null over the trigger, the way docker masks /proc files for unprivileged containers.
-# Writes then succeed and go nowhere, and init carries on with its shutdown.
+# from the docker argv, so init does it, first thing, in the container's own mount namespace: a
+# private file over the trigger, the same idiom as remora.common.rc's /proc/vmallocinfo mask.
+# Writes then land in that file instead of the kernel, and init carries on with its shutdown.
+#
+# NOT /dev/null, which is what docker masks with. A bind mount shares the inode, and init.rc
+# chowns and chmods the trigger at post-fs (root:system 0220, for bugreports) — over /dev/null that
+# made /dev/null itself unwritable to everything but root and system, so every `2>/dev/null` in
+# adb shell or an app failed. Seen on the first deploys after this mask landed: the
+# connect's lit-screen probe read 0 bytes for its whole minute, and the mirror opened late.
 on early-init
-    mount none /dev/null /proc/sysrq-trigger bind
+    write /dev/.remora-sysrq 0
+    mount none /dev/.remora-sysrq /proc/sysrq-trigger bind

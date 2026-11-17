@@ -1,6 +1,7 @@
 #include "engine/Engine.h"
 #include "engine/GuestVm.h"
 #include "core/ManagedHost.h"
+#include "core/Resolver.h"
 
 #include <QDir>
 #include <QFile>
@@ -175,10 +176,13 @@ bool connectRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner
                 const ConflictFn &onConflict, bool fullscreenDisplay) {
     backend = effectiveBackend(backend);
     RunContext ctx = makeContext(cfg, backend, caps, windowTitle, fullscreenDisplay);
-    if (managedHost(ctx.guest)) {
-        if (!guestUp(sp, ctx, sink)) return false;
+    const bool managed = managedHost(ctx.guest).has_value();
+    if (managed && !guestUp(sp, ctx, sink)) return false;
+    // A pin the registry does not know answers through the registered image under it, which only
+    // the docker host can name — and the mirror argv's encoder pin is one of the answers
+    // (bd remora-3czv). Once the host is up, and the context made again if it changed anything.
+    if (learnImageRoot(sp, ctx.rc) || managed)
         ctx = makeContext(cfg, backend, caps, windowTitle, fullscreenDisplay);
-    }
     ExclusionService excl(sp, ctx.guest);
     const bool includeGuest = (backend == Backend::Remote);
     const ClusterState state = excl.probe(includeGuest);
@@ -220,10 +224,10 @@ bool reconnectRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawn
                   bool fullscreenDisplay) {
     backend = effectiveBackend(backend);
     RunContext ctx = makeContext(cfg, backend, caps, windowTitle, fullscreenDisplay);
-    if (managedHost(ctx.guest)) {
-        if (!guestUp(sp, ctx, sink)) return false;
+    const bool managed = managedHost(ctx.guest).has_value();
+    if (managed && !guestUp(sp, ctx, sink)) return false;
+    if (learnImageRoot(sp, ctx.rc) || managed)
         ctx = makeContext(cfg, backend, caps, windowTitle, fullscreenDisplay);
-    }
     // Before the mirror, not after: the helper is what makes Android report a hardware keyboard,
     // and a reconnect is exactly the case where the container is up but its helper is not (it died,
     // or the container predates the feature). Idempotent, so the usual warm reconnect pays one
@@ -250,10 +254,9 @@ bool watchBootRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawn
                   const std::optional<HostCapabilities> &caps, const QString &windowTitle) {
     backend = effectiveBackend(backend);
     RunContext ctx = makeContext(cfg, backend, caps, windowTitle);
-    if (managedHost(ctx.guest)) {
-        if (!guestUp(sp, ctx, sink)) return false;
-        ctx = makeContext(cfg, backend, caps, windowTitle);
-    }
+    const bool managed = managedHost(ctx.guest).has_value();
+    if (managed && !guestUp(sp, ctx, sink)) return false;
+    if (learnImageRoot(sp, ctx.rc) || managed) ctx = makeContext(cfg, backend, caps, windowTitle);
     startSplash(sp, ctx);
     const auto restart = [&sp, ctx, backend](LogSink &s) -> StepResult {
         const LineSink log = [&s](const QString &stream, const QString &text) {
@@ -357,6 +360,8 @@ bool smartRun(Backend backend, const RemoraConfig &profile, LogSink &sink, Spawn
     if (const RunContext g = makeContext(profile, backend, caps, windowTitle, fullscreenDisplay);
         managedHost(g.guest) && !guestUp(sp, g, sink))
         return false;
+    // Before the layers below, which ask what the image already carries (bd remora-3czv).
+    learnImageRoot(sp, resolve(profile, backend, caps));
     // GOOGLE PLAY FIRST (bd remora-6laf.8). Everything below asks whether the running container is
     // the image this profile needs, and with Play on that is the overlay for the CURRENT base —
     // which exists only once this has found or built it. Its own visible step, because the first

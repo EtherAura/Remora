@@ -82,6 +82,7 @@
 #endif
 
 #include "core/Builders.h"  // buildStorageAclArgv — the storage ACL grant behind pkexec
+#include "core/ImageLineage.h"  // a pinned local layer's registered root (bd remora-3czv)
 #include "core/Features.h"
 #include "core/Gating.h"
 #include "core/ImageBuild.h"
@@ -3869,8 +3870,16 @@ void MainWindow::refreshImageGating() {
         // and reset the profile to h264 the moment the page loaded.
         RemoraConfig hevcProbe = cfg_;
         hevcProbe.mirror.videoCodec = QStringLiteral("h265");
-        const bool hevcCapable =
-            imageCarriesC2Va(resolve(hevcProbe, currentBackend()).capabilityTag());
+        const ResolvedConfig hevcRc = resolve(hevcProbe, currentBackend());
+        // A pin the registry does not know answers through the registered image under it, which
+        // only the docker host can name (bd remora-3czv). Until it has, nothing is greyed or reset:
+        // the page used to decide on "unknown" and put h264 on the screen of a profile that asks
+        // for h265, where the next edit on the page saved it.
+        const bool lineagePending =
+            !hevcRc.unregisteredImage.isEmpty() &&
+            !recordedImageRoot(imageHostKey(hevcRc), hevcRc.unregisteredImage);
+        if (lineagePending) askImageRoot(hevcRc);
+        const bool hevcCapable = lineagePending || imageCarriesC2Va(hevcRc.capabilityTag());
         // h265 rides the -hwc2 image's VAAPI encoder; av1 has NO hardware encoder in any
         // Remora image (the software AV1 encoder dies instantly at full resolution) — the
         // c2-va component is HEVC-only, so av1 stays disabled everywhere for now.
@@ -7242,6 +7251,30 @@ void MainWindow::onNewProfile() {
 }
 
 
+void MainWindow::askImageRoot(const ResolvedConfig &rc) {
+    const QString host = imageHostKey(rc), tag = rc.unregisteredImage;
+    const QString key = host + QLatin1Char('\n') + tag;
+    if (imageRootAsking_.contains(key)) return;
+    imageRootAsking_.insert(key);
+    const Backend backend = rc.backend;
+    const QString ssh = rc.sshHost.value_or(QString());
+    QPointer<MainWindow> self(this);
+    auto *ask = QThread::create([self, backend, ssh, host, tag, key] {
+        RealSpawner sp;
+        // A host that could not be asked is recorded as "no root": the page then decides as it
+        // did before lineage existed, rather than asking again on every edit. The deploy asks
+        // afresh regardless.
+        recordImageRoot(host, tag, probeImageRoot(sp, backend, tag, ssh).value_or(QString()));
+        QMetaObject::invokeMethod(qApp, [self, key] {
+            if (!self) return;
+            self->imageRootAsking_.remove(key);
+            self->refreshImageGating();
+        });
+    });
+    connect(ask, &QThread::finished, ask, &QObject::deleteLater);
+    ask->start();
+}
+
 // A non-h264 mirror codec needs an on-device HW encoder, which only the -hwc2 image ships —
 // stock/prebuilt images have just OMX.google.h264.encoder, so the mirror server dies with
 // "Could not create video encoder" and the demuxers report connection errors. Catch it here
@@ -7251,8 +7284,13 @@ bool MainWindow::gateVideoCodec(RemoraConfig &cfg, Backend backend) {
     // The same question the mirror's encoder pin asks (Builders, imageCarriesC2Va), so the two
     // cannot disagree. This gate used to test the tag for "hwc2" and stopped every Connect of the
     // public image, which carries the encoder under a name without it.
+    // A pin whose lineage the page has not heard back about yet goes through: the deploy asks the
+    // docker host itself before it pins an encoder (bd remora-3czv).
+    const bool lineagePending = !rc.unregisteredImage.isEmpty() &&
+                                !recordedImageRoot(imageHostKey(rc), rc.unregisteredImage);
     if (rc.videoCodec == QLatin1String("h264")
-        || (rc.videoCodec == QLatin1String("h265") && imageCarriesC2Va(rc.capabilityTag())))
+        || (rc.videoCodec == QLatin1String("h265") &&
+            (lineagePending || imageCarriesC2Va(rc.capabilityTag()))))
         return true;
     const auto ret = QMessageBox::question(
         this, QStringLiteral("No %1 encoder in this image").arg(rc.videoCodec),

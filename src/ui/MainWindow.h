@@ -316,6 +316,11 @@ private:
     void recordProfile(const QString &depName, const QString &profile,
                        const QString &hostOverride, const QString &imageOverride, bool on);
     bool gateVideoCodec(RemoraConfig &cfg, Backend backend);  // false = user cancelled
+    // Read, off the UI thread, which registered image a pin the registry does not know was built
+    // over, then gate the page again (bd remora-3czv). One question per docker host and tag at a
+    // time.
+    void askImageRoot(const ResolvedConfig &rc);
+    QSet<QString> imageRootAsking_;
     void syncProfileWidgets();
     QLineEdit *addBrowseDir(class QFormLayout *form, const QString &label, const QString &placeholder);
     QString archivesDir() const;

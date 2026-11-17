@@ -185,7 +185,10 @@ static int cmdPlan(const QStringList &a, QTextStream &out) {
     // indistinguishable from the broken half-applied state this fixed. plan is the human-facing
     // contract, so it must not resolve from a narrower probe than the thing it claims to describe.
     RealSpawner planSp;
-    ResolvedConfig rc = resolve(cfg, backend, deployCapabilities(backend, cfg, planSp));
+    const auto planCaps = deployCapabilities(backend, cfg, planSp);
+    ResolvedConfig rc = resolve(cfg, backend, planCaps);
+    // A pin the registry does not know is asked about the way the deploy asks (bd remora-3czv).
+    if (learnImageRoot(planSp, rc)) rc = resolve(cfg, backend, planCaps);
     applyVendorPaths(rc, backend);  // same fill makeContext does, so plan matches the real argv
     const auto [env, mirror] = buildMirrorArgv(rc, rc.target);
     out << "# instance=" << (inst.isEmpty() ? QStringLiteral("(none)") : inst)
@@ -228,6 +231,17 @@ static int cmdPlan(const QStringList &a, QTextStream &out) {
         out << "# " << l << "\n";
     for (const QString &l : archVariantReport(planSp, backend, rc).split(QLatin1Char('\n')))
         out << "# " << l << "\n";
+    // Which image a pin the registry does not know answers for (bd remora-3czv): said, because
+    // the codec, the agent and the updater below all follow from it.
+    if (!rc.unregisteredImage.isEmpty())
+        out << (rc.imageRootTag.isEmpty()
+                    ? QStringLiteral("# image: %1 is not a registered image, and neither its "
+                                     "labels nor its layers name one it was built on — Remora "
+                                     "cannot tell what it carries, and pins no hardware "
+                                     "encoder\n").arg(rc.unregisteredImage)
+                    : QStringLiteral("# image: %1 is not a registered image; it was built on %2, "
+                                     "so it carries what %2 does\n")
+                          .arg(rc.unregisteredImage, rc.imageRootTag));
     // Google Play is materialized by the deploy, never here: plan builds nothing, so it names the
     // base the overlay goes on and leaves the overlay's own name to `up` (bd remora-6laf.8).
     if (rc.googlePlay)
@@ -1147,7 +1161,8 @@ static int cmdPip(const QStringList &a, QTextStream &out) {
             return 0;
     }
 
-    const RunContext ctx = makeContext(cfg, b, std::nullopt, title);
+    RunContext ctx = makeContext(cfg, b, std::nullopt, title);
+    if (learnImageRoot(sp, ctx.rc)) ctx = makeContext(cfg, b, std::nullopt, title);  // remora-3czv
     QString err;
     const QString target = resolveAdbTarget(sp, ctx, &err);
     if (target.isEmpty()) {
