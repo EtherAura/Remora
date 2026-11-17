@@ -3355,12 +3355,15 @@ private slots:
             RecordingSink sink;
             QVERIFY(reconnectRun(b, c, sink, sp));
             QVERIFY(hasCall(sp, hevc));
-            const QString host = b == Backend::Remote ? *c.backend.sshHost : QString();
-            QCOMPARE(recordedImageRoot(host, pin), QStringLiteral("remora24:x86_64-public"));
+            // What the profile resolves to, not what it asked for: where this machine's docker is
+            // Remora's own guest (Windows), bare is that guest, over ssh, under the guest's name.
+            const ResolvedConfig rc = resolve(c, b);
+            QCOMPARE(recordedImageRoot(imageHostKey(rc), pin),
+                     QStringLiteral("remora24:x86_64-public"));
             bool overSsh = false;
             for (const QString &call : sp.calls)
                 if (call.contains("org.remora.addons.root")) overSsh = call.startsWith("ssh");
-            QCOMPARE(overSsh, b == Backend::Remote);
+            QCOMPARE(overSsh, rc.backend == Backend::Remote);
         }
         forgetImageRoots();
     }

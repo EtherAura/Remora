@@ -2006,13 +2006,15 @@ private slots:
         QCOMPARE(r.capabilityTag(), pin);
         QVERIFY(!r.agentBaked);
         QVERIFY(r.updaterDir.isEmpty());
-        // asked, and the image names no root: the same
-        recordImageRoot(QString(), pin, QString());
+        // asked, and the image names no root: the same. Recorded under the key the resolver
+        // reads: "" for this machine's docker, the guest's name where that is Remora's guest.
+        const QString host = imageHostKey(r);
+        recordImageRoot(host, pin, QString());
         r = resolve(cfg, Backend::Bare);
         QVERIFY(r.imageRootTag.isEmpty());
         QCOMPARE(r.capabilityTag(), pin);
         // the root learned: every capability question follows it, and the pin is still what runs
-        recordImageRoot(QString(), pin, root);
+        recordImageRoot(host, pin, root);
         r = resolve(cfg, Backend::Bare);
         QCOMPARE(r.imageTag, pin);
         QCOMPARE(r.imageRootTag, root);
