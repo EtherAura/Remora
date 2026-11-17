@@ -447,6 +447,24 @@ private slots:
         QVERIFY(hasGate(g, "hw_video_decode", "info"));  // the caveat itself survives
     }
 
+    // A profile written before the retirement still lists native_vulkan. The registry no longer
+    // knows it, so it must block by name rather than drop out silently, and must not drag a
+    // registered neighbour down with it.
+    void featureGatesBlocksAnUnknownKey() {
+        QVERIFY(!findFeature("native_vulkan"));
+
+        const QVector<Gate> g = featureGates({"native_vulkan"});
+        QCOMPARE(g.size(), 1);
+        QCOMPARE(g[0].key, QString("native_vulkan"));
+        QCOMPARE(g[0].ok, false);
+        QCOMPARE(g[0].reason, QString("unknown feature"));
+        QCOMPARE(g[0].severity, QString("block"));
+
+        const QVector<Gate> mixed = featureGates({"gapps", "native_vulkan"});
+        QVERIFY(hasGate(mixed, "native_vulkan", "block"));
+        QVERIFY(!hasGate(mixed, "gapps", "block"));
+    }
+
     void gatesUnmetRequires() {
         QVERIFY(hasGate(featureGates({"shamiko"}), "shamiko", "warn"));  // needs root + play_spoof
         QVERIFY(!hasGate(featureGates({"gapps"}), "gapps", "warn"));  // native x86_64 APKs
