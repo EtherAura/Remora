@@ -322,6 +322,19 @@ private slots:
         QCOMPARE(m.merge(std::move(next))->payload, hex("cc"));  // merger cleared
     }
 
+    void configMergingKeepsLatest() {
+        // An encoder restart re-sends CONFIG: the newer parameter sets replace the held ones
+        PacketMerger m;
+        MediaPacket stale{std::nullopt, true, false, hex("0102")};
+        QVERIFY(!m.merge(std::move(stale)).has_value());
+        MediaPacket fresh{std::nullopt, true, false, hex("0304")};
+        QVERIFY(!m.merge(std::move(fresh)).has_value());
+        MediaPacket frame{Q_UINT64_C(7), false, true, hex("aa")};
+        auto merged = m.merge(std::move(frame));
+        QVERIFY(merged.has_value());
+        QCOMPARE(merged->payload, hex("0304aa"));  // not appended: no stale 0102
+    }
+
     // Device messages -------------------------------------------------------------------------
 
     void deviceMessages() {
