@@ -25,6 +25,8 @@ The ready-made image is a 716 MB download and takes 2.4 GB in Docker; a freshly 
 
 NVIDIA, Intel and AMD [GPU acceleration](docs/user/GPU-Acceleration.md), with a shared Qt workspace and CLI.
 
+Support Remora on Patreon: https://www.patreon.com/EtherAura
+
 ## Quick start
 
 The quickest way to Android is the ready-made image the project publishes. No source build needed.
