@@ -1,0 +1,5 @@
+{
+  "data-root": "/var/lib/remora/docker",
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "2" }
+}

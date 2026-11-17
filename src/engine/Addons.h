@@ -7,13 +7,19 @@ namespace remora {
 // order, each holding <name>/ laid out as vendor/source-build/features/<name> is; vendorDir is the
 // vendor tree carrying Remora's own halves (magisk.rc, stage-arm-layer.sh) and fetch-payloads.sh;
 // stageParent is where a build context is assembled before Docker gets it.
+// stageOnHost assembles the context on the Docker host instead (bd remora-7oih.3): the payloads
+// and Remora's halves are copied into a fresh mktemp directory there, staged and built there, and
+// a missing fetchable payload is fetched there and copied back. It is what a client with no local
+// sh, cp or tar — Windows — does; elsewhere the context is assembled here.
 struct AddonPaths {
     QStringList payloadRoots;
     QString vendorDir;
     QString stageParent;
+    bool stageOnHost = false;
 };
 // The user's payload directory first ($REMORA_PAYLOAD_DIR, else ~/.local/share/remora/payloads),
 // then the vendored features tree, which carries the payloads only in a checkout that has them.
+// stageOnHost is set on Windows.
 AddonPaths defaultAddonPaths();
 // Where a payload Remora cannot fetch is put, and where it fetches the one it can.
 QString userPayloadDir();

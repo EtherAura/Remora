@@ -9,8 +9,9 @@
 # Qt itself uses. Two runtimes in one process is an ABI break waiting for the first std:: type to
 # cross a DLL boundary. The SDK pins the llvm-mingw release Qt 6.11.3 was built with.
 #
-# moc, rcc and uic run on THIS machine, so they come from the host's Qt (QT_HOST_PATH), and the
-# host Qt must be the same version as the Windows one: Qt refuses a mismatch at configure time.
+# moc, rcc and uic run on THIS machine, so they come from a Linux Qt (QT_HOST_PATH) of exactly the
+# Windows Qt's version: Qt refuses a mismatch at configure time. The SDK carries one (host-qt/), so
+# the distribution's Qt version does not matter; without it, the system Qt is tried.
 
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR AMD64)
@@ -41,7 +42,12 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 set(CMAKE_PREFIX_PATH "${REMORA_WINDOWS_SDK}/qt")
-set(QT_HOST_PATH "/usr" CACHE PATH "Host Qt for moc/rcc/uic (same version as the target Qt)")
+if(EXISTS "${REMORA_WINDOWS_SDK}/host-qt/lib/cmake/Qt6CoreTools")
+    set(QT_HOST_PATH "${REMORA_WINDOWS_SDK}/host-qt" CACHE PATH "Host Qt for moc/rcc/uic")
+    set(QT_HOST_PATH_CMAKE_DIR "${REMORA_WINDOWS_SDK}/host-qt/lib/cmake" CACHE PATH "")
+else()
+    set(QT_HOST_PATH "/usr" CACHE PATH "Host Qt for moc/rcc/uic (same version as the target Qt)")
+endif()
 # Named, not derived: Qt guesses ${QT_HOST_PATH}/lib/cmake, which is not where Gentoo, Fedora or
 # Debian keep it, and when the guess misses Qt silently takes the Windows package's own tools —
 # moc.exe, which this machine cannot run — and the failure only surfaces at generate time.

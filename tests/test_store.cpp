@@ -1,11 +1,13 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
 
 #include <algorithm>
 
+#include "TestPlatform.h"
 #include "store/Store.h"
 
 using namespace remora;
@@ -49,22 +51,44 @@ class TestStore : public QObject {
 
     QString rc(const QTemporaryDir &dir) const { return dir.filePath(QStringLiteral("remorarc")); }
 
+    // Where the default remorarc must resolve for the suite to run. On Linux, the HOME and XDG_*
+    // ctest sets, inside the build tree. Windows asks the known-folder API, which no environment
+    // variable redirects, so there it is QStandardPaths' test mode: a qttest folder of its own
+    // beside the real per-user data, made here so the guard can resolve it. Empty when test mode
+    // did not take, which the guard reads as outside.
+    static QString isolatedRoot() {
+#ifdef Q_OS_WIN
+        QStandardPaths::setTestModeEnabled(true);
+        const QString root =
+            QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+        if (!root.endsWith(QLatin1String("/qttest"))) return QString();
+        const QString path = defaultRemorarcPath();
+        if (path.startsWith(root + QLatin1Char('/')))
+            QDir().mkpath(QFileInfo(path).absolutePath());
+        return root;
+#else
+        return QStringLiteral(REMORA_TEST_HOME);
+#endif
+    }
+
 private slots:
     // Every case below writes to a QTemporaryDir, but the store's default path is the user's real
-    // remorarc. ctest gives each suite a HOME and XDG_* inside the build tree; this refuses to run
-    // at all unless the default path really resolves inside it, so a later case that reaches the
-    // default path can only ever touch the build tree, and a passing suite proves the isolation.
+    // remorarc. The suite refuses to run at all unless the default path really resolves inside an
+    // isolated root (isolatedRoot), so a later case that reaches the default path can only ever
+    // touch that, and a passing suite proves the isolation.
     void initTestCase() {
+        const QString root = isolatedRoot();
         const QString path = defaultRemorarcPath();
-        if (!within(path, QStringLiteral(REMORA_TEST_HOME)))
-            QFAIL(qPrintable(QStringLiteral("default remorarc %1 is not inside the isolated test "
-                                            "HOME %2; run the suite through ctest")
-                                 .arg(path, QStringLiteral(REMORA_TEST_HOME))));
+        if (!within(path, root))
+            QFAIL(qPrintable(QStringLiteral("default remorarc %1 is not inside the isolated root "
+                                            "%2; run the suite through ctest")
+                                 .arg(path, root)));
     }
 
     // The guard above is only as good as within(): a symlinked leaf, a sibling whose name merely
     // starts with the root's, or a link that resolves nowhere must all count as outside.
     void withinFollowsLinksAndComparesComponents() {
+        SKIP_ON_WINDOWS("QFile::link makes a .lnk shortcut on Windows, not a symbolic link");
         QTemporaryDir base;
         QVERIFY(base.isValid());
         const QDir b(base.path());
@@ -561,6 +585,51 @@ private slots:
 
     // ─── service --remove: the unit-removal adapter against a fake manager ───
 
+    // bd remora-7oih.2 — no systemctl at all: a Windows client, or a Linux without systemd. Every
+    // call used to fail, the state read "unknown", and the unit was kept — so Delete profile could
+    // never delete a profile there. Nothing can have loaded a unit without a manager: ask once,
+    // delete whatever unit files exist, skip the reload, and succeed.
+    void removeWithNoServiceManagerDeletesTheFiles() {
+        QTemporaryDir dir;
+        const QString unitDir = dir.path();
+        write(unitDir + QStringLiteral("/remora-p.service"), "[Unit]\n");
+        write(unitDir + QStringLiteral("/remora-updater-p.service.d/override.conf"), "o\n");
+        write(unitDir + QStringLiteral("/remora-other.service"), "keep\n");
+        FakeManager m;
+        m.noManager = true;
+        const UnitRemovalResult r = removeServiceUnits(unitDir, QStringLiteral("p"), m.runner());
+        QVERIFY2(r.ok, qPrintable(r.errors.join(QLatin1Char('\n'))));
+        QVERIFY(r.noServiceManager);
+        QCOMPARE(m.calls.size(), 1);  // the first disable said it all
+        QVERIFY(!m.ran(QStringLiteral("daemon-reload"), {}));
+        QVERIFY(!QFileInfo::exists(unitDir + QStringLiteral("/remora-p.service")));
+        QVERIFY(!QFileInfo::exists(unitDir + QStringLiteral("/remora-updater-p.service.d")));
+        QCOMPARE(read(unitDir + QStringLiteral("/remora-other.service")), QByteArray("keep\n"));
+        QCOMPARE(r.removed.size(), 2);
+        // and on a machine that never had a unit, nothing is created where none was
+        QTemporaryDir empty;
+        const QString none = empty.filePath(QStringLiteral("systemd/user"));
+        QVERIFY(removeServiceUnits(none, QStringLiteral("p"), m.runner()).ok);
+        QVERIFY(!QFileInfo::exists(none));
+    }
+
+    // …which is what makes the workspace's Delete profile work there.
+    void deleteProfileWithNoServiceManager() {
+        QTemporaryDir dir;
+        const QString unitDir = dir.filePath(QStringLiteral("units"));
+        const QString path = rc(dir);
+        seedProfiles(path, unitDir);
+        FakeManager m;
+        m.noManager = true;
+        int hooks = 0;
+        const ProfileDeletionResult r = deleteProfileAndServices(
+            path, unitDir, QStringLiteral("p"), m.runner(), [&](const QString &) { ++hooks; });
+        QVERIFY2(r.deleted, qPrintable(r.error));
+        QCOMPARE(hooks, 1);
+        QCOMPARE(listInstances(path), QStringList{QStringLiteral("other")});
+        expectUnrelatedIntact(path, unitDir);
+    }
+
     // The named regression: the .service file is gone, its drop-in remains, and the manager still
     // has the unit loaded and running. Its disable and stop fail; a successful reload must not
     // turn that into success, and the drop-in must survive untouched.
@@ -739,6 +808,7 @@ private slots:
     // A drop-in directory that is a link, and links inside a real one, are unlinked; what they
     // point at is untouched.
     void removeUnlinksSymlinksWithoutFollowing() {
+        SKIP_ON_WINDOWS("QFile::link makes a .lnk shortcut on Windows, not a symbolic link");
         QTemporaryDir dir, outside;
         const QString unitDir = dir.path();
         write(outside.path() + QStringLiteral("/target-dir/precious"), "p\n");
@@ -1055,17 +1125,21 @@ private:
                 if (c.size() > 2 && c[2] == verb && (unit.isEmpty() || c.last() == unit)) return true;
             return false;
         }
+        // No systemctl on this machine at all: every call is the spawner's could-not-start.
+        bool noManager = false;
         UnitCommandRunner runner() {
             return [this](const QStringList &v) -> UnitCommandResult {
                 calls << v;
+                if (noManager)
+                    return {kNoServiceManagerRc, {}, QStringLiteral("failed to start systemctl")};
                 if (v.size() < 3 || v[0] != QLatin1String("systemctl") ||
                     v[1] != QLatin1String("--user"))
-                    return {127, {}, QStringLiteral("unexpected argv")};
+                    return {99, {}, QStringLiteral("unexpected argv")};
                 const QString verb = v[2];
                 if (verb == QLatin1String("daemon-reload"))
                     return {reloadRc, {}, reloadRc ? QStringLiteral("reload refused") : QString()};
                 const QString unit = v.last();
-                if (!units.contains(unit)) return {127, {}, QStringLiteral("unmodelled unit")};
+                if (!units.contains(unit)) return {99, {}, QStringLiteral("unmodelled unit")};
                 Unit &u = units[unit];
                 if (verb == QLatin1String("disable")) {
                     if (!unitDir.isEmpty())
@@ -1089,7 +1163,7 @@ private:
                     return {0, QStringLiteral("LoadState=%1\nActiveState=%2\n").arg(u.load, u.active),
                             {}};
                 }
-                return {127, {}, QStringLiteral("unexpected verb")};
+                return {99, {}, QStringLiteral("unexpected verb")};
             };
         }
     };

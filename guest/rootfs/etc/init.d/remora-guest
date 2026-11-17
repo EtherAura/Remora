@@ -1,0 +1,46 @@
+#!/sbin/openrc-run
+# The one piece of the guest that is Remora's own. Before sshd and docker start, it:
+#   - formats the data disk on first boot and mounts it: /home and docker's data-root live there,
+#     so replacing the system disk (an update) keeps every image, container and Android /data;
+#   - takes this install's ssh identity from QEMU's fw_cfg: the client's public key as the only
+#     authorised key, and the sshd host key the client already trusts. Handing the host key IN is
+#     what lets the client pin it from the first connection instead of trusting whatever answers.
+# The Windows app passes both with -fw_cfg name=opt/remora/<name>,file=<path> (bd remora-7oih.5).
+
+description="Remora guest: data disk and ssh identity"
+
+DATA_DEV=/dev/vdb
+DATA=/var/lib/remora
+FWCFG=/sys/firmware/qemu_fw_cfg/by_name/opt/remora
+
+depend() {
+    need localmount
+    before networking
+}
+
+start() {
+    ebegin "Mounting the Remora data disk"
+    if ! blkid "$DATA_DEV" >/dev/null 2>&1; then
+        mkfs.ext4 -q -L remora-data "$DATA_DEV" || { eend 1 "cannot format $DATA_DEV"; return 1; }
+    fi
+    mkdir -p "$DATA"
+    mountpoint -q "$DATA" || mount -t ext4 "$DATA_DEV" "$DATA" || { eend 1; return 1; }
+    mkdir -p "$DATA/home/remora" "$DATA/docker"
+    chown remora:remora "$DATA/home/remora"
+    mountpoint -q /home || mount --bind "$DATA/home" /home
+    eend 0
+
+    ebegin "Taking the ssh identity from the host"
+    modprobe qemu_fw_cfg 2>/dev/null
+    if [ ! -r "$FWCFG/authorized_key/raw" ] || [ ! -r "$FWCFG/host_key/raw" ]; then
+        eend 1 "no opt/remora/{authorized_key,host_key} in fw_cfg: this guest is started by Remora"
+        return 1
+    fi
+    install -d -m 700 -o remora -g remora /home/remora/.ssh
+    cat "$FWCFG/authorized_key/raw" >/home/remora/.ssh/authorized_keys
+    chown remora:remora /home/remora/.ssh/authorized_keys
+    chmod 600 /home/remora/.ssh/authorized_keys
+    (umask 077; cat "$FWCFG/host_key/raw" >/etc/ssh/ssh_host_ed25519_key)
+    ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key >/etc/ssh/ssh_host_ed25519_key.pub
+    eend $?
+}

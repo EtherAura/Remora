@@ -219,7 +219,7 @@ Settings that shape the build (all optional, see [Configuration](Configuration.m
 
 | key | default | meaning |
 |---|---|---|
-| `source_host` | this machine | host where the source tree lives and compiles |
+| `source_host` | this machine; required on Windows | host where the source tree lives and compiles. A Windows client has no local Linux toolchain, so it refuses a pull or build without one |
 | `source_kind` | `lineage` | `lineage` or `aosp` |
 | `source_pinned` | on | sync Remora's pinned manifest, the tested revisions |
 | `build_jobs` / `build_nice` | all cores / 15 | parallelism and niceness |

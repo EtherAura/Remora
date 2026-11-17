@@ -38,7 +38,7 @@ optdepends=(
   'openssh: deploy to a docker host over ssh (the remote target)'
   'nvidia-utils: NVIDIA acceleration through the Venus render server'
   'python: fetch official images and their updates, add Google Play and share host input devices on this machine (the bare target)'
-  'unzip: show the boot animation in the mirror while Android starts'
+  'unzip: fetch the Magisk payload for an image build or add-on'
   "polkit: open a device's storage from the workspace (the access grant runs under pkexec)"
 )
 # The test suites build throwaway git repositories to apply patch series against. The image and

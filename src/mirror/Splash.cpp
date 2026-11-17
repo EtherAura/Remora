@@ -5,6 +5,8 @@
 #include <QFile>
 #include <QFileInfo>
 
+#include <memory>
+
 namespace remora::mirror {
 
 void FramePrefetcher::setFrames(const QStringList &paths) {
@@ -131,13 +133,18 @@ SplashController::SplashController(SplashOptions opts, QObject *parent)
 
 SplashController::~SplashController() {
     // An abort mid-acquisition must not destroy live QProcess children (Qt warns loudly);
-    // reap them first. The extract dir was made writable right after unzip, so its removal
-    // succeeds even when we die between unzip and playback.
+    // reap them first. Every extracted file is this process's own, so the extract dir's removal
+    // succeeds even when we die between the unpack and playback.
     for (QProcess *p : findChildren<QProcess *>()) {
         if (p->state() != QProcess::NotRunning) {
             p->kill();
             p->waitForFinished(500);
         }
+    }
+    // An unpack still writing into extract_ must finish before the directory is removed under it.
+    if (extractJob_) {
+        extractJob_->wait();
+        delete extractJob_;
     }
 }
 
@@ -249,21 +256,64 @@ void SplashController::onAcquireStep() {
     tryAcquire();
 }
 
+// Unpack the animation's STORED entries under root. In-process, where this used to fork `unzip`
+// and then `chmod -R u+w`, neither of which a Windows client has (bd remora-7oih.2). The chmod is
+// not needed at all any more: unzip restored the zip's read-only modes, which blocked
+// QTemporaryDir's removal at exit, while a file this process creates is the owner's to delete.
+// Compressed entries are skipped rather than inflated — Android's player cannot show them either,
+// since it reads frames in place — and named in one warning so a strange zip is not a mystery.
+static bool unpackBootAnimation(const QString &zipPath, const QString &root) {
+    QFile f(zipPath);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    const QByteArray bytes = f.readAll();
+    const ZipIndex idx = indexZip(bytes);
+    if (!idx.error.isEmpty()) {
+        qWarning("mirror: boot animation %s unreadable: %s", qPrintable(zipPath),
+                 qPrintable(idx.error));
+        return false;
+    }
+    const QDir dir(root);
+    QStringList skipped;
+    for (const ZipEntry &e : idx.entries) {
+        if (!zipEntryNameIsSafe(e.name)) {
+            skipped << e.name;
+            continue;
+        }
+        if (e.name.endsWith(QLatin1Char('/'))) {
+            dir.mkpath(e.name);
+            continue;
+        }
+        if (e.method != 0) {
+            skipped << QStringLiteral("%1 (method %2)").arg(e.name).arg(e.method);
+            continue;
+        }
+        const QString out = dir.filePath(e.name);
+        dir.mkpath(QFileInfo(out).path());
+        QFile o(out);
+        if (!o.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+            o.write(bytes.constData() + e.offset, e.size) != e.size)
+            return false;
+    }
+    if (!skipped.isEmpty())
+        qWarning("mirror: boot animation: skipped %lld entries Android would not play either: %s",
+                 qlonglong(skipped.size()), qPrintable(skipped.mid(0, 5).join(QLatin1String(", "))));
+    return true;
+}
+
 void SplashController::extractZip() {
-    if (!extract_.isValid()) return;
-    // Same tool the reference splash forks; the zip is Android's own, always unzip-friendly.
-    auto *unzip = new QProcess(this);
-    connect(unzip, &QProcess::finished, this, [this, unzip](int rc, QProcess::ExitStatus) {
-        unzip->deleteLater();
-        if (rc != 0) return;
-        // Android zips carry read-only entries, which block QTemporaryDir's removal at exit —
-        // make the extracted tree deletable before anything else happens.
-        QProcess::execute(QStringLiteral("chmod"),
-                          {QStringLiteral("-R"), QStringLiteral("u+w"), extract_.path()});
-        loadDesc();
+    if (!extract_.isValid() || extractJob_) return;
+    // Off the GUI thread, as the unzip child was: the frames are tens of MiB, and the window is
+    // painting status text meanwhile.
+    auto ok = std::make_shared<bool>(false);
+    extractJob_ = QThread::create([ok, zip = o_.cacheZip, root = extract_.path()] {
+        *ok = unpackBootAnimation(zip, root);
     });
-    unzip->start(QStringLiteral("unzip"),
-                 {QStringLiteral("-oq"), o_.cacheZip, QStringLiteral("-d"), extract_.path()});
+    connect(extractJob_, &QThread::finished, this, [this, ok] {
+        extractJob_->deleteLater();
+        extractJob_ = nullptr;
+        if (*ok) loadDesc();
+    });
+    extractJob_->start();
 }
 
 void SplashController::loadDesc() {

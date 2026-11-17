@@ -1,0 +1,60 @@
+# Remora's changes to Alpine's linux-lts configuration (guest/kernel/derive-config.sh applies them).
+
+CONFIG_LOCALVERSION="-remora"
+
+# DMA-BUF heaps. Android's Codec2 allocates its buffers from /dev/dma_heap/system, and the image
+# turns Codec2 on only where that node exists (vendor-remora/remora.c2.sh): without it there is no
+# video encoder at all, so no mirror. Alpine leaves the whole subsystem out.
+CONFIG_DMABUF_HEAPS=y
+CONFIG_DMABUF_HEAPS_SYSTEM=y
+
+# Module signing with a key the build generates and throws away: Alpine's configuration names its
+# own build key, which exists only on Alpine's builders. The modules ship inside the guest image
+# beside the kernel that built them, so the signature vouches for nothing the image does not.
+CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"
+
+# Booted without an initramfs: everything between power-on and / is built in.
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_EXT4_FS=y
+CONFIG_FW_CFG_SYSFS=y
+CONFIG_HW_RANDOM_VIRTIO=y
+CONFIG_OVERLAY_FS=y
+
+# Android's own devices, built in. Each is reached through a node (/dev/loop-control,
+# /dev/mapper/control, /dev/fuse, /dev/net/tun, /dev/uinput) that only exists once its module is
+# loaded, and nothing loads a module for a node that does not exist yet: as modules, apexd waited
+# 20 s for /dev/loop-control, failed, and Android rebooted itself out of its own boot.
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_BLK_DEV_DM=y
+CONFIG_FUSE_FS=y
+CONFIG_TUN=y
+CONFIG_INPUT_UINPUT=y
+
+# Hardware a QEMU guest never has. Off for build time and size; networking, filesystems, netfilter,
+# input (uinput) and everything else Alpine enables stays exactly as Alpine has it.
+# CONFIG_DRM is not set
+# CONFIG_SOUND is not set
+# CONFIG_WLAN is not set
+# CONFIG_MEDIA_SUPPORT is not set
+# CONFIG_STAGING is not set
+# CONFIG_BT is not set
+# CONFIG_NFC is not set
+# CONFIG_USB_SUPPORT is not set
+# CONFIG_INFINIBAND is not set
+# CONFIG_IIO is not set
+# CONFIG_INPUT_TOUCHSCREEN is not set
+# CONFIG_INPUT_JOYSTICK is not set
+# CONFIG_INPUT_TABLET is not set
+# CONFIG_MTD is not set
+# CONFIG_CAN is not set
+# CONFIG_HAMRADIO is not set
+# CONFIG_ISDN is not set
+# CONFIG_FIREWIRE is not set
+# CONFIG_PCCARD is not set
+# CONFIG_ETHERNET is not set
+# CONFIG_THUNDERBOLT is not set
+# CONFIG_SURFACE_PLATFORMS is not set
+# CONFIG_X86_PLATFORM_DEVICES is not set
+# CONFIG_KVM is not set

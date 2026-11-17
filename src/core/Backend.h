@@ -24,6 +24,21 @@ QString retiredVmBackendMessage();
 // backend=bare on a Windows desktop (bd remora-7oih): there is no Linux kernel there to run it on.
 QString bareNeedsLinuxMessage();
 
+// The OS Remora ITSELF runs on — the client, never the docker host, which is Linux everywhere. A
+// Windows client has none of the local tools a Linux one shells out to (sh, coreutils, docker,
+// systemd, an XDG desktop), so the code that forks on it asks Spawner::localOs() rather than
+// testing Q_OS_WIN in place: a fake spawner can then say "Windows", and the Windows arm runs in
+// the Linux test suite instead of only on a machine nobody tests on (bd remora-7oih.2).
+enum class LocalOs { Unix, Windows };
+#ifdef Q_OS_WIN
+inline constexpr LocalOs kLocalOs = LocalOs::Windows;
+#else
+inline constexpr LocalOs kLocalOs = LocalOs::Unix;
+#endif
+// A Linux-desktop feature (the XDG app menu, systemd --user units) asked for on Windows: one line
+// naming what it is and that this client has no such thing, for the CLI and the GUI alike.
+QString linuxDesktopOnlyMessage(const QString &feature);
+
 QString gpuModeToString(GpuMode m);
 // host | guest, and nothing else: an unrecognised spelling is nullopt, NOT a default. "auto" used
 // to parse into a third mode that nothing handled, so gpu_mode=auto ran as guest (SwiftShader)

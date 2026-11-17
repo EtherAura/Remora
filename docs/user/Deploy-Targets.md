@@ -18,7 +18,12 @@ The target is inferred from `ssh_host`. An explicit `backend=bare` or `backend=r
 profile overrides the inference, and `--backend` on the command line overrides both. An unset or
 unrecognised value means `bare`.
 
-Both targets can render on a real GPU: see [GPU Acceleration](GPU-Acceleration.md).
+Both targets can render on a real GPU: see [GPU Acceleration](GPU-Acceleration.md). NVIDIA
+through Venus, `host_encode` and `host_decode` are `bare` only, because their helpers run on the
+machine running Remora. A `remote` profile that turns one on is refused before anything is created.
+
+On Windows, which has no Linux kernel to run docker on, `bare` means the Linux guest Remora runs
+for you, reached the way `remote` reaches any docker host: see [Windows](Windows.md).
 
 ## What each target needs
 
@@ -53,6 +58,7 @@ command exits 0 when the target is ready and 1 when it is not.
 | IBT-fixed `ashmem_linux.ko` loaded | bare, Android 16 only | required | load the module. Android 17 needs none |
 | remote reachable over ssh | remote | required | set up key-based ssh to `ssh_host` |
 | docker usable on the remote | remote | required | install docker, add the remote user to its group |
+| no bare-only GPU settings | remote, `gpu_mode=host` | required | turn off `venus`, `host_encode` and `host_decode`, or deploy with `bare` on the docker host |
 | host LAN readable | `network_mode=macvlan` | required | set `macvlan_parent`, `macvlan_subnet` and `macvlan_gateway`, or use `bridge` |
 | `python3` on the docker host | `shared_inputs` set | optional | install python3 |
 | GPU rows | `gpu_mode=host` or `--gpu-host` | informational | see [GPU Acceleration](GPU-Acceleration.md#checking-the-gpu) |
@@ -69,7 +75,17 @@ for a profile without deploying anything.
 
 A profile created in the workspace is given its own container name (`remora-<profile>`), data
 directory (`~/.remora-<profile>`) and the lowest free host adb port from 5555 upward, written into
-the profile. A hand-written profile that sets none of these gets:
+the profile. On Linux the data directory is written out against your home; on Windows, which has
+no local docker, it stays `~/.remora-<profile>`, and the docker host's shell expands it to that
+host's home.
+
+A remote profile's data directory is a path on the docker host. A `~` typed into the Device page's
+data-directory field is that host's home and is stored as typed; only a `bare` profile has it
+expanded against this machine's home, because docker does not expand it there. The field's folder
+picker browses this machine, so it is greyed out for a remote profile. A path that is shown
+unchanged is never rewritten.
+
+A hand-written profile that sets none of these gets:
 
 | key | `bare` | `remote` |
 |---|---|---|

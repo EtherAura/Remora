@@ -1,5 +1,6 @@
 #pragma once
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include "core/Backend.h"
@@ -19,9 +20,12 @@ struct PrereqResult {
 // adds the python3 row remora-input-share.py runs on (bd remora-4ei.36) — each asked of the
 // RESOLVED config rather than the backend, because the mode is a per-profile choice everywhere.
 // needsAshmem adds the ashmem module row on bare — releaseNeedsAshmem() of the profile's release.
+// bareOnlyRequested is the resolved profile's list of the same name: on remote each entry is a
+// required failure, because preflight refuses it (bd remora-7oih.3).
 QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &caps,
                                      bool gpuHost = false, bool macvlan = false,
-                                     bool sharedInputs = false, bool needsAshmem = true);
+                                     bool sharedInputs = false, bool needsAshmem = true,
+                                     const QStringList &bareOnlyRequested = {});
 
 // Does an image of this Android release need the host's ashmem module (bd remora-oky7)? Android 17
 // does not: with every /dev/ashmem* removed before init it boots, renders WebView, decodes AVC and

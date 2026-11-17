@@ -8,9 +8,12 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QOpenGLContext>
 #include <QScreen>
 #include <QWheelEvent>
+
+#include "core/Builders.h"
 
 extern "C" {
 #include <libavutil/frame.h>
@@ -57,6 +60,17 @@ void MirrorWindow::showSplash(QSize initialSize) {
     splash_ = true;
     sizedToVideo_ = true;  // the adopted window keeps its geometry — no live-frame resize
     resize(initialSize.isEmpty() ? QSize(1024, 576) : initialSize);
+#ifdef Q_OS_WIN
+    // Windows lets a client place itself, and there is no KWin helper to do it (Orchestrator's
+    // centerSplashWindow): centre on the screen unless the profile names a position.
+    if (explicitPos_) {
+        move(*explicitPos_);
+    } else if (QScreen *s = screen()) {
+        QRect g = geometry();
+        g.moveCenter(s->availableGeometry().center());
+        move(g.topLeft());
+    }
+#endif
     show();
 }
 
@@ -576,12 +590,34 @@ void MirrorWindow::sendKey(QKeyEvent *e, quint8 action) {
     }
 }
 
+// Start the other side of the toggle from its LaunchSpec: this process's environment with the
+// spec's edits, detached so it outlives this window. Still no systemd scope of its own, as with
+// the shell line before it: it lands in THIS mirror's cgroup, which the engine already lifted out
+// of the GUI's (Spawner::scopedArgv), so it survives the GUI exactly as this window does.
+static bool startLaunchSpec(const LaunchSpec &spec) {
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    for (const QString &k : spec.unset) env.remove(k);
+    for (auto it = spec.set.constBegin(); it != spec.set.constEnd(); ++it)
+        env.insert(it.key(), it.value());
+    QProcess p;
+    p.setProgram(spec.argv.first());
+    p.setArguments(spec.argv.mid(1));
+    p.setProcessEnvironment(env);
+#ifdef Q_OS_WIN
+    // remora.exe is a console program, and a detached one gets a console window of its own.
+    // CREATE_NEW_CONSOLE and CREATE_NO_WINDOW, spelled out to keep <windows.h> and its macros out
+    // of a file full of GL and FFmpeg.
+    p.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
+        a->flags = (a->flags & ~0x00000010UL) | 0x08000000UL;
+    });
+#endif
+    return p.startDetached();
+}
+
 void MirrorWindow::toggleDisplayMode() {
     // Alt+D switches mirror ↔ desktop: launch the OTHER side's command from the environment —
-    // the engine injects both as opaque shell lines — then close this window so the toggle
-    // switches rather than stacks. REMORA_DESKTOP_NEW_WINDOW keeps this window open (stacking).
-    // The launched line backgrounds the real client, and startDetached reparents it, so it
-    // outlives this window.
+    // the engine injects both as LaunchSpecs — then close this window so the toggle switches
+    // rather than stacks. REMORA_DESKTOP_NEW_WINDOW keeps this window open (stacking).
     const bool isDesktop = qEnvironmentVariableIsSet("REMORA_IS_DESKTOP");
     const QString cmd = QString::fromLocal8Bit(
         qgetenv(isDesktop ? "REMORA_MIRROR_CMD" : "REMORA_DESKTOP_CMD"));
@@ -589,7 +625,17 @@ void MirrorWindow::toggleDisplayMode() {
         qWarning("mirror: display toggle not configured");
         return;
     }
-    if (!QProcess::startDetached(QStringLiteral("sh"), {QStringLiteral("-c"), cmd})) {
+    bool started = false;
+    if (const std::optional<LaunchSpec> spec = decodeLaunchSpec(cmd)) {
+        started = startLaunchSpec(*spec);
+    } else {
+#ifdef Q_OS_UNIX
+        // A shell line: this window descends from a mirror an older Remora started, before the
+        // toggle was data. Run it as that Remora meant it to run.
+        started = QProcess::startDetached(QStringLiteral("sh"), {QStringLiteral("-c"), cmd});
+#endif
+    }
+    if (!started) {
         qWarning("mirror: could not switch display mode");
         return;
     }

@@ -21,8 +21,17 @@ ProcResult runPublicImages(Spawner &sp, const QStringList &args, const QString &
     // empty catalog.
     if (!QFile::exists(helper) || !QFile::exists(key))
         return {2, {}, "Public image helper/trust anchor is missing"};
-    if (host.isEmpty())
+    if (host.isEmpty()) {
+#ifdef Q_OS_WIN
+        // The helper is python3 driving docker, and Windows has neither: the catalog is verified
+        // on the Linux docker host whose docker loads the image (bd remora-7oih.3).
+        return {2, {}, QStringLiteral("the image catalog is verified and loaded on a Linux docker "
+                                      "host, and on Windows there is no local one — pass --host "
+                                      "user@host, or set ssh_host on the profile")};
+#else
         return sp.run(QStringList{"python3", helper} + args + QStringList{"--key", key}, {}, log);
+#endif
+    }
     // The host lands in an ssh/scp argv, so it is held to a plain user@host shape: nothing that
     // could read as an option or a second word.
     if (host.startsWith('-') || !QRegularExpression("^[A-Za-z0-9_.@%:\\[\\]-]+$").match(host).hasMatch())
@@ -39,8 +48,8 @@ ProcResult runPublicImages(Spawner &sp, const QStringList &args, const QString &
     // Only a directory mktemp could have produced is ever removed below.
     if (!QRegularExpression("^/tmp/remora-images\\.[A-Za-z0-9]{10}$").match(dir).hasMatch())
         return {2, {}, "Unexpected remote staging directory"};
-    auto result = sp.run({"scp", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--",
-                          helper, key, host + ":" + dir + "/"},
+    auto result = sp.run(Spawner::scpArgv({helper, key, host + ":" + dir + "/"},
+                                          {"-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"}),
                          {}, log);
     if (!result.rc) {
         QStringList command{"python3", dir + "/catalog.py"};

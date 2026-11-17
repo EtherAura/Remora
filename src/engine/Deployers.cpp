@@ -863,13 +863,10 @@ static StepResult ensureImageOn(Spawner &sp, const QString &host, const QString 
 // Every backend's connect launches the local adb + mirror clients — catch missing tools in
 // preflight, not as a confusing late failure inside the connect step.
 static std::optional<StepResult> missingHostTools(Spawner &sp, const LineSink &log) {
-#ifdef Q_OS_WIN
-    if (sp.run({"where", "/q", "adb"}, {}, log).rc != 0)
-        return StepResult::fail("adb not found on PATH — install Android SDK Platform-Tools");
-#else
-    if (sp.run({"sh", "-c", "command -v adb >/dev/null 2>&1"}, {}, log).rc != 0)
-        return StepResult::fail("adb not found on PATH — install android-tools");
-#endif
+    if (sp.run(adbLookupArgv(sp.localOs()), {}, log).rc != 0)
+        return StepResult::fail(sp.localOs() == LocalOs::Windows
+                                    ? "adb not found on PATH — install Android SDK Platform-Tools"
+                                    : "adb not found on PATH — install android-tools");
     // No external-client check since the cutover: the mirror client is the remora binary itself.
     return std::nullopt;
 }
@@ -1406,6 +1403,11 @@ private:
         // companion app has no staging path to a remote docker host (bd remora-pzq).
         if (const QString apps = companionAppsRemoteRefusal(ctx.rc.companionApps); !apps.isEmpty())
             return StepResult::fail(apps);
+        // Also config shape: venus/host_encode/host_decode run their helpers on THIS machine, and
+        // nothing here starts them on the docker host (bd remora-7oih.3).
+        if (const QString bareOnly = bareOnlyFeaturesRefusal(ctx.rc.bareOnlyRequested);
+            !bareOnly.isEmpty())
+            return StepResult::fail(bareOnly);
         if (auto miss = missingHostTools(sp_, log)) return *miss;
         if (sp_.run(Spawner::sshArgv(ctx.guest, "echo ok"), {}, log).out.trimmed() !=
             QLatin1String("ok"))
@@ -1440,10 +1442,12 @@ private:
         // CHECKED pushes, because these become the /remora bind SOURCES at docker run
         // (bd remora-4ei.88) — docker answers a missing source by creating an empty directory
         // there, so a failed scp must stop the deploy HERE, where the message names the push,
-        // not later as an inexplicably empty /remora inside the container. scp carries the mode,
-        // so fwd stays executable on the other side.
+        // not later as an inexplicably empty /remora inside the container. The executable bits
+        // are set explicitly after the pushes: scp carries the mode from a Linux tree, but a
+        // Windows one has none to carry (bd remora-7oih).
         const auto push = [&](const QString &local, const QString &name) {
-            return sp_.run({"scp", local, ctx.guest + QStringLiteral(":.remora/") + name}, {}, log)
+            return sp_.run(Spawner::scpArgv({local, ctx.guest + QStringLiteral(":.remora/") + name}),
+                           {}, log)
                        .rc == 0;
         };
         if (!push(vendorNativeBinary("fwd"), QStringLiteral("fwd")))
@@ -1484,6 +1488,13 @@ private:
                       QStringLiteral("remora-agent.rc")))
                 return StepResult::fail("could not push remora-agent.rc to the remote's ~/.remora");
         }
+        // The two the container EXECUTES (see the push comment above). uinput-kbd may be absent.
+        if (sp_.run(Spawner::sshArgv(ctx.guest, QStringLiteral(
+                        "chmod 755 .remora/fwd && { [ ! -e .remora/uinput-kbd ] || "
+                        "chmod 755 .remora/uinput-kbd; }")),
+                    {}, log)
+                .rc != 0)
+            return StepResult::fail("could not mark fwd executable on the remote");
         // Same macvlan rule as bare, against the remote docker host's own LAN — the subnet that
         // matters is the one the CONTAINER will be on, never this machine's (bd remora-400).
         const NetworkEnsure net = ensureMacvlanNetwork(sp_, ctx.rc, ctx.guest, log);
@@ -1560,7 +1571,8 @@ private:
                                : QStringLiteral("%1 no longer matches the profile — recreating")
                                      .arg(c));
             sp_.run(Spawner::sshArgv(ctx.guest, "docker rm -f " + c), {}, log);
-            if (ctx.replaceOwn) reapSessionOrphans(sp_, c, QString(), log);  // as on bare
+            if (ctx.replaceOwn)  // as on bare, less the encoder this backend never ran
+                reapSessionOrphans(sp_, c, QString(), log, Backend::Remote);
         } else if (sp_.run(Spawner::sshArgv(ctx.guest, "docker start " + c), {}, log).rc == 0) {
             if (!wasRunning) appendStatusLine(ctx.statusPath, QStringLiteral("REMORA_BOOTING"));
             return StepResult::good(QStringLiteral("started existing %1").arg(c));

@@ -1,10 +1,11 @@
 #include "engine/Engine.h"
+#include "engine/GuestVm.h"
+#include "core/ManagedHost.h"
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
-#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTextStream>
 
@@ -50,8 +51,12 @@ private:
 // the configured size (when set) and centers it within its screen's placement area (retrying a
 // few seconds so it lands after the mirror's own client-size enforcement settles — the adopting
 // screen then keeps this geometry). Silently a no-op on non-KDE hosts (no qdbus6/KWin).
+//
+// Not on Windows at all, where there is no KWin, no qdbus6 and no shell to run the loop — and where
+// a client CAN place its own window, so the splash centres itself (MirrorWindow::showSplash). Not
+// even the script file is written there (bd remora-7oih.2).
 void centerSplashWindow(Spawner &sp, const RunContext &ctx) {
-    if (ctx.windowTitle.isEmpty()) return;
+    if (ctx.windowTitle.isEmpty() || sp.localOs() == LocalOs::Windows) return;
     const QString jsPath = ctx.statusPath + QStringLiteral(".center.js");
     QFile js(jsPath);
     if (!js.open(QIODevice::WriteOnly | QIODevice::Truncate)) return;
@@ -110,11 +115,14 @@ void centerSplashWindow(Spawner &sp, const RunContext &ctx) {
 // splash exists, because by then the only thing they can match is that splash (bd remora-eoy.10).
 void startSplash(Spawner &sp, RunContext &ctx) {
     if (ctx.fullscreenDisplay || ctx.rc.target.isEmpty() || ctx.splashArgv.isEmpty()) return;
-    sp.run({"pkill", "-f", mirrorTitlePattern(ctx.rc.target, ctx.windowTitle)}, {}, {});
+    stopMirrorClients(sp, instanceMirrorPids(sp, ctx.rc.target, ctx.windowTitle));
     // The guest-side reap that stood here went with killStaleServer (bd remora-28ix.4
     // step 4): the agent is one long-running init service rather than a server spawned per
     // session, so there is no stale guest process left to reap and no VF encoder context to leak.
-    // The host-side pkill above stays — that one is about OUR window, not the device's.
+    // The host-side reap above stays — that one is about OUR window, not the device's. It waits
+    // for the stale window to go (and kills one that will not) rather than signalling and moving
+    // on as the pkill did: a stuck predecessor that ignored the TERM used to survive beside the
+    // splash, and once the splash is adopted nothing reaps the predecessors any more.
     QDir().mkpath(QFileInfo(ctx.statusPath).dir().path());
     QFile f(ctx.statusPath);  // fresh run, fresh status — stale markers must not replay
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write("starting...\n");
@@ -124,7 +132,7 @@ void startSplash(Spawner &sp, RunContext &ctx) {
     // authorities racing over the window (client target = frame + decorations vs helper target =
     // frame) made the final size NONDETERMINISTIC — observed settling on either, run to run.
     const bool helperSizes =
-        ctx.rc.windowWidth && ctx.rc.windowHeight
+        ctx.rc.windowWidth && ctx.rc.windowHeight && sp.localOs() != LocalOs::Windows
         && !QStandardPaths::findExecutable(QStringLiteral("qdbus6")).isEmpty();
     if (helperSizes) argv << QStringLiteral("--boot-animation-external-geometry");
     ctx.splash = std::make_shared<Detached>(
@@ -141,21 +149,36 @@ QHash<QString, QString> stepTitles(const QVector<Step> &steps) {
 
 }  // namespace
 
-QString mirrorTitlePattern(const QString &target, const QString &windowTitle) {
-    QString inst = windowTitle;
-    if (inst.startsWith(QLatin1String("Remora:"))) inst = inst.mid(7);
-    // No usable title → match only the legacy prefix: a bare "--window-title" pattern would
-    // reap app/desktop windows too.
-    if (inst.isEmpty())
-        return QStringLiteral("remora mirror.*-s %1.*--window-title Remora:").arg(target);
-    return QStringLiteral("remora mirror.*-s %1.*--window-title (Remora:)?%2")
-        .arg(target, QRegularExpression::escape(inst));
+// Remora's own Linux guest (bd remora-7oih.5) has to be up before anything asks its docker a
+// question — the exclusion probe, smartRun's container inspection, a reconnect's adb — so every
+// entry that targets it starts it first, as a step of its own so the wait is visible. The context
+// is made again afterwards: a first start may have had to move the guest's ports, and the adb
+// target is derived from them.
+//
+// A guest that is already up is no step at all: smartRun starts it and then runs connectRun, which
+// asks again, and "guest running" twice in one step list read as two starts.
+static bool guestUp(Spawner &sp, const RunContext &ctx, LogSink &sink) {
+    if (GuestVm(sp).status().running && GuestVm(sp).ensureRunning(ctx.rc, {}).ok) return true;
+    const QVector<Step> steps{{QStringLiteral("guest"), QStringLiteral("Start Remora's Linux guest"),
+                               [&sp, &ctx](LogSink &s) {
+                                   const LineSink log = [&s](const QString &stream,
+                                                             const QString &text) {
+                                       s.line(QStringLiteral("guest"), stream, text);
+                                   };
+                                   return GuestVm(sp).ensureRunning(ctx.rc, log);
+                               }}};
+    return runChain(steps, sink);
 }
 
 bool connectRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner &sp,
                 const std::optional<HostCapabilities> &caps, const QString &windowTitle,
                 const ConflictFn &onConflict, bool fullscreenDisplay) {
+    backend = effectiveBackend(backend);
     RunContext ctx = makeContext(cfg, backend, caps, windowTitle, fullscreenDisplay);
+    if (managedHost(ctx.guest)) {
+        if (!guestUp(sp, ctx, sink)) return false;
+        ctx = makeContext(cfg, backend, caps, windowTitle, fullscreenDisplay);
+    }
     ExclusionService excl(sp, ctx.guest);
     const bool includeGuest = (backend == Backend::Remote);
     const ClusterState state = excl.probe(includeGuest);
@@ -172,7 +195,11 @@ bool connectRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner
         if (conflict->sameName) ctx.replaceOwn = true;
         else excl.stop(backend, conflict->holder);
     }
-    auto dep = makeDeployer(backend, sp);
+    // Remora's own guest boots Android on a share of this machine's cores: 300 s, against the 72 s
+    // a bare host gets. Under TCG (guest_accel=tcg, no hypervisor) every instruction is emulated,
+    // and a boot takes the better part of half an hour.
+    const int guestBoot = ctx.rc.guestAccel == QLatin1String("tcg") ? 1800 : 300;
+    auto dep = managedHost(ctx.guest) ? makeDeployer(backend, sp, guestBoot) : makeDeployer(backend, sp);
     startSplash(sp, ctx);  // after conflict consent — a declined takeover must not flash a window
     const QVector<Step> steps = dep->steps(ctx);
     StatusSink ssink(sink, ctx.splash ? ctx.statusPath : QString(), stepTitles(steps));
@@ -183,8 +210,7 @@ bool connectRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner
     // already become the mirror and neither can touch it (doConnect adopted its pid).
     if (!ok && ctx.splash) {
         appendStatusLine(ctx.statusPath, QStringLiteral("REMORA_ABORT"));
-        if (sp.detachedAlive(*ctx.splash))
-            sp.run({"kill", QString::number(ctx.splash->pid)}, {}, {});
+        if (sp.detachedAlive(*ctx.splash)) stopMirrorClients(sp, {ctx.splash->pid});
     }
     return ok;
 }
@@ -192,7 +218,12 @@ bool connectRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner
 bool reconnectRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner &sp,
                   const std::optional<HostCapabilities> &caps, const QString &windowTitle,
                   bool fullscreenDisplay) {
+    backend = effectiveBackend(backend);
     RunContext ctx = makeContext(cfg, backend, caps, windowTitle, fullscreenDisplay);
+    if (managedHost(ctx.guest)) {
+        if (!guestUp(sp, ctx, sink)) return false;
+        ctx = makeContext(cfg, backend, caps, windowTitle, fullscreenDisplay);
+    }
     // Before the mirror, not after: the helper is what makes Android report a hardware keyboard,
     // and a reconnect is exactly the case where the container is up but its helper is not (it died,
     // or the container predates the feature). Idempotent, so the usual warm reconnect pays one
@@ -217,7 +248,12 @@ bool reconnectRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawn
 // screen composites the same window becomes the mirror (doConnect adopts the splash).
 bool watchBootRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner &sp,
                   const std::optional<HostCapabilities> &caps, const QString &windowTitle) {
+    backend = effectiveBackend(backend);
     RunContext ctx = makeContext(cfg, backend, caps, windowTitle);
+    if (managedHost(ctx.guest)) {
+        if (!guestUp(sp, ctx, sink)) return false;
+        ctx = makeContext(cfg, backend, caps, windowTitle);
+    }
     startSplash(sp, ctx);
     const auto restart = [&sp, ctx, backend](LogSink &s) -> StepResult {
         const LineSink log = [&s](const QString &stream, const QString &text) {
@@ -267,14 +303,15 @@ bool watchBootRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawn
     const bool ok = runChain(steps, ssink);
     if (!ok && ctx.splash) {
         appendStatusLine(ctx.statusPath, QStringLiteral("REMORA_ABORT"));
-        if (sp.detachedAlive(*ctx.splash))
-            sp.run({"kill", QString::number(ctx.splash->pid)}, {}, {});
+        if (sp.detachedAlive(*ctx.splash)) stopMirrorClients(sp, {ctx.splash->pid});
     }
     return ok;
 }
 
 bool sleepRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner &sp,
               const std::optional<HostCapabilities> &caps, const QString &windowTitle) {
+    // A stopped guest has nothing to freeze, so sleeping never starts one.
+    backend = effectiveBackend(backend);
     RunContext ctx = makeContext(cfg, backend, caps, windowTitle);
     const auto freeze = [&sp, ctx, backend](LogSink &s) -> StepResult {
         const LineSink log = [&s](const QString &stream, const QString &text) {
@@ -299,8 +336,7 @@ bool sleepRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner &
         // is not left sitting on a dead frame. The guest end needs nothing: the agent is an init
         // service that pauses and resumes with the container, not a per-session server that would
         // leak the VF encoder context if frozen (killStaleServer, removed).
-        if (!ctx.rc.target.isEmpty())
-            sp.run({"pkill", "-f", mirrorTitlePattern(ctx.rc.target, ctx.windowTitle)}, {}, log);
+        stopMirrorClients(sp, instanceMirrorPids(sp, ctx.rc.target, ctx.windowTitle));
         const ProcResult p = guestRun(QStringLiteral("docker pause %1").arg(c),
                                       {"docker", "pause", c});
         if (p.rc != 0)
@@ -317,6 +353,10 @@ bool sleepRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner &
 bool smartRun(Backend backend, const RemoraConfig &profile, LogSink &sink, Spawner &sp,
               const std::optional<HostCapabilities> &caps, const QString &windowTitle,
               const ConflictFn &onConflict, bool fullscreenDisplay) {
+    backend = effectiveBackend(backend);
+    if (const RunContext g = makeContext(profile, backend, caps, windowTitle, fullscreenDisplay);
+        managedHost(g.guest) && !guestUp(sp, g, sink))
+        return false;
     // GOOGLE PLAY FIRST (bd remora-6laf.8). Everything below asks whether the running container is
     // the image this profile needs, and with Play on that is the overlay for the CURRENT base —
     // which exists only once this has found or built it. Its own visible step, because the first

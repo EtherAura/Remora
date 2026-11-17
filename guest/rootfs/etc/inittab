@@ -1,0 +1,17 @@
+# Remora's guest (bd remora-7oih.5). Alpine's own, less the gettys (there is no console to log in
+# on, and no password to log in with), with sshd, dockerd and acpid run by init itself.
+#
+# Why init: Android writes to /proc/sysrq-trigger when its shutdown cannot unmount /data — which
+# a fresh profile's first boot always reaches, since it reboots itself once — and that trigger is
+# the KERNEL's, not the container's. "Terminate all tasks" took sshd and docker down with it and
+# left a guest nobody could reach (seen). Writes to the trigger bypass kernel.sysrq, so
+# no sysctl stops them; init is the one process they spare, and it respawns these at once. An
+# OpenRC-driven restart was tried first and stalled on OpenRC's own state after the kill.
+::sysinit:/sbin/openrc sysinit
+::sysinit:/sbin/openrc boot
+::wait:/sbin/openrc default
+::respawn:/usr/sbin/remora-run sshd
+::respawn:/usr/sbin/remora-run dockerd
+::respawn:/usr/sbin/remora-run acpid
+::ctrlaltdel:/sbin/reboot
+::shutdown:/sbin/openrc shutdown

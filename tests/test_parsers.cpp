@@ -1,13 +1,15 @@
 #include <QFile>
 #include <QtTest>
 
+#include "TestPlatform.h"
 #include "core/Backend.h"
+#include "core/ManagedHost.h"
 #include "core/Parsers.h"
 
 using namespace remora;
 
 static QString fx(const QString &name) {
-    QFile f(QStringLiteral(FIXTURES_DIR) + "/" + name);
+    QFile f(sourcePath(QStringLiteral("tests/fixtures/") + name));
     if (!f.open(QIODevice::ReadOnly)) return QString();
     return QString::fromUtf8(f.readAll());
 }
@@ -679,12 +681,16 @@ private slots:
     // deployed to a KVM guest over ssh and failed at preflight with "no ssh host set" — which reads
     // as a missing setting rather than as the wrong target having been chosen for it. Local needs
     // no configuration to be reachable and is what someone who did not specify meant.
+    //
+    // Local is this machine's docker; on Windows that is Remora's own guest. effectiveBackend(Bare)
+    // is local on both.
     void unsetBackendMeansLocalNotTheVmGuest() {
-        QCOMPARE(backendFromString(QString()), Backend::Bare);
-        QCOMPARE(backendFromString(QStringLiteral("")), Backend::Bare);
-        QCOMPARE(backendFromString(QStringLiteral("nonsense")), Backend::Bare);
+        const Backend local = effectiveBackend(Backend::Bare);
+        QCOMPARE(backendFromString(QString()), local);
+        QCOMPARE(backendFromString(QStringLiteral("")), local);
+        QCOMPARE(backendFromString(QStringLiteral("nonsense")), local);
         for (Backend b : {Backend::Bare, Backend::Remote})
-            QCOMPARE(backendFromString(backendToString(b)), b);
+            QCOMPARE(backendFromString(backendToString(b)), effectiveBackend(b));
     }
 
     // "vm" is now one of the unrecognised names, so it lands on Bare like the rest — which is why
@@ -693,7 +699,7 @@ private slots:
     // gpu_mode=host, no overlayfs, macvlan and container adb 5555 — the opposite of bare on all
     // four. isRetiredVmBackend is what lets preflight refuse instead (bd remora-d5v).
     void retiredVmBackendIsRecognisedNotSilentlyReinterpreted() {
-        QCOMPARE(backendFromString(QStringLiteral("vm")), Backend::Bare);
+        QCOMPARE(backendFromString(QStringLiteral("vm")), effectiveBackend(Backend::Bare));
         QVERIFY(isRetiredVmBackend(QStringLiteral("vm")));
         QVERIFY(isRetiredVmBackend(QStringLiteral("  vm  ")));
         QVERIFY(!isRetiredVmBackend(QStringLiteral("bare")));

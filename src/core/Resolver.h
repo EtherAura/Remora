@@ -21,10 +21,26 @@ namespace remora {
 // the two can never disagree about what the host can do.
 bool driverHasVaEncode(const QString &drmDriver);
 
+// desktop_menu's default. The menu is XDG .desktop files, which only a Linux desktop reads, so it
+// is on there and off on Windows, where refreshing it would fail after every connect
+// (bd remora-7oih.2). The GUI's checkboxes read the same constant as the resolver.
+inline constexpr bool kDesktopMenuDefault = kLocalOs != LocalOs::Windows;
+
 // Substitute the proven per-backend default for each unset field. gpuNode is only ever a live
 // probed node, never a bake — see resolveHostGpu().
 ResolvedConfig resolve(const RemoraConfig &cfg, Backend backend,
                        const std::optional<HostCapabilities> &caps = std::nullopt);
+
+// For a client with no local docker — Windows, where resolve() applies it (bd remora-7oih.3): an
+// unset build_host becomes the profile's own docker host (a remote profile's ssh_host), with the
+// build and output dirs that default to this machine's home moved to ~-relative paths the remote
+// shell expands. A no-op when build_host is set or the profile names no docker host.
+void buildOnTheDockerHost(ResolvedConfig &r, const RemoraConfig &c);
+
+// The refusal for a remote profile that asks for bare-only host-GPU helpers (bd remora-7oih.3),
+// worded once for preflight, check and plan. Empty when `requested` (ResolvedConfig's
+// bareOnlyRequested) is.
+QString bareOnlyFeaturesRefusal(const QStringList &requested);
 
 // The host-encoder socket pair for a container NAME. Shared by the resolver (which pins the
 // paths into the resolved config) and the teardown reap (which has only the name — a conflict

@@ -53,7 +53,7 @@ QList<QPair<QString, QByteArray>> readVendorTreeAt(const QString &vendorRoot,
 }
 
 QList<QPair<QString, QByteArray>> readVendorPath(const QString &relPath) {
-    return readVendorTreeAt(QStringLiteral(REMORA_VENDOR_DIR), relPath);
+    return readVendorTreeAt(vendorDir(), relPath);
 }
 
 
@@ -206,14 +206,15 @@ void posixShellEnv(QProcess &p) {
 }
 
 QString stageSourceAssets(Spawner &sp, const QString &host) {
-    const QString localVendor = QStringLiteral(REMORA_VENDOR_DIR);
+    const QString localVendor = vendorDir();
     if (host.isEmpty()) return localVendor + QStringLiteral("/source-patches");
     const QString remoteRoot = QStringLiteral("~/.cache/remora/source-assets");
     sp.run(Spawner::sshArgv(host, QStringLiteral("mkdir -p %1").arg(remoteRoot)), {}, {});
-    sp.run({QStringLiteral("scp"), QStringLiteral("-r"), QStringLiteral("-q"),
-            localVendor + QStringLiteral("/source-build"),
-            localVendor + QStringLiteral("/source-patches"),
-            host + QStringLiteral(":") + remoteRoot + QStringLiteral("/")}, {}, {});
+    sp.run(Spawner::scpArgv({localVendor + QStringLiteral("/source-build"),
+                             localVendor + QStringLiteral("/source-patches"),
+                             host + QStringLiteral(":") + remoteRoot + QStringLiteral("/")},
+                            {QStringLiteral("-r"), QStringLiteral("-q")}),
+           {}, {});
     return remoteRoot + QStringLiteral("/source-patches");
 }
 

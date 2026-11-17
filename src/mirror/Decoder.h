@@ -24,9 +24,9 @@ struct VideoFrame {
 };
 
 // libavcodec wrapper: merged media-packet payloads in, RGB frames out. Hardware decode follows
-// --hwdec, which the resolver turns on by default; "auto" tries CUDA/NVDEC before VAAPI because
-// on a mixed NVIDIA+Intel host the VAAPI surface download fails ENOSYS after one frame (bd
-// memory client-gpu-hwdec-crossgpu) — decode must live on the GPU the frames leave through.
+// --hwdec, which the resolver turns on by default; "auto" tries CUDA/NVDEC before VAAPI on Linux
+// and before D3D11VA on Windows — the reasons, and which modes reach which API per platform, are
+// core/MirrorHwDecode's.
 class Decoder {
 public:
     Decoder() = default;
@@ -34,10 +34,12 @@ public:
     Decoder &operator=(const Decoder &) = delete;
     ~Decoder();
 
-    // hwdec: "" / "off" / "0" = software; "auto" / "1" = CUDA then VAAPI probe;
-    // "cuda" / "nvdec"; "vaapi" (render-node probe, nvidia/nouveau nodes rejected);
-    // anything else = an explicit /dev/dri node for VAAPI. Hw setup failure falls back to
-    // software with a warning — only a mid-stream download failure is fatal.
+    // hwdec: "" / "off" / "0" = software; "auto" / "1" = CUDA, then the VAAPI probe on Linux or
+    // D3D11VA on Windows; "cuda" / "nvdec"; "d3d11va" (Windows, default adapter); "vaapi"
+    // (Linux render-node probe, nvidia/nouveau nodes rejected); anything else = an explicit
+    // /dev/dri node for VAAPI (Linux). Hw setup failure — no device, or one the stream's codec,
+    // profile or size cannot use — falls back to software with a warning; a mid-stream download
+    // failure is reported per frame.
     bool init(quint8 codecId, const QString &hwdec, QString *error);
     // Build the hw device context now rather than at the first packet. Optional and idempotent:
     // init() does it itself if this was never called.
@@ -46,7 +48,7 @@ public:
     // downloading them — the render window copies them device-to-device into its textures. The
     // window arms this once its GL context proves willing, and disarms it if interop fails
     // mid-stream. Honored only for CUDA; VAAPI keeps the download path (Option B, unproven on
-    // the cross-GPU host this runs on).
+    // the cross-GPU host this runs on), and so does D3D11VA (no D3D11/GL interop yet).
     void setKeepHwFrames(bool keep) { keepHwFrames_ = keep; }
     // The decoder device's CUcontext for GL interop registration; null unless hw decode is CUDA.
     void *cudaContext() const;

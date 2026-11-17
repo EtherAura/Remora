@@ -25,11 +25,11 @@ KEYWORDS="~amd64"
 IUSE="test"
 RESTRICT="!test? ( test )"
 
-# Qt 6: Core Widgets Test Network DBus OpenGLWidgets (qtbase), Multimedia, WebEngineWidgets. The
+# Qt 6: Core Widgets Test Network Sql+SQLite DBus OpenGLWidgets (qtbase), Multimedia, WebEngineWidgets. The
 # mirror decodes and records with FFmpeg; the host frame encoder and decoder link it too, and
 # remora-frame-decoder (host_decode) exports VA surfaces itself.
 COMMON_DEPEND="
-	dev-qt/qtbase:6[dbus,gui,network,opengl,widgets]
+	dev-qt/qtbase:6[dbus,gui,network,opengl,sql,sqlite,widgets]
 	dev-qt/qtmultimedia:6
 	dev-qt/qtwebengine:6[widgets]
 	media-libs/libva:=
@@ -94,6 +94,6 @@ pkg_postinst() {
 	optfeature "deploying to a docker host over ssh (the remote target)" virtual/openssh
 	optfeature "NVIDIA acceleration through the Venus render server" x11-drivers/nvidia-drivers
 	optfeature "fetching official images and their updates, adding Google Play and sharing host input devices (the bare target)" dev-lang/python
-	optfeature "showing the boot animation in the mirror while Android starts" app-arch/unzip
+	optfeature "fetching the Magisk payload for an image build or add-on" app-arch/unzip
 	optfeature "opening a device's storage from the workspace (pkexec)" sys-auth/polkit
 }

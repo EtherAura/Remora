@@ -14,6 +14,7 @@
 **Running Android**
 
 - [Deploy Targets](Deploy-Targets.md)
+- [Windows](Windows.md)
 - [GPU Acceleration](GPU-Acceleration.md)
 - [Mirroring](Mirroring.md)
 - [Android Apps on the Desktop](Android-Apps-on-the-Desktop.md)

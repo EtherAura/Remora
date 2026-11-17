@@ -29,12 +29,19 @@
 #include "engine/PlayInstall.h"
 #include "engine/PublicImages.h"
 #include "engine/Engine.h"
+#include "engine/GuestVm.h"
 #include <csignal>
 #include <unistd.h>
 #include <QProcess>
 #include "engine/RedditLogin.h"
 #include "engine/SourceBuild.h"
 #include "store/Store.h"
+
+#ifdef Q_OS_WIN
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 using namespace remora;
 
@@ -189,6 +196,11 @@ static int cmdPlan(const QStringList &a, QTextStream &out) {
     // contract, so the trade gets named here (bd remora-e5x.4).
     if (rc.videoCodecFallback.has_value())
         out << "# NOTE: " << *rc.videoCodecFallback << "\n";
+    // What `up` would refuse at preflight, said before the argv rather than left for the deploy:
+    // the argv below is the remote one WITHOUT those helpers, which is not what the profile asks
+    // for (bd remora-7oih.3).
+    if (const QString bareOnly = bareOnlyFeaturesRefusal(rc.bareOnlyRequested); !bareOnly.isEmpty())
+        out << "# DEPLOY WILL REFUSE: " << bareOnly << "\n";
     // The macvlan network is created BY the deploy, so the docker-run line below is only half the
     // story — show the create the chain would run (or say why it can't build one), the same way
     // the run argv is shown rather than described (bd remora-400).
@@ -430,7 +442,8 @@ static int cmdCheck(const QStringList &a, QTextStream &out) {
     const bool gpu = a.contains(QStringLiteral("--gpu-host")) || rcc.gpuMode == GpuMode::Host;
     const auto results =
         checkReadiness(b, caps, gpu, rcc.networkMode == QLatin1String("macvlan"),
-                       !rcc.sharedInputs.isEmpty(), releaseNeedsAshmem(rcc.androidVersion));
+                       !rcc.sharedInputs.isEmpty(), releaseNeedsAshmem(rcc.androidVersion),
+                       rcc.bareOnlyRequested);
     // Say WHICH profile this is about. A preflight that names no subject reads as a statement
     // about the machine, so when it did silently report on a different profile there was nothing
     // in the output to contradict that reading (bd remora-4ei.70).
@@ -455,10 +468,10 @@ static int cmdCheck(const QStringList &a, QTextStream &out) {
         for (int i = 1; i < archLines.size(); ++i) out << "          " << archLines.at(i) << "\n";
     }
     // The running encoder's published shape (bd remora-e5x.18.3): it degrades AUTONOMOUSLY under
-    // VRAM pressure, and that used to live only in its stderr, which nothing watches. Local read
-    // wherever the target is — the encoder only exists where the venus stack does. No file means
-    // no encoder (or one from before status existed): nothing to report, not a failure.
-    if (rcc.hostEncode) {
+    // VRAM pressure, and that used to live only in its stderr, which nothing watches. A local
+    // read, so bare only — the encoder only exists where the venus stack does (bd remora-7oih.3).
+    // No file means no encoder (or one from before status existed): nothing to report.
+    if (b == Backend::Bare && rcc.hostEncode) {
         const ProcResult st =
             sp.run({QStringLiteral("sh"), QStringLiteral("-c"),
                     QStringLiteral("cat %1 2>/dev/null")
@@ -868,6 +881,49 @@ static int cmdSleep(const QStringList &a) {
     return ok ? 0 : 1;
 }
 
+// remora guest [status|start|stop|reset-system] — Remora's own Linux guest: the docker host that
+// "this machine" means where there is no local Linux docker, i.e. on Windows (bd remora-7oih.5).
+// Every deploy and connect starts it on its own; this is for seeing it, stopping it (it keeps
+// running when Remora exits, as docker does), and rebooting it on a fresh system disk.
+static int cmdGuest(const QStringList &a, QTextStream &out) {
+    RealSpawner sp;
+    GuestVm guest(sp);
+    const QString sub = positional(a).value(0, QStringLiteral("status"));
+    const LineSink log = [](const QString &, const QString &text) {
+        QTextStream(stderr) << text << '\n';
+    };
+    const auto report = [&out](const StepResult &r) {
+        out << r.detail << '\n';
+        if (!r.ok && !r.stderrTail.isEmpty()) out << r.stderrTail << '\n';
+        return r.ok ? 0 : 1;
+    };
+    if (sub == QLatin1String("status")) {
+        const GuestVm::Status st = guest.status();
+        out << "guest:   " << (st.running ? QStringLiteral("running (%1, pid %2, ssh on 127.0.0.1:%3)")
+                                                   .arg(st.accel)
+                                                   .arg(st.pid)
+                                                   .arg(st.sshPort)
+                                             : QStringLiteral("stopped"))
+            << '\n'
+            << "image:   " << (st.shipped ? st.image : QStringLiteral("not installed (expected in %1)")
+                                                          .arg(QDir::toNativeSeparators(
+                                                              GuestVm::imageDir())))
+            << '\n'
+            << "state:   " << QDir::toNativeSeparators(GuestVm::stateDir())
+            << (st.provisioned ? QString() : QStringLiteral(" (nothing provisioned yet)")) << '\n';
+        return 0;
+    }
+    if (sub == QLatin1String("start")) {
+        QString inst;
+        const RemoraConfig cfg = configForArg(a.mid(0, 2), inst);
+        return report(guest.ensureRunning(resolve(cfg, Backend::Remote), log));
+    }
+    if (sub == QLatin1String("stop")) return report(guest.stop(log));
+    if (sub == QLatin1String("reset-system")) return report(guest.resetSystem(log));
+    QTextStream(stderr) << "usage: remora guest [status|start|stop|reset-system]\n";
+    return 2;
+}
+
 // remora reset-data [<profile>] --yes — delete the profile's /data, factory-resetting the
 // instance. Exists because an unprivileged `rm -rf` cannot finish the job: Android writes the tree
 // as root and as its own system uids, so the user owns the profile but not its contents, and the
@@ -912,6 +968,17 @@ static int cmdResetData(const QStringList &a, QTextStream &out) {
 // (boot splash + mirror appear automatically) and is frozen in place (sleep) at logout, so the
 // next login resumes the session in ~1s.
 static int cmdService(const QStringList &a, QTextStream &out) {
+    // systemd --user units, under ~/.config/systemd/user. Windows has no such manager: writing the
+    // files there left Linux units under C:\Users that nothing would ever run, and then exited 1
+    // on a systemctl that is not there (bd remora-7oih.2). Refuse before touching anything.
+    if (kLocalOs == LocalOs::Windows) {
+        QTextStream(stderr) << "remora: service: "
+                            << linuxDesktopOnlyMessage(QStringLiteral("`remora service`"))
+                            << " — it installs systemd --user units. Start the device with "
+                               "`remora up`; auto-sleep and update-watch also run in the "
+                               "foreground.\n";
+        return 2;
+    }
     const QStringList pos = positional(a);
     const QString path = defaultRemorarcPath();
     const QString unitDir = QDir::homePath() + QStringLiteral("/.config/systemd/user");
@@ -1062,34 +1129,22 @@ static int cmdPip(const QStringList &a, QTextStream &out) {
     RealSpawner sp;
 
     // TOGGLE: bound to a hotkey, the useful behaviour is "show it / put it away", not "open a
-    // seventh copy". Matched on the window title, which buildPipMirrorArgv always sets. The
-    // bracket in "[R]emora PIP" keeps pgrep from matching its OWN command line — without it the
-    // pattern is always found and the toggle would think a PIP is running when none is.
+    // seventh copy". Matched on the window title, which buildPipMirrorArgv always sets, through
+    // the mirror registry (closePip) rather than pgrep — on Windows the pgrep never matched, so
+    // the toggle only ever opened another PIP.
     //
     // The title is PER-PROFILE, so each profile's menu entry toggles its OWN PIP and leaves the
-    // others up. pgrep -f takes an ERE and a profile name is arbitrary user text, so the instance
-    // half is escaped — an unescaped "C++" profile would be a malformed pattern, not a miss.
+    // others up.
     //
     // Runs BEFORE the device is resolved: putting a window away must not require the device to
     // still be reachable, or a PIP orphaned by a stopped instance cannot be dismissed.
     const QString title = pipWindowTitle(inst);
-    QString pat = QStringLiteral("[") + title.left(1) + QStringLiteral("]");
-    for (const QChar c : title.mid(1)) {
-        if (QStringLiteral(".[]{}()*+?^$|\\").contains(c)) pat += QLatin1Char('\\');
-        pat += c;
-    }
-    const auto pipRunning = [&sp, &pat] {
-        const ProcResult r = sp.run({"pgrep", "-f", "--", pat}, {}, {});
-        return r.rc == 0 && !r.out.trimmed().isEmpty();
-    };
-    if (pipRunning()) {
-        sp.run({"pkill", "-f", "--", pat}, {}, {});
-        // pkill returns once the signal is SENT, so a second press inside the mirror's teardown window
-        // still saw the old process and reported "closed" again instead of reopening. Wait for it
-        // to actually go — bounded, so a wedged client cannot hang the hotkey.
-        for (int i = 0; i < 30 && pipRunning(); ++i) QThread::msleep(100);
-        out << (pipRunning() ? "pip: close signalled, but it is still running\n" : "pip: closed\n");
-        return 0;
+    switch (closePip(sp, title)) {
+        case PipClose::NotRunning: break;
+        case PipClose::Closed: out << "pip: closed\n"; return 0;
+        case PipClose::StillRunning:
+            out << "pip: close signalled, but it is still running\n";
+            return 0;
     }
 
     const RunContext ctx = makeContext(cfg, b, std::nullopt, title);
@@ -1291,6 +1346,26 @@ static QString adbLink(const QString &inst, Spawner &sp) {
 static int execAdb(const QString &target, const QStringList &tail) {
     QStringList argv{QStringLiteral("adb"), QStringLiteral("-s"), target};
     argv << tail;
+#ifdef Q_OS_WIN
+    // Windows has no exec. mingw's _execvp spawns the program and EXITS the caller, so the prompt
+    // came back while adb still held the console, an argument with a space reached adb as two, and
+    // adb's exit code was lost (bd remora-7oih.2). Run it as a child on this same console instead
+    // — QProcess quotes each argument — wait for it, and hand its exit code back.
+    QProcess p;
+    p.setProcessChannelMode(QProcess::ForwardedChannels);
+    p.setInputChannelMode(QProcess::ForwardedInputChannel);
+    p.start(argv.first(), argv.mid(1));
+    if (!p.waitForStarted(10000)) {
+        QTextStream(stderr) << "remora: could not start adb — is it installed?\n";
+        return 127;
+    }
+    // Ctrl-C reaches every process on the console. adb acts on it (logcat stops); remora must not,
+    // or it exits first and the prompt is back over adb's last output. Ignored only once adb is
+    // running, because a child started after this would inherit the ignore too.
+    ::SetConsoleCtrlHandler(nullptr, TRUE);
+    p.waitForFinished(-1);
+    return p.exitStatus() == QProcess::NormalExit ? p.exitCode() : 1;
+#else
     std::vector<QByteArray> bytes;
     std::vector<char *> cargv;
     for (const QString &s : argv) bytes.push_back(s.toLocal8Bit());
@@ -1299,6 +1374,7 @@ static int execAdb(const QString &target, const QStringList &tail) {
     ::execvp(cargv[0], cargv.data());
     QTextStream(stderr) << "remora: could not exec adb — is it installed?\n";
     return 127;
+#endif
 }
 
 static int cmdShell(const QStringList &a) {
@@ -1381,8 +1457,8 @@ static int cmdPushApp(const QStringList &a, QTextStream &out) {
                             << "\n";
         return 1;
     }
-    if (sp.run({QStringLiteral("scp"), QStringLiteral("-r"), src + QStringLiteral("/."),
-                guest + QLatin1Char(':') + dest},
+    if (sp.run(Spawner::scpArgv({src + QStringLiteral("/."), guest + QLatin1Char(':') + dest},
+                                {QStringLiteral("-r")}),
                {}, {})
             .rc != 0) {
         QTextStream(stderr) << "remora push-app: scp to " << guest << " failed\n";
@@ -2042,6 +2118,16 @@ static int cmdSourceBuild(const QStringList &a, QTextStream &out) {
     const RemoraConfig cfg = configForArg(a, inst);
     const QString host = cfg.image.sourceHost.value_or(QString());
     const QString tree = cfg.image.sourceTree.value_or(QString());
+#ifdef Q_OS_WIN
+    // repo, git, script(1) and the build are Linux tools, and Windows has no local tree for them
+    // to work in: a source build goes to a named build machine or nowhere (bd remora-7oih.3).
+    if (host.isEmpty()) {
+        out << "build --source: source builds run on a Linux build machine, and on Windows there "
+               "is no local one. Set source_host=<user>@<host> for instance '"
+            << inst << "' in remorarc (a machine with the disk and memory for an Android build).\n";
+        return 2;
+    }
+#endif
     if (tree.isEmpty()) {
         out << "build --source: no source_tree configured for instance '" << inst
             << "'. Set Source directory in the Image page's Source build card, or add "
@@ -2423,6 +2509,19 @@ static int cmdBuild(const QStringList &a, QTextStream &out) {
     return ok ? 0 : 1;
 }
 
+// The docker host a --host-less `images`/`play-install` targets. Blank on Linux: this machine,
+// as it always was. On Windows there is no local docker, so it is the active profile's own docker
+// host (its ssh_host — how the managed Linux VM appears too), and blank only when that profile has
+// none, which the engine then refuses by name (bd remora-7oih.3).
+static QString windowsDefaultDockerHost() {
+#ifdef Q_OS_WIN
+    QString inst;
+    const RemoraConfig cfg = loadActive(inst);
+    if (inferBackend(cfg) == Backend::Remote) return dockerHostOf(cfg.backend.sshHost.value_or(QString()));
+#endif
+    return QString();
+}
+
 static int cmdImages(const QStringList &args) {
     const QString action = args.value(2);
     if (action != "list" && action != "check" && action != "fetch" && action != "rollback") {
@@ -2443,6 +2542,7 @@ static int cmdImages(const QStringList &args) {
         if (key == "--host") host = args[++i];
         else helper << key << args[++i];
     }
+    if (host.isEmpty()) host = windowsDefaultDockerHost();
     RealSpawner sp;
     bool stderrSeen = false;
     const auto r = runPublicImages(sp, helper, host, [&stderrSeen](const QString &stream, const QString &line) {
@@ -2474,6 +2574,7 @@ static int cmdPlayInstall(const QStringList &args) {
             else helper << key << args[i];
         } else helper << key;
     }
+    if (host.isEmpty()) host = windowsDefaultDockerHost();
     RealSpawner sp;
     bool hadStderr = false;
     const auto result = runPlayInstall(sp, helper, host, [&hadStderr](const QString &stream, const QString &line) {
@@ -2499,6 +2600,7 @@ static void printUsage(QTextStream &out) {
         << "  service   [<profile>] [--remove]  systemd --user unit: up at login, sleep at logout\n"
         << "  reset-data [<profile>] --yes   factory-reset: delete the profile's /data (bare)\n"
         << "  reconnect [--backend …]   attach to a running instance\n"
+        << "  guest     [status|start|stop|reset-system]  Remora's own Linux guest (Windows)\n"
         << "  app       <profile> <pkg> launch one Android app in its own window\n"
         << "  apps      [<profile>] [--remove]  refresh/remove the desktop app-menu folder\n"
         << "  desktop   [<profile>]     open a separate desktop-mode display (no specific app)\n"
@@ -2539,6 +2641,24 @@ static void printUsage(QTextStream &out) {
 }
 
 int main(int argc, char **argv) {
+    // Before anything resolves a profile: on Windows "this machine" is Remora's own guest, and
+    // its name resolves to forwarded ports only once it is registered (bd remora-7oih.5).
+    GuestVm::registerFromState();
+#ifdef Q_OS_WIN
+    // adb's mDNS discovery listens on the network, which is what makes Windows Firewall stop the
+    // first adb server Remora starts with an "allow this app?" prompt. Remora reaches devices by
+    // address, never by discovery, and its server listens on localhost, which needs no rule.
+    if (qEnvironmentVariableIsEmpty("ADB_MDNS")) qputenv("ADB_MDNS", "0");
+#endif
+#ifdef REMORA_GUI_BY_DEFAULT
+    // remora-gui.exe (Windows): no arguments is a double-click, and a double-click means the
+    // workspace. Any arguments are the same commands remora.exe takes, the mirror included.
+    if (argc <= 1) {
+        static char gui[] = "gui";
+        static char *guiArgv[] = {argv[0], gui, nullptr};
+        return runGui(2, guiArgv);
+    }
+#endif
     // Branch before constructing an app object — GUI needs QApplication, CLI needs QCoreApplication,
     // and only one may exist. Peek argv directly (QCoreApplication::arguments() isn't up yet).
     // `--help` / `-h` skips these window-opening branches and reaches the usage guard below instead.
@@ -2614,6 +2734,7 @@ int main(int argc, char **argv) {
     if (cmd == QLatin1String("update-watch")) return cmdUpdateWatch(args);
     if (cmd == QLatin1String("service")) return cmdService(args, out);
     if (cmd == QLatin1String("reset-data")) return cmdResetData(args, out);
+    if (cmd == QLatin1String("guest")) return cmdGuest(args, out);
     if (cmd == QLatin1String("pip")) return cmdPip(args, out);
     if (cmd == QLatin1String("reconnect")) return cmdReconnect(args);
     if (cmd == QLatin1String("app")) return cmdApp(args);

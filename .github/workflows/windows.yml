@@ -1,0 +1,124 @@
+name: Windows
+
+# Remora for Windows (bd remora-7oih), built the way it is built anywhere: cross-compiled on Linux
+# against the pinned SDK (tools/windows-sdk.sh), with the Linux guest Android runs in built beside
+# it (guest/build.sh), and staged into the folder a Windows PC runs (tools/windows-stage.sh). The
+# result is uploaded as an artifact; nothing is published. The test suites are staged as a second
+# artifact and run on a real Windows machine (bd remora-7oih.7): Wine on Linux runs the host's own
+# sh when a Windows program asks for one, so only Windows can say a suite is Windows-ready.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-build:
+    name: cross-build (llvm-mingw, Ubuntu)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # bsdtar: the host Qt's archive has symlink chains 7-Zip refuses (see tools/windows-sdk.sh).
+      # build-essential's static libc builds the two Linux helpers the package carries.
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build p7zip-full libarchive-tools curl nsis
+
+      # Keyed on the script, which holds every pin and checksum: a changed pin is a new SDK.
+      - name: Cache the Windows SDK
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/remora-windows-sdk
+          key: windows-sdk-${{ hashFiles('tools/windows-sdk.sh') }}
+
+      - name: Fetch the Windows SDK
+        run: tools/windows-sdk.sh
+
+      # The kernel is the slow part of the guest (~15 min cold); it is cached by what it is built
+      # from. The rest of the guest is a few minutes of apk and mkfs.
+      - name: Cache the guest kernel
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/remora-guest-build/kernel-*
+          key: guest-kernel-${{ hashFiles('guest/kernel/config', 'guest/assemble.sh') }}
+
+      - name: Build the guest
+        run: guest/build.sh build-guest
+
+      - name: Configure
+        run: >
+          cmake -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=cmake/windows-llvm-mingw.cmake
+
+      - name: Build
+        run: cmake --build build-win
+
+      - name: Stage
+        run: tools/windows-stage.sh build-win dist build-guest
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: remora-windows
+          path: dist
+          retention-days: 14
+
+      # The installer a PC runs: Program Files, a Start-menu entry, and the Windows Hypervisor
+      # Platform turned on (packaging/windows/remora.nsi).
+      - name: Installer
+        run: tools/windows-installer.sh dist remora-setup.exe
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: remora-windows-installer
+          path: remora-setup.exe
+          retention-days: 14
+
+      - name: Stage the test suites
+        run: tools/windows-stage.sh --tests build-win dist-tests
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: remora-windows-tests
+          path: dist-tests
+          retention-days: 14
+
+  test:
+    name: test (Windows)
+    needs: cross-build
+    runs-on: windows-2025
+    steps:
+      # The suites read the checkout's fixtures and vendor files (REMORA_TEST_SOURCE_DIR), so the
+      # commit they were built from is checked out beside them. .gitattributes keeps it LF.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: remora-windows-tests
+          path: dist-tests
+
+      # Every suite, each log on the console and in dist-tests\results; the exit code is the
+      # number of suites that failed.
+      - name: Run the suites
+        shell: cmd
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: call dist-tests\run-tests.cmd "%GITHUB_WORKSPACE%"
+
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: remora-windows-test-results
+          path: dist-tests/results
+          retention-days: 14

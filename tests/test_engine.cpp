@@ -1,3 +1,4 @@
+#include <QElapsedTimer>
 #include <QFile>
 #include <QProcess>
 #include <QRegularExpression>
@@ -6,22 +7,47 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QtTest>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QTcpServer>
+#include <QTcpSocket>
 
+#include "TestPlatform.h"
 #include "core/Builders.h"
 #include "core/Config.h"
 #include "core/Features.h"
 #include "core/Gating.h"
 #include "core/ImageBuild.h"
+#include "core/ManagedHost.h"
 #include "core/Resolver.h"
 #include "core/SourcePatches.h"
 #include "engine/AppTransfer.h"
+#include "engine/HostShell.h"
 #include "engine/PlayInstall.h"
 #include "engine/RedditLogin.h"
 #include "engine/Engine.h"
+#include "engine/MirrorRegistry.h"
 #include "store/Store.h"
 #include "engine/SourceBuild.h"
 
 using namespace remora;
+
+// Why a case below cannot hold on Windows (SKIP_ON_WINDOWS, tests/TestPlatform.h).
+static constexpr const char kBareDeploy[] = "a bare deploy, which Windows refuses at preflight";
+static constexpr const char kBareHost[] =
+    "bare: the fakes answer for this machine's docker, which on Windows is Remora's guest";
+static constexpr const char kBareOnlyGpu[] = "host encode is bare only, and Windows has no bare";
+static constexpr const char kRunsSh[] = "runs the generated shell through sh";
+
+// The targets a deploy case runs against: both, except on Windows, which refuses bare before
+// anything runs (bareIsRefusedFirstOnWindows).
+static QList<Backend> deployTargets() {
+#ifdef Q_OS_WIN
+    return {Backend::Remote};
+#else
+    return {Backend::Bare, Backend::Remote};
+#endif
+}
 
 // ── a configurable fake spawner ──
 class FakeSpawner : public Spawner {
@@ -134,6 +160,16 @@ public:
     bool adbTool = true;                     // preflight's local-tools check
     bool screencapOk = true;                 // captureScreenshot's exec-out redirect
     bool litProbeTimesOut = false;           // waitLit gate: screencap wedges (rc 124 from timeout)
+    // The client this fake pretends to be (bd remora-7oih.2). Unix by default, so every test
+    // written before the Windows client describes the Linux one it was written against.
+    LocalOs os = LocalOs::Unix;
+    // runTimed's deadline per call, in order: what the engine BOUNDED, as opposed to what it ran.
+    QList<int> timedCallsMs;
+    // readTail's answers by path, for a log the test stages (the mirror's own detached log).
+    QHash<QString, QString> fileTails;
+    // When set, spawnDetached hands this back as the child's own log, so a test can stage what a
+    // spawned mirror "said" through fileTails.
+    QString detachedLog;
     // Venus render-server health, as the two probes see it. Defaults describe a healthy stack.
     bool ashmemNodeMissing = false;  // the in-container ashmem probe reports NO_ASHMEM
     bool venusProcAlive = true;    // `ps -C virgl_test_server` scoped to this profile's socket path
@@ -145,10 +181,21 @@ public:
     // splash is NOT a served consumer the moment it is told to attach — it still has to notice the
     // marker, finish its outro, push the server and open the video socket (bd remora-82x).
     int servedZeroFirst = 0;
-    // What `pgrep -f '<mirror argv>'` reports, one payload per call: doConnect asks once up front
-    // (the predecessors it must spare) and again when reaping a rejected attempt (which by then
-    // includes that attempt's own process).
-    QStringList mirrorPidLists;
+    // What the mirror registry reports (Spawner::mirrors, bd remora-7oih.1), one snapshot per
+    // query with the last one sticky: doConnect asks for husks, then once up front (the
+    // predecessors it must spare), again per attempt, and again when reaping a rejected attempt
+    // (which by then includes that attempt's own process). Empty by default — no mirror open.
+    QVector<QVector<MirrorEntry>> mirrorSnapshots;
+    int mirrorQueries = 0;
+    // Every stop the engine asked for, in order (also logged into `calls` as "STOP <pids>", so
+    // a test can order a stop against the spawns around it), and the pids that will not go.
+    struct Stop {
+        QList<qint64> pids;
+        int graceMs = 0;
+        bool force = false;
+    };
+    QVector<Stop> stops;
+    QList<qint64> unstoppable;
     // Has this /data carried a boot through to a working mirror before? false = fresh, which is the
     // only situation the boot-stability hold defends, so the default keeps the hold in play.
     bool dataBootedBefore = false;
@@ -176,7 +223,6 @@ public:
     // torn-down container's frame socket (bd remora-e5x.19.1). Distinct from the yes/no probe
     // above — this one extracts pids.
     QString orphanEncoderPids;
-    int mirrorClients = 0;                   // countMirrorClients' pgrep answer
     // probeMirrorFlow / probeEncoderRate: the endpoint scan's labelled output, then one answer per
     // `tail` of a counter log, popped in order so a two-sample rate can be staged.
     QString mirrorEndpoints;
@@ -215,6 +261,7 @@ public:
         if (cmd.contains("/proc/$e/cgroup")) return R(0, mirrorEndpoints);
         if (cmd.contains("ss -tnHp")) return R(0, huskScanOut);
         if (cmd.contains("command -v adb")) return R(adbTool ? 0 : 1);
+        if (argv == QStringList{"where", "/q", "adb"}) return R(adbTool ? 0 : 1);
         if (cmd.contains("lsmod | grep -q ashmem")) return R(ashmem ? 0 : 1);
         // The /data shape probe (bd remora-4ei.89). Matched on its discriminator so one rule
         // answers both backends — bare runs it as a local `sh -c`, remote as an ssh payload.
@@ -421,11 +468,10 @@ public:
             return installOk ? R(0) : R(1, {}, "INSTALL_FAILED_TEST");
         if (argv.value(0) == "adb" && cmd.contains("get-state")) return R(0, pop(adbStates, "device"));
         if (argv.value(0) == "adb" && cmd.contains("getprop")) return R(0, pop(bootStates, "1"));
-        // waitLit gate. The probe is `timeout <s> adb … screencap`, so match the wrapper too.
-        // litProbeTimesOut reproduces a wedged screencap: rc 124 is what `timeout` returns when it
-        // kills the call, and the connect must proceed anyway rather than block.
-        if ((argv.value(0) == "adb" || argv.value(0) == "timeout") && cmd.contains("screencap") &&
-            !cmd.contains("exec-out"))
+        // waitLit gate: `adb … screencap`, bounded by runTimed (bd remora-7oih.2).
+        // litProbeTimesOut reproduces a wedged screencap: rc 124 is what the deadline returns when
+        // it kills the call, and the connect must proceed anyway rather than block.
+        if (argv.value(0) == "adb" && cmd.contains("screencap") && !cmd.contains("exec-out"))
             return litProbeTimesOut ? R(124) : R(0, "500000\n");
         // The phantom keyboard's identity probe. Answered for BOTH backends: remote runs it
         // through sshArgv, local through sh -c, and both land in this dispatcher.
@@ -453,8 +499,6 @@ public:
             }
             return R(0, QString::number(servedConsumers) + "\n");
         }
-        if (argv.value(0) == "sh" && cmd.contains("tail -n 400"))
-            return R(0, counterReads.isEmpty() ? QString() : counterReads.takeFirst());
         // The serve gate's log resolution embeds the encoder ps AND an awk stage, so it must be
         // matched on its own discriminator — the readlink — before both encoder rules below
         // (bd remora-7ps). Empty path = the resolution failed, the gate's degraded mode.
@@ -486,18 +530,6 @@ public:
         // Once the server has been spawned its socket appears, so the post-spawn wait terminates.
         if (argv.value(0) == "sh" && cmd.contains("venus.sock"))
             return (venusSocketPresent || spawnCount > 0) ? R(0) : R(1);
-        if (argv.value(0) == "sh" && cmd.contains("pgrep -f '") && cmd.contains("|| true"))
-            return R(0, pop(mirrorPidLists, QString()));
-        if (argv.value(0) == "sh" && cmd.contains("pgrep -fc"))
-            return R(0, QString::number(mirrorClients) + "\n");
-        if (argv.value(0) == "sh" && cmd.contains("exec-out screencap")) {
-            if (!screencapOk) return R(1, {}, "adb: device offline");
-            // mimic the shell redirect: write a stub PNG at the > target so the size check passes
-            const QString path = cmd.section(QLatin1String("> '"), 1).chopped(1);
-            QFile f(path);
-            if (f.open(QIODevice::WriteOnly)) f.write("PNG-STUB-BYTES");
-            return R(0);
-        }
         if (argv.mid(0, 2) == QStringList{"adb", "disconnect"}) return R(0);
         if (argv.value(0) == "ssh") {
             // sshArgv now sends `/bin/sh -c '<payload>'` so a non-POSIX login shell cannot swallow
@@ -507,12 +539,33 @@ public:
         }
         return R(0);
     }
+    LocalOs localOs() const override { return os; }
+    ProcResult runTimed(const QStringList &argv, int timeoutMs, const LineSink &onLine) override {
+        timedCallsMs << timeoutMs;
+        return run(argv, {}, onLine);
+    }
+    ProcResult runToFile(const QStringList &argv, const QString &outPath) override {
+        calls << argv.join(QLatin1Char(' ')) + " > " + outPath;
+        if (argv.contains(QStringLiteral("screencap"))) {
+            if (!screencapOk) return ProcResult{1, {}, "adb: device offline"};
+            QFile f(outPath);  // a stub PNG, so the size check passes
+            if (f.open(QIODevice::WriteOnly)) f.write("PNG-STUB-BYTES");
+        }
+        return ProcResult{0, {}, {}};
+    }
+    // The flow probe's counter logs are read 400 lines at a time; one answer per read, popped in
+    // order so a two-sample rate can be staged. Anything else answers from fileTails.
+    QString readTail(const QString &path, int lines) override {
+        calls << QStringLiteral("TAIL %1 %2").arg(lines).arg(path);
+        if (lines == 400) return counterReads.isEmpty() ? QString() : counterReads.takeFirst();
+        return fileTails.value(path);
+    }
     Detached spawnDetached(const QStringList &argv, const QMap<QString, QString> &env) override {
         calls << "DETACH " + argv.join(QLatin1Char(' '));
         // Some of what a detached child is told lives ONLY in its environment — the render
         // server's frame socket and display pin are read once at startup and appear in no argv.
         detachedEnv = env;
-        return Detached{4242};
+        return Detached{4242, detachedLog};
     }
     QMap<QString, QString> detachedEnv;  // env of the most recent spawnDetached
     bool detachedAlive(const Detached &) override {
@@ -526,6 +579,22 @@ public:
     // that also slept would only be sleeping. Record the intent and return — this alone took the
     // suite from ~371s to well under a second (bd remora-eoy.9).
     void waitMs(int ms) override { waitedMs += ms; }
+    QVector<MirrorEntry> mirrors() override {
+        ++mirrorQueries;
+        if (mirrorSnapshots.size() > 1) return mirrorSnapshots.takeFirst();
+        return mirrorSnapshots.isEmpty() ? QVector<MirrorEntry>() : mirrorSnapshots.first();
+    }
+    QList<qint64> terminate(const QList<qint64> &pids, int graceMs, bool force) override {
+        stops.push_back({pids, graceMs, force});
+        QStringList ps;
+        for (qint64 p : pids) ps << QString::number(p);
+        calls << QStringLiteral("STOP %1%2").arg(ps.join(QLatin1Char(' ')),
+                                                 force ? QStringLiteral(" force") : QString());
+        QList<qint64> left;
+        for (qint64 p : pids)
+            if (unstoppable.contains(p)) left << p;
+        return left;
+    }
 
 private:
     QString groupsStr() const {
@@ -623,7 +692,7 @@ public:
 };
 
 static QString fx(const QString &name) {
-    QFile f(QStringLiteral(FIXTURES_DIR) + "/" + name);
+    QFile f(sourcePath(QStringLiteral("tests/fixtures/") + name));
     if (!f.open(QIODevice::ReadOnly)) return QString();
     return QString::fromUtf8(f.readAll());
 }
@@ -648,6 +717,39 @@ static int countCalls(const FakeSpawner &sp, const QString &sub) {
     for (const QString &c : sp.calls)
         if (c.contains(sub)) ++n;
     return n;
+}
+
+// One registry entry as a running mirror reports it. Live and a minute old unless a test says
+// otherwise — a settled session, the one shape no reap may mistake for a husk or a starter.
+static MirrorEntry mirrorAt(qint64 pid, const QString &serial, const QString &title,
+                            MirrorKind kind = MirrorKind::Main,
+                            MirrorSessionState session = MirrorSessionState::Live,
+                            qint64 ageMs = 60000) {
+    MirrorEntry e;
+    e.pid = pid;
+    e.serial = serial;
+    e.title = title;
+    e.kind = kind;
+    e.session = session;
+    e.startedMs = QDateTime::currentMSecsSinceEpoch() - ageMs;
+    return e;
+}
+
+// Did the engine stop exactly this set of pids in one call (order aside)?
+static bool stopped(const FakeSpawner &sp, QList<qint64> pids, bool force = true) {
+    std::sort(pids.begin(), pids.end());
+    for (const FakeSpawner::Stop &st : sp.stops) {
+        QList<qint64> got = st.pids;
+        std::sort(got.begin(), got.end());
+        if (got == pids && st.force == force && (!force || st.graceMs > 0)) return true;
+    }
+    return false;
+}
+
+static bool everStopped(const FakeSpawner &sp, qint64 pid) {
+    for (const FakeSpawner::Stop &st : sp.stops)
+        if (st.pids.contains(pid)) return true;
+    return false;
 }
 
 // Read a splash status file's full contents ("" when absent).
@@ -688,25 +790,66 @@ static RemoraConfig withMacvlan(RemoraConfig c = {}) {
 class RedditFakeSpawner : public Spawner {
 public:
     QList<QStringList> calls;
+    // What a pull delivers: a real AccountManager database (see accountDb), as on a device.
+    QByteArray pulledDb;
+    // Every file pushed back, by its local path, read at the moment it was pushed.
+    QList<QByteArray> pushed;
     ProcResult run(const QStringList &argv, const QMap<QString, QString> &,
                    const LineSink &) override {
         calls << argv;
         const QString cmd = argv.join(QLatin1Char(' '));
         ProcResult r;
         if (cmd.contains(QLatin1String("stat -c %u"))) r.out = QStringLiteral("10123\n");
-        if (argv.value(0) == QLatin1String("sqlite3") && cmd.contains(QLatin1String("SELECT")))
-            r.out = QStringLiteral("7\n");
         if (cmd.contains(QLatin1String("mktemp"))) r.out = QStringLiteral("/tmp/remora-rl.AbC123\n");
         // A pull lands in a local file: `… cat '<container path>' > '<local>'` on bare, scp on remote.
         static const QRegularExpression pull(QStringLiteral("cat '[^']+' > '([^']+)'"));
         QString landed = pull.match(cmd).captured(1);
-        if (argv.value(0) == QLatin1String("scp") && argv.value(2).contains(QLatin1Char(':')))
-            landed = argv.value(3);
+        // scp's operands are its last two arguments, whatever options and `--` come first.
+        const bool scp = argv.value(0) == QLatin1String("scp") && argv.size() >= 3;
+        const QString scpFrom = scp ? argv.value(argv.size() - 2) : QString();
+        const QString scpTo = scp ? argv.last() : QString();
+        if (scp && scpFrom.contains(QLatin1Char(':'))) landed = scpTo;
         if (!landed.isEmpty()) {
             QFile f(landed);
-            if (f.open(QIODevice::WriteOnly)) f.write("db");
+            if (f.open(QIODevice::WriteOnly)) f.write(pulledDb.isEmpty() ? QByteArray("db") : pulledDb);
+        }
+        // …and a push reads one: `… cat > <path>' < '<local>'` on bare, scp to the host on remote.
+        static const QRegularExpression push(QStringLiteral("< '([^']+)'$"));
+        QString sent = argv.value(0) == QLatin1String("sh") ? push.match(cmd).captured(1) : QString();
+        if (scp && scpTo.contains(QLatin1Char(':'))) sent = scpFrom;
+        if (!sent.isEmpty()) {
+            QFile f(sent);
+            if (f.open(QIODevice::ReadOnly)) pushed << f.readAll();
         }
         return r;
+    }
+    // An accounts database with Android's shape: an AUTOINCREMENT accounts table (hence
+    // sqlite_sequence), the extras table, and one unrelated account already in it.
+    static QByteArray accountDb(bool ce) {
+        QTemporaryDir d;
+        const QString path = d.filePath(QStringLiteral("a.db"));
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("fixture"));
+            db.setDatabaseName(path);
+            if (db.open()) {
+                QSqlQuery q(db);
+                q.exec(ce ? QStringLiteral("CREATE TABLE accounts(_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                                           "name TEXT NOT NULL, type TEXT NOT NULL, password TEXT, "
+                                           "UNIQUE(name,type))")
+                          : QStringLiteral("CREATE TABLE accounts(_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                                           "name TEXT NOT NULL, type TEXT NOT NULL, previous_name TEXT, "
+                                           "last_password_entry_time_millis_epoch INTEGER, UNIQUE(name,type))"));
+                if (ce)
+                    q.exec(QStringLiteral("CREATE TABLE extras(_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                                          "accounts_id INTEGER, key TEXT NOT NULL, value TEXT, "
+                                          "UNIQUE(accounts_id,key))"));
+                q.exec(QStringLiteral("INSERT INTO accounts(name,type) VALUES('other','com.example')"));
+                db.close();
+            }
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("fixture"));
+        QFile f(path);
+        return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
     }
     Detached spawnDetached(const QStringList &, const QMap<QString, QString> &) override {
         return {};
@@ -818,6 +961,7 @@ private slots:
     // what build-mesa.sh reads from the tree, then STOPS — nonzero, with the helper's invocation,
     // and without staging Mesa, building the image, assembling it or recording patch state.
     void missingMesaPayloadPreparesLibdrmThenStops() {
+        SKIP_ON_WINDOWS(kRunsSh);
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const MesaTailRun r = runMesaTail(dir.path(), {});
@@ -847,6 +991,7 @@ private slots:
     // preparation dead — no builder image, no module build, no full build, no instructions that
     // read as "ready". Each failure is checked separately.
     void mesaPreparationStopsOnEveryEarlyFailure() {
+        SKIP_ON_WINDOWS(kRunsSh);
         struct Case {
             const char *name;
             MesaTailSetup setup;
@@ -886,6 +1031,7 @@ private slots:
     // Prerequisites a previous build left in out/ are reused: no staging, no Docker at all, straight
     // to the helper's invocation — and still a stop, never a build.
     void mesaPreparationReusesBuiltPrerequisites() {
+        SKIP_ON_WINDOWS(kRunsSh);
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         MesaTailSetup s;
@@ -900,6 +1046,7 @@ private slots:
     // A public release must not be staged without Mesa — its staging refuses that by policy — so a
     // missing payload with nothing built is refused before anything runs, naming the way round.
     void publicMesaPreparationRefusesToStageWithoutMesa() {
+        SKIP_ON_WINDOWS(kRunsSh);
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         MesaTailSetup s;
@@ -922,6 +1069,7 @@ private slots:
     // patch state is recorded, no module build happens, and every step after staging is the very
     // text a mesa-less plan generates.
     void presentMesaPayloadKeepsTheNormalRoute() {
+        SKIP_ON_WINDOWS(kRunsSh);
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         MesaTailSetup s;
@@ -983,6 +1131,7 @@ private slots:
     // its own coverage under reapSessionOrphans.
 
     void aFailingStepStopsTheBuildChain() {
+        SKIP_ON_WINDOWS(kRunsSh);
         // Step 2 fails; step 3 carries the bare ';' that used to split the list.
         const QStringList steps{QStringLiteral("true"), QStringLiteral("sh -c 'exit 1'"),
                                 QStringLiteral("echo ran-anyway; true")};
@@ -1025,6 +1174,7 @@ private slots:
     // The other half: a clean chain must still run every step and succeed, or the fix above would
     // "work" by breaking all builds.
     void aCleanChainRunsEveryStep() {
+        SKIP_ON_WINDOWS(kRunsSh);
         const QStringList steps{QStringLiteral("echo one"), QStringLiteral("echo two; true"),
                                 QStringLiteral("echo three")};
         QProcess p;
@@ -1053,9 +1203,11 @@ private slots:
                      .contains(QLatin1String("qttest")),
                  "QStandardPaths test mode is not in effect — these tests would read and write the "
                  "real ~/.cache/remora, where a live splash writes the same files");
+        useCheckoutVendorDir();
     }
 
     void bareHappyPath() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);
         auto dep = makeDeployer(Backend::Bare, sp, 24, 0);
@@ -1072,6 +1224,7 @@ private slots:
     // source by creating an empty directory. An empty cpufreq view means zero CPU clusters, which
     // is a state no phone presents and a fresh way to break the very apps this protects.
     void bareHostPrereqsBuildsTheCpufreqTreeBeforeProvision() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);
         QVERIFY2(!ctx.rc.cpufreqDir.isEmpty(), "default-on must give the context a directory");
@@ -1092,6 +1245,7 @@ private slots:
     // OFF must be total: no directory, no generation, no bind. The knob exists for measuring the
     // host's own cpufreq from inside the guest, which a trimmed view cannot answer.
     void cpufreqTopologyOffGeneratesNothing() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         RemoraConfig cfg;
         cfg.input.cpufreqTopology = false;
@@ -1114,6 +1268,7 @@ private slots:
     // failure; but it must be said, because nothing else in the chain would ever mention it and
     // the symptom is simply "the boot is slow".
     void bareHostPrereqsWarnsWhenLegacyNetfilterTablesAreMissing() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;  // no ip[6]_tables_names -> the registries read empty
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);
         RecordingSink sink;
@@ -1128,6 +1283,7 @@ private slots:
 
     // …and stays quiet when the kernel does offer them, so it cannot become background noise.
     void bareHostPrereqsSilentWhenNetfilterTablesArePresent() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.legacyNetfilterTables = true;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);
@@ -1145,6 +1301,7 @@ private slots:
     // reporting the build's own ro.product.model. The marker therefore lives in /dev, a tmpfs that dies
     // with the container.
     void spoofGenerationMarkerLivesOnTmpfsNotPersistentData() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         RemoraConfig cfg;
         cfg.advanced.playSpoof = true;
@@ -1163,6 +1320,7 @@ private slots:
     // stops running and the device is left unspoofed with every step green. install.sh clears them
     // but only runs when module CONTENT drifted, which it had not — so nothing healed it.
     void staleDisableMarkersAreClearedEveryDeploy() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         RemoraConfig cfg;
         cfg.advanced.playSpoof = true;
@@ -1178,6 +1336,7 @@ private slots:
     }
 
     void bareProvisionRecreatesWhenImageSuperseded() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.startOk = true;         // an existing container that `docker start` would happily run
         sp.containerStale = true;  // …but its image id != the tag's
@@ -1192,6 +1351,7 @@ private slots:
     // The converse: a current image must still take the cheap start path, or every deploy would
     // pay a full container recreate.
     void bareProvisionStartsExistingWhenImageCurrent() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.startOk = true;
         sp.containerStale = false;
@@ -1207,6 +1367,7 @@ private slots:
     // a container offering only the plain node makes every WebView renderer die and composite
     // black; the link lives in the container's own /dev, so it does not survive a recreate.
     void bareDeployLinksBootIdAshmemNode() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);
         RecordingSink sink;
@@ -1220,6 +1381,7 @@ private slots:
     // host with no ashmem_linux at all (it runs on memfd); an Android 16 one is refused in
     // preflight, before anything is created, because its system_server crash-loops without it.
     void barePreflightAsksAshmemOnlyOfAndroid16() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         {
             FakeSpawner sp;
             sp.ashmem = false;
@@ -1247,6 +1409,7 @@ private slots:
     // A container with no ashmem at all must still deploy: an Android 17 image runs on memfd, and
     // an Android 16 one never gets this far without the module.
     void bareDeploySurvivesMissingAshmem() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.ashmemNodeMissing = true;  // the in-container probe reports NO_ASHMEM
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);
@@ -1300,6 +1463,7 @@ private slots:
     // previous watcher is unconditional — the device list may have changed to EMPTY, and a stale
     // watcher would keep re-exposing devices the operator just unticked — but the spawn is not.
     void sharedInputsExposeAndWatch() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         // 1. Two devices, one grabbed: both named in the detail; the watcher goes through
         //    spawnDetached (scoped, so it survives Remora exiting) with the same names.
         {
@@ -1376,6 +1540,7 @@ private slots:
     // "generic" — a USB hub carrying the operator's keyboard had been unplugged — so the three
     // outcomes must be distinguishable in the step's own detail.
     void phantomKeyboardNamesAMissingIdentity() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         const QString devices = fx(QStringLiteral("proc_input_devices.txt"));
         QVERIFY(!devices.isEmpty());
 
@@ -1431,7 +1596,7 @@ private slots:
     // in the vm bringup script and died with that backend, leaving bare and remote passing the node
     // in with nothing to make it usable. Both surviving backends must hand it over.
     void deployHandsCameraNodesToCameraserver() {
-        for (const Backend b : {Backend::Bare, Backend::Remote}) {
+        for (const Backend b : deployTargets()) {
             // Remote has no baked ssh host, so it must be supplied or preflight refuses.
             RemoraConfig c = (b == Backend::Remote) ? withGuest() : RemoraConfig{};
             c.input.cameraDevices =
@@ -1461,6 +1626,7 @@ private slots:
     // No cameras passed = no exec at all, and certainly no failure: the overwhelmingly common
     // profile carries no camera feature and must not pay for one.
     void deployWithoutCamerasIssuesNoCameraFixup() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);
         RecordingSink sink;
@@ -1480,6 +1646,7 @@ private slots:
     // to do" — which reads like the profile never wanted one. Requested-and-absent is exactly the
     // case worth hearing about, since Android will enumerate zero cameras.
     void deployNamesCamerasRequestedButAbsent() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         RemoraConfig c;
         c.image.features = QStringList{QStringLiteral("camera_v4l2")};
         // No caps => the live probe found nothing, which is the unplugged-camera case.
@@ -1505,6 +1672,7 @@ private slots:
     // with it enabled silently got nothing: the device stayed uncertified and Google sign-in
     // failed with "Something went wrong". Off by default, it must stay a pure no-op.
     void bareDeploySkipsPlaySpoofWhenOff() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);  // playSpoof defaults false
         RecordingSink sink;
@@ -1517,6 +1685,7 @@ private slots:
     // Enabled, it must probe the image and reach the injector — and it must NOT bounce the
     // framework when something is already injected, or every reconnect would restart Android.
     void bareDeployRunsPlaySpoofWhenOn() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         RemoraConfig cfg;
         cfg.advanced.playSpoof = true;
@@ -1558,6 +1727,7 @@ private slots:
     }
 
     void markedMagiskImageKeepsItsModulesAndInjector() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.bootManagedZygisk = true;
         sp.spoofModulesDrifted = true;
@@ -1573,6 +1743,7 @@ private slots:
     }
 
     void markedMagiskImageRequiresRootAndNativeInjection() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         for (bool rootMissing : {false, true}) {
             FakeSpawner sp;
             sp.bootManagedZygisk = true;
@@ -1601,6 +1772,7 @@ private slots:
     // gate returned the right answer for what it looked at, and no behavioural test can catch a
     // witness that was never consulted.
     void spoofDriftGateWatchesVersionAndBinariesNotJustScripts() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         RemoraConfig cfg;
         cfg.advanced.playSpoof = true;
@@ -1625,6 +1797,7 @@ private slots:
     // The verdict half: drift must actually re-run install.sh, and a matching /data must not — a
     // gate that re-installed every deploy would rm -rf the module dir on every up.
     void spoofDriftReinstallsOnlyWhenSomethingMoved() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         for (bool drifted : {true, false}) {
             FakeSpawner sp;
             sp.spoofModulesDrifted = drifted;
@@ -1643,6 +1816,7 @@ private slots:
     // misdiagnosis, because ReZygisk is injected by Remora itself and still reported success. The
     // deploy must fail LOUDLY instead, before any module work runs (bd remora-82c.13).
     void bareDeployFailsLoudlyWhenRootDidNotComeUp() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.rootProbeGap = QStringLiteral("NO_SBIN");
         RemoraConfig cfg;
@@ -1663,6 +1837,7 @@ private slots:
     // A profile that asks for no spoof promises nothing about root, so the gate must not run —
     // a rootless image with play_spoof off deploys exactly as before.
     void bareDeploySkipsRootGateWhenSpoofOff() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.rootProbeGap = QStringLiteral("NO_SBIN");
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);  // playSpoof defaults false
@@ -1672,7 +1847,26 @@ private slots:
         QVERIFY(!hasCall(sp, "pgrep -x magiskd"));
     }
 
+    // What every bare deploy here skips on Windows instead: bare is refused at preflight, first,
+    // in one line that says what to use, before anything is spawned (bd remora-7oih).
+    void bareIsRefusedFirstOnWindows() {
+#ifndef Q_OS_WIN
+        QSKIP("Windows only: a Linux client deploys bare");
+#endif
+        FakeSpawner sp;
+        RecordingSink sink;
+        QVERIFY(!runChain(makeDeployer(Backend::Bare, sp, 24, 0)
+                              ->steps(makeContext(RemoraConfig{}, Backend::Bare)),
+                          sink));
+        QCOMPARE(sink.of("preflight"), StepState::Failed);
+        QCOMPARE(sink.of("provision"), StepState::Skipped);
+        QVERIFY2(sink.details.join(QLatin1Char(' ')).contains(bareNeedsLinuxMessage()),
+                 qPrintable(sink.details.join(QLatin1Char(' '))));
+        QVERIFY2(sp.calls.isEmpty(), qPrintable(sp.calls.join(QLatin1Char('\n'))));
+    }
+
     void barePreflightFailSkipsRest() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.inDocker = false;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);
@@ -1683,6 +1877,7 @@ private slots:
     }
 
     void bareImageMissingFails() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.imagePresent = false;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);
@@ -1696,7 +1891,11 @@ private slots:
     // exist and the failure read as a network problem. Preflight must name the missing field, and
     // must not spawn ssh at all — an ssh attempt against an empty host is exactly the confusing
     // failure this replaced.
+    //
+    // That is where this machine's docker is a local daemon. Where it is Remora's own guest
+    // (Windows), a blank host is the guest (blankHostIsTheGuestWhereLocalDockerIsTheGuest).
     void unsetSshHostFailsByNameBeforeAnySpawn() {
+        const ScopedLocalDockerIsGuest daemon(false);
         for (Backend b : {Backend::Remote}) {
             FakeSpawner sp;
             auto ctx = makeContext(RemoraConfig{}, b);  // no sshHost
@@ -1734,7 +1933,7 @@ private slots:
     // The same rule for gpu_mode=auto: it parsed into a mode nothing handled and deployed as
     // SwiftShader. Refused in preflight, naming the values that do exist.
     void unrecognisedGpuModeRefusesInPreflightBeforeCreatingAnything() {
-        for (Backend b : {Backend::Bare, Backend::Remote}) {
+        for (const Backend b : deployTargets()) {
             FakeSpawner sp;
             RemoraConfig cfg = withGuest();
             cfg.gpu.unrecognisedMode = QStringLiteral("auto");  // what the loader sets
@@ -1778,7 +1977,7 @@ private slots:
     // the A17 incident, and every layer of the stack reported success while it happened.
     // Refuse in preflight, before the container exists, and name both remedies.
     void flatDataDirRefusesOverlayDeployBeforeCreatingAnything() {
-        for (Backend b : {Backend::Bare, Backend::Remote}) {
+        for (const Backend b : deployTargets()) {
             FakeSpawner sp;
             sp.dataDirShape = QStringLiteral("flat\n");
             RemoraConfig cfg = withGuest();
@@ -1798,6 +1997,7 @@ private slots:
     // being bad: a dir already written as an overlay must not be bound in flat either, or Android
     // gets a /data whose whole contents are upper/ and work/.
     void layeredDataDirRefusesPlainBindDeploy() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.dataDirShape = QStringLiteral("layered\n");
         RemoraConfig cfg = withGuest();
@@ -1821,7 +2021,7 @@ private slots:
             "aes xsave avx f16c rdrand lahf_lm abm sse4a 3dnowprefetch bmi1 avx2 bmi2 rdseed adx");
     }
     void alderlakeImageRefusedOnAZenHostBeforeCreatingAnything() {
-        for (Backend b : {Backend::Bare, Backend::Remote}) {
+        for (const Backend b : deployTargets()) {
             FakeSpawner sp;
             sp.imageArchVariant = QStringLiteral("alderlake");
             sp.hostCpuFlags = zen1Flags();
@@ -1841,6 +2041,7 @@ private slots:
     // after three false refusals and zero catches, so a guard that cannot be shown to stay out of
     // the way is worth less than no guard at all.
     void archVariantGuardPassesTheMatchAndEveryUnknown() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         struct Case { const char *what; QString variant; QString flags; };
         const QString alderLake = QStringLiteral(
             "flags\t: fpu sse sse2 fma movbe popcnt abm avx f16c bmi1 avx2 bmi2 rdseed adx "
@@ -1869,9 +2070,8 @@ private slots:
     // bd remora-pzq. A "local:" companion app aimed at a REMOTE docker host is refused in
     // preflight, before anything is dialled: the staging step retired with the vm backend, so the
     // bind would name a directory on the wrong machine and docker would create it empty — an app
-    // that silently does not install. Bare keeps the form untouched: there the docker host IS
-    // this machine and the path binds in place.
-    void localCompanionAppRefusesRemoteDeployAndBareKeepsIt() {
+    // that silently does not install.
+    void localCompanionAppRefusesRemoteDeploy() {
         RemoraConfig cfg = withGuest();
         cfg.integration.companionApps =
             QStringList{QStringLiteral("local:/home/u/out/RemoraTweaks")};
@@ -1887,19 +2087,28 @@ private slots:
         QVERIFY(said.contains(QStringLiteral("local:")));        // and the form that caused it
         QVERIFY(!hasCall(sp, "docker run"));
         QVERIFY(!hasCall(sp, "docker start"));
+    }
 
-        FakeSpawner sp2;
-        RecordingSink sink2;
-        QVERIFY(runChain(makeDeployer(Backend::Bare, sp2, 24, 0)
+    // Bare keeps the form untouched: there the docker host IS this machine and the path binds in
+    // place.
+    void localCompanionAppBindsInPlaceOnBare() {
+        SKIP_ON_WINDOWS(kBareDeploy);
+        RemoraConfig cfg = withGuest();
+        cfg.integration.companionApps =
+            QStringList{QStringLiteral("local:/home/u/out/RemoraTweaks")};
+        FakeSpawner sp;
+        RecordingSink sink;
+        QVERIFY(runChain(makeDeployer(Backend::Bare, sp, 24, 0)
                              ->steps(makeContext(cfg, Backend::Bare)),
-                         sink2));
-        QCOMPARE(sink2.of("preflight"), StepState::Ok);
+                         sink));
+        QCOMPARE(sink.of("preflight"), StepState::Ok);
     }
 
     // …and the guard must stay out of the way of every legitimate deploy. A matching shape, and a
     // host that has never been deployed to, both proceed. A check that refused real work would be a
     // worse regression than the bug it prevents.
     void matchingAndFirstTimeDataShapesDeployNormally() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         for (const auto &c : QList<QPair<QString, bool>>{{"layered", true},
                                                          {"flat", false},
                                                          {"missing", true},
@@ -1930,18 +2139,67 @@ private slots:
             RemoraConfig cfg;
             if (b == Backend::Remote) cfg.backend.sshHost = QStringLiteral("me@dockerhost");
             RedditFakeSpawner sp;
+            sp.pulledDb = RedditFakeSpawner::accountDb(true);
             QVERIFY(injectRedditSession(sp, makeContext(cfg, b), QStringLiteral("someone"), cookie, {}));
-            bool readSql = false;
             for (const QStringList &argv : sp.calls) {
                 const QString cmd = argv.join(QLatin1Char(' '));
                 QVERIFY2(!cmd.contains(cookie), qPrintable(cmd));
                 QVERIFY2(!cmd.contains(QLatin1String("base64")), qPrintable(cmd));
                 QVERIFY2(!cmd.contains(QLatin1String("/tmp/remora-rl-")), qPrintable(cmd));
-                if (argv.value(0) == QLatin1String("sqlite3") && cmd.contains(QLatin1String(".read ")))
-                    readSql = true;
+                // Qt's SQLite edits the pulled databases (bd remora-7oih.3): no sqlite3 binary,
+                // which a Windows client does not have, on either backend.
+                QVERIFY2(argv.value(0) != QLatin1String("sqlite3"), qPrintable(cmd));
             }
-            QVERIFY(readSql);
+            // The credential database that went back carries the account, at the next free id,
+            // with the cookie as its extra — and the account that was already there untouched.
+            bool found = false;
+            for (const QByteArray &bytes : sp.pushed) {
+                QTemporaryDir d;
+                const QString path = d.filePath(QStringLiteral("ce.db"));
+                QFile f(path);
+                QVERIFY(f.open(QIODevice::WriteOnly));
+                f.write(bytes);
+                f.close();
+                {
+                    QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("check"));
+                    db.setDatabaseName(path);
+                    QVERIFY(db.open());
+                    QSqlQuery q(db);
+                    if (q.exec(QStringLiteral("SELECT a._id, x.value FROM accounts a JOIN extras x "
+                                              "ON x.accounts_id=a._id WHERE a.name='someone'")) &&
+                        q.next()) {
+                        found = true;
+                        QCOMPARE(q.value(0).toInt(), 2);
+                        QVERIFY(q.value(1).toString().contains(cookie));
+                        QSqlQuery o(db);
+                        QVERIFY(o.exec(QStringLiteral("SELECT count(*) FROM accounts WHERE name='other'")) && o.next());
+                        QCOMPARE(o.value(0).toInt(), 1);
+                    }
+                    db.close();
+                }
+                QSqlDatabase::removeDatabase(QStringLiteral("check"));
+            }
+            QVERIFY2(found, "no pushed accounts_ce.db carries the account");
         }
+    }
+
+    // Owner-only, file and directory: a checkin can be made in this device's name with it.
+    void checkinSnapshotIsOwnerOnly() {
+        SKIP_ON_WINDOWS("POSIX mode bits, which Windows does not have");
+        FakeSpawner sp;
+        sp.checkinScanOut = QStringLiteral("3648232585666691482\n1\n2914131252766307936\n");
+        const QString inst = QStringLiteral("Android 17");
+        QFile::remove(checkinSnapshotPath(inst));
+        probePlayCertification(sp, Backend::Bare, QStringLiteral("c"), QString(), false, inst);
+        QVERIFY(loadCheckinSnapshot(inst).has_value());
+        const auto others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup |
+                            QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
+        QCOMPARE(QFileInfo(checkinSnapshotPath(inst)).permissions() & others,
+                 QFileDevice::Permissions());
+        QCOMPARE(QFileInfo(QFileInfo(checkinSnapshotPath(inst)).absolutePath()).permissions() &
+                     others,
+                 QFileDevice::Permissions());
+        QFile::remove(checkinSnapshotPath(inst));
     }
 
     // bd remora-4ei.84. Reading the identity is the ONLY moment Remora ever sees it, so it is the
@@ -1964,14 +2222,6 @@ private slots:
         QCOMPARE(c.identityPair(),
                  QStringLiteral("3648232585666691482:2914131252766307936"));
         QCOMPARE(loadCheckinSnapshot(inst).value(), c.identityPair());
-        // Owner-only, file and directory: a checkin can be made in this device's name with it.
-        const auto others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup |
-                            QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
-        QCOMPARE(QFileInfo(checkinSnapshotPath(inst)).permissions() & others,
-                 QFileDevice::Permissions());
-        QCOMPARE(QFileInfo(QFileInfo(checkinSnapshotPath(inst)).absolutePath()).permissions() &
-                     others,
-                 QFileDevice::Permissions());
 
         // An UNCERTIFIED identity is snapshotted too — it is still this instance's, the user may be
         // about to register it, and losing it between reading and registering is the sequence that
@@ -2077,7 +2327,8 @@ private slots:
         }
         const RemoraConfig legacy = loadInstance(path, QStringLiteral("Legacy"));
         QVERIFY(legacy.backend.retiredVmBackend);
-        QCOMPARE(inferBackend(legacy), Backend::Bare);  // unrecognised name → local, per remora-d5v
+        // unrecognised name → local, per remora-d5v; on Windows, local is the guest
+        QCOMPARE(inferBackend(legacy), effectiveBackend(Backend::Bare));
 
         const RemoraConfig modern = loadInstance(path, QStringLiteral("Modern"));
         QVERIFY(!modern.backend.retiredVmBackend);
@@ -2154,7 +2405,7 @@ private slots:
         // were registered: any real version is only imageless until someone builds for it, so
         // pinning the test to one makes it expire the day that version starts working. 99 is
         // outside supportedAndroidVersions(), so no tag can ever be registered for it.
-        for (Backend b : {Backend::Bare, Backend::Remote}) {
+        for (const Backend b : deployTargets()) {
             FakeSpawner sp;
             RemoraConfig cfg;
             cfg.image.androidVersion = 99;
@@ -2181,6 +2432,7 @@ private slots:
     }
 
     void deployRelaysBootMarkerToSplash() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         // provision must write REMORA_BOOTING into the splash status file the moment it starts a
         // fresh Android boot, not after the run returns — the splash would miss the whole boot.
         FakeSpawner sp;
@@ -2263,6 +2515,7 @@ private slots:
     }
 
     void deploySkipsBootMarkerWhenNothingBooted() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         // A provision that found the container already running boots nothing and must emit no
         // marker — the splash stays on status text rather than playing an animation over a no-op.
         FakeSpawner sp;
@@ -2299,6 +2552,25 @@ private slots:
         // This deploy booted nothing (container already running, no REMORA_BOOTING) — doConnect
         // must tell the status-phase splash to attach, or it would wait for a boot forever.
         QVERIFY(status.contains(QStringLiteral("REMORA_ATTACH")));
+    }
+
+    // bd remora-7oih.2 — the splash's centering helper is a detached `sh` loop of qdbus6 KWin
+    // scripting. A Windows client has none of the three, so it neither spawns the loop nor writes
+    // the script it would have run; the splash centres itself there.
+    void windowsSplashSpawnsNoKWinHelper() {
+        FakeSpawner sp;
+        sp.os = LocalOs::Windows;
+        RemoraConfig cfg;
+        cfg.network.macvlanIp = QStringLiteral("192.0.2.77");
+        const auto ctx = makeContext(withGuest(cfg), Backend::Remote, std::nullopt,
+                                     QStringLiteral("Remora:wintest"));
+        QFile::remove(ctx.statusPath + QStringLiteral(".center.js"));
+        RecordingSink sink;
+        QVERIFY(connectRun(Backend::Remote, withGuest(cfg), sink, sp, std::nullopt,
+                           QStringLiteral("Remora:wintest"), nullptr));
+        QCOMPARE(countCalls(sp, "DETACH"), 1);  // the splash, and nothing else
+        QVERIFY(!hasCall(sp, "DETACH sh"));
+        QVERIFY(!QFile::exists(ctx.statusPath + QStringLiteral(".center.js")));
     }
 
     // bd remora-82x. play-spoof BACKGROUNDS each module's service.sh (setsid … &): they block on
@@ -2357,39 +2629,45 @@ private slots:
         QVERIFY(hasCall(sp, "service\\.sh"));
     }
 
-    void deployNeverPkillsItsOwnSplash() {
-        // REGRESSION, bd remora-eoy.10. doConnect's stale-mirror pkill matches the SPLASH's own
-        // argv — same -s, same --window-title, because the splash IS the mirror argv plus the
+    void deployNeverStopsItsOwnSplash() {
+        // REGRESSION, bd remora-eoy.10. doConnect's stale-mirror reap matches the SPLASH too —
+        // same -s, same --window-title, because the splash IS the mirror argv plus the
         // boot-animation flags. It used to be gated on adoptSplash, so the moment that test came
         // out false (which it does on a cold path, ~70s after startSplash) Remora SIGTERMed the
         // live, mirroring window it had just opened: captured on-device as "Terminated" in the
         // splash's own log 21s into a healthy session, seen by the user as the mirror dropping
-        // and reopening. Once a splash exists it is the ONLY thing this pattern can still match —
-        // startSplash reaped true stales immediately before spawning it — so the kill must not
+        // and reopening. Once a splash exists it is the ONLY thing this lookup can still match —
+        // startSplash reaped true stales immediately before spawning it — so the stop must not
         // run at all, regardless of how the adoption test turns out.
         FakeSpawner sp;
         sp.containerRunning = true;
         // Reproduce the cold-path condition rather than the happy one: fail the FIRST liveness
         // check, which is precisely the adoptSplash test, while the splash itself is spawned and
-        // later checks pass. Without this the fake adopts the splash, the kill is skipped for the
+        // later checks pass. Without this the fake adopts the splash, the stop is skipped for the
         // old reason, and the test would pass even against the bug it exists to catch.
         sp.detachedDiesFirst = 1;
         RemoraConfig cfg;
         cfg.network.macvlanIp = QStringLiteral("192.0.2.77");
+        const QString target =
+            makeContext(withGuest(cfg), Backend::Remote, std::nullopt, QStringLiteral("Remora:test"))
+                .rc.target;
+        // A stale mirror before the deploy; once the splash is up, the registry holds the splash
+        // (pid 4242, the fake's every spawn) — so a stop aimed at "this instance's mirror" after
+        // the spawn would land on it, and be caught here.
+        sp.mirrorSnapshots = {
+            {mirrorAt(111, target, QStringLiteral("test"))},
+            {mirrorAt(4242, target, QStringLiteral("test"), MirrorKind::Splash,
+                      MirrorSessionState::Pending, 5000)}};
         RecordingSink sink;
         QVERIFY(connectRun(Backend::Remote, withGuest(cfg), sink, sp, std::nullopt,
                            QStringLiteral("Remora:test"), nullptr));
-        // startSplash's OWN pre-spawn pkill is legitimate and must stay — at that point no splash
-        // exists yet and it is what reaps a genuinely stale mirror. The invariant is narrower: no
-        // mirror pkill after the splash has been spawned.
         int splashAt = -1;
         for (int i = 0; i < sp.calls.size(); ++i)
             if (sp.calls[i].contains(QStringLiteral("mirror -s"))) { splashAt = i; break; }
         QVERIFY2(splashAt >= 0, "no splash was spawned — test cannot check the invariant");
         for (int i = splashAt + 1; i < sp.calls.size(); ++i)
-            QVERIFY2(!(sp.calls[i].startsWith(QStringLiteral("pkill"))
-                       && sp.calls[i].contains(QStringLiteral("remora mirror"))),
-                     qPrintable(QStringLiteral("deploy pkilled a mirror after spawning its own "
+            QVERIFY2(!sp.calls[i].startsWith(QStringLiteral("STOP")),
+                     qPrintable(QStringLiteral("deploy stopped a mirror after spawning its own "
                                                "splash: %1").arg(sp.calls[i])));
         // No guest-side kill at ANY point in a deploy: on a cold path the splash already owns a
         // live session, and the agent is the one init service serving it — stopping or killing it
@@ -2404,13 +2682,15 @@ private slots:
             QVERIFY2(!(namesAgent && stops),
                      qPrintable(QStringLiteral("deploy stopped the guest agent: %1").arg(c)));
         }
-        // The LOCAL pre-spawn pkill is legitimate and must survive: at that point no splash
+        // The LOCAL pre-spawn reap is legitimate and must survive: at that point no splash
         // exists and it is what reaps a genuinely stale mirror window.
         bool localReapBeforeSplash = false;
         for (int i = 0; i < splashAt; ++i)
-            if (sp.calls[i].startsWith(QStringLiteral("pkill"))) { localReapBeforeSplash = true; break; }
+            if (sp.calls[i] == QStringLiteral("STOP 111 force")) { localReapBeforeSplash = true; break; }
         QVERIFY2(localReapBeforeSplash,
                  "the stale local mirror was never reaped before the splash was spawned");
+        QVERIFY(!everStopped(sp, 4242));
+        QVERIFY(!spawnsProgram(sp, QStringLiteral("pkill")));
     }
 
 
@@ -2430,6 +2710,10 @@ private slots:
         const QString status = statusFileText(ctx.statusPath);
         QVERIFY(status.contains(QStringLiteral("failed:")));
         QVERIFY(status.contains(QStringLiteral("REMORA_ABORT")));
+        // The animation phase no longer reads the file, so the splash itself is stopped too —
+        // through the stop seam, which escalates if it ignores the request.
+        QVERIFY2(stopped(sp, {4242}), qPrintable(sp.calls.join(QLatin1Char('\n'))));
+        QVERIFY(!spawnsProgram(sp, QStringLiteral("kill")));
     }
 
     void sleepFreezesRunningContainer() {
@@ -2438,10 +2722,23 @@ private slots:
         FakeSpawner sp;
         RemoraConfig cfg;
         cfg.network.macvlanIp = QStringLiteral("192.0.2.77");
+        const QString target =
+            makeContext(withGuest(cfg), Backend::Remote, std::nullopt, QStringLiteral("Remora:test"))
+                .rc.target;
+        // This instance's mirror, its PIP, and another profile's mirror on the same device: sleep
+        // closes the first only, exactly as the title pattern did.
+        sp.mirrorSnapshots = {{mirrorAt(111, target, QStringLiteral("test")),
+                               mirrorAt(112, target, pipWindowTitle(QStringLiteral("test")),
+                                        MirrorKind::Pip),
+                               mirrorAt(113, target, QStringLiteral("other"))}};
         RecordingSink sink;
         QVERIFY(sleepRun(Backend::Remote, withGuest(cfg), sink, sp, std::nullopt, QStringLiteral("Remora:test")));
         QVERIFY(hasCall(sp, "docker pause"));
-        QVERIFY(hasCall(sp, "pkill"));
+        QVERIFY2(stopped(sp, {111}), qPrintable(sp.calls.join(QLatin1Char('\n'))));
+        QVERIFY(!everStopped(sp, 112) && !everStopped(sp, 113));
+        QVERIFY(sp.calls.indexOf(QStringLiteral("STOP 111 force"))
+                < sp.calls.indexOf(QRegularExpression(QStringLiteral(".*docker pause.*"))));
+        QVERIFY(!spawnsProgram(sp, QStringLiteral("pkill")));
         QVERIFY(sp.containerPaused);
     }
 
@@ -2479,7 +2776,8 @@ private slots:
     void resolveAdbTargetPinnedNeedsNoDiscovery() {
         FakeSpawner sp;
         const auto ctx = makeContext(RemoraConfig{}, Backend::Bare);
-        QCOMPARE(resolveAdbTarget(sp, ctx), QStringLiteral("localhost:5555"));
+        // localhost:5555, or on Windows the guest's name, which the deploy maps to its port
+        QCOMPARE(resolveAdbTarget(sp, ctx), ctx.rc.target);
         QVERIFY(sp.calls.isEmpty());  // a pinned target costs zero round trips
     }
 
@@ -2518,6 +2816,7 @@ private slots:
 
     // …and the defaults are untouched: bare stays bridged unless a profile asks otherwise.
     void bareDefaultsToBridgeStill() {
+        SKIP_ON_WINDOWS(kBareHost);
         const ResolvedConfig rc = resolve(RemoraConfig{}, Backend::Bare);
         QCOMPARE(rc.networkMode, QStringLiteral("bridge"));
         QCOMPARE(rc.target, QStringLiteral("localhost:5555"));
@@ -2822,6 +3121,7 @@ private slots:
     }
 
     void bareProvisionRecreatesAContainerOnTheWrongNetwork() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.startOk = true;  // the container exists and would start happily
         sp.containerNetworks = QStringLiteral("bridge=172.17.0.2 ");
@@ -2840,6 +3140,7 @@ private slots:
 
     // …and the same probe must not make every ordinary deploy recreate its container.
     void bareProvisionKeepsABridgedContainerInBridgeMode() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.startOk = true;
         LogSink sink;
@@ -2853,6 +3154,7 @@ private slots:
     // The full bare deploy with macvlan: the network is ensured before the run, the run carries
     // --network/--ip instead of -p, and the connect goes to the container's own address.
     void bareMacvlanDeployWiresTheWholeChain() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         sp.macvlanNetPresent = false;
         sp.startOk = false;  // force the create path so the docker-run argv is actually issued
@@ -2893,14 +3195,24 @@ private slots:
         QVERIFY(rep.contains(QLatin1String("## versions")));  // the rest still bundled
     }
 
-    // The auto-sleep idle signal: local mirror clients for the target, self-match excluded.
-    void countMirrorClientsParsesPgrep() {
+    // The auto-sleep idle signal: every local client on the target — mirror, splash, PIP, app and
+    // desktop windows alike — and only that target. On Windows the pgrep this used to be answered
+    // 0 whatever was open, and auto-sleep froze a device someone was watching (bd remora-7oih.1).
+    void countMirrorClientsCountsTheRegistry() {
         FakeSpawner sp;
-        sp.mirrorClients = 2;
-        QCOMPARE(countMirrorClients(sp, QStringLiteral("192.0.2.77:5555")), 2);
-        QVERIFY(hasCall(sp, "[r]emora mirror.*-s 192.0.2.77:5555"));  // bracket self-exclusion trick
-        sp.mirrorClients = 0;
-        QCOMPARE(countMirrorClients(sp, QStringLiteral("192.0.2.77:5555")), 0);
+        sp.os = LocalOs::Windows;
+        const QString t = QStringLiteral("192.0.2.77:5555");
+        sp.mirrorSnapshots = {{mirrorAt(1, t, QStringLiteral("A")),
+                               mirrorAt(2, t, pipWindowTitle(QStringLiteral("A")), MirrorKind::Pip),
+                               mirrorAt(3, t, QStringLiteral("Maps"), MirrorKind::App),
+                               // a serial that merely STARTS with the target is another device
+                               mirrorAt(4, QStringLiteral("192.0.2.77:55550"), QStringLiteral("B")),
+                               mirrorAt(5, QStringLiteral("192.0.2.78:5555"), QStringLiteral("C"))}};
+        QCOMPARE(countMirrorClients(sp, t), 3);
+        QCOMPARE(countMirrorClients(sp, QString()), 0);  // no target counts nothing, not everything
+        QVERIFY(sp.calls.isEmpty());  // no pgrep, no shell — nothing spawned at all
+        sp.mirrorSnapshots.clear();
+        QCOMPARE(countMirrorClients(sp, t), 0);
     }
 
     void captureScreenshotWritesFile() {
@@ -2909,7 +3221,10 @@ private slots:
         const QString path = tmp.filePath(QStringLiteral("shot.png"));
         QString err;
         QVERIFY(captureScreenshot(sp, QStringLiteral("192.0.2.77:5555"), path, &err));
-        QVERIFY(hasCall(sp, "exec-out screencap -p"));
+        // adb itself, its stdout into the file: no `sh -c "… > file"`, which a Windows client has
+        // no shell to run (bd remora-7oih.2)
+        QVERIFY(hasCall(sp, "adb -s 192.0.2.77:5555 exec-out screencap -p > " + path));
+        QVERIFY(!spawnsProgram(sp, "sh"));
         QVERIFY(QFileInfo(path).size() > 0);
     }
 
@@ -2971,6 +3286,7 @@ private slots:
     }
 
     void bareCoexistsWithARunningRemoteContainer() {
+        SKIP_ON_WINDOWS(kBareHost);
         FakeSpawner sp;  // local docker ps empty → bare not running; ssh host not probed for bare
         RecordingSink sink;
         QVERIFY(connectRun(Backend::Bare, RemoraConfig{}, sink, sp, std::nullopt, {},
@@ -3002,6 +3318,7 @@ private slots:
     // The false negative that made the above dangerous: two differently-named containers sharing
     // the host adb port used to sail straight through and fail on the docker port bind.
     void sameHostAdbPortIsAConflictEvenWithDifferentNames() {
+        SKIP_ON_WINDOWS(kBareHost);
         FakeSpawner sp;
         sp.localPs = QStringLiteral("someone-elses-container\n");
         sp.exclPorts["someone-elses-container"] = QStringLiteral("5555");
@@ -3020,6 +3337,7 @@ private slots:
 
     // The collision that corrupts rather than merely fails: two Android instances writing one /data.
     void sameDataDirIsAConflictEvenWithDifferentNames() {
+        SKIP_ON_WINDOWS(kBareHost);
         FakeSpawner sp;
         sp.localPs = QStringLiteral("other\n");
         sp.exclBinds["other"] = QStringLiteral("/home/user/.remora-bm-data:/data");
@@ -3058,6 +3376,7 @@ private slots:
     // Our own container must report sameName so smartRun's recreateOwn auto-consents instead of
     // prompting the user to take over from themselves — it also collides on port and dataDir.
     void ownContainerReportsSameNameNotAResourceCollision() {
+        SKIP_ON_WINDOWS(kBareHost);
         FakeSpawner sp;
         sp.localPs = QStringLiteral("remora-bm\n");
         sp.exclPorts["remora-bm"] = QStringLiteral("5555");
@@ -3075,6 +3394,7 @@ private slots:
     // nothing to replace it — found when the in-Android updater's redeploy failed its host
     // prerequisites and took a working device with it.
     void aReplacementThatFailsEarlyLeavesTheRunningDevice() {
+        SKIP_ON_WINDOWS(kBareHost);
         FakeSpawner sp;
         sp.localPs = QStringLiteral("remora-bm\n");  // ours, running…
         sp.containerStale = true;                      // …on a superseded image: a replacement
@@ -3087,6 +3407,7 @@ private slots:
     }
 
     void aReplacementRemovesTheOldContainerOnlyAtProvision() {
+        SKIP_ON_WINDOWS(kBareHost);
         FakeSpawner sp;
         sp.localPs = QStringLiteral("remora-bm\n");
         sp.containerStale = true;
@@ -3108,6 +3429,7 @@ private slots:
     // single-opener, so handing /dev/video0 to a second instance does not share the camera, it
     // just makes the second one fail to open it.
     void sameCameraDeviceIsAConflict() {
+        SKIP_ON_WINDOWS(kBareHost);
         FakeSpawner sp;
         sp.localPs = QStringLiteral("first\n");
         sp.exclDevices["first"] = QStringLiteral("/dev/video0");
@@ -3145,6 +3467,7 @@ private slots:
 
     // Taking over stops the ACTUAL holder, not a hardcoded name.
     void acceptedConflictStopsTheHolderByName() {
+        SKIP_ON_WINDOWS(kBareHost);
         FakeSpawner sp;
         sp.localPs = QStringLiteral("someone-elses-container\n");
         sp.exclPorts["someone-elses-container"] = QStringLiteral("5555");
@@ -3207,6 +3530,70 @@ private slots:
                                        /*livenessDelayMs=*/0, /*mirrorRetries=*/3);
         QVERIFY(r.ok);
         QVERIFY(hasCall(sp, "virgl_test_server"));  // the server was (re)started, not assumed
+    }
+
+    // bd remora-7oih.3 — venus, host_encode and host_decode are BARE ONLY. Each helper runs on
+    // THIS machine, and a remote deploy has no step that starts one on the docker host, so the old
+    // behaviour started the render server and the encoder/decoder here beside a container that was
+    // somewhere else. The resolver keeps them off for remote; this pins the connect step's own
+    // gate, which is what a reconnect or a hand-built context reaches — nothing may be started or
+    // probed locally whatever the flags say.
+    void remoteConnectNeverStartsOrProbesHostHelpers() {
+        FakeSpawner sp;
+        sp.venusProcAlive = false;
+        sp.venusSocketPresent = false;
+        auto ctx = makeContext(withGuest(), Backend::Remote);
+        ctx.rc.venus = true;
+        ctx.rc.venusServerPath = QString("/opt/venus/bin/virgl_test_server");
+        ctx.rc.venusSocketDir = QString("/run/venus");
+        ctx.rc.hostEncode = true;
+        ctx.rc.hostEncodeDrivesMirror = true;
+        ctx.rc.hostEncodeFrameSocket = hostEncodeFrameSocketFor(ctx.rc.containerName);
+        ctx.rc.hostEncodeVideoSocket = hostEncodeVideoSocketFor(ctx.rc.containerName);
+        ctx.rc.hostDecode = true;
+        ctx.rc.hostDecodeSocket = hostDecodeSocketFor(ctx.rc.containerName);
+        RecordingSink sink;
+        doConnect(sp, ctx, sink, /*retries=*/5, /*retryDelayMs=*/0, /*livenessDelayMs=*/0,
+                  /*mirrorRetries=*/3);
+        QVERIFY(!hasCall(sp, "virgl_test_server"));
+        QVERIFY(!hasCall(sp, "remora-frame-encoder"));
+        QVERIFY(!hasCall(sp, "remora-frame-decoder"));
+        QVERIFY(!hasCall(sp, "/tmp/remora-frames-"));
+        QVERIFY(!hasCall(sp, "/tmp/remora-decode-"));
+        // …and the mirror it launches reads the device's own stream, not a local socket.
+        QVERIFY(!hasCall(sp, "--external-video-socket"));
+    }
+
+    // The same request on a remote PROFILE is refused at preflight, before anything is dialled or
+    // created, naming the setting and both ways out.
+    void remoteBareOnlyHostGpuSettingsRefuseInPreflight() {
+        for (const char *key : {"venus", "host_encode", "host_decode"}) {
+            RemoraConfig cfg = withGuest();
+            cfg.gpu.mode = GpuMode::Host;
+            if (QLatin1String(key) == QLatin1String("venus")) cfg.gpu.venus = true;
+            if (QLatin1String(key) == QLatin1String("host_encode")) cfg.mirror.hostEncode = true;
+            if (QLatin1String(key) == QLatin1String("host_decode")) cfg.mirror.hostDecode = true;
+            FakeSpawner sp;
+            RecordingSink sink;
+            QVERIFY(!runChain(makeDeployer(Backend::Remote, sp, 24, 0)
+                                  ->steps(makeContext(cfg, Backend::Remote)),
+                              sink));
+            QCOMPARE(sink.of("preflight"), StepState::Failed);
+            const QString said = sink.details.join(QLatin1Char(' '));
+            QVERIFY2(said.contains(QStringLiteral("%1=true").arg(QLatin1String(key))), key);
+            QVERIFY(said.contains(QStringLiteral("backend=bare")));
+            QVERIFY(!hasCall(sp, "echo ok"));  // config shape: refused before ssh is dialled
+            QVERIFY(!hasCall(sp, "docker run"));
+            QVERIFY(!hasCall(sp, "virgl_test_server"));
+        }
+        // Guest mode never resolved any of them on any backend, so it is no reason to refuse.
+        RemoraConfig guest = withGuest();
+        guest.mirror.hostEncode = true;
+        FakeSpawner sp;
+        RecordingSink sink;
+        runChain(makeDeployer(Backend::Remote, sp, 24, 0)->steps(makeContext(guest, Backend::Remote)),
+                 sink);
+        QCOMPARE(sink.of("preflight"), StepState::Ok);
     }
 
     // bd remora-82c.3 — the same applicability rule, but against the REAL vendor tree through the
@@ -3383,6 +3770,7 @@ private slots:
     // must stop the deploy (without the overlay the baked Intel ICD wins and SurfaceFlinger
     // crash-loops in chooseEglConfig before boot completes).
     void bareGuestModeGeneratesBuildPropOverlayBeforeRun() {
+        SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare);
         QVERIFY2(ctx.rc.buildPropOverlay.has_value(), "guest default must resolve an overlay path");
@@ -3616,19 +4004,29 @@ private slots:
     void rejectedMirrorAttemptIsReapedAndEscalatedToKill() {
         FakeSpawner sp;
         sp.servedConsumers = 0;  // every attempt is rejected as starved
-        // 111 predates this connect and must survive; 222 is what this attempt spawned.
-        sp.mirrorPidLists = QStringList{"111", "111\n222"};
         auto ctx = makeContext(withGuest(), Backend::Bare);
         ctx.rc.hostEncode = true;
         ctx.rc.hostEncodeDrivesMirror = true;
+        // 111 predates this connect and the attempt's reap must spare it; 222 is what this attempt
+        // spawned. Asked by the husk reap, the predecessor snapshot and the pre-launch reap first
+        // (with no splash that one stops 111 on its own account, as the pkill did), then per
+        // attempt and per reap. The session is untitled, which matches only the legacy "Remora:"
+        // prefix — so the mirrors are titled that way.
+        const QString legacy = QStringLiteral("Remora:legacy");
+        const MirrorEntry prior = mirrorAt(111, ctx.rc.target, legacy);
+        const MirrorEntry spawned = mirrorAt(222, ctx.rc.target, legacy, MirrorKind::Main,
+                                             MirrorSessionState::Pending, 500);
+        sp.mirrorSnapshots = {{prior}, {prior}, {prior}, {prior, spawned}};
         RecordingSink sink;
         doConnect(sp, ctx, sink, /*retries=*/5, /*retryDelayMs=*/0, /*livenessDelayMs=*/0,
                   /*mirrorRetries=*/2, /*bootWaitMs=*/240000, /*waitLit=*/false,
                   /*bootStableMs=*/0, /*mirrorHoldMs=*/0);
-        // The attempt's real pid AND the spawn pid go; the predecessor is spared.
-        QVERIFY2(hasCall(sp, "kill 222 4242"), qPrintable(sp.calls.join(QLatin1Char('\n'))));
-        // …and whatever ignored the TERM is killed outright rather than left to flicker.
-        QVERIFY(hasCall(sp, "kill -9"));
+        // The attempt's real pid AND the spawn pid go, and whatever ignores the graceful stop is
+        // killed outright rather than left to flicker; the predecessor is spared.
+        QVERIFY2(stopped(sp, {222, 4242}), qPrintable(sp.calls.join(QLatin1Char('\n'))));
+        for (const FakeSpawner::Stop &st : sp.stops)
+            QVERIFY(!(st.pids.contains(4242) && st.pids.contains(111)));
+        QVERIFY(!hasCall(sp, "kill "));
     }
 
     // bd remora-c3h. play-spoof and a first boot both restart adbd immediately before connect, so
@@ -3677,6 +4075,32 @@ private slots:
         // none of the layer-2 remedies, which would send the operator at the wrong thing entirely
         QVERIFY2(!r.detail.contains(QStringLiteral("layer 2")), qPrintable(r.detail));
         QVERIFY2(!r.detail.contains(QStringLiteral("macvlan-shim")), qPrintable(r.detail));
+    }
+
+    // The routing diagnosis reads THIS host's tables with `ip`, which a Windows client lacks — its
+    // empty answers read as "no ARP entry", so every failed connect there blamed layer 2 and handed
+    // over Linux route commands (bd remora-7oih.2). Windows gets the plain failure instead.
+    void windowsConnectFailureBlamesNoRoute() {
+        FakeSpawner sp;
+        sp.os = LocalOs::Windows;
+        sp.adbStates = QStringList{QStringLiteral("unknown")};  // nothing ever answers
+        RemoraConfig cfg;
+        cfg.network.macvlanIp = QStringLiteral("192.0.2.77");
+        auto ctx = makeContext(withGuest(cfg), Backend::Remote);
+        RecordingSink sink;
+        const StepResult r = doConnect(sp, ctx, sink, /*retries=*/2, /*retryDelayMs=*/0,
+                                       /*livenessDelayMs=*/0, /*mirrorRetries=*/1);
+        QVERIFY(!r.ok);
+        QVERIFY2(r.detail.contains(QStringLiteral("not ready after 2 tries")), qPrintable(r.detail));
+        QVERIFY2(!r.detail.contains(QStringLiteral("layer 2")), qPrintable(r.detail));
+        QVERIFY(!hasCall(sp, "ip route"));
+        QVERIFY(!hasCall(sp, "ip neigh"));
+        // the same failure on Linux still runs the diagnosis
+        FakeSpawner lin;
+        lin.adbStates = QStringList{QStringLiteral("unknown")};
+        RecordingSink lsink;
+        QVERIFY(!doConnect(lin, ctx, lsink, 2, 0, 0, 1).ok);
+        QVERIFY(hasCall(lin, "ip neigh show"));
     }
 
     void connectFailsWhenTheEncoderServesNobody() {
@@ -4053,6 +4477,67 @@ private slots:
         QCOMPARE(countCalls(sp, "mirror -s"), 1);
         // and it gives up after ONE wedged probe instead of re-polling for the whole budget
         QCOMPARE(countCalls(sp, "screencap -p 2>/dev/null | wc -c"), 1);
+        // The bound is the spawner's deadline, not a local coreutils `timeout`: Windows' timeout.exe
+        // is a different program, so there every probe failed at once and the gate spent its whole
+        // 60 s on each deploy (bd remora-7oih.2).
+        QVERIFY(!spawnsProgram(sp, "timeout"));
+        QCOMPARE(sp.timedCallsMs, QList<int>{8000});
+    }
+
+    // The real halves of the three seams that replaced local shell plumbing (bd remora-7oih.2).
+    // Offline: /bin/sh and printf stand in for adb, and the tail reads a file written here.
+    void realSpawnerSeamsBehaveLikeTheShellTheyReplace() {
+        SKIP_ON_WINDOWS("the stand-ins are POSIX tools");
+        QTemporaryDir tmp;
+        RealSpawner sp;
+        // runToFile carries bytes run() would mangle: a NUL, a stray 0xFF, no trailing newline
+        const QString png = tmp.filePath(QStringLiteral("shot.png"));
+        QCOMPARE(sp.runToFile({"printf", "\\211PNG\\000\\377"}, png).rc, 0);
+        QFile f(png);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("\x89PNG\0\xff", 6));
+        // runTimed reports 124, as `timeout` did, and does not wait the child out
+        QElapsedTimer t;
+        t.start();
+        QCOMPARE(sp.runTimed({"sh", "-c", "sleep 30"}, 300).rc, 124);
+        QVERIFY(t.elapsed() < 10000);
+        QCOMPARE(sp.runTimed({"sh", "-c", "echo ok; exit 3"}, 5000).rc, 3);
+        // readTail is `tail -n`: the last N lines, a trailing newline ending the last one, the
+        // whole file when it is shorter, nothing for a file that is not there — and the same
+        // answer from a file far bigger than its first read window.
+        const QString log = tmp.filePath(QStringLiteral("m.log"));
+        QFile w(log);
+        QVERIFY(w.open(QIODevice::WriteOnly));
+        for (int i = 0; i < 5000; ++i) w.write(QByteArray("line ") + QByteArray::number(i) + "\n");
+        w.close();
+        QCOMPARE(sp.readTail(log, 3), QStringLiteral("line 4997\nline 4998\nline 4999\n"));
+        QCOMPARE(sp.readTail(log, 400).count(QLatin1Char('\n')), 400);
+        QVERIFY(sp.readTail(log, 400).startsWith(QStringLiteral("line 4600\n")));
+        QVERIFY(w.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        w.write("a\nb");
+        w.close();
+        QCOMPARE(sp.readTail(log, 1), QStringLiteral("b"));
+        QCOMPARE(sp.readTail(log, 8), QStringLiteral("a\nb"));
+        QCOMPARE(sp.readTail(tmp.filePath(QStringLiteral("absent.log")), 8), QString());
+    }
+
+    // The mirror's dying words are read from ITS log in-process. They used to come from a local
+    // `sh -c tail`, which on Windows answered nothing, so a mirror that had already declared itself
+    // dead passed as connected (bd remora-7oih.2).
+    void fatalLineInTheMirrorsOwnLogRejectsTheAttempt() {
+        FakeSpawner sp;
+        sp.detachedLog = QStringLiteral("/nonexistent/remora-detached-1-0.log");
+        sp.fileTails.insert(sp.detachedLog,
+                            QStringLiteral("connecting\nmirror: fatal: no first frame in 30 s\n"));
+        auto ctx = makeContext(withGuest(), Backend::Remote);
+        RecordingSink sink;
+        const StepResult r = doConnect(sp, ctx, sink, /*retries=*/5, /*retryDelayMs=*/0,
+                                       /*livenessDelayMs=*/0, /*mirrorRetries=*/2);
+        QVERIFY(!r.ok);  // a live process whose log says it gave up is not a connected mirror
+        QCOMPARE(countCalls(sp, "TAIL 8 " + sp.detachedLog), 2);  // once per attempt
+        QVERIFY(!hasCall(sp, "tail -n"));
+        QVERIFY2(r.detail.contains(QStringLiteral("mirror: fatal: no first frame")),
+                 qPrintable(r.detail));
     }
 
     // The boot-anim splash, adopted as the mirror, can pass the liveness check while still playing
@@ -4090,7 +4575,7 @@ private slots:
     void adoptedSplashIsWaitedForRatherThanCalledStarved() {
         FakeSpawner sp;
         sp.servedZeroFirst = 3;  // it becomes a consumer on the 4th probe, ~3s after the marker
-        auto ctx = makeContext(withGuest(), Backend::Remote);
+        auto ctx = makeContext(withGuest(), Backend::Bare);
         ctx.rc.hostEncode = true;
         ctx.rc.hostEncodeDrivesMirror = true;
         ctx.splash = std::make_shared<Detached>(Detached{999});
@@ -4110,7 +4595,7 @@ private slots:
     void plainMirrorServingNobodyIsStillStarvedImmediately() {
         FakeSpawner sp;
         sp.servedConsumers = 0;  // never arrives
-        auto ctx = makeContext(withGuest(), Backend::Remote);
+        auto ctx = makeContext(withGuest(), Backend::Bare);
         ctx.rc.hostEncode = true;
         ctx.rc.hostEncodeDrivesMirror = true;
         RecordingSink sink;  // no ctx.splash: nothing to adopt, so no grace
@@ -4134,7 +4619,7 @@ private slots:
         auto connect = [&](const QString &status, StepResult *out) {
             FakeSpawner sp;
             sp.encoderStatusOut = status;
-            auto ctx = makeContext(withGuest(), Backend::Remote);
+            auto ctx = makeContext(withGuest(), Backend::Bare);
             ctx.rc.hostEncode = true;
             ctx.rc.hostEncodeDrivesMirror = true;
             RecordingSink sink;
@@ -4174,7 +4659,7 @@ private slots:
     void adoptedSplashHoldEndsAsSoonAsTheEncoderServesIt() {
         FakeSpawner sp;
         sp.servedConsumers = 1;  // serving from the first probe
-        auto ctx = makeContext(withGuest(), Backend::Remote);
+        auto ctx = makeContext(withGuest(), Backend::Bare);
         ctx.rc.hostEncode = true;
         ctx.rc.hostEncodeDrivesMirror = true;
         ctx.splash = std::make_shared<Detached>(Detached{999});
@@ -4318,6 +4803,7 @@ private slots:
     }
 
     void smartConnectDeploysTheGooglePlayOverlay() {
+        SKIP_ON_WINDOWS(kBareHost);
         const QString overlay = QStringLiteral("remora-local:play-08c62ac56c4d-07db5d1f5dc7");
         FakeSpawner sp;
         sp.containerNetworks = QStringLiteral("lan=192.0.2.77 ");
@@ -4354,6 +4840,7 @@ private slots:
     }
 
     void smartConnectRecreatesAContainerWithoutTheUpdaterChannel() {
+        SKIP_ON_WINDOWS(kBareHost);
         FakeSpawner sp;
         sp.containerNetworks = QStringLiteral("lan=192.0.2.77 ");
         sp.containerBinds = QStringLiteral("/srv/data:/data-diff");  // made before the channel
@@ -4400,6 +4887,7 @@ private slots:
     }
 
     void smartConnectRedeploysWhenCameraNodeMissing() {
+        SKIP_ON_WINDOWS(kBareHost);
         FakeSpawner sp;  // containerDevices default carries no video node
         sp.containerNetworks = QStringLiteral("lan=192.0.2.77 ");  // network is NOT the cause
         RecordingSink sink;
@@ -4424,6 +4912,7 @@ private slots:
     // or explicitly switched off — must not stay passed through to a container that reports
     // healthy. Same silent config drift, pointing the other way.
     void smartConnectRedeploysWhenCameraUnplugged() {
+        SKIP_ON_WINDOWS(kBareHost);
         FakeSpawner sp;
         sp.containerNetworks = QStringLiteral("lan=192.0.2.77 ");
         sp.containerDevices = QStringLiteral("/dev/input/event5\n/dev/video0");
@@ -4799,6 +5288,7 @@ private slots:
     }
 
     void imageBuildLocalCommands() {
+        SKIP_ON_WINDOWS("builds with this machine's docker, which Windows does not have");
         QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
 
@@ -4842,16 +5332,39 @@ private slots:
         QVERIFY(!QFileInfo::exists(rc.buildDir + "/Dockerfile") || true);
     }
 
-    // Desktop app-menu integration: auto-refresh defaults on, checkbox opt-out resolves through,
-    // and the profile→slug mapping matches slugify() in remora-app-menu.sh.
+    // Desktop app-menu integration: auto-refresh defaults on where there is an XDG menu (not on
+    // Windows), checkbox opt-out resolves through, and the profile→slug mapping matches slugify()
+    // in remora-app-menu.sh.
     void desktopMenuIntegration() {
         RemoraConfig cfg;
-        QVERIFY(resolve(cfg, Backend::Remote).desktopMenu);
+        QCOMPARE(resolve(cfg, Backend::Remote).desktopMenu, kDesktopMenuDefault);
         cfg.integration.desktopMenu = false;
         QVERIFY(!resolve(cfg, Backend::Remote).desktopMenu);
         QCOMPARE(appMenuSlug(QStringLiteral("Android 16")), QStringLiteral("android-16"));
         QCOMPARE(appMenuSlug(QStringLiteral("--Daily Driver (vm)--")),
                  QStringLiteral("daily-driver-vm"));
+    }
+
+    // bd remora-7oih.2 — the menu is XDG .desktop files written by a bash script. On a Windows
+    // client both halves were a FAILED step (bash is not there), so the post-connect refresh
+    // failed after every connect. Now they are a skip that says why, and nothing runs.
+    void windowsAppMenuIsASkipNotAFailure() {
+        FakeSpawner sp;
+        sp.os = LocalOs::Windows;
+        RecordingSink sink;
+        QVERIFY(appMenuSync(sp, withGuest(), Backend::Remote, QStringLiteral("p"), sink));
+        QCOMPARE(sink.of(QStringLiteral("app-menu")), StepState::Skipped);
+        QVERIFY2(sink.details.join(QLatin1Char('\n')).contains(QStringLiteral("not available on Windows")),
+                 qPrintable(sink.details.join(QLatin1Char('\n'))));
+        RecordingSink rm;
+        QVERIFY(appMenuRemove(sp, QStringLiteral("p"), rm));
+        QCOMPARE(rm.of(QStringLiteral("app-menu")), StepState::Skipped);
+        QVERIFY(sp.calls.isEmpty());  // no bash, no adb, nothing
+        // Linux still runs the script
+        FakeSpawner lin;
+        RecordingSink lsink;
+        appMenuRemove(lin, QStringLiteral("p"), lsink);
+        QVERIFY(spawnsProgram(lin, "bash"));
     }
 
     // Per-app window modes ("<pkg>=desktop|freeform"): unset asks, set round-trips, re-set
@@ -4923,14 +5436,18 @@ private slots:
         const QMap<QString, QString> e = mirrorSpawnEnv(d, target, d.mirrorArgv);
         // it is the desktop side, so Alt+D reads MIRROR_CMD…
         QCOMPARE(e.value(QStringLiteral("REMORA_IS_DESKTOP")), QStringLiteral("1"));
-        const QString mirrorCmd = e.value(QStringLiteral("REMORA_MIRROR_CMD"));
-        QVERIFY(!mirrorCmd.isEmpty());
+        const std::optional<LaunchSpec> mirror =
+            decodeLaunchSpec(e.value(QStringLiteral("REMORA_MIRROR_CMD")));
+        QVERIFY(mirror.has_value());
+        const QString mirrorCmd = mirror->argv.join(QLatin1Char(' '));
         // …and what it names is a MIRROR: no new display, and titled for the profile, not
         // "Remora-desktop:". Handing back this window's own argv is the bug being fixed.
         QVERIFY(!mirrorCmd.contains(QStringLiteral("--new-display")));
         QVERIFY(!mirrorCmd.contains(kDesktopTitlePrefix));
-        QVERIFY(mirrorCmd.contains(QStringLiteral("'Dev'")));
-        QVERIFY(mirrorCmd.contains(QStringLiteral("env -u REMORA_IS_DESKTOP")));
+        QCOMPARE(mirror->argv.last(), QStringLiteral("Dev"));
+        // the mirror side drops the desktop marker, so the window it opens knows it is the mirror
+        QCOMPARE(mirror->unset, QStringList{QStringLiteral("REMORA_IS_DESKTOP")});
+        QVERIFY(mirror->set.isEmpty());
 
         // An APP window on the same profile still gets nothing — one app has no "other side".
         cfg.mirror.fullscreenApp = QStringLiteral("com.anthropic.claude");
@@ -4940,6 +5457,34 @@ private slots:
         const QMap<QString, QString> pe = mirrorSpawnEnv(p, target, p.mirrorArgv);
         QVERIFY(!pe.contains(QStringLiteral("REMORA_MIRROR_CMD")));
         QVERIFY(!pe.contains(QStringLiteral("REMORA_IS_DESKTOP")));
+    }
+
+    // bd remora-7oih.2 — the two sides of Alt+D are data, not POSIX shell lines: a Windows mirror
+    // has no `sh -c` to hand one to. Each names the running binary and an argv that survives
+    // titles a shell would have split, and the env edit that says which side it is.
+    void altDToggleIsAnArgvNotAShellLine() {
+        RemoraConfig cfg;
+        const QString target = QStringLiteral("localhost:5555");
+        auto m = makeContext(cfg, Backend::Bare, std::nullopt, QStringLiteral("Pixel 'A' $HOME"));
+        const QMap<QString, QString> e = mirrorSpawnEnv(m, target, m.mirrorArgv);
+        const std::optional<LaunchSpec> desk =
+            decodeLaunchSpec(e.value(QStringLiteral("REMORA_DESKTOP_CMD")));
+        const std::optional<LaunchSpec> back =
+            decodeLaunchSpec(e.value(QStringLiteral("REMORA_MIRROR_CMD")));
+        QVERIFY(desk.has_value());
+        QVERIFY(back.has_value());
+        QCOMPARE(desk->argv.first(), QCoreApplication::applicationFilePath());
+        QCOMPARE(desk->set.value(QStringLiteral("REMORA_IS_DESKTOP")), QStringLiteral("1"));
+        QVERIFY(desk->unset.isEmpty());
+        // the title is ONE argument, quote and dollar intact — nothing re-parses it any more
+        QCOMPARE(desk->argv.last(), kDesktopTitlePrefix + QStringLiteral("Pixel 'A' $HOME"));
+        QVERIFY(desk->argv.join(QLatin1Char(' ')).contains(QStringLiteral("--new-display")));
+        // the mirror side is exactly what the caller spawned, with the desktop marker removed
+        QCOMPARE(back->argv, m.mirrorArgv);
+        QCOMPARE(back->unset, QStringList{QStringLiteral("REMORA_IS_DESKTOP")});
+        for (const QString &k : {QStringLiteral("REMORA_DESKTOP_CMD"),
+                                 QStringLiteral("REMORA_MIRROR_CMD")})
+            QVERIFY2(!e.value(k).contains(QStringLiteral("env -u")), qPrintable(e.value(k)));
     }
 
     // arm64 pins (bd remora-e5x.23): an app with no working x86_64 build is installed as arm64
@@ -5031,6 +5576,7 @@ private slots:
     // shell arithmetic that sizes --memory-swap is what is checked, not the template text. An
     // explicit cap makes every figure independent of the host's own memory.
     void sourceBuildContainerNestsUnderContainersSliceWithBoundedSwap() {
+        SKIP_ON_WINDOWS(kRunsSh);
         auto noVendor = [](const QString &) { return QList<QPair<QString, QByteArray>>(); };
         auto runArgv = [&](int memGiB) {
             SourceBuildPlan p;
@@ -5083,8 +5629,9 @@ private slots:
     // the gate assemble sources, with the WITH_NDK the real assemble step sets, on a fixture of
     // sentinel files: a contains() check cannot tell a gate that always copies from one that works.
     void armTranslationOverlayFollowsTheSelection() {
+        SKIP_ON_WINDOWS(kRunsSh);
         auto noVendor = [](const QString &) { return QList<QPair<QString, QByteArray>>(); };
-        const QString sbuild = QDir::cleanPath(QStringLiteral(FIXTURES_DIR "/../../vendor/source-build"));
+        const QString sbuild = sourcePath(QStringLiteral("vendor/source-build"));
         QVERIFY(QFile::exists(sbuild + QStringLiteral("/ndk-overlay.sh")));
         const QString invoke = QStringLiteral("sh ") + sbuild + QStringLiteral("/assemble-image.sh");
         // The env prefix of the real assemble step, i.e. exactly what assemble is started with.
@@ -5164,8 +5711,9 @@ private slots:
     // installer is always this checkout's whatever a payload carries, and the payload fills in only
     // what the vendored tree lacks: in a public clone, every binary.
     void spoofLayerLaysThePayloadUnderTheVendoredTree() {
+        SKIP_ON_WINDOWS(kRunsSh);
         const QString sbuild =
-            QDir::cleanPath(QStringLiteral(FIXTURES_DIR "/../../vendor/source-build"));
+            sourcePath(QStringLiteral("vendor/source-build"));
         QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
         const auto put = [](const QString &path, const QByteArray &body) {
@@ -5233,8 +5781,9 @@ private slots:
     // fixture could never pass it, and what is under test here is the layout and the order, with
     // the patcher's own refusal driven by a stub that fails.
     void armLayerStagesPatchedPayloadAndProps() {
+        SKIP_ON_WINDOWS(kRunsSh);
         const QString sbuild =
-            QDir::cleanPath(QStringLiteral(FIXTURES_DIR "/../../vendor/source-build"));
+            sourcePath(QStringLiteral("vendor/source-build"));
         QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
         const QString root = tmp.path() + QStringLiteral("/ndk_translation");
@@ -5334,6 +5883,7 @@ private slots:
     // guard that always fails are indistinguishable to a contains() check, and only one of them is
     // worth having.
     void pinnedManifestClobberIsRefusedBeforeSync() {
+        SKIP_ON_WINDOWS(kRunsSh);
         auto noVendor = [](const QString &) { return QList<QPair<QString, QByteArray>>(); };
         QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
@@ -5421,6 +5971,7 @@ private slots:
     // EXECUTES the full joined chain all three ways; a contains() check cannot tell a gate that
     // always skips from one that never does.
     void absentProjectIsSkippedNotInited() {
+        SKIP_ON_WINDOWS(kRunsSh);
         QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
         const QString tree = tmp.path() + QStringLiteral("/tree");
@@ -5485,6 +6036,7 @@ private slots:
     // and in every arm: the guard's adoption logic must stamp only on PROOF, and the difference
     // between "stamps on proof" and "stamps on first touch" is invisible to contains().
     void treeVersionGuardRefusesWrongVersionBuilds() {
+        SKIP_ON_WINDOWS(kRunsSh);
         auto noVendor = [](const QString &) { return QList<QPair<QString, QByteArray>>(); };
         QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
@@ -6430,6 +6982,70 @@ private slots:
                  QStringLiteral("i915"));
     }
 
+    // bd remora-7oih.2 — a Windows client has no sh, lsmod, id or local docker. The probe asked
+    // them all anyway, and `command -v adb` is a SHELL BUILTIN, so `check` and the GUI readiness
+    // reported adb MISSING on every Windows install. There the bare-only rows are not asked at all,
+    // and adb is looked up with where.exe — while the remote rows still go over ssh as before.
+    void windowsProbeAsksForNoLinuxTool() {
+        FakeSpawner sp;
+        sp.os = LocalOs::Windows;
+        sp.renderNodes = QStringLiteral("/dev/dri/renderD128 xe\n");
+        const HostCapabilities c =
+            probeCapabilities(Backend::Remote, QStringLiteral("tester@guest.invalid"), sp);
+        QCOMPARE(c.localOs, LocalOs::Windows);
+        QVERIFY(c.adbPresent);
+        QVERIFY(hasCall(sp, "where /q adb"));
+        for (const char *tool : {"sh", "lsmod", "id", "docker"})
+            QVERIFY2(!spawnsProgram(sp, QLatin1String(tool)), tool);
+        QVERIFY(c.sshReachable.value_or(false));  // the docker host is still asked, over ssh
+        QVERIFY(c.remoteDockerOk.value_or(false));
+
+        FakeSpawner noAdb;
+        noAdb.os = LocalOs::Windows;
+        noAdb.adbTool = false;
+        QVERIFY(!probeCapabilities(Backend::Remote, QStringLiteral("tester@guest.invalid"), noAdb)
+                     .adbPresent);
+
+        // A bare profile asked from Windows scans nothing locally either: there is no /dev/dri,
+        // and no LAN to read for a docker host that does not exist. The GUI's GPU picker is empty.
+        FakeSpawner bare;
+        bare.os = LocalOs::Windows;
+        bare.renderNodes = QStringLiteral("/dev/dri/renderD128 xe\n");
+        const HostCapabilities b = probeCapabilities(Backend::Bare, QString(), bare);
+        QVERIFY(!b.hostRenderNode.has_value());
+        QVERIFY(probeRenderNodes(bare).isEmpty());
+        QVERIFY(!spawnsProgram(bare, "sh"));
+
+        // and on Linux nothing changed: the same probe still asks the shell and the local tools
+        FakeSpawner onLinux;
+        onLinux.renderNodes = QStringLiteral("/dev/dri/renderD128 xe\n");
+        QVERIFY(probeCapabilities(Backend::Bare, QString(), onLinux).hostRenderNode.has_value());
+        QVERIFY(hasCall(onLinux, "command -v adb"));
+        QVERIFY(spawnsProgram(onLinux, "lsmod"));
+        QCOMPARE(probeRenderNodes(onLinux).size(), 1);
+    }
+
+    // …and status/doctor from Windows ask no local docker: the bare row reads not-running, which is
+    // the truth, rather than a docker error about a daemon the client was never meant to have.
+    void windowsStatusAndDoctorAskNoLocalDocker() {
+        FakeSpawner sp;
+        sp.os = LocalOs::Windows;
+        sp.localPs = QStringLiteral("remora-bm");  // would answer, if it were asked
+        const StatusReport r = probeStatus(Backend::Bare, sp);
+        QVERIFY(!r.bareRunning);
+        QVERIFY(!r.bareDockerError.has_value());
+        QVERIFY(!spawnsProgram(sp, "docker"));
+
+        FakeSpawner doc;
+        doc.os = LocalOs::Windows;
+        const QString report =
+            doctorReport(doc, withMacvlan(), Backend::Remote, QStringLiteral("default"));
+        QVERIFY(!report.contains(QStringLiteral("docker (local)")));
+        QVERIFY(report.contains(QStringLiteral("docker (tester@guest.invalid)")));
+        QVERIFY(!spawnsProgram(doc, "docker"));
+        QVERIFY(!spawnsProgram(doc, "sh"));
+    }
+
     // The SwiftShader-fallback detector's datum: status carries the renderer SurfaceFlinger
     // actually composited with, for the bare rows like the vm rows always did.
     void statusCarriesBareGles() {
@@ -6528,6 +7144,7 @@ private slots:
     }
 
     void flowProbeAnswersEarlyOnceTheEncoderIsPlainlyCarryingFrames() {
+        SKIP_ON_WINDOWS(kBareOnlyGpu);
         const ResolvedConfig rc = hostEncodeRc();
         QVERIFY(rc.hostEncode && rc.hostEncodeDrivesMirror);
         FakeSpawner sp;
@@ -6548,6 +7165,7 @@ private slots:
     // inside the gate, so the encoder counter does not move and the gate cannot fire. The probe
     // then spends its full window and judges on the ratio — 300 composed against 30 encoded.
     void flowProbeFallsThroughToTheFullWindowWhenTheGateCannotFire() {
+        SKIP_ON_WINDOWS(kBareOnlyGpu);
         const ResolvedConfig rc = hostEncodeRc();
         FakeSpawner sp;
         sp.mirrorEndpoints = endpointScan();
@@ -6570,6 +7188,7 @@ private slots:
     // short window — where judgeMirrorFlow can never say starved — and the ratio test that would
     // have condemned it never runs. The gate must also ask the RELATIVE question and fall through.
     void flowProbeGateRefusesAnEncoderAboveTheFloorButBelowTheRatio() {
+        SKIP_ON_WINDOWS(kBareOnlyGpu);
         const ResolvedConfig rc = hostEncodeRc();
         FakeSpawner sp;
         sp.mirrorEndpoints = endpointScan();
@@ -6594,6 +7213,7 @@ private slots:
     // composes nothing while the encoder legitimately keeps emitting. Zero composed frames is not
     // a shortfall to measure — the gate treats it as healthy and answers on the short window.
     void flowProbeGateStillFiresEarlyOnAnIdleMirror() {
+        SKIP_ON_WINDOWS(kBareOnlyGpu);
         const ResolvedConfig rc = hostEncodeRc();
         FakeSpawner sp;
         sp.mirrorEndpoints = endpointScan();
@@ -6630,13 +7250,19 @@ private slots:
         FakeSpawner sp;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare, std::nullopt,
                                QStringLiteral("Android 17"));
+        const QString t = QStringLiteral("10.0.0.5:5555");
+        const QString title = QStringLiteral("Android 17");
+        sp.mirrorSnapshots = {
+            {mirrorAt(4242, t, title), mirrorAt(4243, t, title), mirrorAt(4244, t, title)}};
         sp.huskScanOut = QStringLiteral("4242\n4243\n");
-        QCOMPARE(reapMirrorHusks(sp, ctx, QStringLiteral("10.0.0.5:5555"), {}), 2);
-        const QString calls = sp.calls.join(QLatin1Char('\n'));
-        QVERIFY(calls.contains(QStringLiteral("kill 4242 4243")));
+        QCOMPARE(reapMirrorHusks(sp, ctx, t, {}), 2);
+        // `ss` judges the instance's own mirrors, which the registry named — not a pgrep pattern.
+        QVERIFY2(hasCall(sp, "for p in 4242 4243 4244;"), qPrintable(sp.calls.join('\n')));
+        QVERIFY(!hasCall(sp, "pgrep"));
         // TERM alone is not enough for a husk — it is a stuck client by definition — so the
-        // escalation must follow (the same killMirrorPids the rejected-attempt reap uses).
-        QVERIFY(calls.contains(QStringLiteral("kill -9")));
+        // escalation must follow (the same stop the rejected-attempt reap uses).
+        QVERIFY(stopped(sp, {4242, 4243}));
+        QVERIFY(!everStopped(sp, 4244));
     }
 
     // The two ways the scan says "nothing to do" are indistinguishable on purpose: a host with no
@@ -6647,20 +7273,24 @@ private slots:
         FakeSpawner sp;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare, std::nullopt,
                                QStringLiteral("Android 17"));
+        sp.mirrorSnapshots = {
+            {mirrorAt(4242, QStringLiteral("10.0.0.5:5555"), QStringLiteral("Android 17"))}};
         sp.huskScanOut = QString();
         QCOMPARE(reapMirrorHusks(sp, ctx, QStringLiteral("10.0.0.5:5555"), {}), 0);
-        QVERIFY(!sp.calls.join(QLatin1Char('\n')).contains(QStringLiteral("kill ")));
+        QVERIFY(sp.stops.isEmpty());
     }
 
     void huskReaperNeverTurnsStrayOutputIntoAKill() {
         FakeSpawner sp;
         auto ctx = makeContext(RemoraConfig{}, Backend::Bare, std::nullopt,
                                QStringLiteral("Android 17"));
-        // Anything that is not a bare pid is dropped: this output reaches a `kill` command line,
-        // and a stray word there is an arbitrary-argument hole, not a cosmetic problem.
-        sp.huskScanOut = QStringLiteral("ss: command not found\n-1\n99 88\n\n");
+        sp.mirrorSnapshots = {
+            {mirrorAt(4242, QStringLiteral("10.0.0.5:5555"), QStringLiteral("Android 17"))}};
+        // Anything that is not one of the candidates is dropped: this output reaches a stop call,
+        // and a stray word — or a pid the registry never named — has no business there.
+        sp.huskScanOut = QStringLiteral("ss: command not found\n-1\n99 88\n777\n\n");
         QCOMPARE(reapMirrorHusks(sp, ctx, QStringLiteral("10.0.0.5:5555"), {}), 0);
-        QVERIFY(!sp.calls.join(QLatin1Char('\n')).contains(QStringLiteral("kill ")));
+        QVERIFY(sp.stops.isEmpty());
     }
 
     // An app or desktop window (--new-display) is a session in its own right, not a mirror, and
@@ -6672,6 +7302,50 @@ private slots:
         sp.huskScanOut = QStringLiteral("4242\n");
         QCOMPARE(reapMirrorHusks(sp, ctx, QStringLiteral("10.0.0.5:5555"), {}), 0);
         QVERIFY(sp.calls.isEmpty());  // it must not even ask
+        QCOMPARE(sp.mirrorQueries, 0);
+    }
+
+    // A mirror with no session yet is no husk: it has outlived no server. Above all the splash,
+    // which animates a cold boot for minutes owning no tunnel at all — exactly the shape the `ss`
+    // test reads as dead once it is past the age floor.
+    void huskReaperNeverJudgesAMirrorThatHasNotConnectedYet() {
+        FakeSpawner sp;
+        auto ctx = makeContext(RemoraConfig{}, Backend::Bare, std::nullopt,
+                               QStringLiteral("Android 17"));
+        sp.mirrorSnapshots = {{mirrorAt(4242, QStringLiteral("10.0.0.5:5555"),
+                                        QStringLiteral("Android 17"), MirrorKind::Splash,
+                                        MirrorSessionState::Pending, 120000)}};
+        sp.huskScanOut = QStringLiteral("4242\n");
+        QCOMPARE(reapMirrorHusks(sp, ctx, QStringLiteral("10.0.0.5:5555"), {}), 0);
+        QVERIFY(!spawnsProgram(sp, QStringLiteral("sh")));  // nothing to ask `ss` about
+    }
+
+    // Windows has no `ss` (bd remora-7oih.1), so the mirror's own report decides: a registered
+    // session that came up and lost its tunnel, past the age floor. Nothing else — not a young
+    // loss, not a live or a starting session, not a mirror nobody registered, not another
+    // instance's window or a PIP — and nothing reaches a shell.
+    void huskReaperWithoutPosixUserlandReadsTheSelfReport() {
+        FakeSpawner sp;
+        sp.os = LocalOs::Windows;
+        auto ctx = makeContext(RemoraConfig{}, Backend::Bare, std::nullopt,
+                               QStringLiteral("Android 17"));
+        const QString t = QStringLiteral("10.0.0.5:5555");
+        const QString title = QStringLiteral("Android 17");
+        MirrorEntry legacy = mirrorAt(505, t, title, MirrorKind::Main, MirrorSessionState::Unknown);
+        legacy.registered = false;
+        sp.mirrorSnapshots = {
+            {mirrorAt(501, t, title, MirrorKind::Main, MirrorSessionState::Lost, 60000),
+             mirrorAt(502, t, title, MirrorKind::Main, MirrorSessionState::Lost, 5000),
+             mirrorAt(503, t, title, MirrorKind::Main, MirrorSessionState::Live, 60000),
+             mirrorAt(504, t, title, MirrorKind::Splash, MirrorSessionState::Pending, 60000),
+             legacy,
+             mirrorAt(506, t, QStringLiteral("Other"), MirrorKind::Main, MirrorSessionState::Lost),
+             mirrorAt(507, t, pipWindowTitle(title), MirrorKind::Pip, MirrorSessionState::Lost)}};
+        sp.huskScanOut = QStringLiteral("502\n503\n504\n505\n");  // must not even be asked
+        QCOMPARE(reapMirrorHusks(sp, ctx, t, {}), 1);
+        QVERIFY2(stopped(sp, {501}), qPrintable(sp.calls.join('\n')));
+        QCOMPARE(sp.stops.size(), 1);
+        QVERIFY(!spawnsProgram(sp, QStringLiteral("sh")));
     }
 
     // ─────────── teardown reap (bd remora-e5x.19.1) ───────────
@@ -6682,15 +7356,20 @@ private slots:
 
     void teardownReapsClientsEncoderAndSockets() {
         FakeSpawner sp;
-        sp.mirrorPidLists = QStringList{QStringLiteral("311\n312")};
+        const QString t = QStringLiteral("10.0.0.5:5555");
+        // Every kind on the target goes — the device is being destroyed — and nothing on a
+        // serial that merely starts with it.
+        sp.mirrorSnapshots = {{mirrorAt(311, t, QStringLiteral("A17")),
+                               mirrorAt(312, t, pipWindowTitle(QStringLiteral("A17")),
+                                        MirrorKind::Pip),
+                               mirrorAt(313, QStringLiteral("10.0.0.5:55550"), QStringLiteral("B"))}};
         sp.orphanEncoderPids = QStringLiteral("507\n");
-        QCOMPARE(reapSessionOrphans(sp, QStringLiteral("remora-a17"),
-                                    QStringLiteral("10.0.0.5:5555"), {}),
-                 3);
+        QCOMPARE(reapSessionOrphans(sp, QStringLiteral("remora-a17"), t, {}), 3);
         const QString calls = sp.calls.join(QLatin1Char('\n'));
-        QVERIFY(calls.contains(QStringLiteral("kill 311 312 507")));
         // An orphan is a stuck client by definition, so the escalation must follow.
-        QVERIFY(calls.contains(QStringLiteral("kill -9")));
+        QVERIFY2(stopped(sp, {311, 312, 507}), qPrintable(calls));
+        QVERIFY(!everStopped(sp, 313));
+        QVERIFY(!calls.contains(QStringLiteral("pgrep")));
         // The socket inodes go with them: a leftover inode is what made a dead stack look
         // present to the next generation's adoption checks.
         QVERIFY(calls.contains(QStringLiteral(
@@ -6698,15 +7377,17 @@ private slots:
     }
 
     // No serial (an unpinned macvlan profile, or a takeover of a profile this process cannot
-    // resolve) means no client pattern worth trusting — but the encoder and its sockets derive
+    // resolve) means no client lookup worth trusting — but the encoder and its sockets derive
     // from the container NAME alone, so they are cleaned regardless.
     void teardownWithoutATargetStillCleansTheEncoder() {
         FakeSpawner sp;
+        sp.mirrorSnapshots = {{mirrorAt(311, QStringLiteral("10.0.0.5:5555"), QStringLiteral("A"))}};
         sp.orphanEncoderPids = QStringLiteral("507\n");
         QCOMPARE(reapSessionOrphans(sp, QStringLiteral("remora-a17"), QString(), {}), 1);
         const QString calls = sp.calls.join(QLatin1Char('\n'));
-        QVERIFY(!calls.contains(QStringLiteral("pgrep -f")));
-        QVERIFY(calls.contains(QStringLiteral("kill 507")));
+        QCOMPARE(sp.mirrorQueries, 0);
+        QVERIFY(stopped(sp, {507}));
+        QVERIFY(!everStopped(sp, 311));
         // The frame socket moved into a per-container DIRECTORY so the composer can reach it
         // through a bind mount (bd remora-emoe phase 2). Teardown removes the SOCKET and
         // leaves the directory: it is the bind source, and deleting it under a running
@@ -6714,17 +7395,523 @@ private slots:
         QVERIFY(calls.contains(QStringLiteral("rm -f /tmp/remora-frames-remora-a17/frame.sock")));
     }
 
-    // Anything that is not a bare pid is dropped before it can reach the kill line — the same
-    // arbitrary-argument guard the husk scan carries.
+    // bd remora-7oih.3 — host encode is bare-only, so a REMOTE teardown has no encoder on this
+    // machine to find. Its half of the reap must not run there: it would scan and delete in this
+    // machine's /tmp for a container that never had anything here. The clients are still reaped,
+    // because the mirror runs here on every backend.
+    void remoteTeardownLeavesTheEncoderHalfAlone() {
+        FakeSpawner sp;
+        const QString t = QStringLiteral("10.0.0.5:5555");
+        sp.mirrorSnapshots = {{mirrorAt(311, t, QStringLiteral("A17"))}};
+        sp.orphanEncoderPids = QStringLiteral("507\n");
+        QCOMPARE(reapSessionOrphans(sp, QStringLiteral("remora-a17"), t, {}, Backend::Remote), 1);
+        const QString calls = sp.calls.join(QLatin1Char('\n'));
+        QVERIFY2(stopped(sp, {311}), qPrintable(calls));
+        QVERIFY(!everStopped(sp, 507));
+        QVERIFY(!calls.contains(QStringLiteral("remora-frame-encoder")));
+        QVERIFY(!calls.contains(QStringLiteral("/tmp/remora-frames-")));
+    }
+
+    // ─────────── image-side shell helpers (engine/HostShell, bd remora-7oih.3) ───────────
+
+    // A process that never STARTED used to read as success: Qt leaves exitCode() at 0 with
+    // NormalExit, and the GUI-thread wait returns at once for a process that is not running. So a
+    // missing ssh turned every library scan, prune and push into "it worked, and said nothing".
+    // Run on the test's main thread, which is the GUI-thread path the bug lived on.
+    void shellThatNeverStartsIsAFailureNotSilence() {
+        QTemporaryDir empty;
+        QVERIFY(empty.isValid());
+        const QByteArray path = qgetenv("PATH");
+        qputenv("PATH", empty.path().toLocal8Bit());  // no ssh, no sh: nothing can start
+        const ShellResult r = runShellRc(QStringLiteral("user@host.invalid"), QStringLiteral("true"));
+        const QString out = runShell(QStringLiteral("user@host.invalid"), QStringLiteral("echo hi"));
+        const ShellResult pipe = runHostPipe({QString(), {QStringLiteral("docker"), QStringLiteral("save"), QStringLiteral("x")}},
+                                             {QString(), {QStringLiteral("docker"), QStringLiteral("load")}}, 5000);
+        qputenv("PATH", path);
+        QCOMPARE(r.rc, 127);
+        QVERIFY2(r.out.contains(QLatin1String("could not start ssh")), qPrintable(r.out));
+        QVERIFY(out.isEmpty());
+        QCOMPARE(pipe.rc, 127);
+    }
+
+    // …while a command that runs keeps its own exit code and output. A blank host is this
+    // machine: sh on Linux, and on Windows, which has none, a refusal saying where to run it.
+    void aBlankHostRunsHereOrSaysWhyNot() {
+#ifdef Q_OS_WIN
+        const ShellResult r = runShellRc(QString(), QStringLiteral("echo out; exit 3"));
+        QCOMPARE(r.rc, 127);
+        QCOMPARE(r.out, noLocalShellMessage());
+        QVERIFY(runShell(QString(), QStringLiteral("echo hi")).isEmpty());
+#else
+        QCOMPARE(runShellRc(QString(), QStringLiteral("echo out; exit 3")).rc, 3);
+        QCOMPARE(runShell(QString(), QStringLiteral("echo hi")), QStringLiteral("hi\n"));
+#endif
+    }
+
+    // The push/fetch pipe, without a local sh: two processes joined by Qt. The data arrives
+    // intact, and the exit code follows pipefail — a producer that died is not a successful load,
+    // and a consumer that refused the stream is named rather than the producer's EPIPE.
+    void hostPipeCarriesTheBytesAndReportsEitherEndFailing() {
+        SKIP_ON_WINDOWS("the ends are local sh processes, and Windows runs no local host command");
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString file = dir.path() + QStringLiteral("/got");
+        const HostCommand sink{QString(), {QStringLiteral("sh"), QStringLiteral("-c"),
+                                           QStringLiteral("cat > '%1'").arg(file)}};
+        const ShellResult ok = runHostPipe(
+            {QString(), {QStringLiteral("sh"), QStringLiteral("-c"), QStringLiteral("printf abc; echo note >&2")}},
+            sink, 10000);
+        QCOMPARE(ok.rc, 0);
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("abc"));
+        QVERIFY(ok.out.contains(QLatin1String("note")));  // the producer's stderr is kept
+        QCOMPARE(runHostPipe({QString(), {QStringLiteral("sh"), QStringLiteral("-c"), QStringLiteral("printf x; exit 5")}},
+                             {QString(), {QStringLiteral("cat")}}, 10000).rc,
+                 5);
+        QCOMPARE(runHostPipe({QString(), {QStringLiteral("sh"), QStringLiteral("-c"), QStringLiteral("printf x")}},
+                             {QString(), {QStringLiteral("sh"), QStringLiteral("-c"), QStringLiteral("exit 7")}},
+                             10000).rc,
+                 7);
+    }
+
+    // A remote stage runs under /bin/sh -c on the far side (the login shell may be fish), with each
+    // word quoted, batch-mode so a password prompt can never hang a transfer.
+    void hostCommandArgvNamesTheShellAndQuotesEachWord() {
+        const QStringList a = hostCommandArgv(
+            {QStringLiteral("user@h"), {QStringLiteral("docker"), QStringLiteral("save"), QStringLiteral("a b")}});
+        QCOMPARE(a.mid(0, 3), (QStringList{QStringLiteral("ssh"), QStringLiteral("-o"),
+                                           QStringLiteral("BatchMode=yes")}));
+        QVERIFY(a.contains(QStringLiteral("user@h")));
+        QCOMPARE(a.at(a.indexOf(QStringLiteral("user@h")) + 1), QStringLiteral("/bin/sh"));
+        QVERIFY(a.last().contains(QLatin1String("a b")));
+        QCOMPARE(hostCommandArgv({QString(), {QStringLiteral("docker"), QStringLiteral("load")}}),
+                 (QStringList{QStringLiteral("docker"), QStringLiteral("load")}));
+    }
+
+    // A one-route HTTP server for the fetches below: /missing is a 404, anything else `body`.
+    static QString serveBody(QTcpServer &server, const QByteArray &body) {
+        if (!server.listen(QHostAddress::LocalHost)) return QString();
+        QObject::connect(&server, &QTcpServer::newConnection, &server, [&server, &body] {
+            QTcpSocket *s = server.nextPendingConnection();
+            QObject::connect(s, &QTcpSocket::readyRead, s, [s, &body] {
+                const QByteArray req = s->readAll();
+                if (req.contains("GET /missing"))
+                    s->write("HTTP/1.0 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found");
+                else
+                    s->write("HTTP/1.0 200 OK\r\nContent-Length: " + QByteArray::number(body.size()) +
+                             "\r\n\r\n" + body);
+                s->disconnectFromHost();
+            });
+        });
+        return QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort());
+    }
+
+    // The http(s) half of a fetch, with Qt instead of a local curl: the body streams into the
+    // consumer, and an error status hands it NOTHING — `docker load` would report a 404 page as a
+    // corrupt archive and the real reason would be lost.
+    void httpFetchStreamsTheBodyAndNeverAnErrorPage() {
+        SKIP_ON_WINDOWS("the consumer is a local sh, and Windows runs no local host command");
+        QTcpServer server;
+        const QByteArray body(300000, 'z');  // several reads' worth
+        const QString base = serveBody(server, body);
+        QVERIFY(!base.isEmpty());
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString file = dir.path() + QStringLiteral("/got");
+        const HostCommand sink{QString(), {QStringLiteral("sh"), QStringLiteral("-c"),
+                                           QStringLiteral("cat > '%1'").arg(file)}};
+        const ShellResult ok = runHttpToHost(base + QStringLiteral("/image.tar"), sink, 20000);
+        QCOMPARE(ok.rc, 0);
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QCOMPARE(f.readAll(), body);
+        }
+        const ShellResult missing = runHttpToHost(base + QStringLiteral("/missing"), sink, 20000);
+        QVERIFY(missing.rc != 0);
+        QVERIFY2(missing.out.contains(QLatin1String("404")), qPrintable(missing.out));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QVERIFY(!f.readAll().contains("not found"));
+    }
+
+    // The small-document GET the mirror index uses: the body, or nothing for an error.
+    void httpGetSmallReturnsTheBodyOrNothing() {
+        QTcpServer server;
+        const QByteArray body(300000, 'z');
+        const QString base = serveBody(server, body);
+        QVERIFY(!base.isEmpty());
+        QCOMPARE(httpGetSmall(base + QStringLiteral("/index.txt"), 10000), body);
+        QString err;
+        QVERIFY(httpGetSmall(base + QStringLiteral("/missing"), 10000, &err).isEmpty());
+        QVERIFY(err.contains(QLatin1String("404")));
+    }
+
+    // Anything that is not a bare pid is dropped before it can reach the stop call — the same
+    // arbitrary-argument guard the husk scan carries, for the encoder half's `ps` output.
     void teardownNeverTurnsStrayOutputIntoAKill() {
         FakeSpawner sp;
-        sp.mirrorPidLists = QStringList{QStringLiteral("pgrep: invalid option\n-9 1\n")};
-        sp.orphanEncoderPids = QStringLiteral("awk: not found\n");
+        sp.orphanEncoderPids = QStringLiteral("awk: not found\n-9 1\n");
         QCOMPARE(reapSessionOrphans(sp, QStringLiteral("remora-a17"),
                                     QStringLiteral("10.0.0.5:5555"), {}),
                  0);
-        QVERIFY(!sp.calls.join(QLatin1Char('\n')).contains(QStringLiteral("kill ")));
+        QVERIFY(sp.stops.isEmpty());
     }
+
+    // Remora's own guest (bd remora-7oih.5) is named by a reserved ssh_host and reached by its
+    // forwarded port, key and pinned host key: ssh and scp both expand the name, and nothing else.
+    void managedGuestNameExpandsInSshAndScpOnly() {
+        ManagedHost h;
+        h.alias = guestAlias();
+        h.user = QStringLiteral("remora");
+        h.sshPort = 47022;
+        h.identityFile = QStringLiteral("C:\\state\\client");
+        h.knownHostsFile = QStringLiteral("C:\\state\\known_hosts");
+        registerManagedHost(h);
+        const QStringList ssh = Spawner::sshArgv(guestAlias(), QStringLiteral("true"));
+        QVERIFY(ssh.join(' ').contains(QStringLiteral(
+            "-p 47022 -i C:\\state\\client -o IdentitiesOnly=yes -o BatchMode=yes "
+            "-o StrictHostKeyChecking=yes -o UserKnownHostsFile=C:\\state\\known_hosts "
+            "remora@127.0.0.1 /bin/sh -c 'true'")));
+        QVERIFY(!ssh.contains(guestAlias()));
+        // A Windows source path has a colon too; it is not a host.
+        const QStringList scp = Spawner::scpArgv(
+            {QStringLiteral("C:\\Remora\\vendor\\fwd"), guestAlias() + QStringLiteral(":.remora/fwd")});
+        QCOMPARE(scp.first(), QStringLiteral("scp"));
+        QCOMPARE(scp.mid(scp.size() - 3),
+                 (QStringList{QStringLiteral("--"), QStringLiteral("C:\\Remora\\vendor\\fwd"),
+                              QStringLiteral("remora@127.0.0.1:.remora/fwd")}));
+        QVERIFY(scp.contains(QStringLiteral("-P")));
+        // Any other host is passed through untouched, with no options of the guest's.
+        const QStringList other = Spawner::scpArgv(
+            {QStringLiteral("/v/fwd"), QStringLiteral("me@nas:.remora/fwd")});
+        QCOMPARE(other, (QStringList{QStringLiteral("scp"), QStringLiteral("--"),
+                                     QStringLiteral("/v/fwd"), QStringLiteral("me@nas:.remora/fwd")}));
+        QVERIFY(!Spawner::sshArgv(QStringLiteral("me@nas"), QStringLiteral("true")).contains(
+            QStringLiteral("-p")));
+        forgetManagedHost(guestAlias());
+    }
+    // ─────────── mirror registry (bd remora-7oih.1) ───────────
+    // Every find / stop / count of mirrors went through pgrep patterns over the Linux command
+    // line. On Windows each one returned nothing: a reconnect left the old mirror beside the new,
+    // a rejected attempt was never killed, Stop left windows open, the PIP toggle only ever
+    // opened, and auto-sleep froze a device in use.
+
+    // The Windows-shaped reconnect: the previous mirror is found and stopped, the new one is
+    // launched, and none of it goes near a shell or procps.
+    void reconnectWithoutPosixUserlandReplacesTheMirrorWithoutAShell() {
+        FakeSpawner sp;
+        sp.os = LocalOs::Windows;
+        auto ctx = makeContext(withGuest(), Backend::Remote, std::nullopt,
+                               QStringLiteral("Android 17"));
+        sp.mirrorSnapshots = {{mirrorAt(900, ctx.rc.target, QStringLiteral("Android 17"))}};
+        RecordingSink sink;
+        QVERIFY(doConnect(sp, ctx, sink, /*retries=*/5, /*retryDelayMs=*/0,
+                          /*livenessDelayMs=*/0).ok);
+        QVERIFY2(stopped(sp, {900}), qPrintable(sp.calls.join('\n')));
+        QVERIFY(hasCall(sp, "DETACH"));
+        for (const QString &prog : {QStringLiteral("sh"), QStringLiteral("pgrep"),
+                                    QStringLiteral("pkill"), QStringLiteral("kill")})
+            QVERIFY2(!spawnsProgram(sp, prog),
+                     qPrintable(QStringLiteral("spawned %1:\n%2").arg(prog, sp.calls.join('\n'))));
+        QVERIFY(!hasCall(sp, "ss -tnHp"));
+    }
+
+    // The same machine through sleep's reap and through Stop's teardown.
+    void sleepAndStopWithoutPosixUserlandUseTheStopSeam() {
+        RemoraConfig cfg;
+        cfg.network.macvlanIp = QStringLiteral("192.0.2.77");
+        const QString target =
+            makeContext(withGuest(cfg), Backend::Remote, std::nullopt, QStringLiteral("A")).rc.target;
+        {
+            FakeSpawner sp;
+            sp.os = LocalOs::Windows;
+            sp.mirrorSnapshots = {{mirrorAt(901, target, QStringLiteral("A"))}};
+            RecordingSink sink;
+            QVERIFY(sleepRun(Backend::Remote, withGuest(cfg), sink, sp, std::nullopt,
+                             QStringLiteral("A")));
+            QVERIFY(stopped(sp, {901}));
+            QVERIFY(!spawnsProgram(sp, QStringLiteral("pkill")));
+        }
+        {
+            FakeSpawner sp;
+            sp.os = LocalOs::Windows;
+            sp.mirrorSnapshots = {{mirrorAt(902, target, QStringLiteral("A")),
+                                   mirrorAt(903, target, QStringLiteral("Maps"), MirrorKind::App)}};
+            QCOMPARE(reapSessionOrphans(sp, QStringLiteral("remora-a"), target, {}), 2);
+            QVERIFY(stopped(sp, {902, 903}));
+            QVERIFY(!hasCall(sp, "pgrep") && !spawnsProgram(sp, QStringLiteral("kill")));
+        }
+    }
+
+    void pipToggleClosesOnlyItsOwnProfilesPip() {
+        FakeSpawner sp;
+        sp.os = LocalOs::Windows;
+        const QString t = QStringLiteral("10.0.0.5:5555");
+        // Profile "A 2"'s PIP is up; "A"'s is not. The old pattern was an unanchored regex, so
+        // "Remora PIP — A" matched "Remora PIP — A 2" and toggling A closed A 2's window.
+        sp.mirrorSnapshots = {
+            {mirrorAt(41, t, pipWindowTitle(QStringLiteral("A 2")), MirrorKind::Pip),
+             mirrorAt(42, t, QStringLiteral("A"))}};
+        QCOMPARE(closePip(sp, pipWindowTitle(QStringLiteral("A"))), PipClose::NotRunning);
+        QVERIFY(sp.stops.isEmpty());
+        QCOMPARE(closePip(sp, pipWindowTitle(QStringLiteral("A 2"))), PipClose::Closed);
+        // Asked to close and waited for, never escalated: a PIP is a healthy window.
+        QCOMPARE(sp.stops.size(), 1);
+        QCOMPARE(sp.stops[0].pids, QList<qint64>{41});
+        QVERIFY(!sp.stops[0].force);
+        QVERIFY(sp.stops[0].graceMs > 0);
+        sp.unstoppable = {41};
+        QCOMPARE(closePip(sp, pipWindowTitle(QStringLiteral("A 2"))), PipClose::StillRunning);
+        QVERIFY(sp.calls.filter(QRegularExpression(QStringLiteral("^(sh|pgrep|pkill|kill)\\b")))
+                    .isEmpty());
+    }
+
+    // ── the pure selection rules ──
+
+    void mirrorKindIsReadFromTheLaunchFlags() {
+        QCOMPARE(mirrorKindFor(false, false, QString(), QStringLiteral("A")), MirrorKind::Main);
+        QCOMPARE(mirrorKindFor(false, true, QString(), QStringLiteral("A")), MirrorKind::Splash);
+        QCOMPARE(mirrorKindFor(false, false, QString(kPipAppId), QStringLiteral("x")),
+                 MirrorKind::Pip);
+        QCOMPARE(mirrorKindFor(true, false, QStringLiteral("remora-a-com.maps"),
+                               QStringLiteral("Maps")),
+                 MirrorKind::App);
+        QCOMPARE(mirrorKindFor(true, false, QString(), kDesktopTitlePrefix + QStringLiteral("A")),
+                 MirrorKind::Desktop);
+    }
+
+    // The argv every launcher actually builds, read back the way the Linux upgrade fallback reads
+    // /proc — so a mirror an older Remora started is classified exactly like a registered one.
+    void mirrorEntryFromArgvReadsEveryLauncherShape() {
+        RemoraConfig cfg;
+        cfg.network.macvlanIp = QStringLiteral("192.0.2.77");
+        RunContext ctx = makeContext(cfg, Backend::Bare, std::nullopt, QStringLiteral("Android 17"));
+        // argv[0] is the running binary, which here is this suite rather than remora.
+        ctx.mirrorArgv[0] = ctx.splashArgv[0] = QStringLiteral("/usr/bin/remora");
+        const auto main = mirrorEntryFromArgv(ctx.mirrorArgv);
+        QVERIFY(main);
+        QCOMPARE(main->serial, ctx.rc.target);
+        QCOMPARE(main->title, QStringLiteral("Android 17"));
+        QCOMPARE(main->kind, MirrorKind::Main);
+        QVERIFY(!main->registered);
+        QCOMPARE(mirrorEntryFromArgv(ctx.splashArgv).value_or(MirrorEntry{}).kind,
+                 MirrorKind::Splash);
+
+        QStringList pip =
+            buildPipMirrorArgv(ctx.rc, ctx.rc.target, QStringLiteral("Android 17")).second;
+        pip[0] = QStringLiteral("/usr/bin/remora");
+        const auto p = mirrorEntryFromArgv(pip);
+        QVERIFY(p);
+        QCOMPARE(p->kind, MirrorKind::Pip);
+        QCOMPARE(p->title, pipWindowTitle(QStringLiteral("Android 17")));  // the `=` spelling
+
+        RemoraConfig dcfg = cfg;
+        dcfg.mirror.fullscreenSeparateDisplay = true;
+        RunContext desk = makeContext(dcfg, Backend::Bare, std::nullopt,
+                                      kDesktopTitlePrefix + QStringLiteral("Android 17"), true);
+        desk.mirrorArgv[0] = QStringLiteral("remora");
+        QCOMPARE(mirrorEntryFromArgv(desk.mirrorArgv).value_or(MirrorEntry{}).kind,
+                 MirrorKind::Desktop);
+        dcfg.mirror.fullscreenApp = QStringLiteral("com.maps");
+        RunContext app = makeContext(dcfg, Backend::Bare, std::nullopt, QStringLiteral("Maps"), true);
+        app.mirrorArgv[0] = QStringLiteral("remora");
+        QCOMPARE(mirrorEntryFromArgv(app.mirrorArgv).value_or(MirrorEntry{}).kind, MirrorKind::App);
+
+        // Not clients: the app-menu's one-shot listing, a wrapper shell that merely mentions a
+        // mirror, another program, a mirror without a serial.
+        QVERIFY(!mirrorEntryFromArgv({"remora", "mirror", "-s", "x:1", "--list-apps"}));
+        QVERIFY(!mirrorEntryFromArgv({"/bin/sh", "-c", "remora mirror -s x:1"}));
+        QVERIFY(!mirrorEntryFromArgv({"/usr/bin/vlc", "mirror", "-s", "x:1"}));
+        QVERIFY(!mirrorEntryFromArgv({"remora", "mirror", "--window-title", "A"}));
+        QVERIFY(!mirrorEntryFromArgv({"remora", "gui"}));
+        // Windows' own spelling of argv[0], and QCommandLineParser's other value form.
+        const auto win = mirrorEntryFromArgv(
+            {"C:\\Program Files\\Remora\\remora.exe", "mirror", "--serial=x:1"});
+        QVERIFY(win);
+        QCOMPARE(win->serial, QStringLiteral("x:1"));
+        QCOMPARE(win->title, QStringLiteral("Remora mirror — x:1"));  // MirrorApp's own default
+    }
+
+    void instanceTitleMatchesTheProfileExactly() {
+        QVERIFY(isInstanceMirrorTitle(QStringLiteral("A 17"), QStringLiteral("A 17")));
+        QVERIFY(isInstanceMirrorTitle(QStringLiteral("Remora:A 17"), QStringLiteral("A 17")));
+        QVERIFY(isInstanceMirrorTitle(QStringLiteral("A 17"), QStringLiteral("Remora:A 17")));
+        QVERIFY(!isInstanceMirrorTitle(QStringLiteral("A 17 beta"), QStringLiteral("A 17")));
+        QVERIFY(!isInstanceMirrorTitle(kDesktopTitlePrefix + QStringLiteral("A 17"),
+                                       QStringLiteral("A 17")));
+        // C++ and friends are names, not patterns.
+        QVERIFY(isInstanceMirrorTitle(QStringLiteral("C++ (x)"), QStringLiteral("C++ (x)")));
+        // An untitled session takes only the legacy prefix — "any title" would take app and
+        // desktop windows with it.
+        QVERIFY(isInstanceMirrorTitle(QStringLiteral("Remora:old"), QString()));
+        QVERIFY(!isInstanceMirrorTitle(QStringLiteral("old"), QString()));
+    }
+
+    void instanceMirrorsAreTheMainWindowAndItsSplashOnly() {
+        const QString t = QStringLiteral("10.0.0.5:5555");
+        const QVector<MirrorEntry> all{
+            mirrorAt(1, t, QStringLiteral("A")),
+            mirrorAt(2, t, QStringLiteral("A"), MirrorKind::Splash, MirrorSessionState::Pending),
+            mirrorAt(3, t, QStringLiteral("A"), MirrorKind::App),  // an app titled like the profile
+            mirrorAt(4, t, pipWindowTitle(QStringLiteral("A")), MirrorKind::Pip),
+            mirrorAt(5, t, kDesktopTitlePrefix + QStringLiteral("A"), MirrorKind::Desktop),
+            mirrorAt(6, QStringLiteral("10.0.0.5:55550"), QStringLiteral("A")),
+            mirrorAt(7, t, QStringLiteral("B"))};
+        QCOMPARE(mirrorPids(instanceMirrors(all, t, QStringLiteral("A"))), (QList<qint64>{1, 2}));
+        QVERIFY(instanceMirrors(all, QString(), QStringLiteral("A")).isEmpty());
+        MirrorQuery q;
+        q.target = t;
+        QCOMPARE(selectMirrors(all, q).size(), 6);
+        q = {};
+        q.exactTitle = pipWindowTitle(QStringLiteral("A"));
+        QCOMPARE(mirrorPids(selectMirrors(all, q)), QList<qint64>{4});
+    }
+
+    void mirrorEntryRoundTripsAndRefusesWhatIsNotOne() {
+        MirrorEntry e = mirrorAt(77, QStringLiteral("10.0.0.5:5555"), QStringLiteral("Remora PIP — A"),
+                                 MirrorKind::Pip, MirrorSessionState::Lost);
+        const auto back = decodeMirrorEntry(encodeMirrorEntry(e));
+        QVERIFY(back);
+        QCOMPARE(back->pid, e.pid);
+        QCOMPARE(back->serial, e.serial);
+        QCOMPARE(back->title, e.title);
+        QCOMPARE(back->kind, e.kind);
+        QCOMPARE(back->startedMs, e.startedMs);
+        QCOMPARE(back->session, e.session);
+        QVERIFY(back->registered);
+        QVERIFY(!decodeMirrorEntry("not json"));
+        QVERIFY(!decodeMirrorEntry(R"({"pid":0,"serial":"x:1"})"));
+        QVERIFY(!decodeMirrorEntry(R"({"pid":5})"));
+        // A kind from a newer client is still a mirror on its target.
+        QCOMPARE(decodeMirrorEntry(R"({"pid":5,"serial":"x:1","kind":"hologram"})")->kind,
+                 MirrorKind::Main);
+    }
+
+    // ── the registry on disk ──
+
+    void registryShowsALiveRegistrationAndForgetsItOnExit() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        MirrorEntry self = mirrorAt(QCoreApplication::applicationPid(), QStringLiteral("x:1"),
+                                    QStringLiteral("A"), MirrorKind::Main,
+                                    MirrorSessionState::Pending);
+        {
+            MirrorRegistration reg(self, dir.path());
+            QVERIFY2(reg.ok(), qPrintable(reg.error()));
+            QVector<MirrorEntry> live = readMirrorRegistry(dir.path());
+            QCOMPARE(live.size(), 1);
+            QCOMPARE(live[0].pid, self.pid);
+            QCOMPARE(live[0].serial, self.serial);
+            QCOMPARE(live[0].session, MirrorSessionState::Pending);
+            reg.setSession(MirrorSessionState::Live);
+            QCOMPARE(readMirrorRegistry(dir.path()).value(0).session, MirrorSessionState::Live);
+            reg.setSession(MirrorSessionState::Lost);
+            QCOMPARE(readMirrorRegistry(dir.path()).value(0).session, MirrorSessionState::Lost);
+        }
+        QVERIFY(readMirrorRegistry(dir.path()).isEmpty());
+        QVERIFY(QDir(dir.path()).entryList(QDir::Files | QDir::Hidden).isEmpty());
+    }
+
+    // What a SIGKILLed or crashed mirror leaves: its entry and its lock file, with nobody holding
+    // the lock. The pid in it is THIS process's — alive, and a Remora — which is precisely the
+    // reused-pid case a pid-based staleness test (QLockFile's) gets wrong; the lock decides.
+    void registryReapsTheEntryACrashedMirrorLeftBehind() {
+        QTemporaryDir dir;
+        const qint64 pid = QCoreApplication::applicationPid();
+        const QString id = QStringLiteral("%1-00000000deadbeef").arg(pid);
+        QFile json(dir.filePath(id + QStringLiteral(".json")));
+        QVERIFY(json.open(QIODevice::WriteOnly));
+        json.write(encodeMirrorEntry(mirrorAt(pid, QStringLiteral("x:1"), QStringLiteral("A"))));
+        json.close();
+        QFile lock(dir.filePath(id + QStringLiteral(".lock")));
+        QVERIFY(lock.open(QIODevice::WriteOnly));
+        lock.close();
+        // …and one whose lock file is gone altogether.
+        const QString id2 = QStringLiteral("%1-00000000feedface").arg(pid);
+        QFile json2(dir.filePath(id2 + QStringLiteral(".json")));
+        QVERIFY(json2.open(QIODevice::WriteOnly));
+        json2.write(encodeMirrorEntry(mirrorAt(pid, QStringLiteral("x:1"), QStringLiteral("B"))));
+        json2.close();
+        // …and a lock left with no entry at all.
+        QFile orphan(dir.filePath(QStringLiteral("99-0000000000000001.lock")));
+        QVERIFY(orphan.open(QIODevice::WriteOnly));
+        orphan.close();
+
+        MirrorRegistration live(mirrorAt(pid, QStringLiteral("x:1"), QStringLiteral("C")), dir.path());
+        QVERIFY(live.ok());
+        const QVector<MirrorEntry> found = readMirrorRegistry(dir.path());
+        QCOMPARE(found.size(), 1);
+        QCOMPARE(found[0].title, QStringLiteral("C"));
+        // The dead ones' files are gone; the live one's are untouched.
+        QCOMPARE(QDir(dir.path()).entryList(QDir::Files).size(), 2);
+    }
+
+    // A held lock vouches for its own entry only: an entry whose pid disagrees with the id its
+    // owner wrote is damaged, and a damaged entry's pid is not one to hand to a stop call.
+    void registrySkipsAnEntryWhosePidDisagreesWithItsId() {
+        QTemporaryDir dir;
+        MirrorRegistration reg(mirrorAt(QCoreApplication::applicationPid(), QStringLiteral("x:1"),
+                                        QStringLiteral("A")),
+                               dir.path());
+        QVERIFY(reg.ok());
+        const QStringList jsons = QDir(dir.path()).entryList({QStringLiteral("*.json")});
+        QCOMPARE(jsons.size(), 1);
+        QFile f(dir.filePath(jsons[0]));
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(encodeMirrorEntry(mirrorAt(1, QStringLiteral("x:1"), QStringLiteral("A"))));
+        f.close();
+        QVERIFY(readMirrorRegistry(dir.path()).isEmpty());
+        QVERIFY(QFile::exists(dir.filePath(jsons[0])));  // not removed: its owner is alive
+    }
+
+    void registryOfANonexistentDirectoryIsEmpty() {
+        QTemporaryDir dir;
+        QVERIFY(readMirrorRegistry(dir.filePath(QStringLiteral("never-made"))).isEmpty());
+    }
+
+#ifdef Q_OS_LINUX
+    // The upgrade fallback reads /proc: a mirror an older Remora started is found by its exact
+    // argv — no pgrep, no joined-string ambiguity over a title with spaces in it, no wrapper shell
+    // mistaken for the mirror it mentions. Fed a proc tree of its own so the suite never sees the
+    // machine's real mirrors.
+    void procFallbackFindsMirrorsThatNeverRegistered() {
+        QTemporaryDir proc;
+        const auto task = [&](const QString &pid, const QStringList &argv) {
+            QDir().mkpath(proc.filePath(pid));
+            QFile f(proc.filePath(pid + QStringLiteral("/cmdline")));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            for (const QString &a : argv) f.write(a.toUtf8() + '\0');
+        };
+        task(QStringLiteral("4100"), {"/opt/old/remora", "mirror", "-s", "10.9.8.7:5555",
+                                      "--window-title=Remora PIP — legacy one",
+                                      "--app-id=remora-pip"});
+        task(QStringLiteral("4101"), {"./build/remora", "mirror", "-s", "10.9.8.7:5555",
+                                      "--window-title", "legacy one"});
+        task(QStringLiteral("4102"), {"/bin/sh", "-c", "remora mirror -s 10.9.8.7:5555"});
+        task(QStringLiteral("4103"), {"remora", "mirror", "-s", "10.9.8.7:5555", "--list-apps"});
+        task(QString::number(QCoreApplication::applicationPid()),
+             {"/usr/bin/remora", "mirror", "-s", "10.9.8.7:5555"});  // never itself
+        task(QStringLiteral("self"), {"/usr/bin/remora", "mirror", "-s", "10.9.8.7:5555"});
+        QDir().mkpath(proc.filePath(QStringLiteral("4104")));  // a kernel thread: no cmdline
+        QVector<MirrorEntry> found = scanMirrorProcesses(proc.path());
+        std::sort(found.begin(), found.end(),
+                  [](const MirrorEntry &a, const MirrorEntry &b) { return a.pid < b.pid; });
+        QCOMPARE(found.size(), 2);
+        QCOMPARE(found[0].pid, qint64(4100));
+        QCOMPARE(found[0].kind, MirrorKind::Pip);
+        QCOMPARE(found[0].title, QStringLiteral("Remora PIP — legacy one"));
+        QCOMPARE(found[1].pid, qint64(4101));
+        QCOMPARE(found[1].kind, MirrorKind::Main);
+        QCOMPARE(found[1].title, QStringLiteral("legacy one"));
+        QVERIFY(!found[0].registered && !found[1].registered);
+        // …and it is an instance mirror like any registered one, so every reap still finds it.
+        QCOMPARE(mirrorPids(instanceMirrors(found, QStringLiteral("10.9.8.7:5555"),
+                                            QStringLiteral("legacy one"))),
+                 QList<qint64>{4101});
+    }
+#endif
 };
 
 QTEST_MAIN(TestEngine)

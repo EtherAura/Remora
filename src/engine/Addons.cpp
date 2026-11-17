@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
@@ -122,6 +123,69 @@ QString quoteJoin(const QStringList &argv) {
     return q.join(QLatin1Char(' '));
 }
 
+// A scratch directory on the Docker host for AddonPaths::stageOnHost, made on first use and removed
+// with everything in it when this goes out of scope. The path is held to the exact shape mktemp
+// gives, so nothing else can ever reach the rm.
+class HostScratch {
+public:
+    HostScratch(Spawner &sp, const QString &host, const LineSink &log)
+        : sp_(sp), host_(host), log_(log) {}
+    ~HostScratch() {
+        if (!dir_.isEmpty()) sp_.run(ssh(QStringLiteral("rm -rf -- ") + shellQuote(dir_)), {}, {});
+    }
+    QStringList ssh(const QString &cmd) const {
+        QStringList a = Spawner::sshArgv(host_, cmd, 10);
+        a.insert(1, QStringLiteral("BatchMode=yes"));
+        a.insert(1, QStringLiteral("-o"));
+        return a;
+    }
+    // The directory, made now if it is not yet; empty with *err set when it could not be.
+    QString dir(QString *err) {
+        if (!dir_.isEmpty()) return dir_;
+        const ProcResult made =
+            sp_.run(ssh(QStringLiteral("umask 077; mktemp -d /tmp/remora-addons.XXXXXXXXXX")), {},
+                    log_);
+        const QString d = made.out.trimmed();
+        if (made.rc != 0 ||
+            !QRegularExpression(QStringLiteral("^/tmp/remora-addons\\.[A-Za-z0-9]{10}$"))
+                 .match(d)
+                 .hasMatch()) {
+            *err = QStringLiteral("could not make a staging directory on %1").arg(host_);
+            return QString();
+        }
+        dir_ = d;
+        return dir_;
+    }
+    ProcResult run(const QStringList &argv) { return sp_.run(ssh(quoteJoin(argv)), {}, log_); }
+    // scp, either way; `toHost` copies local → remote. -r so a directory travels whole.
+    ProcResult copy(const QString &from, const QString &to, bool toHost) {
+        return sp_.run(Spawner::scpArgv({toHost ? from : host_ + QLatin1Char(':') + from,
+                                         toHost ? host_ + QLatin1Char(':') + to : to},
+                                        {QStringLiteral("-q"), QStringLiteral("-r"),
+                                         QStringLiteral("-o"), QStringLiteral("BatchMode=yes"),
+                                         QStringLiteral("-o"), QStringLiteral("ConnectTimeout=10")}),
+                       {}, log_);
+    }
+
+private:
+    Spawner &sp_;
+    QString host_;
+    LineSink log_;
+    QString dir_;
+};
+
+// Executable again what can execute. A file copied off a Windows filesystem arrives without its
+// mode — NTFS has none to send — and the layer's COPY keeps whatever mode the context holds, so
+// zygiskd64 or a guest linker would land in the image unrunnable. Content decides, not a path list:
+// every ELF and every #! script under `dir` becomes 0755, which is the mode each one carries in a
+// checkout that kept it.
+QString restoreExecBits(const QString &dir) {
+    return QStringLiteral("find %1 -type f | while IFS= read -r f; do "
+                          "m=$(head -c 4 \"$f\" | od -An -tx1 | tr -d ' \\n'); "
+                          "case \"$m\" in 7f454c46|2321*) chmod 755 \"$f\";; esac; done")
+        .arg(shellQuote(dir));
+}
+
 }  // namespace
 
 QString userPayloadDir() {
@@ -132,11 +196,17 @@ QString userPayloadDir() {
 }
 
 AddonPaths defaultAddonPaths() {
-    const QString vendor = QStringLiteral(REMORA_VENDOR_DIR);
+    const QString vendor = vendorDir();
+#ifdef Q_OS_WIN
+    const bool onHost = true;
+#else
+    const bool onHost = false;
+#endif
     return {{userPayloadDir(), vendor + QStringLiteral("/source-build/features")},
             vendor,
             QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) +
-                QStringLiteral("/remora")};
+                QStringLiteral("/remora"),
+            onHost};
 }
 
 AddonPayload locateAddonPayload(const QString &feature, const AddonPaths &paths) {
@@ -201,10 +271,40 @@ StepResult ensureAddonOverlay(Spawner &sp, RemoraConfig &cfg, Backend backend,
     // The payloads, on this computer. Magisk is fetched when it is missing, from its recorded
     // upstream with the pinned hash; the others are proprietary with no recorded source, so only
     // the user can supply them.
+    HostScratch scratch(sp, host, log);
+    if (paths.stageOnHost && host.isEmpty())
+        return StepResult::fail(QStringLiteral(
+            "add-ons are staged on the Docker host, and this profile names none — set ssh_host"));
     QVector<AddonPayload> payloads;
     for (const QString &f : pending) {
         AddonPayload p = locateAddonPayload(f, paths);
-        if (p.dir.isEmpty() && p.fetchable && !paths.payloadRoots.isEmpty()) {
+        if (p.dir.isEmpty() && p.fetchable && !paths.payloadRoots.isEmpty() && paths.stageOnHost) {
+            // Fetched where the shell, curl and unzip are, then copied back into the payload dir
+            // here, so the fingerprint below reads the same bytes either way.
+            QString err;
+            const QString d = scratch.dir(&err);
+            if (d.isEmpty()) return StepResult::fail(err);
+            const QString root = paths.payloadRoots.first();
+            if (log) log(QStringLiteral("stdout"),
+                         QStringLiteral("fetching the %1 payload on %2 into %3").arg(p.name, host, root));
+            ProcResult fr = scratch.copy(paths.vendorDir + QStringLiteral("/fetch-payloads.sh"),
+                                         d + QStringLiteral("/fetch-payloads.sh"), true);
+            if (fr.rc == 0)
+                fr = sp.run(scratch.ssh(QStringLiteral("REMORA_PAYLOAD_DIR=%1 sh %2 %3")
+                                            .arg(shellQuote(d + QStringLiteral("/fetched")),
+                                                 shellQuote(d + QStringLiteral("/fetch-payloads.sh")),
+                                                 shellQuote(p.name))),
+                            {}, log);
+            if (fr.rc == 0) {
+                QDir().mkpath(root);
+                fr = scratch.copy(d + QStringLiteral("/fetched/") + p.name, root, false);
+            }
+            if (fr.rc != 0)
+                return StepResult::fail(QStringLiteral("could not fetch the %1 payload for %2 on %3")
+                                            .arg(p.name, f, host),
+                                        fr.stderrTail);
+            p = locateAddonPayload(f, paths);
+        } else if (p.dir.isEmpty() && p.fetchable && !paths.payloadRoots.isEmpty()) {
             if (log) log(QStringLiteral("stdout"),
                          QStringLiteral("fetching the %1 payload into %2").arg(p.name, paths.payloadRoots.first()));
             const ProcResult fr =
@@ -263,6 +363,112 @@ StepResult ensureAddonOverlay(Spawner &sp, RemoraConfig &cfg, Backend backend,
             QStringLiteral("reused %1 — %2 over %3").arg(tag, what, rc.imageTag));
     }
 
+    const QString sb = paths.vendorDir + QStringLiteral("/source-build");
+    const QString dockerfile =
+        addonLayerDockerfile(pending, rc.imageTag, rc.androidVersion, baseId, rootId, recipe);
+    if (paths.stageOnHost) {
+        // The same staging as below, every command run on the Docker host against copies of the
+        // same inputs: Remora's halves under <d>/sb at their paths in source-build, each payload at
+        // <d>/payloads/<name>, the context at <d>/ctx.
+        QString err;
+        const QString d = scratch.dir(&err);
+        if (d.isEmpty()) return StepResult::fail(err);
+        const QString hsb = d + QStringLiteral("/sb"), hp = d + QStringLiteral("/payloads"),
+                      hc = d + QStringLiteral("/ctx");
+        QStringList own, made{hsb, hp, hc};
+        for (const AddonPayload &p : payloads)
+            for (const QString &f : ownFiles(p.feature, paths.vendorDir))
+                if (!own.contains(f)) {
+                    own << f;
+                    made << hsb + QLatin1Char('/') + QFileInfo(QDir(sb).relativeFilePath(f)).path();
+                }
+        made.removeDuplicates();
+        const auto failed = [&](const QString &what, const ProcResult &r) {
+            return StepResult::fail(QStringLiteral("%1 on %2 failed").arg(what, host), r.stderrTail);
+        };
+        ProcResult r = scratch.run(QStringList{QStringLiteral("mkdir"), QStringLiteral("-p")} + made);
+        if (r.rc != 0) return failed(QStringLiteral("preparing the add-on context"), r);
+        for (const QString &f : own) {
+            const QString rel = QDir(sb).relativeFilePath(f);
+            // A directory lands INSIDE the target with scp -r, so it is copied to its parent.
+            r = scratch.copy(f, QFileInfo(f).isDir() ? hsb + QLatin1Char('/') + QFileInfo(rel).path()
+                                                     : hsb + QLatin1Char('/') + rel,
+                             true);
+            if (r.rc != 0) return failed(QStringLiteral("copying %1").arg(rel), r);
+        }
+        QStringList sent;
+        for (const AddonPayload &p : payloads) {
+            if (sent.contains(p.name)) continue;
+            sent << p.name;
+            r = scratch.copy(p.dir, hp, true);
+            if (r.rc != 0) return failed(QStringLiteral("copying the %1 payload").arg(p.name), r);
+        }
+        r = sp.run(scratch.ssh(restoreExecBits(d)), {}, log);
+        if (r.rc != 0) return failed(QStringLiteral("restoring file modes"), r);
+        const auto at = [&](const AddonPayload &p) { return hp + QLatin1Char('/') + p.name; };
+        bool spoofOnHost = false;
+        for (const AddonPayload &p : payloads) {
+            QVector<QStringList> steps;
+            if (p.feature == QLatin1String("magisk_root")) {
+                steps << QStringList{QStringLiteral("mkdir"), QStringLiteral("-p"),
+                                     hc + QStringLiteral("/magisk")}
+                      << QStringList{QStringLiteral("cp"), QStringLiteral("-a"),
+                                     at(p) + QStringLiteral("/magisk"),
+                                     hc + QStringLiteral("/magisk/magisk")}
+                      << QStringList{QStringLiteral("cp"),
+                                     hsb + QStringLiteral("/features/magisk/magisk.rc"),
+                                     hsb + QStringLiteral("/features/magisk/magisk-setup.sh"),
+                                     hc + QStringLiteral("/magisk/")};
+            } else if (p.feature == QLatin1String("arm_translate")) {
+                steps << QStringList{QStringLiteral("sh"), hsb + QStringLiteral("/stage-arm-layer.sh"),
+                                     hc, at(p)};
+            } else if (p.feature == QLatin1String("play_spoof") ||
+                       p.feature == QLatin1String("shamiko")) {
+                if (spoofOnHost) continue;
+                spoofOnHost = true;
+                QStringList argv{QStringLiteral("sh"), hsb + QStringLiteral("/stage-spoof-layer.sh"),
+                                 hc, QStringLiteral("--payload"), at(p)};
+                if (pending.contains(QLatin1String("play_spoof"))) {
+                    argv << QStringLiteral("--spoof");
+                    if (rc.addons.contains(QLatin1String("arm_translate")))
+                        argv << QStringLiteral("--nb-sigfix")
+                             << hsb + QStringLiteral("/features/nb_sigfix");
+                }
+                if (pending.contains(QLatin1String("shamiko"))) argv << QStringLiteral("--shamiko");
+                steps << argv;
+            } else if (p.feature == QLatin1String("widevine_l3")) {
+                steps << QStringList{QStringLiteral("mkdir"), QStringLiteral("-p"),
+                                     hc + QStringLiteral("/wv")}
+                      << QStringList{QStringLiteral("cp"), QStringLiteral("-a"),
+                                     at(p) + QStringLiteral("/vendor"),
+                                     hc + QStringLiteral("/wv/vendor")};
+            }
+            for (const QStringList &s : steps) {
+                r = scratch.run(s);
+                if (r.rc != 0)
+                    return StepResult::fail(
+                        QStringLiteral("staging %1 for the add-on layer failed").arg(p.feature),
+                        r.stderrTail);
+            }
+        }
+        // The Dockerfile travels as a file: scp is the one copy that needs no shell on this side.
+        QTemporaryDir local;
+        QFile df(local.path() + QStringLiteral("/Dockerfile"));
+        if (!local.isValid() || !df.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+            df.write(dockerfile.toUtf8()) < 0)
+            return StepResult::fail(QStringLiteral("cannot write a Dockerfile in %1").arg(local.path()));
+        df.close();
+        r = scratch.copy(df.fileName(), hc + QStringLiteral("/Dockerfile"), true);
+        if (r.rc != 0) return failed(QStringLiteral("copying the Dockerfile"), r);
+        const ProcResult built = scratch.run(buildImageBuildArgv(tag, hc));
+        if (built.rc != 0)
+            return StepResult::fail(QStringLiteral("could not build the add-on layer (%1) over %2")
+                                        .arg(what, rc.imageTag),
+                                    built.stderrTail);
+        cfg.image.addonOverlay = tag;
+        return StepResult::good(QStringLiteral("built %1 — %2 over %3").arg(tag, what, rc.imageTag));
+    }
+
     // The context, assembled on this computer: Docker reads it from here, or from the tar stream
     // ssh carries to a remote host. Removed when this returns, whatever happened.
     QDir().mkpath(paths.stageParent);
@@ -271,7 +477,6 @@ StepResult ensureAddonOverlay(Spawner &sp, RemoraConfig &cfg, Backend backend,
         return StepResult::fail(QStringLiteral("cannot create a build directory in %1")
                                     .arg(paths.stageParent));
     const QString c = ctx.path();
-    const QString sb = paths.vendorDir + QStringLiteral("/source-build");
     bool spoofStaged = false;
     for (const AddonPayload &p : payloads) {
         ProcResult r{0, {}, {}};
@@ -313,9 +518,7 @@ StepResult ensureAddonOverlay(Spawner &sp, RemoraConfig &cfg, Backend backend,
                                     r.stderrTail);
     }
     QFile df(c + QStringLiteral("/Dockerfile"));
-    if (!df.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
-        df.write(addonLayerDockerfile(pending, rc.imageTag, rc.androidVersion, baseId, rootId, recipe)
-                     .toUtf8()) < 0)
+    if (!df.open(QIODevice::WriteOnly | QIODevice::Truncate) || df.write(dockerfile.toUtf8()) < 0)
         return StepResult::fail(QStringLiteral("cannot write %1").arg(df.fileName()));
     df.close();
 

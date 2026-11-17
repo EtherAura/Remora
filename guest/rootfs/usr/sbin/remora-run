@@ -1,0 +1,23 @@
+#!/bin/sh
+# The guest's three long-running services, run by init itself (see /etc/inittab) rather than by
+# OpenRC: init respawns its children the moment they die, whatever killed them, and keeps no
+# state that a mass kill could leave stale. Each runs in the foreground, logging to /var/log.
+case "$1" in
+sshd)
+    # sshd re-execs itself by absolute path, and wants its privilege-separation directory.
+    mkdir -p /var/empty
+    exec /usr/sbin/sshd -D -e 2>>/var/log/sshd.log
+    ;;
+dockerd)
+    # What /etc/init.d/docker would set: Android's init and its zygotes open a great many files.
+    ulimit -n 1048576
+    ulimit -u unlimited
+    exec /usr/bin/dockerd >>/var/log/docker.log 2>&1
+    ;;
+acpid)
+    # The power button QEMU presses for a graceful shutdown (QMP system_powerdown).
+    exec /sbin/acpid -f
+    ;;
+esac
+echo "remora-run: unknown service $1" >&2
+exit 1

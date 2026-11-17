@@ -83,19 +83,22 @@ void AppMenuWorker::run() {
 }
 
 ReadinessWorker::ReadinessWorker(Backend backend, QString sshHost, bool gpuHost, bool macvlan,
-                                 bool sharedInputs, bool needsAshmem, QObject *parent)
+                                 bool sharedInputs, bool needsAshmem,
+                                 QStringList bareOnlyRequested, QObject *parent)
     : QThread(parent),
       backend_(backend),
       sshHost_(std::move(sshHost)),
       gpuHost_(gpuHost),
       macvlan_(macvlan),
       sharedInputs_(sharedInputs),
-      needsAshmem_(needsAshmem) {}
+      needsAshmem_(needsAshmem),
+      bareOnlyRequested_(std::move(bareOnlyRequested)) {}
 
 void ReadinessWorker::run() {
     RealSpawner sp;
     const HostCapabilities caps = probeCapabilities(backend_, sshHost_, sp);
-    const auto results = checkReadiness(backend_, caps, gpuHost_, macvlan_, sharedInputs_, needsAshmem_);
+    const auto results = checkReadiness(backend_, caps, gpuHost_, macvlan_, sharedInputs_,
+                                        needsAshmem_, bareOnlyRequested_);
     QStringList lines;
     for (const PrereqResult &r : results) {
         QString line = (r.ok ? QStringLiteral("✓ ") : QStringLiteral("✗ ")) + r.label;
@@ -177,8 +180,8 @@ void ArmAppInstallWorker::run() {
         }
         emit sigLine(QStringLiteral("staging remora-arm-fetch.sh → ") + guest);
         const ProcResult scp =
-            sp.run({QStringLiteral("scp"), script, guest + QStringLiteral(":remora-arm-fetch.sh")},
-                   {}, onLine);
+            sp.run(Spawner::scpArgv({script, guest + QStringLiteral(":remora-arm-fetch.sh")}), {},
+                   onLine);
         if (scp.rc != 0) {
             emit sigDone(false, QStringLiteral("could not copy the fetch script to ") + guest);
             return;

@@ -43,6 +43,21 @@ ProcResult runPlayInstall(Spawner &sp, const QStringList &arguments, const QStri
                                   "original image, running instances and Android data are "
                                   "retained. Use the new image with fresh Android data.") +
                            "\nUse --accept-terms " + playTermsVersion()};
+#ifdef Q_OS_WIN
+    // No python3 or docker here (bd remora-7oih.3). The terms are printed by Remora itself —
+    // nothing runs and nothing is downloaded to read them — and an install goes to a Linux docker
+    // host or nowhere.
+    if (arguments.contains("--show-terms"))
+        return {0, playNotice(QStringLiteral("This downloads directly from the provider on the "
+                                             "Docker host and creates a separate local image "
+                                             "there; the original image and Android data are "
+                                             "retained.")) + '\n',
+                {}};
+    if (host.isEmpty())
+        return {2, {}, QStringLiteral("Google Play is installed on a Linux docker host, and on "
+                                      "Windows there is no local one — pass --host user@host, or "
+                                      "set ssh_host on the profile")};
+#endif
     if (host.isEmpty() || arguments.contains("--show-terms"))
         return sp.run(QStringList{"python3", script, "--manifest", data} + arguments, {}, log);
     const auto ssh = [&host](const QString &command) {
@@ -57,8 +72,9 @@ ProcResult runPlayInstall(Spawner &sp, const QStringList &arguments, const QStri
     const QString dir = made.out.trimmed();
     if (!QRegularExpression("^/tmp/remora-play\\.[A-Za-z0-9]{10}$").match(dir).hasMatch())
         return {2, {}, "Remote mktemp returned an unexpected path"};
-    auto result = sp.run({"scp", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                          "--", script, data, host + ":" + dir + "/"}, {}, log);
+    auto result = sp.run(Spawner::scpArgv({script, data, host + ":" + dir + "/"},
+                                          {"-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"}),
+                         {}, log);
     if (!result.rc) {
         QStringList cmd{"python3", dir + "/install.py", "--manifest", dir + "/package.json"};
         cmd += arguments;

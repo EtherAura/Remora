@@ -81,6 +81,16 @@ because a missing library boots to a black screen instead of to an error.
 Remora starts the render server in its own systemd scope, so it outlives the workspace, and
 generates the mounts and properties the container needs.
 
+**Venus is bare only.** The render server runs on the machine running Remora, beside the
+container, and a `remote` deploy has nothing that starts one on the docker host. The same goes for
+`host_encode` and `host_decode` below. On `remote`, automatic Venus stays off even when the docker
+host has the whole stack. A `remote` profile with `gpu_mode=host` and `venus=true`,
+`host_encode=true` or `host_decode=true` is refused before anything is created: `remora up` fails
+its preflight and names the setting, `remora check` reports it as a required row, and
+`remora plan` prints it as a `DEPLOY WILL REFUSE` line above the commands. Turn the setting off for that profile, or run
+Remora on the docker host itself with `backend=bare`. In guest mode the three settings do nothing
+on either target, so they are not refused there.
+
 **The image must carry the matching gralloc.** A deploy refuses to proceed if the image has no
 `gralloc.minigbm_gbm_mesa.so`. Build the image with the `minigbm_gbm_mesa_vtest` source patch,
 which is off by default, or set `venus=false`.
@@ -104,7 +114,8 @@ remora check --gpu-host
 ```
 
 The GPU rows appear automatically for a profile with `gpu_mode=host`. They never block a deploy.
-They exist to explain what the deploy will render on.
+They exist to explain what the deploy will render on. The NVIDIA, Venus and host-encode rows are
+`bare` only, because those features are.
 
 | row | if it fails |
 |---|---|
@@ -153,13 +164,12 @@ decrypts in software and is capped at SD, so the real benefit is on unencrypted 
 ### Decoding on the host
 
 NVIDIA's VA-API driver cannot run inside Android. `host_decode=true` decodes on the host instead:
-Remora starts a helper on the docker host at each connect, after probing that the host can decode,
-and Android's decoder sends it the compressed stream. If the helper is missing or does not answer,
-decoding falls back to the local path, so a problem costs the optimisation and never the video. It
-needs `gpu_mode=host` and the helper on the docker host. The Remora build compiles it when it
-finds libva and FFmpeg's development files, and `make -C vendor/native host-decoder` builds it on
-its own for another docker host. The helper uses whatever VA-API driver the host has, so it also
-works on Intel and AMD hosts.
+Remora starts a helper beside the container at each connect, after probing that the host can
+decode, and Android's decoder sends it the compressed stream. If the helper is missing or does not
+answer, decoding falls back to the local path, so a problem costs the optimisation and never the
+video. It needs `backend=bare`, `gpu_mode=host` and the helper, which the Remora build compiles
+when it finds libva and FFmpeg's development files. The helper uses whatever VA-API driver the host
+has, so it also works on Intel and AMD hosts.
 
 ## What the GPU means for the mirror
 
@@ -170,7 +180,7 @@ works on Intel and AMD hosts.
 | a GPU whose VA-API driver cannot encode, such as NVIDIA's decode-only driver | falls back to h264, unless `host_encode` is on |
 
 `host_encode=true` encodes the mirror on the host GPU instead of inside Android. It needs
-`gpu_mode=host`, the Venus stack, and the host frame encoder. The `.deb` does not include that
+`backend=bare`, `gpu_mode=host`, the Venus stack, and the host frame encoder. The `.deb` does not include that
 encoder: see [Installation](Installation.md). More on these settings is in
 [Mirroring](Mirroring.md#video-and-audio-settings) and
 [HW-VIDEO-DECODE.md](../HW-VIDEO-DECODE.md).

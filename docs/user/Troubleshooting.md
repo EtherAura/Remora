@@ -39,6 +39,7 @@ logcat, which can include things you would rather not publish. Redact freely.
 | `gpu_mode=<value> is not a GPU mode` | only `host` and `guest` are valid | set one of them, or remove the key for the default (`guest`) |
 | another container "is already using" something | a running instance holds a resource this profile needs, for example the host adb port | stop that instance, or give this profile its own, then retry |
 | `DEPLOY WILL REFUSE` about `/data` | the data directory on disk does not have the layout the profile resolves to (layered, or a plain bind) | follow the refusal text. `use_overlayfs` selects the layout |
+| `DEPLOY WILL REFUSE` about `venus`, `host_encode` or `host_decode` | a `remote` profile turned on a GPU helper that only runs beside a `bare` container | turn the setting off for that profile, or run Remora on the docker host with `backend=bare`. See [GPU Acceleration](GPU-Acceleration.md#what-happens-at-deploy) |
 | `DEPLOY WILL REFUSE` about CPU tuning | the image was built for an `arch_variant` whose instructions this CPU lacks | deploy a portable image, build with a variant this host satisfies, or run the image on a host that has the missing flags |
 | the image has no `gralloc.minigbm_gbm_mesa.so` | Venus is on but the image was built without its gralloc | rebuild with the `minigbm_gbm_mesa_vtest` source patch, or set `venus=false` |
 

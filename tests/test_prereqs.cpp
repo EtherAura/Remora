@@ -2,9 +2,11 @@
 #include <QProcess>
 #include <QtTest>
 
+#include "TestPlatform.h"
 #include "core/Builders.h"
 #include "core/Prereqs.h"
 #include "core/Resolved.h"
+#include "core/Resolver.h"
 
 // The host encoder's own --codec gate, compiled here as it is there (it carries no ffmpeg).
 #include "../vendor/native/remora-encoder-names.h"
@@ -19,13 +21,47 @@ static HostCapabilities withTools() {
     return c;
 }
 
+// Bare readiness asks about this machine's docker, which only a Linux client has. The client's OS
+// is an input (HostCapabilities::localOs), so these rows hold on a Windows build as well; what
+// Windows answers instead is windowsBareIsOneLinuxRefusal.
+static HostCapabilities linuxClient() {
+    HostCapabilities c = withTools();
+    c.localOs = LocalOs::Unix;
+    return c;
+}
+
 class TestPrereqs : public QObject {
     Q_OBJECT
 private slots:
+    // bd remora-7oih.2 — a Windows client cannot run bare, so its readiness says that ONCE instead
+    // of listing the docker group, a local daemon and ashmem as missing with usermod / systemctl /
+    // modprobe remedies it could never act on. Remote readiness is the same rows as on Linux.
+    void windowsBareIsOneLinuxRefusal() {
+        HostCapabilities c = withTools();
+        c.localOs = LocalOs::Windows;
+        const auto r = checkReadiness(Backend::Bare, c, false, false, false, true);
+        QVERIFY(!isReady(r));
+        QStringList keys;
+        for (const auto &row : r) keys << row.key;
+        QCOMPARE(keys, (QStringList{"adb", "bare_linux"}));
+        QCOMPARE(r.at(1).remedy, bareNeedsLinuxMessage());
+        c.sshReachable = true;
+        c.remoteDockerOk = true;
+        QVERIFY(isReady(checkReadiness(Backend::Remote, c)));
+        // adb's remedy names what a Windows user installs
+        c.adbPresent = false;
+        QVERIFY(checkReadiness(Backend::Remote, c).at(0).remedy.contains(
+            QLatin1String("Platform-Tools")));
+        const HostCapabilities onLinux = linuxClient();
+        QStringList linuxKeys;
+        for (const auto &row : checkReadiness(Backend::Bare, onLinux, false, false, false, true))
+            linuxKeys << row.key;
+        QCOMPARE(linuxKeys, (QStringList{"adb", "docker_group", "docker_daemon", "ashmem"}));
+    }
+
     // A daemon that cannot be asked blocks a bare deploy, and names itself.
     void dockerDaemonDownBlocksBare() {
-        HostCapabilities c;
-        c.adbPresent = true;
+        HostCapabilities c = linuxClient();
         c.inDockerGroup = true;
         c.modAshmem = true;
         c.dockerDaemonOk = false;
@@ -45,7 +81,7 @@ private slots:
         QVERIFY(releaseNeedsAshmem(16));
         QVERIFY(releaseNeedsAshmem(13));
         QVERIFY(!releaseNeedsAshmem(17));
-        HostCapabilities c = withTools();
+        HostCapabilities c = linuxClient();
         c.inDockerGroup = true;
         c.dockerDaemonOk = true;
         c.modAshmem = false;
@@ -64,7 +100,7 @@ private slots:
     // check must not block harder than the deploy does. Without this row, a docker host missing
     // python3 fails every expose with "could not run remora-input-share.py" and nothing names why.
     void python3RowAppearsOnlyWhenSharingInputs() {
-        HostCapabilities c = withTools();
+        HostCapabilities c = linuxClient();
         c.inDockerGroup = true;
         c.dockerDaemonOk = true;
         c.modAshmem = true;
@@ -95,7 +131,7 @@ private slots:
     // one that names it. Reported only when both sides are known: absence of either is the
     // venus_nvidia_node row's business, and a non-NVIDIA host must not grow a row about NVIDIA.
     void nvidiaAbiMismatchIsNamedButNeverBlocks() {
-        HostCapabilities c = withTools();
+        HostCapabilities c = linuxClient();
         c.inDockerGroup = true;
         c.dockerDaemonOk = true;
         c.modAshmem = true;
@@ -132,7 +168,7 @@ private slots:
     // want it is not broken for lacking it. Before these checks a missing piece surfaced only at
     // connect, as a log line the CLI summarises away.
     void hostEncodeIsReportedButNeverBlocks() {
-        HostCapabilities c = withTools();
+        HostCapabilities c = linuxClient();
         c.inDockerGroup = true;
         c.dockerDaemonOk = true;
         c.modAshmem = true;
@@ -160,7 +196,7 @@ private slots:
     }
 
     void bareReady() {
-        HostCapabilities c = withTools();
+        HostCapabilities c = linuxClient();
         c.inDockerGroup = true;
         c.dockerDaemonOk = true;
         c.modAshmem = true;
@@ -168,7 +204,7 @@ private slots:
     }
 
     void bareMissingAshmem() {
-        HostCapabilities c = withTools();
+        HostCapabilities c = linuxClient();
         c.inDockerGroup = true;
         c.dockerDaemonOk = true;
         QVERIFY(!isReady(checkReadiness(Backend::Bare, c)));
@@ -178,7 +214,7 @@ private slots:
     // A probed driver with no VA mapping gets a failing "gpu"-severity row (advisory: it must
     // never block a deploy); a mapped driver passes; no probe, no row.
     void bareUnmappedVaDriverIsNamedNotSilent() {
-        HostCapabilities c = withTools();
+        HostCapabilities c = linuxClient();
         c.inDockerGroup = true;
         c.dockerDaemonOk = true;
         c.modAshmem = true;
@@ -205,6 +241,33 @@ private slots:
         c.sshReachable = true;
         c.remoteDockerOk = true;
         QVERIFY(isReady(checkReadiness(Backend::Remote, c)));
+    }
+
+    // bd remora-7oih.3 — what preflight refuses, check reports as a required failure, in the same
+    // words; and the Venus/host-encode rows are bare-only, because the remote probe no longer
+    // scans for pieces nothing on remote would use.
+    void remoteBareOnlyGpuSettingsAreNotReady() {
+        const auto find = [](const QVector<PrereqResult> &v, const QString &key) {
+            for (const PrereqResult &r : v)
+                if (r.key == key) return r;
+            return PrereqResult{};
+        };
+        HostCapabilities c = withTools();
+        c.sshReachable = true;
+        c.remoteDockerOk = true;
+        const QStringList asked{QStringLiteral("host_encode=true")};
+        const QVector<PrereqResult> rows =
+            checkReadiness(Backend::Remote, c, /*gpuHost=*/true, false, false, true, asked);
+        QVERIFY(!isReady(rows));
+        const PrereqResult row = find(rows, QStringLiteral("bare_only_gpu"));
+        QVERIFY(row.label.contains(QStringLiteral("host_encode=true")));
+        QCOMPARE(row.remedy, bareOnlyFeaturesRefusal(asked));
+        QVERIFY(find(rows, QStringLiteral("venus_server")).key.isEmpty());
+        QVERIFY(find(rows, QStringLiteral("host_encoder_built")).key.isEmpty());
+        QVERIFY(isReady(checkReadiness(Backend::Remote, c, true)));
+        // Bare keeps the advisory rows.
+        QVERIFY(!find(checkReadiness(Backend::Bare, c, true), QStringLiteral("venus_server"))
+                     .key.isEmpty());
     }
 
     void remoteNoDocker() {
@@ -283,6 +346,7 @@ private slots:
     // alderlake image on the machine that built it. Reads its flags from THIS host at run time, so
     // it cannot be satisfied by a fixture that agrees with a mistake.
     void archVariantNeverRefusesTheHostThatBuiltIt() {
+        SKIP_ON_WINDOWS("reads this host's /proc/cpuinfo, which only Linux has");
         QFile f(QStringLiteral("/proc/cpuinfo"));
         if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) QSKIP("no /proc/cpuinfo");
         // readAll(), NOT a while(!atEnd()) loop: QFile::atEnd() consults size(), procfs reports
@@ -365,12 +429,13 @@ private slots:
     // imported and promoted, and only then. The lifecycle is the helper's own Python, so is its
     // regression; it runs from here, under this suite's isolated HOME.
     void imageFetchReleasesItsArchiveOnlyAfterImport() {
+        SKIP_ON_WINDOWS("the helper is Linux tooling: python3 driving docker on the docker host");
         if (QStringLiteral(REMORA_PYTHON).isEmpty())
             QSKIP("no Python 3 interpreter was found at configure time");
         QProcess p;
         p.setProcessChannelMode(QProcess::MergedChannels);
         p.start(QStringLiteral(REMORA_PYTHON),
-                {QStringLiteral(REMORA_SOURCE_DIR "/tests/test_public_images.py"),
+                {sourcePath(QStringLiteral("tests/test_public_images.py")),
                  QStringLiteral("ImportCache")});
         QVERIFY2(p.waitForFinished(120000), "the image-cache regression did not finish");
         const QByteArray out = p.readAll();
@@ -380,12 +445,13 @@ private slots:
     // The receipt preflight any release prune would need first: a receipt that lacks its
     // rollback fields is unknown rollback state, never a first install that holds nothing back.
     void imageReceiptRetentionRefusesMissingRollbackFields() {
+        SKIP_ON_WINDOWS("the helper is Linux tooling: python3 driving docker on the docker host");
         if (QStringLiteral(REMORA_PYTHON).isEmpty())
             QSKIP("no Python 3 interpreter was found at configure time");
         QProcess p;
         p.setProcessChannelMode(QProcess::MergedChannels);
         p.start(QStringLiteral(REMORA_PYTHON),
-                {QStringLiteral(REMORA_SOURCE_DIR "/tests/test_public_images.py"),
+                {sourcePath(QStringLiteral("tests/test_public_images.py")),
                  QStringLiteral("ReleaseReceiptRetention")});
         QVERIFY2(p.waitForFinished(120000), "the receipt-retention regression did not finish");
         const QByteArray out = p.readAll();
@@ -395,12 +461,13 @@ private slots:
     // The release-tag decision a prune would act on: only an image fetch replaced, by its own
     // rollback alias, that no receipt and no container holds; anything unknown selects nothing.
     void imageReleaseRetentionSelectsOnlyOwnedObsoleteTags() {
+        SKIP_ON_WINDOWS("the helper is Linux tooling: python3 driving docker on the docker host");
         if (QStringLiteral(REMORA_PYTHON).isEmpty())
             QSKIP("no Python 3 interpreter was found at configure time");
         QProcess p;
         p.setProcessChannelMode(QProcess::MergedChannels);
         p.start(QStringLiteral(REMORA_PYTHON),
-                {QStringLiteral(REMORA_SOURCE_DIR "/tests/test_public_images.py"),
+                {sourcePath(QStringLiteral("tests/test_public_images.py")),
                  QStringLiteral("ReleaseRetention")});
         QVERIFY2(p.waitForFinished(120000), "the release-retention regression did not finish");
         const QByteArray out = p.readAll();

@@ -5,6 +5,7 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QMutex>
 #include <QRegularExpression>
@@ -61,8 +62,22 @@ bool runChain(const QVector<Step> &steps, LogSink &sink) {
     return !aborted;
 }
 
+// Compiled in on Linux: the source tree, or the share dir a package installs to. On Windows the
+// package puts vendor/ beside remora.exe, and a path compiled on the build machine would name a
+// directory that does not exist on the PC it runs on (bd remora-7oih). REMORA_VENDOR_DIR in the
+// environment overrides it there, for a build run from somewhere else.
+QString vendorDir() {
+#ifdef Q_OS_WIN
+    const QString env = qEnvironmentVariable("REMORA_VENDOR_DIR");
+    if (!env.isEmpty()) return env;
+    return QCoreApplication::applicationDirPath() + QStringLiteral("/vendor");
+#else
+    return QStringLiteral(REMORA_VENDOR_DIR);
+#endif
+}
+
 QString vendorScript(const QString &kind, const QString &name) {
-    return QStringLiteral(REMORA_VENDOR_DIR) + "/" + kind + "/" + name;
+    return vendorDir() + "/" + kind + "/" + name;
 }
 
 // Raw inputs only — the version extraction is parseNvidiaVersionScan's, tested offline. The ls
@@ -80,7 +95,7 @@ QVector<VersionAssetRow> auditVersionAssets() {
     // actually on disk, so a version offered in the UI with no manifest / no patch set is caught by
     // `remora check` rather than 40 minutes into a build (bd remora-82c.2). Prebuilt-only versions
     // (no releaseConfig) have no source assets to audit and are skipped.
-    const QString sb = QStringLiteral(REMORA_VENDOR_DIR "/source-build");
+    const QString sb = vendorDir() + QStringLiteral("/source-build");
     QVector<VersionAssetRow> rows;
     for (const AndroidRelease &r : androidReleases()) {
         if (r.releaseConfig.isEmpty()) continue;
@@ -132,7 +147,7 @@ VendorDriftReport auditVendorTreeDrift() {
     // redirects with --prefix /usr — the exact mismatch that let the install prune test a
     // directory that does not exist for its whole life (bd remora-4ei.33). Probing the short list
     // of real locations answers what a frozen path cannot.
-    const QString mineRoot = QStringLiteral(REMORA_VENDOR_DIR);
+    const QString mineRoot = vendorDir();
     QStringList candidates;
 #if REMORA_VENDOR_IS_INSTALLED
     const bool stagesFromDrifted = true;  // builds stage from `mine`; drift means the repo's
@@ -161,7 +176,7 @@ VendorDriftReport auditVendorTreeDrift() {
 }
 
 QString vendorNativeBinary(const QString &name) {
-    return QStringLiteral(REMORA_VENDOR_DIR) + "/native/" + name;
+    return vendorDir() + "/native/" + name;
 }
 
 QString agentDex() {
@@ -522,7 +537,7 @@ QString imageBuildFingerprint(const QStringList &enabledPatches, const QStringLi
     for (const SourcePatch &sp : sourcePatches()) {
         if (!p.contains(sp.key)) continue;
         for (const QString &name : sp.patches) {
-            QFile file(QStringLiteral(REMORA_VENDOR_DIR "/source-patches/") + sp.dir +
+            QFile file(vendorDir() + QStringLiteral("/source-patches/") + sp.dir +
                        QLatin1Char('/') + name);
             h.addData(name.toUtf8());
             if (file.open(QIODevice::ReadOnly)) h.addData(&file);
@@ -539,7 +554,7 @@ QString imageBuildFingerprint(const QStringList &enabledPatches, const QStringLi
     // only when the sorted (path, size, mtime) stat vector changes. mtimes gate the CACHE and
     // never enter the fingerprint, so git/sync churning them costs one re-read and moves nothing
     // (the reason they were excluded before, kept).
-    const QString root = QStringLiteral(REMORA_VENDOR_DIR "/source-build");
+    const QString root = vendorDir() + QStringLiteral("/source-build");
     QDirIterator it(root, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
     QStringList paths;
     while (it.hasNext()) paths << it.next();
@@ -683,8 +698,10 @@ void appendStatusLine(const QString &statusPath, const QString &text) {
 
 // Alt+D toggles mirror ↔ desktop. Each mirror carries BOTH launch commands as env; the client
 // launches the OTHER one and closes itself. REMORA_IS_DESKTOP marks which side a process is:
-// the desktop launcher sets it, the mirror launcher clears it (env -u), and both commands
-// background mirror so it survives the switch. Built with the resolved target (macvlan-safe).
+// the desktop launch sets it, the mirror launch removes it, and the child starts detached so it
+// survives the switch. Built with the resolved target (macvlan-safe). Each command is a
+// LaunchSpec — argv plus env edits — not a shell line, so it starts the same way on Windows,
+// which has no shell to run one (bd remora-7oih.2).
 QMap<QString, QString> mirrorSpawnEnv(const RunContext &ctx, const QString &target,
                                       const QStringList &mirrorArgv) {
     QMap<QString, QString> spawnEnv = ctx.mirrorEnv;
@@ -695,14 +712,6 @@ QMap<QString, QString> mirrorSpawnEnv(const RunContext &ctx, const QString &targ
     // it gets no toggle at all and Alt+D says "not configured".
     const bool desktop = ctx.desktopWindow();
     if (ctx.extraWindow() && !desktop) return spawnEnv;
-    auto shquote = [](const QStringList &argv) {
-        QStringList q;
-        for (const QString &a : argv)
-            q << QLatin1Char('\'')
-                     + QString(a).replace(QLatin1String("'"), QLatin1String("'\\''"))
-                     + QLatin1Char('\'');
-        return q.join(QLatin1Char(' '));
-    };
     // desktop launch args (the --new-display session), with a distinct window title
     ResolvedConfig drc = ctx.rc;
     drc.fullscreenSeparateDisplay = true;
@@ -721,7 +730,7 @@ QMap<QString, QString> mirrorSpawnEnv(const RunContext &ctx, const QString &targ
     // would send Alt+D straight back to another desktop. `remora desktop` starts on that side
     // without ever having been the mirror, so there is no mirror argv to have been handed; build
     // the profile's plain one. (A desktop window that Alt+D spawned from a mirror does not come
-    // through here at all — it inherits the real mirror's command through the shell.)
+    // through here at all — it inherits the real mirror's command through its environment.)
     QStringList margv = mirrorArgv;
     if (desktop) {
         ResolvedConfig mrc = ctx.rc;
@@ -732,11 +741,11 @@ QMap<QString, QString> mirrorSpawnEnv(const RunContext &ctx, const QString &targ
         // This process is the desktop side, so Alt+D must read REMORA_MIRROR_CMD, not _DESKTOP_.
         spawnEnv.insert(QStringLiteral("REMORA_IS_DESKTOP"), QStringLiteral("1"));
     }
-    const QString mirrorCmd =
-        QStringLiteral("env -u REMORA_IS_DESKTOP %1 &").arg(shquote(margv));
-    const QString desktopCmd = QStringLiteral("REMORA_IS_DESKTOP=1 %1 &").arg(shquote(dargv));
-    spawnEnv.insert(QStringLiteral("REMORA_MIRROR_CMD"), mirrorCmd);
-    spawnEnv.insert(QStringLiteral("REMORA_DESKTOP_CMD"), desktopCmd);
+    const QString isDesktop = QStringLiteral("REMORA_IS_DESKTOP");
+    spawnEnv.insert(QStringLiteral("REMORA_MIRROR_CMD"),
+                    encodeLaunchSpec({margv, {}, {isDesktop}}));
+    spawnEnv.insert(QStringLiteral("REMORA_DESKTOP_CMD"),
+                    encodeLaunchSpec({dargv, {{isDesktop, QStringLiteral("1")}}, {}}));
     // Default Alt+D switches (closes the current window); the checkbox keeps it (extra window).
     if (drc.desktopNewWindow)
         spawnEnv.insert(QStringLiteral("REMORA_DESKTOP_NEW_WINDOW"), QStringLiteral("1"));
@@ -868,19 +877,38 @@ static bool dataHasBootedBefore(Spawner &sp, const RunContext &ctx, const LineSi
     return containerExec(sp, ctx, QStringLiteral("test -f %1").arg(kBootStableMarker), log).rc == 0;
 }
 
-// TERM every pid, give it a moment, then KILL whatever ignored the TERM. Shared by both reaps —
-// the one that clears a rejected attempt and the one that enforces "exactly one mirror" after a
-// good attempt — because a mirror worth reaping is usually one that is stuck, and a stuck client
-// does not service signals it has to wake up to handle.
-static void killMirrorPids(Spawner &sp, const QStringList &pids, const LineSink &log) {
-    if (pids.isEmpty()) return;
-    const QString list = pids.join(QLatin1Char(' '));
-    sp.run({"sh", "-c", QStringLiteral("kill %1 2>/dev/null; true").arg(list)}, {}, log);
-    sp.waitMs(1500);
-    sp.run({"sh", "-c",
-            QStringLiteral("for p in %1; do kill -0 $p 2>/dev/null && kill -9 $p 2>/dev/null; "
-                           "done; true").arg(list)},
-           {}, log);
+// How long a reaped mirror gets to leave on its own (its teardown removes the adb forward and
+// finalizes a recording) before it is killed outright.
+static constexpr int kMirrorStopGraceMs = 1500;
+
+void stopMirrorClients(Spawner &sp, const QList<qint64> &pids) {
+    if (!pids.isEmpty()) sp.terminate(pids, kMirrorStopGraceMs, /*force=*/true);
+}
+
+QList<qint64> instanceMirrorPids(Spawner &sp, const QString &target, const QString &windowTitle) {
+    return mirrorPids(instanceMirrors(sp.mirrors(), target, windowTitle));
+}
+
+static QStringList pidStrings(const QList<qint64> &pids) {
+    QStringList out;
+    for (qint64 p : pids) out << QString::number(p);
+    return out;
+}
+
+// TERM every pid, give it a moment, then KILL whatever ignored the TERM — through the Spawner's
+// stop seam, which on Windows is WM_CLOSE plus the mirror's stop event, then TerminateProcess.
+// Shared by every reap — the one that clears a rejected attempt and the one that enforces "exactly
+// one mirror" after a good attempt — because a mirror worth reaping is usually one that is stuck,
+// and a stuck client does not service signals it has to wake up to handle. Only numbers reach the
+// stop call: the encoder half of the teardown still reads its pids from `ps` output.
+static void killMirrorPids(Spawner &sp, const QStringList &pids, const LineSink &) {
+    QList<qint64> ps;
+    for (const QString &s : pids) {
+        bool ok = false;
+        const qint64 p = s.trimmed().toLongLong(&ok);
+        if (ok && p > 0 && !ps.contains(p)) ps << p;
+    }
+    stopMirrorClients(sp, ps);
 }
 
 // A mirror that has OUTLIVED ITS SERVER is not a mirror any more, and nothing used to reap it.
@@ -901,44 +929,61 @@ static void killMirrorPids(Spawner &sp, const QStringList &pids, const LineSink 
 // The discriminator is the TUNNEL, not the window: the mirror listens on its own port for the adb
 // forward, so a live session owns TCP connections and a husk owns none. Measured on the pair that
 // started this — the healthy client held two ESTAB on 127.0.0.1:27183, the husk held zero.
+//
+// Two ways to ask that (bd remora-7oih.1). Where there is a POSIX userland, `ss` asks the kernel,
+// as it always has, and it is the only test that can judge a mirror started before the registry.
+// Where there is not (Windows), the mirror's own registry entry answers: it reports the moment its
+// agent tunnel closes under a session that was up. A mirror that has not had a session yet —
+// above all a splash still animating a cold boot, which owns no tunnel for minutes — is never a
+// candidate on either path: it has outlived no server.
 static QStringList findMirrorHusks(Spawner &sp, const QString &target, const QString &windowTitle,
                                    const LineSink &log) {
-    const QString pat = mirrorTitlePattern(target, windowTitle);
-    if (pat.isEmpty() || pat.contains(QLatin1Char('\''))) return {};
     // A mirror that has only just been spawned has no tunnel YET, and would answer this test
     // exactly like a husk. The age floor is what makes the difference; it is generous because
     // the cost of waiting is nothing and the cost of being wrong is killing a starting mirror.
     constexpr int kMinAgeSec = 30;
+    const QVector<MirrorEntry> mine = instanceMirrors(sp.mirrors(), target, windowTitle);
+    if (!sp.posixUserland())
+        return pidStrings(mirrorPids(selfReportedHusks(mine, QDateTime::currentMSecsSinceEpoch(),
+                                                       qint64(kMinAgeSec) * 1000)));
+    QList<qint64> candidates;
+    for (const MirrorEntry &e : mine)
+        if (e.session != MirrorSessionState::Pending && !candidates.contains(e.pid))
+            candidates << e.pid;
+    if (candidates.isEmpty()) return {};
     // `; true` on the loop, deliberately: the body ends in a test that FAILS for every healthy
     // mirror, and a loop exits with the status of its last command — so without this the scan
     // returns non-zero exactly when it found nothing wrong.
     const QString script =
         QStringLiteral("command -v ss >/dev/null 2>&1 || exit 0; "
-                       "for p in $(pgrep -f '%1' 2>/dev/null); do "
+                       "for p in %1; do "
                        "age=$(ps -o etimes= -p $p 2>/dev/null | tr -d ' '); "
                        "[ -n \"$age\" ] || continue; "
                        "[ \"$age\" -ge %2 ] || continue; "
                        "n=$(ss -tnHp 2>/dev/null | grep -c \"pid=$p,\"); "
                        "[ \"$n\" = 0 ] && echo $p; "
                        "done; true")
-            .arg(pat)
+            .arg(pidStrings(candidates).join(QLatin1Char(' ')))
             .arg(kMinAgeSec);
     // No `ss` exits 0 with no output, and that is the point: absent evidence must never read as
     // "it is dead". Killing a healthy mirror because a diagnostic tool is missing would be a far
     // worse bug than the leak this closes.
     const ProcResult r = sp.run({QStringLiteral("sh"), QStringLiteral("-c"), script}, {}, log);
     if (r.rc != 0) return {};
+    // Only candidates come back out: whatever the script prints, it is a stop list's input.
     QStringList pids;
-    static const QRegularExpression kPid(QStringLiteral("^[0-9]+$"));
-    for (const QString &l : r.out.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
-        if (kPid.match(l.trimmed()).hasMatch()) pids << l.trimmed();
+    for (const QString &l : r.out.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        bool ok = false;
+        const qint64 p = l.trimmed().toLongLong(&ok);
+        if (ok && candidates.contains(p) && !pids.contains(l.trimmed())) pids << l.trimmed();
+    }
     return pids;
 }
 
 int reapMirrorHusks(Spawner &sp, const RunContext &ctx, const QString &target,
                     const LineSink &log) {
     // A --new-display app or desktop window is a session in its own right, not a mirror, and the
-    // title pattern already excludes it; skipping here as well keeps that guarantee explicit
+    // instance lookup already excludes it; skipping here as well keeps that guarantee explicit
     // rather than inherited.
     if (ctx.fullscreenDisplay || target.isEmpty()) return 0;
     const QStringList husks = findMirrorHusks(sp, target, ctx.windowTitle, log);
@@ -962,7 +1007,8 @@ int reapMirrorHusks(Spawner &sp, const RunContext &ctx, const QString &target,
 //
 //  · `det.pid` is spawnDetached's pid — the pid of cmd[0] — and scopedArgv wraps the mirror in
 //    systemd-run, so it is NOT reliably the mirror's. Killing it can leave the real process running.
-//    Match the mirror's own argv instead, which is what actually identifies it.
+//    Find the mirror by what it registered (its own pid, its target, its title) instead, which is
+//    what actually identifies it.
 //  · A rejected mirror is by definition a STUCK one — starved of video, blocked in its demuxer —
 //    and that is precisely the state in which SIGTERM is not serviced. Observed: alive in
 //    futex_wait 84 SECONDS after a TERM, gone instantly on a KILL.
@@ -979,19 +1025,11 @@ int reapMirrorHusks(Spawner &sp, const RunContext &ctx, const QString &target,
 static void reapMirrorAttempt(Spawner &sp, const RunContext &ctx, const QString &target,
                               const QStringList &spare, const Detached &det, const LineSink &log) {
     QStringList victims;
-    const QString pat = mirrorTitlePattern(target, ctx.windowTitle);
-    if (!pat.contains(QLatin1Char('\''))) {
-        const QStringList live =
-            sp.run({"sh", "-c", QStringLiteral("pgrep -f '%1' || true").arg(pat)}, {}, log)
-                .out.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-        for (const QString &p : live) {
-            const QString t = p.trimmed();
-            if (t.isEmpty()) continue;
-            bool spared = false;
-            for (const QString &s : spare)
-                if (s.trimmed() == t) { spared = true; break; }
-            if (!spared) victims << t;
-        }
+    for (const QString &t : pidStrings(instanceMirrorPids(sp, target, ctx.windowTitle))) {
+        bool spared = false;
+        for (const QString &s : spare)
+            if (s.trimmed() == t) { spared = true; break; }
+        if (!spared) victims << t;
     }
     const QString own = QString::number(det.pid);
     if (det.pid > 0 && !victims.contains(own)) victims << own;
@@ -1016,7 +1054,7 @@ static void reapMirrorAttempt(Spawner &sp, const RunContext &ctx, const QString 
 // the next connect's husk reaper, but the encoder and its sockets are still cleaned, because
 // both derive from the container NAME alone.
 int reapSessionOrphans(Spawner &sp, const QString &containerName, const QString &target,
-                       const LineSink &log) {
+                       const LineSink &log, Backend backend) {
     static const QRegularExpression kPid(QStringLiteral("^[0-9]+$"));
     // Only bare pids reach the kill line — this output becomes a command line, and a stray word
     // there is an arbitrary-argument hole, not a cosmetic problem (same guard as the husk scan).
@@ -1027,32 +1065,35 @@ int reapSessionOrphans(Spawner &sp, const QString &containerName, const QString 
         return pids;
     };
     QStringList victims;
-    if (!target.isEmpty() && !target.contains(QLatin1Char('\''))) {
-        // `( |$)` closes the serial: without it a target of 10.0.0.7 would also match a
-        // 10.0.0.78 client — a DIFFERENT container's live mirror reaped on a prefix.
-        const QString pat = QStringLiteral("remora mirror.*-s %1( |$)")
-                                .arg(QRegularExpression::escape(target));
-        victims << pidsOf(
-            sp.run({"sh", "-c", QStringLiteral("pgrep -f '%1' || true").arg(pat)}, {}, log));
+    if (!target.isEmpty()) {
+        // Every kind on the target, matched on the serial EXACTLY: a target of 10.0.0.7 must not
+        // take a 10.0.0.78 client with it — a DIFFERENT container's live mirror reaped on a prefix.
+        MirrorQuery q;
+        q.target = target;
+        victims << pidStrings(mirrorPids(selectMirrors(sp.mirrors(), q)));
     }
     // The encoder, matched on this container's frame socket exactly the way ensureHostEncoder
-    // adopts one — grep -F because the path is a literal, not a pattern.
+    // adopts one — grep -F because the path is a literal, not a pattern. Bare only: host encode is
+    // (bd remora-7oih.3), so a remote container never had one here to reap, and the `ps`/`rm` pair
+    // is a Linux-host command a Windows client does not have.
     const QString frameSock = hostEncodeFrameSocketFor(containerName);
-    victims << pidsOf(sp.run(
-        {"sh", "-c",
-         QStringLiteral("ps -C remora-frame-encoder -o pid=,args= 2>/dev/null | "
-                        "grep -F -- '%1' | awk '{print $1}'")
-             .arg(frameSock)},
-        {}, log));
+    if (backend == Backend::Bare)
+        victims << pidsOf(sp.run(
+            {"sh", "-c",
+             QStringLiteral("ps -C remora-frame-encoder -o pid=,args= 2>/dev/null | "
+                            "grep -F -- '%1' | awk '{print $1}'")
+                 .arg(frameSock)},
+            {}, log));
     killMirrorPids(sp, victims, log);
     // The socket inodes outlive the encoder, and a leftover inode is what made a dead stack look
     // present to the adoption checks (bd remora-e5x.19) — the next generation starts from nothing.
     // The status file rides along: the encoder removes it itself on a clean exit, but a KILLed one
     // cannot, and a dead encoder's "ok" reading as current is the lie the file exists to end
     // (bd remora-e5x.18.3).
-    sp.run({"rm", "-f", frameSock, hostEncodeVideoSocketFor(containerName),
-            hostEncodeStatusFileFor(containerName)},
-           {}, log);
+    if (backend == Backend::Bare)
+        sp.run({"rm", "-f", frameSock, hostEncodeVideoSocketFor(containerName),
+                hostEncodeStatusFileFor(containerName)},
+               {}, log);
     return int(victims.size());
 }
 
@@ -1311,22 +1352,34 @@ QString resolveAdbTarget(Spawner &sp, const RunContext &ctx, QString *err, const
 }
 
 int countMirrorClients(Spawner &sp, const QString &target) {
-    // pgrep -c prints the count itself (0 included); it just exits 1 on no match — hence ||true.
-    // [r]emora: the self-exclusion trick — the sh -c wrapper's own cmdline contains this pattern
-    // and would otherwise count as a phantom client.
-    const ProcResult r = sp.run(
-        {"sh", "-c",
-         QStringLiteral("pgrep -fc '[r]emora mirror.*-s %1' || true").arg(target)}, {}, {});
-    bool ok = false;
-    const int n = r.out.trimmed().toInt(&ok);
-    return ok ? n : 0;
+    // The registry, not `pgrep -fc`: on Windows that answered 0 whatever was open, and auto-sleep
+    // took 0 for "nobody is looking" and froze a device in use. An empty target counts nothing —
+    // an unconstrained query would count every client on the machine.
+    if (target.isEmpty()) return 0;
+    MirrorQuery q;
+    q.target = target;
+    return int(selectMirrors(sp.mirrors(), q).size());
+}
+
+PipClose closePip(Spawner &sp, const QString &title) {
+    MirrorQuery q;
+    q.exactTitle = title;
+    const QList<qint64> pids = mirrorPids(selectMirrors(sp.mirrors(), q));
+    if (pids.isEmpty()) return PipClose::NotRunning;
+    // The wait is the point: a close only SIGNALS, so a second press inside the mirror's teardown
+    // window used to still see the old process and report "closed" again instead of reopening.
+    // Bounded, so a wedged client cannot hang the hotkey, and never escalated — see Engine.h.
+    return sp.terminate(pids, 3000, /*force=*/false).isEmpty() ? PipClose::Closed
+                                                                : PipClose::StillRunning;
 }
 
 bool captureScreenshot(Spawner &sp, const QString &target, const QString &outPath, QString *err) {
-    const ProcResult r = sp.run(
-        {"sh", "-c",
-         QStringLiteral("adb -s %1 exec-out screencap -p > '%2'").arg(target, outPath)},
-        {}, {});
+    // adb's stdout straight into the file — the PNG never passes through a shell redirect, which
+    // a Windows client has no shell for (bd remora-7oih.2).
+    const ProcResult r = sp.runToFile(
+        {QStringLiteral("adb"), QStringLiteral("-s"), target, QStringLiteral("exec-out"),
+         QStringLiteral("screencap"), QStringLiteral("-p")},
+        outPath);
     if (r.rc != 0) {
         if (err)
             *err = r.stderrTail.isEmpty() ? QStringLiteral("screencap failed (adb rc %1)").arg(r.rc)
@@ -1641,9 +1694,14 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
     const LineSink log = [&](const QString &stream, const QString &text) {
         sink.line(QStringLiteral("connect"), stream, text);
     };
+    // The host helpers below — render server, encoder, decoder — and every probe of them are
+    // BARE ONLY (bd remora-7oih.3): each one runs on THIS machine, beside a container that on
+    // remote lives on another. The resolver never turns them on for remote; this gate is what
+    // keeps a reconnect, a GUI runner or a hand-built context from starting or probing them here.
+    const bool bareHelpers = ctx.backend == Backend::Bare;
     // App/desktop displays use their own Android encoder even on a host-encode profile.
     // Only the main mirror can be judged by the host encoder's consumers and packet log.
-    const bool hostEncode = ctx.rc.hostEncode && !ctx.extraWindow();
+    const bool hostEncode = bareHelpers && ctx.rc.hostEncode && !ctx.extraWindow();
     const bool hostVideo = hostEncode && ctx.rc.hostEncodeDrivesMirror;
     // No server-jar preflight since the v1 purge (bd remora-28ix.5): the device half is the
     // agent the image bakes, so there is no host-side file whose absence could fail a session —
@@ -1655,7 +1713,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
     // against a dead socket and never leaves the boot animation, which is exactly what happened
     // once the server was killed out from under a running container. Non-fatal on failure: the
     // deploy chain reports the same condition properly, and a connect should still try.
-    if (ctx.rc.venus) {
+    if (bareHelpers && ctx.rc.venus) {
         const StepResult v = ensureVenusServer(sp, ctx.rc, log);
         if (!v.ok)
             log(QStringLiteral("stderr"), QStringLiteral("venus: %1").arg(v.detail));
@@ -1677,7 +1735,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
     // VA decoder on its own when the socket does not answer, so a failure here costs the NVDEC
     // optimisation and nothing else. Refusing to connect over it would trade working video for no
     // video (bd remora-e5x.37).
-    if (ctx.rc.hostDecode) {
+    if (bareHelpers && ctx.rc.hostDecode) {
         const StepResult d = ensureHostDecoder(sp, ctx.rc, log);
         log(d.ok ? QStringLiteral("stdout") : QStringLiteral("stderr"),
             d.ok ? d.detail : QStringLiteral("host decoder: %1").arg(d.detail));
@@ -1881,7 +1939,11 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
         // fix is a host route, and nothing else in the chain will ever say so (bd remora-4ei.13).
         const QString ip = target.section(QLatin1Char(':'), 0, 0);
         QString hint;
-        if (!ip.isEmpty() && ip != QLatin1String("localhost")) {
+        // The diagnosis reads THIS host's routing with `ip`, which a Windows client does not have:
+        // its empty answers would read as "no ARP entry" and blame layer 2 for any failure at all.
+        // Without the hint the failure still names the target and the tries (bd remora-7oih.2).
+        if (!ip.isEmpty() && ip != QLatin1String("localhost") &&
+            sp.localOs() != LocalOs::Windows) {
             const QString subnet = ip.section(QLatin1Char('.'), 0, 2) + QStringLiteral(".0/24");
             const int nRoutes = sp.run({"sh", "-c",
                                         QStringLiteral("ip route show %1 2>/dev/null | wc -l")
@@ -2057,17 +2119,18 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
         // every call returns. screencap can wedge indefinitely on some GPU stacks (observed on the
         // Venus/NVIDIA path, bd remora-4ei.65), and one hung call then blocks `remora up` forever
         // at the connect step rather than delaying it — the exact failure this gate promises not to
-        // cause.
-        constexpr int kLitCallTimeoutS = 8;
+        // cause. The bound is the spawner's, not coreutils `timeout`: Windows' timeout.exe is a
+        // different program, so every probe there failed at once and the loop burned its whole
+        // budget on each deploy (bd remora-7oih.2). The pipe is fine — it runs on Android.
+        constexpr int kLitCallTimeoutMs = 8000;
         for (int waited = 0; waited < kLitWaitMs; waited += kLitPollMs) {
             const ProcResult sc =
-                sp.run({"timeout", QString::number(kLitCallTimeoutS), "adb", "-s", target, "shell",
-                        "screencap -p 2>/dev/null | wc -c"},
-                       {}, log);
+                sp.runTimed({"adb", "-s", target, "shell", "screencap -p 2>/dev/null | wc -c"},
+                            kLitCallTimeoutMs, log);
             bool isNum = false;
             const int bytes = sc.out.trimmed().toInt(&isNum);
             if (isNum && bytes > kLitMinBytes) break;
-            // 124 = `timeout` killed it. Polling a wedged screencap again cannot help, and the
+            // 124 = the deadline killed it. Polling a wedged screencap again cannot help, and the
             // mirror does not depend on it, so stop gating and let the window open.
             if (sc.rc == 124) {
                 log(QStringLiteral("stdout"),
@@ -2116,14 +2179,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
     const int huskCount = ctx.fullscreenDisplay ? 0 : reapMirrorHusks(sp, ctx, target, log);
     const auto liveMirrors = [&]() -> QStringList {
         if (ctx.fullscreenDisplay) return {};
-        const QString pat = mirrorTitlePattern(target, ctx.windowTitle);
-        if (pat.contains(QLatin1Char('\''))) return {};
-        QStringList pids;
-        for (const QString &p :
-             sp.run({"sh", "-c", QStringLiteral("pgrep -f '%1' || true").arg(pat)}, {}, log)
-                 .out.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
-            if (!p.trimmed().isEmpty()) pids << p.trimmed();
-        return pids;
+        return pidStrings(instanceMirrorPids(sp, target, ctx.windowTitle));
     };
     const QStringList priorMirrors = liveMirrors();
     // Before deciding anything about the splash: let first-boot module work finish, so the
@@ -2143,7 +2199,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
     // Skip both for a desktop/app launch (--new-display): it's an extra window, so it must not
     // reap the running mirror's local process or its guest server.
     if (!ctx.fullscreenDisplay) {
-        // The pattern matches the SPLASH's own argv — the splash is the mirror argv plus the
+        // The lookup matches the SPLASH too — the splash is the mirror argv plus the
         // boot-animation flags, same -s and same --window-title. Gating this on adoptSplash was
         // therefore only ever as correct as that test, and on a cold path the test comes out false
         // while the splash is alive and mirroring: Remora SIGTERMs the window it just opened, and
@@ -2152,8 +2208,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
         // Gate on the splash EXISTING instead. startSplash reaps true stales immediately before
         // spawning it, so once a splash exists the only thing this pattern can still match is that
         // splash. A wrong adoption test now costs a redundant spawn instead of a visible drop.
-        if (!ctx.splash)
-            sp.run({"pkill", "-f", mirrorTitlePattern(target, ctx.windowTitle)}, {}, log);
+        if (!ctx.splash) stopMirrorClients(sp, instanceMirrorPids(sp, target, ctx.windowTitle));
         // The guest-side half of this reap is gone with killStaleServer — the agent
         // is one init service, not a per-session server, so there is no guest process here to
         // leak. Its history is worth keeping because it is why the HOST-side reap above is gated
@@ -2391,12 +2446,12 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
         // profile the render server writes a line per composed frame, so "newest" was always its
         // log, and a dead mirror was reported with "[remora-frame] res_id=3 … DISPLAY" as its
         // last words — a healthy frame from another process.
-        const QString said =
-            det.log.isEmpty()
-                ? QString()
-                : sp.run({"sh", "-c", QStringLiteral("tail -n 8 %1 2>/dev/null").arg(det.log)},
-                         {}, log)
-                      .out.trimmed();
+        // Read in-process: a shell `tail` here meant a Windows client never saw a fatal signature,
+        // and kept a mirror that had already given up (bd remora-7oih.2). The lines still go to
+        // the log, as the tail's own output did.
+        const QString said = det.log.isEmpty() ? QString() : sp.readTail(det.log, 8).trimmed();
+        for (const QString &ln : said.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
+            log(QStringLiteral("stdout"), ln);
         bool broken = false;
         // WHY this attempt was rejected, in Remora's own words. Without it the retry line below
         // reported "the mirror exited immediately" for a process Remora had just killed itself, and

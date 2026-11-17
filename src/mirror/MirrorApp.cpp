@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QDateTime>
 #include <QIcon>
 #include <QCommandLineParser>
 #include <QSurfaceFormat>
@@ -6,12 +7,15 @@
 #include <QSocketNotifier>
 #include <csignal>
 #ifdef Q_OS_WIN
+#include <QWinEventNotifier>
 #include <windows.h>
 #else
 #include <unistd.h>
 #endif
 
 #include "core/Branding.h"
+#include "core/MirrorRegistry.h"
+#include "engine/MirrorRegistry.h"
 #include "CudaInterop.h"
 #include "MirrorSession.h"
 #include "MirrorWindow.h"
@@ -115,7 +119,11 @@ int runMirrorMain(QApplication &app) {
          QStringLiteral("Wayland app_id / X11 class for this window (PIP and app windows)"),
          QStringLiteral("id")},
         {QStringLiteral("hwdec"),
+#ifdef Q_OS_WIN
+         QStringLiteral("hardware decode: off|auto|cuda|nvdec|d3d11va"),
+#else
          QStringLiteral("hardware decode: off|auto|cuda|nvdec|vaapi|/dev/dri/renderD*"),
+#endif
          QStringLiteral("mode")},
         {QStringLiteral("list-apps"),
          QStringLiteral("print the device's app list (the app-menu contract) and exit")},
@@ -242,6 +250,31 @@ int runMirrorMain(QApplication &app) {
     MirrorSession session(opts);
     QString title = p.value(QStringLiteral("window-title"));
     if (title.isEmpty()) title = QStringLiteral("Remora mirror — %1").arg(opts.serial);
+
+    // Register for the life of the process (bd remora-7oih.1): the engine finds, stops and counts
+    // mirrors by what is registered, not by a pgrep pattern over a command line that only Linux
+    // has. Best-effort, like the tunnel lock — the cost of failing is that nothing can find this
+    // window to reap it, which is said, not fatal.
+    MirrorEntry self;
+    self.pid = QCoreApplication::applicationPid();
+    self.serial = opts.serial;
+    self.title = title;
+    self.kind = mirrorKindFor(!opts.newDisplay.isEmpty(), p.isSet(QStringLiteral("boot-animation")),
+                              appId, title);
+    self.startedMs = QDateTime::currentMSecsSinceEpoch();
+    self.session = MirrorSessionState::Pending;
+    MirrorRegistration registration(self);
+    if (!registration.ok())
+        qWarning("mirror: not registered (%s) — Remora cannot find this window to replace or "
+                 "close it", qUtf8Printable(registration.error()));
+    QObject::connect(&session, &MirrorSession::started, &app,
+                     [&registration](bool ok, const QString &) {
+                         if (ok) registration.setSession(MirrorSessionState::Live);
+                     });
+    QObject::connect(&session, &MirrorSession::controlLost, &app, [&registration] {
+        registration.setSession(MirrorSessionState::Lost);
+    });
+
     MirrorWindow window(&session, title, p.value(QStringLiteral("shot")));
 
     std::optional<QSize> exSize;
@@ -325,6 +358,19 @@ int runMirrorMain(QApplication &app) {
 
 #ifdef Q_OS_WIN
     ::SetConsoleCtrlHandler(onConsoleCtrl, TRUE);
+    // The engine's graceful stop (Spawner::terminate) posts WM_CLOSE to this process's windows,
+    // which reaches nothing until the window has been shown — and a starved attempt, the very
+    // mirror a reap is for, never shows it. So it also sets this event; the quit then runs the
+    // same teardown a closed window does. Auto-reset, so one request is one wake-up rather than a
+    // signal that stays set and fires the notifier until the process is gone.
+    const std::wstring stopName = mirrorStopEventName(self.pid).toStdWString();
+    const HANDLE stopEvent = ::CreateEventW(nullptr, FALSE, FALSE, stopName.c_str());
+    std::unique_ptr<QWinEventNotifier> stopNotifier;
+    if (stopEvent) {
+        stopNotifier = std::make_unique<QWinEventNotifier>(stopEvent);
+        QObject::connect(stopNotifier.get(), &QWinEventNotifier::activated, &app,
+                         [] { QCoreApplication::quit(); });
+    }
 #else
     if (::pipe(sigPipe) != 0) return 1;
     QSocketNotifier sigNotifier(sigPipe[0], QSocketNotifier::Read);
@@ -353,6 +399,10 @@ int runMirrorMain(QApplication &app) {
     }
     const int rc = app.exec();
     session.stop();  // explicit: teardown before the QApplication unwinds
+#ifdef Q_OS_WIN
+    stopNotifier.reset();
+    if (stopEvent) ::CloseHandle(stopEvent);
+#endif
     return rc;
 }
 

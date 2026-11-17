@@ -37,7 +37,7 @@ the command line is also the way to drive Remora over ssh.
 | `remora reconnect [<profile>] [--backend …]` | Attach to an already-running instance: adb and mirror only, no bring-up |
 | `remora sleep [<profile>]` | Freeze the device with `docker pause`. `remora up` wakes it in about a second |
 | `remora auto-sleep [<profile>]` | Idle watcher: freezes the device after `auto_sleep_minutes` with no mirror window. Runs until stopped |
-| `remora service [<profile>] [--remove]` | Install and enable systemd user units: up at login, sleep at logout, plus the update and auto-sleep watchers. `--remove` stops, disables and deletes them and their `.service.d` drop-in directories; it works for a profile that no longer exists, and exits non-zero, keeping that unit's files, when a unit cannot be stopped or disabled |
+| `remora service [<profile>] [--remove]` | Install and enable systemd user units: up at login, sleep at logout, plus the update and auto-sleep watchers. `--remove` stops, disables and deletes them and their `.service.d` drop-in directories; it works for a profile that no longer exists, and exits non-zero, keeping that unit's files, when a unit cannot be stopped or disabled. Linux only: on Windows it writes nothing and exits 2 |
 | `remora watch-boot [<profile>]` | Restart the device and attach the mirror during boot, to see the boot animation |
 | `remora update-watch [<profile>]` | Serve the in-Android updater: show the device whether a newer image is on the host or, for the official image, in Remora's signed catalog, and on *Apply* download it if needed and redeploy onto it. Runs until stopped |
 | `remora reset-data [<profile>] --yes` | Factory reset: delete the profile's `/data`, and its application-menu folder with it. `bare` only. Without `--yes` it explains what would be deleted and does nothing |
@@ -47,7 +47,7 @@ the command line is also the way to drive Remora over ssh.
 | command | what it does |
 |---|---|
 | `remora app <profile> <pkg> [--title <name>]` | Launch one Android app in its own window, bringing the device up first if needed |
-| `remora apps [<profile>] [--remove]` | Refresh the profile's application-menu folder (the device must be running), or remove it |
+| `remora apps [<profile>] [--remove]` | Refresh the profile's application-menu folder (the device must be running), or remove it. On Windows, which has no such menu, both report the step as skipped |
 | `remora desktop [<profile>]` | Open a separate desktop-mode display, with no specific app |
 | `remora pip [<profile>]` | Toggle a small always-on-top second mirror. The device must be up |
 | `remora record [<profile>] [<out.mp4>]` | Relaunch the mirror with recording on. Close the mirror window to finish the file |
@@ -69,7 +69,8 @@ the command line is also the way to drive Remora over ssh.
 
 For `shell`, `logcat`, `prop` and `install`, the first argument is taken as a profile only when it
 names one that exists. Anything else passes to adb untouched, so `remora shell ls -l` runs on the
-active profile.
+active profile. On Linux remora replaces itself with adb. On Windows adb runs on the same console,
+remora waits for it, and the command exits with adb's exit code.
 
 ## Build
 
@@ -93,8 +94,10 @@ Docker sees it. The image is imported under an immutable version tag and then ta
 fails keeps it, so trying again does not download it again. A previous image with that name is
 kept as `remora-rollback:public-…`.
 `images rollback` restores it; Android data is never touched. Add `--host user@host` to run on that
-Docker host. `--source` names another signed catalog location. The workspace's **Official
-downloads** button adds the same source to the Image library.
+Docker host. On Windows, which has no local Docker, a command without `--host` runs on the active
+profile's `ssh_host`, and is refused when the profile has none. `--source` names another signed
+catalog location. The workspace's **Official downloads** button adds the same source to the Image
+library.
 
 The public image is x86_64 only. It has no Google apps and no ARM translation, so apps that ship
 only ARM native code refuse to install on it. Add Google Play locally with `play-install` below.
@@ -110,7 +113,8 @@ remora play-install --base YOUR_BASE_TAG --accept-terms litegapps-a17-20261001-v
 ```
 
 Add `--host user@host` to execute on that Docker host. Only Remora's helper source and manifest
-are copied over SSH; that host downloads the payload directly. A remote Docker context is refused;
+are copied over SSH; that host downloads the payload directly. On Windows the active profile's
+`ssh_host` is used when `--host` is absent, and `--show-terms` is printed by Remora itself. A remote Docker context is refused;
 use `--host` instead. Python 3 and Docker must be available there. `--archive /host/path/file.zip`
 uses an already downloaded copy of the exact pinned archive. `--tag remora-local:NAME` names the
 derived image; otherwise its name includes the base and installer recipe hashes. Other tag
@@ -147,7 +151,7 @@ the image this installer is meant for. The overlay it creates is private and is 
 |---|---|
 | `remora recipe [<profile>] [--base <tag>]` | Print the custom-image Dockerfile for the profile's features. `--base` layers onto that image instead of the best-matching registered tag |
 | `remora build [--tag <tag>] [--base <tag>]` | Build that recipe for the active profile, as a Docker overlay. `--tag` names the result |
-| `remora build --source [<profile>]` | Full source build of the profile's image: the same chain the workspace runs. A profile with the `public_release` feature builds the redistributable `remora24:x86_64-public` image, and the build fails if the release audit does |
+| `remora build --source [<profile>]` | Full source build of the profile's image: the same chain the workspace runs. A profile with the `public_release` feature builds the redistributable `remora24:x86_64-public` image, and the build fails if the release audit does. On Windows it needs `source_host` |
 | `remora images list\|check\|fetch\|rollback [--tag <tag>] [--source <url>] [--host <user@host>]` | List, check for a newer release of, verify and import, or roll back an official signed image. Every action but `list` needs `--tag`. See above |
 | `remora venus-build [--dir <dir>] [--tag <version>\|latest]` | Build and install the NVIDIA Venus host renderer. `--dir` sets the install root, `--tag` the guest-library release |
 

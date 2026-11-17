@@ -120,6 +120,7 @@ private:
     QString lastText_;
     QProcess *probe_ = nullptr;
     QProcess *acquire_ = nullptr;
+    QThread *extractJob_ = nullptr;  // the zip unpack, while it runs
 };
 
 }  // namespace remora::mirror

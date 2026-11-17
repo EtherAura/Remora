@@ -1,4 +1,6 @@
 #include <QtTest>
+
+#include "TestPlatform.h"
 #include "engine/PlayInstall.h"
 
 using namespace remora;
@@ -22,6 +24,8 @@ public:
 class PlayEngineTest : public QObject {
     Q_OBJECT
 private slots:
+    // The installer and its manifest are read from vendor/play.
+    void initTestCase() { useCheckoutVendorDir(); }
     void consentBeforeRemoteNetwork() {
         PlaySpawner sp;
         QVERIFY(runPlayInstall(sp, {"--base", "base:clean"}, "user@host").rc != 0);
@@ -100,6 +104,7 @@ private slots:
         QVERIFY(sp.calls.isEmpty());
     }
     void playOverlayBuildsOnTheResolvedBaseAndRecordsTheTag() {
+        SKIP_ON_WINDOWS("bare runs the installer on this machine, which Windows refuses");
         PlaySpawner sp;
         sp.install = {0, receipt(false), {}};
         RemoraConfig c = playProfile();
@@ -121,21 +126,26 @@ private slots:
         QCOMPARE(sp.calls.last().mid(sp.calls.last().size() - 4).value(1),
                  QString("remora24:x86_64-public"));
     }
+    // On this machine's docker, which is Remora's own guest on Windows: the backend smartRun
+    // passes is effectiveBackend's.
     void playOverlayFailureLeavesNoOverlay() {
+        const Backend local = effectiveBackend(Backend::Bare);
         PlaySpawner sp;
         sp.install = {1, {}, "Play installation failed: Base contains conflicting Google/microG package"};
         RemoraConfig c = playProfile();
-        const StepResult r = ensurePlayOverlay(sp, c, Backend::Bare);
+        const StepResult r = ensurePlayOverlay(sp, c, local);
         QVERIFY(!r.ok);
         QVERIFY(r.stderrTail.contains("conflicting"));
         QVERIFY(!c.image.playOverlay.has_value());
         // a zero exit without a receipt is not a success either
         sp.install = {0, "no receipt here", {}};
-        QVERIFY(!ensurePlayOverlay(sp, c, Backend::Bare).ok);
+        QVERIFY(!ensurePlayOverlay(sp, c, local).ok);
         QVERIFY(!c.image.playOverlay.has_value());
     }
     // Built where the container runs: a remote profile's overlay is made on its ssh host, and a
-    // remote profile with no host refuses rather than building one here.
+    // remote profile with no host refuses rather than building one here — where this machine's
+    // docker is a local daemon. Where it is Remora's own guest (Windows), a blank host is the
+    // guest, and the overlay is made there.
     void playOverlayRunsOnTheRemoteDockerHost() {
         PlaySpawner sp;
         sp.install = {0, receipt(false), {}};
@@ -147,10 +157,18 @@ private slots:
         QCOMPARE(sp.calls[2][0], QString("ssh"));
         QVERIFY(sp.calls[2].contains("user@host"));
         QVERIFY(sp.calls[2].last().contains("'remora24:x86_64-public'"));
-        PlaySpawner none;
         RemoraConfig nohost = playProfile();
-        QVERIFY(!ensurePlayOverlay(none, nohost, Backend::Remote).ok);
-        QVERIFY(none.calls.isEmpty());
+        {
+            const ScopedLocalDockerIsGuest daemon(false);
+            PlaySpawner none;
+            QVERIFY(!ensurePlayOverlay(none, nohost, Backend::Remote).ok);
+            QVERIFY(none.calls.isEmpty());
+        }
+        const ScopedLocalDockerIsGuest guest(true);
+        PlaySpawner toGuest;
+        toGuest.install = {0, receipt(false), {}};
+        QVERIFY(ensurePlayOverlay(toGuest, nohost, Backend::Remote).ok);
+        QVERIFY(toGuest.calls.value(2).contains(guestAlias()));
     }
     void malformedDirectoryIsNeverUsedOrRemoved() {
         PlaySpawner sp;

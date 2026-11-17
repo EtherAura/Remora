@@ -3,6 +3,7 @@
 #include <QString>
 #include <optional>
 
+#include "core/Backend.h"  // LocalOs
 #include "core/Parsers.h"  // RenderNode, LanInterface
 
 namespace remora {
@@ -51,6 +52,9 @@ struct HostCapabilities {
     // about a daemon that is down or a DOCKER_HOST pointing nowhere, and `check` read READY.
     std::optional<bool> dockerDaemonOk;
     bool adbPresent = false;                // local clients every target's connect launches
+    // The client the probe ran on. A Windows one has no bare backend, so its readiness carries one
+    // row saying so in place of the docker-group / daemon / ashmem rows it could never pass.
+    LocalOs localOs = kLocalOs;
     // python3 on the DOCKER HOST — remora-input-share.py's interpreter (bd remora-4ei.36). Probed
     // where the devices live: locally for bare, over ssh for remote.
     bool python3Present = false;

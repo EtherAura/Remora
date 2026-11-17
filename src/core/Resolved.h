@@ -170,6 +170,12 @@ struct ResolvedConfig {
     // (measured, bd remora-e5x.3), so this is the only direction that can use it at all.
     bool hostDecode = false;
     QString hostDecodeSocket;
+    // The bare-only host-GPU settings a REMOTE profile turned on (bd remora-7oih.3), as the
+    // remorarc spelling ("venus=true", "host_encode=true", "host_decode=true"). Each is resolved
+    // OFF above, because its helper runs on the machine running Remora and not on the docker host;
+    // listed here so preflight, check and plan refuse the request by name instead of the deploy
+    // quietly doing something other than what the profile says. Empty on bare.
+    QStringList bareOnlyRequested;
     // Whether THIS window takes its video from the host encoder. Follows hostEncode since the
     // v1 purge (the agent composes natively — no compose-capable jar to gate on), but stays its
     // own flag because it is per-window: PIP clears it on its own copy so a second consumer
@@ -227,6 +233,10 @@ struct ResolvedConfig {
     QStringList companionApps;      // "<hostDir>[:<Name>]" → /system/system_ext/app/<Name>
     QString target;                     // "localhost:5555" | "192.168.0.77:5555" | "host:5555"
     std::optional<QString> sshHost;
+    // Remora's own guest (see BackendConfig): auto picks WHPX on Windows and KVM elsewhere.
+    QString guestAccel;
+    int guestMemoryMb = 0;
+    int guestCpus = 0;  // 0 = half this machine's threads, 2 to 8
     // runtime knobs (opt-in: a boot arg is emitted only when set)
     std::optional<int> fps;
     // Guest timezone (persist.sys.timezone), applied by the connect-time device tune. The

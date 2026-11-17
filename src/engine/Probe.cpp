@@ -75,7 +75,15 @@ static void fillRenderNodes(HostCapabilities &c, const QList<RenderNode> &nodes)
 }
 
 QList<RenderNode> probeRenderNodes(Spawner &sp) {
+    if (sp.localOs() == LocalOs::Windows) return {};
     return parseRenderNodes(sp.run({"sh", "-c", kAllNodesScan}).out);
+}
+
+QStringList adbLookupArgv(LocalOs os) {
+    if (os == LocalOs::Windows)
+        return {QStringLiteral("where"), QStringLiteral("/q"), QStringLiteral("adb")};
+    return {QStringLiteral("sh"), QStringLiteral("-c"),
+            QStringLiteral("command -v adb >/dev/null 2>&1")};
 }
 
 std::optional<HostCapabilities> deployCapabilities(Backend backend, const RemoraConfig &cfg,
@@ -400,11 +408,16 @@ static std::optional<QString> lineOrNull(const QString &out, int idx) {
 
 HostCapabilities probeCapabilities(Backend target, const QString &sshHost, Spawner &sp) {
     HostCapabilities c;
-    c.modAshmem = parseLsmodHas(sp.run({"lsmod"}).out, "ashmem");
-    c.inDockerGroup = parseIdGroups(sp.run({"id", "-nG"}).out, "docker");
-    c.dockerDaemonOk =
-        sp.run({"sh", "-c", "docker version --format '{{.Server.Version}}' >/dev/null 2>&1"}).rc == 0;
-    c.adbPresent = sp.run({"sh", "-c", "command -v adb >/dev/null 2>&1"}).rc == 0;
+    c.localOs = sp.localOs();
+    const bool localBare = c.localOs != LocalOs::Windows;
+    if (localBare) {
+        c.modAshmem = parseLsmodHas(sp.run({"lsmod"}).out, "ashmem");
+        c.inDockerGroup = parseIdGroups(sp.run({"id", "-nG"}).out, "docker");
+        c.dockerDaemonOk =
+            sp.run({"sh", "-c", "docker version --format '{{.Server.Version}}' >/dev/null 2>&1"})
+                .rc == 0;
+    }
+    c.adbPresent = sp.run(adbLookupArgv(c.localOs)).rc == 0;
 
 
     const auto probeSsh = [&](const QString &host) {
@@ -423,24 +436,15 @@ HostCapabilities probeCapabilities(Backend target, const QString &sshHost, Spawn
         fillRenderNodes(c, parseRenderNodes(sp.run(Spawner::sshArgv(sshHost, kAllNodesScan)).out));
         c.videoNodes = sp.run(Spawner::sshArgv(sshHost, QStringLiteral("ls /dev/video* 2>/dev/null")))
                            .out.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-        const QString venus = sp.run(Spawner::sshArgv(sshHost, kVenusScan)).out;
-        c.venusServerPath = lineOrNull(venus, 0);
-        c.venusLibDir = lineOrNull(venus, 1);
-        // The REMOTE host's driver state, deliberately: its kernel is the one the container and
-        // the render server live on (bd remora-81cp found exactly this on a remote deploy).
-        c.nvidiaVersions = parseNvidiaVersionScan(
-            sp.run(Spawner::sshArgv(sshHost, kNvidiaVersionScan)).out);
+        // No Venus, NVIDIA-driver or host-encode scan here: all three serve helpers that are
+        // bare-only (bd remora-7oih.3), so a remote answer would only feed rows and a resolver
+        // arm that never read it. The host-encode scan also tested THIS machine's encoder path
+        // with `[ -x ]` on the far side, which could only ever answer about a file that happened
+        // to share the path.
         c.python3Present =
             sp.run(Spawner::sshArgv(sshHost, QStringLiteral("command -v python3 >/dev/null 2>&1")))
                 .rc == 0;
-        const QString he =
-            sp.run(Spawner::sshArgv(sshHost, hostEncodeScan(vendorNativeBinary(
-                                                 QStringLiteral("remora-frame-encoder")))))
-                .out;
-        c.hostEncoderPath = lineOrNull(he, 0);
-        c.ffmpegHevcVulkan = lineOrNull(he, 1).value_or(QString()) == QLatin1String("1");
-        c.venusCapturePatched = lineOrNull(he, 2).value_or(QString()) == QLatin1String("1");
-    } else if (target == Backend::Bare) {
+    } else if (target == Backend::Bare && localBare) {
         c.hostLan = parseHostLanScan(sp.run({"sh", "-c", kHostLanScan}).out);
         fillRenderNodes(c, parseRenderNodes(sp.run({"sh", "-c", kAllNodesScan}).out));
         c.videoNodes = sp.run({"sh", "-c", "ls /dev/video* 2>/dev/null"})
@@ -486,10 +490,15 @@ StatusReport probeStatus(Backend backend, Spawner &sp, const QString &sshHost,
     // A failed `docker ps` is not an empty one. With the daemon down every consumer of this report
     // read running=false as "the container is stopped" — the Runners row, the library, this JSON —
     // while the container was up behind an unreachable socket. Carry the failure as its own fact.
-    const ProcResult psLocal = sp.run({"docker", "ps", "--format", "{{.Names}}"});
-    if (psLocal.rc != 0) r.bareDockerError = firstLine(psLocal.stderrTail, psLocal.out);
-    const auto local = parseDockerPsNames(psLocal.rc == 0 ? psLocal.out : QString());
-    r.bareRunning = local.contains(bareContainer);
+    // No local docker on a Windows client, and no bare container to look for in it: the row reads
+    // as not running, which is the truth, rather than as a docker the client was never meant to
+    // have failing to answer.
+    if (sp.localOs() != LocalOs::Windows) {
+        const ProcResult psLocal = sp.run({"docker", "ps", "--format", "{{.Names}}"});
+        if (psLocal.rc != 0) r.bareDockerError = firstLine(psLocal.stderrTail, psLocal.out);
+        const auto local = parseDockerPsNames(psLocal.rc == 0 ? psLocal.out : QString());
+        r.bareRunning = local.contains(bareContainer);
+    }
     if (r.bareRunning)
         r.bareBoot = parseBootCompleted(
             sp.run({"docker", "exec", bareContainer, "getprop", "sys.boot_completed"}).out);
@@ -571,7 +580,11 @@ QString doctorReport(Spawner &sp, const RemoraConfig &cfg, Backend backend,
     QTextStream ts(&out);
     const auto first = [](const QString &s) { return s.section(QLatin1Char('\n'), 0, 0).trimmed(); };
     // One command on whichever host runs docker for this backend (local for bare, ssh else).
+    // A Windows client has no local docker host, so a bare profile there answers nothing rather
+    // than a shell error; readiness below already says why.
+    const bool localDocker = sp.localOs() != LocalOs::Windows;
     const auto onDockerHost = [&](const QString &cmd) {
+        if (backend == Backend::Bare && !localDocker) return ProcResult{127, {}, {}};
         return backend == Backend::Bare ? sp.run({"sh", "-c", cmd}, {}, {})
                                         : sp.run(Spawner::sshArgv(ctx.guest, cmd), {}, {});
     };
@@ -608,8 +621,9 @@ QString doctorReport(Spawner &sp, const RemoraConfig &cfg, Backend backend,
 
     ts << "\n## versions\n"
        << "adb: " << first(sp.run({"adb", "version"}, {}, {}).out) << "\n"
-       << "mirror: built-in (remora mirror)\n"
-       << "docker (local): " << first(sp.run({"docker", "--version"}, {}, {}).out) << "\n";
+       << "mirror: built-in (remora mirror)\n";
+    if (localDocker)
+        ts << "docker (local): " << first(sp.run({"docker", "--version"}, {}, {}).out) << "\n";
     if (backend != Backend::Bare)
         ts << "docker (" << ctx.guest << "): "
            << first(sp.run(Spawner::sshArgv(ctx.guest, QStringLiteral("docker --version")), {}, {}).out)
@@ -740,18 +754,8 @@ static QString readCounters(Spawner &sp, const QString &encLog, const QString &m
                             std::optional<qint64> &encoded, std::optional<qint64> &composed) {
     encoded.reset();
     composed.reset();
-    if (!encLog.isEmpty()) {
-        const ProcResult r =
-            sp.run({QStringLiteral("sh"), QStringLiteral("-c"),
-                    QStringLiteral("tail -n 400 %1 2>/dev/null").arg(encLog)}, {}, {});
-        encoded = parseEncodedPackets(r.out);
-    }
-    if (!mirLog.isEmpty()) {
-        const ProcResult r =
-            sp.run({QStringLiteral("sh"), QStringLiteral("-c"),
-                    QStringLiteral("tail -n 400 %1 2>/dev/null").arg(mirLog)}, {}, {});
-        composed = parseComposedFrames(r.out);
-    }
+    if (!encLog.isEmpty()) encoded = parseEncodedPackets(sp.readTail(encLog, 400));
+    if (!mirLog.isEmpty()) composed = parseComposedFrames(sp.readTail(mirLog, 400));
     return QString();
 }
 
@@ -764,6 +768,9 @@ static bool findMirrorLogs(Spawner &sp, const ResolvedConfig &rc, QString &encLo
     // profile there is no compose-versus-encode gap to measure — the mirror takes the device's own
     // stream — so the question this answers does not arise.
     if (!rc.hostEncode || !rc.hostEncodeDrivesMirror) return false;
+    // Bare only, like the encoder itself (bd remora-7oih.3): this scan reads THIS machine's
+    // processes, and a remote profile's container is not beside them.
+    if (rc.backend != Backend::Bare) return false;
     if (rc.hostEncodeFrameSocket.isEmpty() || rc.hostEncodeVideoSocket.isEmpty()) return false;
     const ProcResult ends = sp.run(
         {QStringLiteral("sh"), QStringLiteral("-c"), mirrorEndpointsScript(rc)}, {}, {});

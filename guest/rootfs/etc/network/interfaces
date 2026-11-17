@@ -1,0 +1,11 @@
+# Static, not DHCP: QEMU's user-mode network is fixed (guest 10.0.2.15, gateway 10.0.2.2, DNS
+# 10.0.2.3), and an address is kernel state that a mass kill cannot take away. udhcpc, killed by
+# the same sysrq that /etc/inittab explains, releases its lease on the way out and leaves eth0
+# with no address at all — a guest that is up and unreachable.
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 10.0.2.15/24
+    gateway 10.0.2.2

@@ -1,3 +1,9 @@
+# LF in every checkout, Windows included. Nearly everything here ends up running on Linux — on the
+# docker host, in Remora's own guest, inside the container — even when Remora is built and run on
+# Windows (bd remora-7oih), and a shell script or init file checked out with CRLF breaks there in
+# ways that do not name the cause. text=auto leaves binaries alone.
+* text=auto eol=lf
+
 # Source-build feature payloads (GApps/ndk_translation/Magisk prebuilts) — large binaries
 # extracted from the golden image. Git-LFS keeps the main repo lean. Small config (.mk/.rc/
 # .sh/.xml/.txt) stays as normal text.

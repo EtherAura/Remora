@@ -1,5 +1,6 @@
 #include <QtTest>
 
+#include "TestPlatform.h"
 #include "core/Features.h"
 #include "core/Gating.h"
 #include "core/ImageBuild.h"
@@ -280,7 +281,8 @@ private slots:
     // entry whose file is missing is silently inert — the apply loop finds nothing to do and says
     // nothing — which is the mirror of the failure that left hide-stock-updater-entry.patch on
     // disk registered by NOTHING for several releases. Skipped rather than failed when the vendor
-    // tree is not beside the binary, so an installed-binary test run does not fail spuriously.
+    // tree is neither beside the binary nor in the checkout (sourcePath, which is how a staged
+    // Windows run finds it), so an installed-binary test run does not fail spuriously.
     void everyRegisteredPatchFileExists() {
         QDir root(QCoreApplication::applicationDirPath());
         QString base;
@@ -289,7 +291,9 @@ private slots:
             if (QFileInfo::exists(cand)) { base = cand; break; }
             if (!root.cdUp()) break;
         }
-        if (base.isEmpty()) QSKIP("vendor/source-patches not found next to the test binary");
+        if (base.isEmpty()) base = sourcePath(QStringLiteral("vendor/source-patches"));
+        if (!QFileInfo::exists(base))
+            QSKIP("vendor/source-patches is neither beside the test binary nor in the checkout");
         for (const SourcePatch &p : sourcePatches()) {
             for (const QString &f : p.patches) {
                 const QString path = base + QLatin1Char('/') + p.dir + QLatin1Char('/') + f;

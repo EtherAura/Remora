@@ -16,6 +16,13 @@
 # The account password is in $VM_DIR/password, for the web console and RDP.
 #
 # 8 GB of RAM is held for as long as the VM runs (no ballooning), so stop it between test sessions.
+#
+# No nested virtualization, so this VM cannot run the Windows Hypervisor Platform, and the WHPX
+# half of Remora's own guest (bd remora-7oih.5) cannot be tested here: only its TCG fallback and
+# everything around it can. Tried on kvm_intel nested=Y: dockur's VMX=Y with its
+# Hyper-V enlightenments crash-looped Windows at boot once HypervisorPlatform was enabled, and
+# VMX=Y HV=N hung at the boot logo. WHPX needs a real Windows PC.
+
 set -euo pipefail
 
 VM_DIR="${REMORA_WINDOWS_VM_DIR:-/mnt/Build/windows-vm}"

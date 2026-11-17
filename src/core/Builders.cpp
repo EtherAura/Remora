@@ -1,10 +1,14 @@
 #include "core/Builders.h"
+#include "core/MirrorRegistry.h"  // kPipAppId — the registry tells a PIP apart by it
 
 // hostEncodeFrameSocketDirFor: the composer's bind mount and the encoder's own socket path must
 // come from ONE rule, or the container mounts a directory the encoder never binds in.
 #include "core/Resolver.h"
 #include "core/Features.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 
 namespace remora {
@@ -510,7 +514,12 @@ std::pair<QMap<QString, QString>, QStringList> buildMirrorArgv(const ResolvedCon
     // its video from the device encoder like any non-host-encode profile, which also restores the
     // codec options the host path drops. PIP opts out for the same reason (buildPipMirrorArgv).
     const bool newDisplay = fullscreenDisplay && cfg.fullscreenSeparateDisplay;
-    const bool hostEncoded = cfg.hostEncodeDrivesMirror && !newDisplay;
+    // Bare only, whatever the flags say (bd remora-7oih.3): the encoder serving this socket runs
+    // on the machine running Remora, so on remote the path names a socket nothing serves and the
+    // window would wait out its first-frame timeout. The resolver never sets the flag there; this
+    // keeps a hand-built config from putting it back.
+    const bool hostEncoded =
+        cfg.hostEncodeDrivesMirror && !newDisplay && cfg.backend == Backend::Bare;
     // The main mirror's HEVC choice belongs to its host encoder. App displays
     // need a device encoder. Software AVC also avoids the Venus buffer import
     // path when the profile selected host encoding for its main display.
@@ -529,8 +538,8 @@ std::pair<QMap<QString, QString>, QStringList> buildMirrorArgv(const ResolvedCon
     // No --server-path since the v1 purge (bd remora-28ix.5): the device half is the agent the
     // image bakes, and the client refuses plainly when an image predates the bake.
     // Decode on the desktop GPU — on unless hw_decode=false. auto tries CUDA first (decode on the
-    // GPU the frames leave through — the cross-GPU lesson), then probes VAAPI nodes; software is
-    // the fallback.
+    // GPU the frames leave through — the cross-GPU lesson), then probes VAAPI nodes on Linux or
+    // opens D3D11VA on Windows; software is the fallback.
     if (cfg.hwDecode) a << QStringLiteral("--hwdec=auto");
     // Opt-in device audio, main mirror only: a PIP or app window with its own audio stream would
     // double-play everything the main window already plays.
@@ -875,6 +884,33 @@ QString pipWindowTitle(const QString &instance) {
                               : QStringLiteral("Remora PIP — %1").arg(instance);
 }
 
+QString encodeLaunchSpec(const LaunchSpec &spec) {
+    QJsonObject set;
+    for (auto it = spec.set.constBegin(); it != spec.set.constEnd(); ++it) set[it.key()] = it.value();
+    const QJsonObject o{{QStringLiteral("argv"), QJsonArray::fromStringList(spec.argv)},
+                        {QStringLiteral("set"), set},
+                        {QStringLiteral("unset"), QJsonArray::fromStringList(spec.unset)}};
+    return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
+}
+
+std::optional<LaunchSpec> decodeLaunchSpec(const QString &text) {
+    const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8());
+    if (!doc.isObject()) return std::nullopt;
+    const QJsonObject o = doc.object();
+    LaunchSpec spec;
+    for (const QJsonValue &v : o.value(QStringLiteral("argv")).toArray()) {
+        if (!v.isString()) return std::nullopt;
+        spec.argv << v.toString();
+    }
+    if (spec.argv.isEmpty()) return std::nullopt;
+    const QJsonObject set = o.value(QStringLiteral("set")).toObject();
+    for (auto it = set.constBegin(); it != set.constEnd(); ++it)
+        spec.set.insert(it.key(), it.value().toString());
+    for (const QJsonValue &v : o.value(QStringLiteral("unset")).toArray())
+        spec.unset << v.toString();
+    return spec;
+}
+
 std::pair<QMap<QString, QString>, QStringList> buildPipMirrorArgv(const ResolvedConfig &cfg,
                                                                   const QString &target,
                                                                   const QString &instance) {
@@ -929,7 +965,7 @@ std::pair<QMap<QString, QString>, QStringList> buildPipMirrorArgv(const Resolved
         << QStringLiteral("--max-size=960")
         // The unique Wayland app_id / X11 class. Without this the PIP and the main mirror share
         // a class, and the one KWin/Krohnkite rule that floats every profile's PIP cannot bind.
-        << QStringLiteral("--app-id=remora-pip");
+        << QStringLiteral("--app-id=%1").arg(kPipAppId);
     return {env, out};
 }
 

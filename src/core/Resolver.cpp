@@ -1,4 +1,5 @@
 #include "core/Resolver.h"
+#include "core/ManagedHost.h"
 
 #include <QDir>
 #include <QRegularExpression>
@@ -55,7 +56,7 @@ struct HostGpu {
     std::optional<QString> venusNode, venusSocketDir, venusLibDir, venusServerPath;
 };
 static HostGpu resolveHostGpu(const GpuConfig &g, const std::optional<HostCapabilities> &caps,
-                              GpuMode mode) {
+                              GpuMode mode, Backend backend) {
     if (mode != GpuMode::Host) {
         // Guest mode has no node and no gralloc override — but it DOES have a Vulkan answer, and
         // it is the one thing the image cannot supply for itself: gpu_setup_guest's own
@@ -121,7 +122,12 @@ static HostGpu resolveHostGpu(const GpuConfig &g, const std::optional<HostCapabi
                         : (caps.has_value() ? caps->venusLibDir : std::nullopt);
     const bool venusAvailable = caps.has_value() && caps->hostNvidiaRenderNode.has_value() &&
                                 h.venusServerPath.has_value() && h.venusLibDir.has_value();
-    h.venus = g.venus.value_or(venusAvailable);
+    // BARE ONLY (bd remora-7oih.3). The render server is a process the connect step starts on THIS
+    // machine, and a remote deploy has no step that starts one on the docker host — so on remote
+    // the container was handed a socket dir nothing served and a local $HOME path to bind. Never
+    // on there, not even when the remote's own probe finds the whole stack; an explicit venus=true
+    // is recorded by resolve() and refused at preflight rather than dropped without a word.
+    h.venus = backend == Backend::Bare && g.venus.value_or(venusAvailable);
     if (h.venus) {
         h.venusNode = caps.has_value() ? caps->hostNvidiaRenderNode : std::nullopt;
         // A directory, not the socket file: the server recreates the inode on every restart, and a
@@ -273,6 +279,7 @@ static void applyNetwork(ResolvedConfig &r, const NetworkConfig &n,
 
 ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
                        const std::optional<HostCapabilities> &caps) {
+    backend = effectiveBackend(backend);  // bare is the guest where the local docker is the guest
     const auto &d = c.display;
     const auto &im = c.image;
     const auto &n = c.network;
@@ -336,9 +343,9 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
     // encode entrypoint. A profile that pins video_codec still wins outright.
     r.videoCodec = pick(sc.videoCodec, QStringLiteral("h265"));
     // Client-side GPU decode, on unless a profile says otherwise. It has no UI: the mirror picks
-    // NVDEC or VAAPI by itself and falls back to software when the host has no usable decoder, so
-    // the only thing an off switch ever bought was a slower mirror. hw_decode=false in remorarc is
-    // the way out on a host whose decoder misbehaves.
+    // NVDEC, VAAPI or D3D11VA by itself and falls back to software when the host has no usable
+    // decoder, so the only thing an off switch ever bought was a slower mirror. hw_decode=false
+    // in remorarc is the way out on a host whose decoder misbehaves.
     r.hwDecode = pick(sc.hwDecode, true);
     r.maxSize = pick(sc.maxSize, 0);
     r.mirrorExtra = sc.extra;
@@ -357,7 +364,7 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
     // layout in a compact floating window.
     r.freeformDisplay = pick(sc.freeformDisplay, QStringLiteral("1080x2340/420"));
     r.desktopNewWindow = pick(sc.desktopNewWindow, false);
-    r.desktopMenu = pick(c.integration.desktopMenu, true);
+    r.desktopMenu = pick(c.integration.desktopMenu, kDesktopMenuDefault);
     r.sharedFolders = c.integration.sharedFolders;
     r.companionApps = c.integration.companionApps;
     // R3 runtime knobs (opt-in)
@@ -467,7 +474,7 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
         r.gpuMode = pick(g.mode, GpuMode::Guest);
         // gpu_mode=host on a local docker host: the live render node the probe picked instead of
         // SwiftShader — or, when the NVIDIA Venus prerequisites are present, that stack instead.
-        applyHostGpu(r, resolveHostGpu(g, caps, r.gpuMode));
+        applyHostGpu(r, resolveHostGpu(g, caps, r.gpuMode, backend));
         applyNetwork(r, n, caps, QStringLiteral("bridge"));
         r.containerAdbPort = 5556;  // in-container fwd shim (A16 adbd is IPv6-only)
         // LOOPBACK BY DEFAULT. A bare instance is reached from this machine only, and a plain
@@ -484,16 +491,29 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
         r.rezmodsDir = bk.rezmodsDir;  // as bare: no baked default, and no remorarc key sets it
         r.gpuMode = pick(g.mode, GpuMode::Guest);
         // same host-GPU path as bare, scanned over ssh on the remote docker host
-        applyHostGpu(r, resolveHostGpu(g, caps, r.gpuMode));
+        applyHostGpu(r, resolveHostGpu(g, caps, r.gpuMode, backend));
         applyNetwork(r, n, caps, QStringLiteral("bridge"));
         r.containerAdbPort = 5556;
         // Every interface by default: the client connects from ANOTHER machine, so loopback would
         // be unreachable. Narrow it with adb_bind= to the interface the client comes in on.
         r.adbBindAddress = pick(bk.adbBindAddress, QString());
         r.sshHost = pick(bk.sshHost, QString());
+        // Sized for one Android at a time with room for a second: Android alone wants ~2 GB.
+        r.guestAccel = pick(bk.guestAccel, QStringLiteral("auto"));
+        r.guestMemoryMb = pick(bk.guestMemoryMb, 6144);
+        r.guestCpus = pick(bk.guestCpus, 0);  // 0: GuestVm sizes it to the machine
+        // A blank host is this machine, and where this machine's docker is Remora's own guest
+        // (Windows) that is the guest's reserved name (bd remora-7oih.5).
+        if (r.sshHost->trimmed().isEmpty() && localDockerIsGuest()) r.sshHost = guestAlias();
         const QString host = r.sshHost->contains('@') ? r.sshHost->section('@', -1)
                              : (r.sshHost->isEmpty() ? QStringLiteral("localhost") : *r.sshHost);
         r.target = QStringLiteral("%1:%2").arg(host).arg(r.hostAdbPort);
+        // The guest's name is not an address: adb reaches it through the loopback port QEMU
+        // forwards to the one the profile publishes in the guest. Unregistered (no guest set up
+        // yet), the alias stays and the deploy path provisions it before anything dials it.
+        if (const auto m = managedHost(*r.sshHost))
+            if (const auto local = managedAdbPort(*m, r.hostAdbPort))
+                r.target = QStringLiteral("%1:%2").arg(m->address).arg(*local);
     }
 
     // MACVLAN OVERRIDES THE TARGET on every backend. There is no published host port in this mode,
@@ -564,12 +584,24 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
     // the device half is the agent the image bakes. Host encode driving the mirror used to be
     // gated on a compose-capable jar being named; the agent composes natively, so hostEncode
     // alone decides (a per-window opt-out — PIP — still clears the flag on its own copy).
-    r.hostEncode = sc.hostEncode.value_or(false) && hostGpuBackend;
+    // Both helpers are BARE ONLY, like the render server (bd remora-7oih.3): the connect step runs
+    // them on THIS machine, beside a container that on remote is somewhere else. Asked for there,
+    // they stay off and the request is recorded for preflight to refuse by name.
+    const bool bareHostGpu = hostGpuBackend && backend == Backend::Bare;
+    r.hostEncode = sc.hostEncode.value_or(false) && bareHostGpu;
     // Host DECODE, gated the same way and for the same reason (bd remora-e5x.37): there must be a
     // host GPU for the helper to decode on. Deliberately NOT tied to hostEncode — they are
     // opposite directions through different helpers, and running decode remote is exactly what
     // frees the local VADisplay for encode. A profile can want either alone.
-    r.hostDecode = sc.hostDecode.value_or(false) && hostGpuBackend;
+    r.hostDecode = sc.hostDecode.value_or(false) && bareHostGpu;
+    // What a remote profile asked for that the lines above declined. Only requests that would have
+    // TAKEN EFFECT on bare are recorded: all three already resolve off in guest mode on every
+    // backend, so refusing them there would break a profile over a setting that never did anything.
+    if (backend == Backend::Remote && hostGpuBackend) {
+        if (g.venus.value_or(false)) r.bareOnlyRequested << QStringLiteral("venus=true");
+        if (sc.hostEncode.value_or(false)) r.bareOnlyRequested << QStringLiteral("host_encode=true");
+        if (sc.hostDecode.value_or(false)) r.bareOnlyRequested << QStringLiteral("host_decode=true");
+    }
     if (r.hostDecode) r.hostDecodeSocket = hostDecodeSocketFor(r.containerName);
     // There is no compose-source choice left to resolve (bd remora-emoe): Remora's own hwcomposer
     // is the sole publisher, and the render server's interception is never armed — see the
@@ -653,7 +685,45 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
         r.imageTag = *im.addonOverlay;
     }
 
+#ifdef Q_OS_WIN
+    // A Windows client has no local docker to build on (bd remora-7oih.3).
+    buildOnTheDockerHost(r, c);
+#endif
     return r;
+}
+
+void buildOnTheDockerHost(ResolvedConfig &r, const RemoraConfig &c) {
+    if (r.buildHost.has_value() && !r.buildHost->isEmpty()) return;
+    if (r.backend != Backend::Remote || !r.sshHost.has_value() || r.sshHost->isEmpty()) return;
+    r.buildHost = r.sshHost;
+    // The local-home defaults above name THIS machine's home, which on the docker host is at best
+    // somebody else's and on Windows is a C:/ path. A literal ~ is expanded by the remote shell,
+    // the same form the remote data_dir defaults take. A path the profile set is kept as written.
+    if (!c.image.buildDir.has_value()) r.buildDir = QStringLiteral("~/.cache/remora/image-build");
+    if (!c.image.outputDir.has_value())
+        r.outputDir = QStringLiteral("~/.local/share/remora/images");
+}
+
+QString bareOnlyFeaturesRefusal(const QStringList &requested) {
+    if (requested.isEmpty()) return QString();
+    // Refused rather than ignored, like backend=vm: the old behaviour was not "off on remote" but
+    // worse — the render server and the encoder/decoder started on THIS machine, the container was
+    // created on the docker host with binds of this machine's paths, and Android then waited on
+    // sockets nothing on its side served.
+    return QStringLiteral(
+               "this remote profile asks for %1, which only backend=bare can provide: the NVIDIA "
+               "Venus render server and the host video encoder and decoder are processes Remora "
+               "starts on the machine it runs on, beside the container, and a remote deploy has no "
+               "step that starts them on the docker host. Either turn them off for this profile (on the Device page pick a GPU other "
+               "than \"NVIDIA — via Venus\", or delete %2 from its remorarc section), or run "
+               "Remora on the docker host itself with backend=bare.")
+        .arg(requested.join(QStringLiteral(", ")),
+             [&] {
+                 QStringList keys;
+                 for (const QString &r : requested)
+                     keys << r.section(QLatin1Char('='), 0, 0) + QLatin1Char('=');
+                 return keys.join(QStringLiteral(", "));
+             }());
 }
 
 QString hostEncodeFrameSocketDirFor(const QString &containerName) {

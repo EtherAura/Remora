@@ -11,11 +11,13 @@ extern "C" {
 #include <libavutil/hwcontext_cuda.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/mem.h>
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 }
 
 #include <QFileInfo>
 
+#include "core/MirrorHwDecode.h"
 #include "core/MirrorProto.h"
 
 namespace remora::mirror {
@@ -30,13 +32,28 @@ Decoder::~Decoder() {
 
 // The get_format callback: prefer the hw surface format our device provides; any fallback is
 // the decoder telling us hw decode is off the table for this stream.
+//
+// "Off the table" arrives two ways. The stream may never offer our format (a profile the API
+// cannot decode, such as 4:4:4), or it offered it and the hwaccel then failed to initialise — no
+// decoder for this profile or size, or a frames pool the device could not allocate — and
+// libavcodec calls back again without it. Either way the answer is the SOFTWARE format, not
+// fmts[0]: the list still holds every other hw format this FFmpeg was built with (the Windows
+// build carries dxva2, d3d12, vulkan and cuda besides d3d11), none of which can bind to our
+// device, and each one handed back costs a refused round trip and another warning before
+// libavcodec reaches software by itself.
 static AVPixelFormat pickPixelFormat(AVCodecContext *ctx, const AVPixelFormat *fmts) {
     const int want = *static_cast<const int *>(ctx->opaque);  // &Decoder::hwPixFmt_
     for (const AVPixelFormat *f = fmts; *f != AV_PIX_FMT_NONE; ++f)
         if (*f == want) return *f;
-    qWarning("mirror: decoder did not offer the hw surface format — falling back to %s",
-             av_get_pix_fmt_name(fmts[0]));
-    return fmts[0];
+    if (*fmts == AV_PIX_FMT_NONE) return AV_PIX_FMT_NONE;  // never sent; sw[1] would overrun
+    const AVPixelFormat *sw = fmts;
+    for (; sw[1] != AV_PIX_FMT_NONE; ++sw) {
+        const AVPixFmtDescriptor *d = av_pix_fmt_desc_get(*sw);
+        if (d && !(d->flags & AV_PIX_FMT_FLAG_HWACCEL)) break;
+    }
+    qWarning("mirror: %s decode is not available for this stream — using software decode (%s)",
+             av_get_pix_fmt_name(AVPixelFormat(want)), av_get_pix_fmt_name(*sw));
+    return *sw;
 }
 
 bool Decoder::tryHwDevice(int deviceType, const QByteArray &node) {
@@ -45,7 +62,11 @@ bool Decoder::tryHwDevice(int deviceType, const QByteArray &node) {
                                node.isEmpty() ? nullptr : node.constData(), nullptr, 0) < 0)
         return false;
     hwDevice_ = dev;
-    hwPixFmt_ = deviceType == AV_HWDEVICE_TYPE_CUDA ? AV_PIX_FMT_CUDA : AV_PIX_FMT_VAAPI;
+    switch (deviceType) {
+        case AV_HWDEVICE_TYPE_CUDA: hwPixFmt_ = AV_PIX_FMT_CUDA; break;
+        case AV_HWDEVICE_TYPE_D3D11VA: hwPixFmt_ = AV_PIX_FMT_D3D11; break;
+        default: hwPixFmt_ = AV_PIX_FMT_VAAPI; break;
+    }
     qInfo("mirror: hw decode via %s%s%s",
           av_hwdevice_get_type_name(AVHWDeviceType(deviceType)), node.isEmpty() ? "" : " on ",
           node.constData());
@@ -61,26 +82,42 @@ void Decoder::warmHardware(const QString &hwdec) {
     if (!hwDevice_) setupHw(hwdec);
 }
 
+// Which APIs a mode tries, and in what order per platform, is hwDecodeAttempts' (core, tested);
+// this only opens them. A device that opens can still turn out unusable for the stream — that is
+// pickPixelFormat's fallback, at the first packet.
 void Decoder::setupHw(const QString &hwdec) {
-    const QString mode = hwdec.toLower();
-    if (mode.isEmpty() || mode == QLatin1String("off") || mode == QLatin1String("0")) return;
-    const bool autoMode = mode == QLatin1String("auto") || mode == QLatin1String("1");
-    if (autoMode || mode == QLatin1String("cuda") || mode == QLatin1String("nvdec"))
-        if (tryHwDevice(AV_HWDEVICE_TYPE_CUDA, {})) return;
-    if (autoMode || mode == QLatin1String("vaapi")) {
-        // Probe the render nodes, skipping nvidia/nouveau: they expose no usable VAAPI decode.
-        for (int n = 128; n <= 135; ++n) {
-            const QString node = QStringLiteral("/dev/dri/renderD%1").arg(n);
-            if (!QFileInfo::exists(node)) continue;
-            const QString driver =
-                QFileInfo(QStringLiteral("/sys/class/drm/renderD%1/device/driver").arg(n))
-                    .symLinkTarget()
-                    .section(QLatin1Char('/'), -1);
-            if (driver == QLatin1String("nvidia") || driver == QLatin1String("nouveau")) continue;
-            if (tryHwDevice(AV_HWDEVICE_TYPE_VAAPI, node.toLocal8Bit())) return;
+    if (!hwDecodeRequested(hwdec)) return;
+    for (const HwDecodeAttempt &a : hwDecodeAttempts(hwdec, kHostHwDecodePlatform)) {
+        switch (a.api) {
+            case HwDecodeApi::Cuda:
+                if (tryHwDevice(AV_HWDEVICE_TYPE_CUDA, {})) return;
+                break;
+            case HwDecodeApi::D3d11va:
+                // The default adapter. Opening it says nothing about decode support yet: the
+                // decoder GUID for the codec and profile is checked at hwaccel init, which falls
+                // back through pickPixelFormat.
+                if (tryHwDevice(AV_HWDEVICE_TYPE_D3D11VA, {})) return;
+                break;
+            case HwDecodeApi::Vaapi:
+                if (!a.node.isEmpty()) {
+                    if (tryHwDevice(AV_HWDEVICE_TYPE_VAAPI, a.node.toLocal8Bit())) return;
+                    break;
+                }
+                // Probe the render nodes, skipping nvidia/nouveau: they expose no usable VAAPI
+                // decode.
+                for (int n = 128; n <= 135; ++n) {
+                    const QString node = QStringLiteral("/dev/dri/renderD%1").arg(n);
+                    if (!QFileInfo::exists(node)) continue;
+                    const QString driver =
+                        QFileInfo(QStringLiteral("/sys/class/drm/renderD%1/device/driver").arg(n))
+                            .symLinkTarget()
+                            .section(QLatin1Char('/'), -1);
+                    if (driver == QLatin1String("nvidia") || driver == QLatin1String("nouveau"))
+                        continue;
+                    if (tryHwDevice(AV_HWDEVICE_TYPE_VAAPI, node.toLocal8Bit())) return;
+                }
+                break;
         }
-    } else if (!autoMode) {
-        if (tryHwDevice(AV_HWDEVICE_TYPE_VAAPI, mode.toLocal8Bit())) return;  // explicit node
     }
     qWarning("mirror: no usable hw decode device for '%s' — using software decode",
              qUtf8Printable(hwdec));
@@ -125,6 +162,13 @@ bool Decoder::init(quint8 codecId, const QString &hwdec, QString *error) {
         // frames instead of downloaded copies — the one on screen, plus one held through the
         // splash ending — and each held frame is a surface the decoder cannot reuse. Without
         // headroom the pool runs dry and decode stalls with "No decoder surfaces left".
+        //
+        // D3D11VA's pool is fixed too (one texture array, sized at hwaccel init), and libavcodec
+        // already sizes it for the stream: 16 reference surfaces for H.264/HEVC (8 for AV1), plus
+        // 4 work surfaces. extra_hw_frames covers only surfaces the CALLER keeps, and the
+        // download path below keeps none past decode() — each D3D11 frame is copied out and
+        // released before the next packet. A zero-copy D3D11 path would need headroom like
+        // CUDA's.
         if (hwPixFmt_ == AV_PIX_FMT_CUDA) ctx_->extra_hw_frames = 4;
     }
     if (avcodec_open2(ctx_, codec, nullptr) < 0) {
@@ -161,11 +205,18 @@ QList<VideoFrame> Decoder::decode(const QByteArray &payload, QString *error) {
             if (!swFrame_) swFrame_ = av_frame_alloc();
             const int drc = av_hwframe_transfer_data(swFrame_, frame_, 0);
             if (drc < 0) {
+                // The cross-GPU hint is VAAPI's (and CUDA's, which shares the message); a D3D11
+                // download is a staging copy on the decode device itself, so there is no split
+                // to name — only the way out.
                 if (error)
-                    *error = QStringLiteral(
-                                 "hw frame download failed (rc %1) — cross-GPU split? use "
-                                 "--hwdec off or cuda")
-                                 .arg(drc);
+                    *error = hwPixFmt_ == AV_PIX_FMT_D3D11
+                                 ? QStringLiteral("hw frame download failed (rc %1) — use "
+                                                  "--hwdec off")
+                                       .arg(drc)
+                                 : QStringLiteral(
+                                       "hw frame download failed (rc %1) — cross-GPU split? use "
+                                       "--hwdec off or cuda")
+                                       .arg(drc);
                 av_frame_unref(frame_);
                 break;
             }

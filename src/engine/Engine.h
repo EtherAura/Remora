@@ -11,6 +11,7 @@
 #include "core/Backend.h"
 #include "core/Caps.h"
 #include "core/Config.h"
+#include "core/MirrorRegistry.h"  // MirrorEntry, kDesktopTitlePrefix
 #include "core/Parsers.h"
 #include "core/SourcePatches.h"  // VendorDriftRow — auditVendorTreeDrift's row type
 #include "core/Resolved.h"
@@ -45,8 +46,52 @@ public:
     // during a build (bd remora-eoy.9). Virtual with a real default so RealSpawner and any future
     // implementation keep the blocking behaviour without opting in.
     virtual void waitMs(int ms);
+    // The mirror clients running on THIS machine (bd remora-7oih.1): what the registry holds,
+    // plus — on Linux — any mirror an older Remora started before there was one. Every find,
+    // stop and count of mirrors goes through here instead of through pgrep, which Windows has
+    // not got and whose patterns assumed the Linux command line besides.
+    //
+    // INERT by default, and so is terminate(): a test fake that forgot to override them must
+    // reach neither the developer's real registry nor the real processes in it. A fake's pids
+    // (4242 and friends) are somebody's real ones.
+    virtual QVector<MirrorEntry> mirrors() { return {}; }
+    // Stop processes, gracefully first: SIGTERM on POSIX; on Windows WM_CLOSE to each one's
+    // top-level windows plus its mirror stop event (core/MirrorRegistry.h — a mirror with no
+    // window yet has nothing WM_CLOSE can reach). Waits up to graceMs for them to go, then, with
+    // force, kills what is left outright (SIGKILL / TerminateProcess). Returns the pids still
+    // running at the end. pid <= 1 and this process are never touched.
+    virtual QList<qint64> terminate(const QList<qint64> &pids, int graceMs, bool force = true) {
+        (void)graceMs;
+        (void)force;
+        return pids;
+    }
+    // Which OS this spawner's LOCAL commands run on (core/Backend.h). Asked, not #ifdef'd, so a
+    // fake can be a Windows client and the Windows arm of a probe is tested on Linux.
+    virtual LocalOs localOs() const { return kLocalOs; }
+    // Does this machine have the POSIX userland the remaining local diagnostics shell out to
+    // (sh, procps, ss)? Windows has none of it. The same question as localOs(), asked the way the
+    // mirror registry's callers read best.
+    bool posixUserland() const { return localOs() != LocalOs::Windows; }
+    // The three below replace local shell plumbing that Windows does not have (bd remora-7oih.2).
+    // Each base version starts no process of its own — it goes through run(), which is what a
+    // fake answers — and RealSpawner overrides it with the real thing.
+    //
+    // run() with a deadline: past timeoutMs the child is killed and rc is 124, which is what
+    // coreutils `timeout` returns. Windows has no such tool; its timeout.exe only sleeps.
+    virtual ProcResult runTimed(const QStringList &argv, int timeoutMs,
+                                const LineSink &onLine = {});
+    // run() with stdout written RAW to outPath (truncated first), the `> file` of a shell line.
+    // run() decodes stdout as UTF-8, which cannot carry a PNG.
+    virtual ProcResult runToFile(const QStringList &argv, const QString &outPath);
+    // The last `lines` lines of a LOCAL file, as `tail -n` prints them; empty when unreadable.
+    // Reading a file is impurity like waiting is, so it has a real default the same way.
+    virtual QString readTail(const QString &path, int lines);
 
     static QStringList sshArgv(const QString &host, const QString &remote, int connectTimeout = 5);
+    // scp of operands (sources…, destination), each local or host:path. A host Remora manages
+    // itself (core/ManagedHost.h) is rewritten to the address, port and key that reach it, as
+    // sshArgv does; every other operand passes through untouched, a Windows C:\ path included.
+    static QStringList scpArgv(const QStringList &operands, const QStringList &flags = {});
     // Wrap a detached command in a transient systemd scope so it does not inherit the launching
     // app unit's cgroup. startDetached() detaches the PROCESS but not the cgroup, so a GUI started
     // from the desktop launcher left the mirror inside its app-*.service and the unit's KillMode
@@ -61,8 +106,13 @@ class RealSpawner : public Spawner {
 public:
     ProcResult run(const QStringList &argv, const QMap<QString, QString> &env,
                    const LineSink &onLine) override;
+    ProcResult runTimed(const QStringList &argv, int timeoutMs,
+                        const LineSink &onLine = {}) override;
+    ProcResult runToFile(const QStringList &argv, const QString &outPath) override;
     Detached spawnDetached(const QStringList &argv, const QMap<QString, QString> &env) override;
     bool detachedAlive(const Detached &d) override;
+    QVector<MirrorEntry> mirrors() override;
+    QList<qint64> terminate(const QList<qint64> &pids, int graceMs, bool force = true) override;
 };
 
 // ─────────── steps + chain runner ───────────
@@ -92,11 +142,8 @@ struct Step {
 bool runChain(const QVector<Step> &steps, LogSink &sink);
 
 // ─────────── the resolved plan a backend executes ───────────
-// Window-title prefix that marks a desktop-mode window (the device on its own display, as opposed
-// to the mirror or to one app's window). It is both the user-visible taskbar name and the thing
-// RunContext::desktopWindow() tests, so `remora desktop` and the window Alt+D spawns must spell it
-// the same way — hence one constant rather than the two string literals this used to be.
-inline constexpr QLatin1String kDesktopTitlePrefix{"Remora-desktop:"};
+// kDesktopTitlePrefix — the desktop window's title marker — lives in core/MirrorRegistry.h now:
+// a mirror classifies itself by it when it registers.
 
 struct RunContext {
     Backend backend;
@@ -199,7 +246,8 @@ StepResult shareInputDevices(Spawner &sp, const RunContext &ctx, LogSink &sink);
 // mirror owns TCP connections for the adb forward, a husk owns none. Returns how many were
 // reaped. Conservative by construction — it skips processes younger than the age floor (a
 // starting mirror has no tunnel yet either) and reaps nothing at all when `ss` is unavailable,
-// because absent evidence must never read as "it is dead".
+// because absent evidence must never read as "it is dead". Without a POSIX userland (Windows) the
+// mirror's own registry entry is the evidence: it reports a session whose tunnel closed under it.
 int reapMirrorHusks(Spawner &sp, const RunContext &ctx, const QString &target,
                     const LineSink &log);
 
@@ -210,9 +258,10 @@ int reapMirrorHusks(Spawner &sp, const RunContext &ctx, const QString &target,
 // encoder while holding ~0.5 GiB each (bd remora-e5x.19.1). An empty `target` skips the client
 // reap (a macvlan profile with no pinned IP, or a takeover of an unresolvable profile) but still
 // cleans the encoder and sockets, which derive from the container name alone. Returns how many
-// processes were reaped.
+// processes were reaped. The encoder half runs for Backend::Bare only — host encode is bare-only
+// (bd remora-7oih.3), so a remote container never had an encoder on this machine.
 int reapSessionOrphans(Spawner &sp, const QString &containerName, const QString &target,
-                       const LineSink &log);
+                       const LineSink &log, Backend backend = Backend::Bare);
 
 // Run a shell snippet ON THE DOCKER HOST, wherever that is: locally when `host` is empty (bare),
 // over ssh otherwise (remote). Without this, "the docker host" is spelled two ways at every
@@ -279,10 +328,28 @@ bool containerDevicesStale(const QStringList &devices, const ResolvedConfig &rc)
 QString resolveAdbTarget(Spawner &sp, const RunContext &ctx, QString *err = nullptr,
                          const LineSink &log = {});
 
-// Local mirror clients currently attached to a target — mirror, app windows and desktop
-// sessions alike (every client argv carries "-s <target>"). The auto-sleep idle signal:
+// Local mirror clients currently attached to a target — mirror, splash, PIP, app windows and
+// desktop sessions alike, by the registry (Spawner::mirrors). The auto-sleep idle signal:
 // 0 = nobody is looking at the device.
 int countMirrorClients(Spawner &sp, const QString &target);
+
+// THIS instance's mirror windows on an adb target — the main mirror and the boot splash that
+// becomes it, never a PIP, an app or a desktop window (core instanceMirrors). What the reaps
+// before a splash, before a launch and before a sleep stop.
+QList<qint64> instanceMirrorPids(Spawner &sp, const QString &target, const QString &windowTitle);
+
+// Stop mirror clients the way every reap here does: a graceful stop, a moment to take it, then a
+// hard kill of whatever ignored it. A mirror worth reaping is usually a stuck one, and a stuck
+// client does not service the signal it has to wake up to handle (bd remora-82x: alive in
+// futex_wait 84 s after a TERM, gone instantly on a KILL).
+void stopMirrorClients(Spawner &sp, const QList<qint64> &pids);
+
+// The PIP toggle's "put it away" half, matched on the PIP's per-profile window title — exactly,
+// so one profile's toggle cannot close another's whose name merely starts the same way. Asks
+// politely and waits rather than killing: a PIP is a healthy window the user wants gone, and one
+// that does not go is reported as such.
+enum class PipClose { NotRunning, Closed, StillRunning };
+PipClose closePip(Spawner &sp, const QString &title);
 
 // Device screenshot to outPath. exec-out is binary-safe and the LOCAL shell redirects the PNG
 // into the file, so no pixel data crosses ProcResult (its QString decode would mangle it). adb
@@ -371,6 +438,7 @@ StepResult ensureCpufreqTopology(Spawner &sp, const ResolvedConfig &rc, const QS
 StepResult wipeDataDir(Spawner &sp, const ResolvedConfig &rc, const LineSink &log);
 
 // ─────────── vendored asset locations ───────────
+QString vendorDir();  // the vendor/ tree this binary reads: compiled in, or beside it on Windows
 QString vendorScript(const QString &kind, const QString &name);  // container-scripts/guest-scripts/…
 // One `sh -c` payload emitting the raw inputs of parseNvidiaVersionScan (bd remora-81cp):
 // /proc/driver/nvidia/version plus the libnvidia-glcore.so.* install locations. Shared by the
@@ -533,10 +601,6 @@ struct AppMenuEntry {
     QString pkg, name;  // one generated app entry (the folder's mirror/desktop links excluded)
 };
 QString appMenuSlug(const QString &instance);
-// pgrep/pkill pattern matching THIS instance's mirror for an adb target. Mirror windows
-// are titled with just the profile name (legacy sessions carried a "Remora:" prefix — still
-// matched); app and desktop windows carry other titles and must not match.
-QString mirrorTitlePattern(const QString &target, const QString &windowTitle);
 QVector<AppMenuEntry> appMenuEntries(const QString &slug);  // one folder's app entries
 // Per-app window mode ("desktop" | "freeform" | "" = ask on first launch), kept in
 // cfg.integration.appModes as "<pkg>=<mode>".
@@ -565,10 +629,17 @@ public:
 // sshHost comes from the resolved config and may be empty when unconfigured, in which case the
 // probes that need it are SKIPPED rather than run against a guess. No personal host or domain
 // name is baked in (bd remora-4ei.12).
+// On a Windows client the bare-only local rows (lsmod, docker group, local daemon, the local GPU
+// and LAN scans) are not asked at all: bare does not exist there, and every one of them is a Linux
+// command that would only come back as a misleading failure (bd remora-7oih.2).
 HostCapabilities probeCapabilities(Backend target, const QString &sshHost, Spawner &sp);
+// "Is adb on this machine?" without a shell: `command -v` is a shell builtin, so Windows asks
+// where.exe instead. Shared by the readiness probe and preflight so the two cannot disagree.
+QStringList adbLookupArgv(LocalOs os);
 
 // Just the LOCAL host's render nodes (node + driver each) — the GUI's multi-GPU picker uses this
-// without paying for a full capability probe (bd remora-e5x.1).
+// without paying for a full capability probe (bd remora-e5x.1). Empty on Windows: there is no
+// /dev/dri to scan, and the GPU a deploy uses belongs to the docker host anyway.
 QList<RenderNode> probeRenderNodes(Spawner &sp);
 
 // The capability probe a DEPLOY OR CONNECT needs, or nullopt when this profile does not need one.

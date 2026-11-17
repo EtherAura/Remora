@@ -1,5 +1,7 @@
 #include "core/Backend.h"
 
+#include "core/ManagedHost.h"
+
 namespace remora {
 
 QString backendToString(Backend b) {
@@ -24,7 +26,7 @@ QString backendToString(Backend b) {
 // instructions instead of quietly deploying it somewhere else.
 Backend backendFromString(const QString &s) {
     if (s == QLatin1String("remote")) return Backend::Remote;
-    return Backend::Bare;
+    return effectiveBackend(Backend::Bare);
 }
 
 bool isRetiredVmBackend(const QString &s) { return s.trimmed() == QLatin1String("vm"); }
@@ -43,6 +45,11 @@ QString bareNeedsLinuxMessage() {
         "backend=bare runs Android in docker on this machine, and that needs a Linux kernel: the "
         "container shares it for binder and memfd. Windows does not have one. Deploy to a Linux "
         "docker host instead: backend=remote with ssh_host=<user>@<host>.");
+}
+
+QString linuxDesktopOnlyMessage(const QString &feature) {
+    return QStringLiteral("%1 is a Linux desktop feature and is not available on Windows")
+        .arg(feature);
 }
 
 QString gpuModeToString(GpuMode m) {

@@ -84,8 +84,9 @@ implementation remains in `remora-wzaa`. This is a product decision, not a claim
 >   store suite's `HOME`/XDG isolation needs a Windows equivalent.
 > - **Packaging.** That means DLL staging, the Linux `vendor/native` helpers built on Linux, and a
 >   Windows CI job.
-> - **Decode and display.** There is no D3D11VA decode yet. Window behaviour, audio and GPU decode
->   still need sign-off on a real Windows machine.
+> - **Decode and display.** D3D11VA decode is implemented (`auto` tries CUDA first, frames are
+>   downloaded to the existing NV12 render path) but has not run on a real GPU. Window behaviour,
+>   audio and GPU decode still need sign-off on a real Windows machine.
 > - **The hidden guest.** It is not started.
 >
 > The research below dates. Its appliance section is the starting point for the
@@ -130,8 +131,8 @@ boot/device integration; the current container archive is not a bootable disk im
 Graphics is the largest local uncertainty. Remora currently expects Linux DRM nodes, Mesa/Venus,
 buffer sharing and host codecs. Neither WHPX nor a generic virtual display proves those paths
 work in the appliance. Start with guest software rendering/encoding and software client decode.
-The [current decoder](../src/mirror/Decoder.cpp) implements CUDA and VAAPI selection, without a
-D3D11VA path; Windows hardware decode needs separate implementation/validation. Assess a Windows
+The [current decoder](../src/mirror/Decoder.cpp) selects CUDA and D3D11VA on Windows (VAAPI on
+Linux); Windows hardware decode still needs validation on a real GPU. Assess a Windows
 graphics bridge only after boot/connect works. Do not promise Linux-equivalent gaming performance
 or banking/DRM compatibility. Windows on ARM is outside this x86_64 assessment.
 

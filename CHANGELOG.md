@@ -9,6 +9,17 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Added
 
+- **Hardware video decode in the Windows client.** The mirror decodes with D3D11VA, which every
+  Windows GPU driver provides, so AMD and Intel machines no longer fall back to software.
+  `--hwdec=auto` tries NVIDIA's CUDA first and D3D11VA second, and `--hwdec=d3d11va` asks for it
+  directly. When the GPU cannot decode the stream, the mirror says so once and decodes in software.
+  It has not yet been tested on a Windows machine with a GPU.
+
+- **The Windows client works against a Linux docker host too.** On Windows, the image library,
+  prune, push, fetch, the official catalog, `images`, `play-install` and the add-on layer use the
+  profile's docker host when no other host is given. Source builds need an explicit `source_host`
+  and say so when it is missing.
+
 - **Explicit support for private images managed by Magisk's built-in Zygisk.** Reconnect
   verifies their root and native companion instead of replacing their modules with ReZygisk.
   An opt-in source patch documents the Android 17 container build validated with Shamiko 0.7.5.
@@ -50,16 +61,80 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   in `~/.local/share/remora/payloads/zygisk_pif`. `vendor/source-build/stage-spoof-layer.sh`
   stages the same layer for `remora build --base`.
 
-- **The client builds for Windows (early).** Remora now cross-compiles to a Windows executable
-  with llvm-mingw against Qt's official Windows build: `tools/windows-sdk.sh` fetches the pinned
-  SDK and `cmake/windows-llvm-mingw.cmake` is the toolchain file. Under Wine, `remora mirror`
-  streams and records from an Android instance on a Linux host. There is no Windows package yet,
-  and it has not been tested on Windows itself. `backend=bare` is refused on Windows with a pointer
-  to `backend=remote`, because a local container needs a Linux kernel. A build without Qt WebEngine,
-  which includes this one, explains how to sign in to Reddit with a cookie instead of opening a
-  window it cannot show.
+- **Remora for Windows, without a second machine (early).** Windows has no Linux kernel to run
+  Android on, so Remora for Windows runs its own small Linux guest: Alpine with a kernel Remora
+  builds, under the QEMU it ships, on the Windows Hypervisor Platform. A profile with no `ssh_host`
+  deploys into it over the same path a remote docker host takes, and `remora guest
+  status|start|stop|reset-system` shows and controls it. Its data disk keeps every image and Android
+  `/data` across updates. Settings: `guest_memory_mb`, `guest_cpus`, `guest_accel`. The client
+  cross-compiles with llvm-mingw (`tools/windows-sdk.sh`, `cmake/windows-llvm-mingw.cmake`) and
+  `tools/windows-stage.sh` stages the folder a PC runs: `remora-gui.exe` opens the workspace with no
+  console window, and `remora.exe` is the command line. `tools/windows-installer.sh` builds
+  `remora-setup.exe`, which also turns on the Windows Hypervisor Platform. Nothing is published yet,
+  and the hypervisor path has not been run on a real Windows PC. [Windows](docs/user/Windows.md) has
+  the details.
+
+### Changed
+
+- **NVIDIA Venus, `host_encode` and `host_decode` are `bare` only.** Their helpers run on the
+  machine running Remora, and a `remote` deploy used to start them there, beside a container that
+  was somewhere else. On `remote`, automatic Venus now stays off. A remote profile with
+  `gpu_mode=host` that sets `venus=true`, `host_encode=true` or `host_decode=true` is refused before
+  anything is created: `up` names the setting, `check` reports it as a required row, and `plan`
+  prints a `DEPLOY WILL REFUSE` line.
+
+- **A remote profile's data directory stays a path on the docker host.** A `~` typed into the
+  data-directory field is no longer expanded with this machine's home unless the profile is `bare`.
+  The folder picker is greyed out for remote profiles.
+
+- **The Reddit sign-in no longer needs `sqlite3` on the host.** Android's account databases are
+  edited with Qt's own SQLite driver, and the session cookie appears in no command line. Debian
+  and Ubuntu builds need `libqt6sql6-sqlite`.
 
 ### Fixed
+
+- **Remora finds its mirror windows by a registry, not `pgrep`.** Each mirror window registers
+  itself, and Remora finds, replaces, closes and counts mirrors from that list. On Windows a
+  reconnect now replaces the previous mirror instead of opening a second one beside it, **Stop**
+  closes the windows, the PIP toggle closes as well as opens, and `auto_sleep_minutes` no longer
+  freezes a device that is being watched.
+
+- **The PIP toggle closes only its own profile's PIP.** Toggling a profile whose name is the start
+  of another's ("A" and "A 2") used to close the other profile's PIP. Window lookups now match
+  profile names and device addresses exactly.
+
+- **A stale mirror that ignores the request to close is killed** before a deploy's boot splash
+  opens, before a reconnect and before `remora sleep`, instead of staying open beside the new
+  window.
+
+- **`remora check` and the workspace readiness no longer report adb missing on Windows.** A bare
+  profile there resolves to Remora's own guest, and the local docker rows are not asked of a
+  machine that has no local docker.
+
+- **Screenshots, the boot animation, Alt+D and the lit-screen wait need no local shell.** The mirror
+  unpacks `bootanimation.zip` itself, so `unzip` is no longer needed for it, and a deploy on Windows
+  no longer spends 60 s on the lit-screen wait.
+
+- **`remora shell`, `logcat`, `prop` and `install` on Windows wait for adb and return its exit
+  code.** Arguments with spaces reach adb intact, and the prompt no longer comes back while adb is
+  still running.
+
+- **Profiles can be deleted on Windows, and on Linux without systemd.** With no `systemctl` there
+  are no services to disable, so Delete profile removes the profile instead of keeping it.
+
+- **Linux desktop features say they are unavailable on Windows instead of failing.** The
+  application-menu refresh is skipped with a reason and `desktop_menu` defaults to off there;
+  `remora service` refuses and writes nothing; the input-device pickers and *Open device storage*
+  explain what to do instead. The window icon shows on Windows.
+
+- **The image library no longer treats a command that never started as a success.** A missing
+  `ssh` used to read as success, and on the GUI thread it hung for the whole timeout first.
+
+- **A push or fetch whose sending side fails is reported as failed.** Before, the result was taken
+  from `docker load` alone.
+
+- **An explicit VA-API render node works.** `--hwdec=/dev/dri/renderD128` looked for
+  `/dev/dri/renderd128` instead and always fell back to software decode.
 
 - **Remote deploys set up the container they deployed.** Several deploy steps ran `docker exec`
   on this machine instead of on the remote docker host: the boot-id ashmem link for Android 17

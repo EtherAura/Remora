@@ -1,5 +1,6 @@
 #include <QtTest>
 
+#include "core/MirrorHwDecode.h"
 #include "core/MirrorInput.h"
 #include "core/MirrorProto.h"
 #include "core/SplashFormats.h"
@@ -39,6 +40,85 @@ static Drained drain(StreamDemuxer &d) {
             e == StreamDemuxer::Event::Error)
             return out;
     }
+}
+
+// A --hwdec mode's attempts, spelled for comparison: "cuda", "d3d11va", "vaapi-probe" (the
+// render-node probe) or "vaapi:<node>".
+static QStringList hwPlan(const char *mode, HwDecodePlatform platform) {
+    QStringList out;
+    for (const HwDecodeAttempt &a : hwDecodeAttempts(QString::fromLatin1(mode), platform)) {
+        switch (a.api) {
+            case HwDecodeApi::Cuda: out << QStringLiteral("cuda"); break;
+            case HwDecodeApi::D3d11va: out << QStringLiteral("d3d11va"); break;
+            case HwDecodeApi::Vaapi:
+                out << (a.node.isEmpty() ? QStringLiteral("vaapi-probe")
+                                         : QStringLiteral("vaapi:") + a.node);
+                break;
+        }
+    }
+    return out;
+}
+
+// A zip built byte by byte, so the reader is pinned to the format rather than to whatever one
+// writer happens to emit. `streamed` sets bit 3 and zeroes the LOCAL sizes, as a streaming writer
+// does — only the central directory then knows them.
+struct ZipFile {
+    QByteArray name, data;
+    quint16 method = 0;
+    quint16 flags = 0;
+};
+static void put(QByteArray &b, quint32 v, int width) {
+    for (int i = 0; i < width; ++i) b.append(char((v >> (8 * i)) & 0xFF));
+}
+static QByteArray buildZip(const QList<ZipFile> &files, bool streamed = false,
+                           const QByteArray &comment = {}) {
+    QByteArray out, cd;
+    for (const ZipFile &f : files) {
+        const quint32 local = quint32(out.size());
+        const quint16 flags = f.flags | (streamed ? 0x8 : 0);
+        put(out, 0x04034b50, 4);
+        put(out, 20, 2);
+        put(out, flags, 2);
+        put(out, f.method, 2);
+        put(out, 0, 4);  // time + date
+        put(out, 0, 4);  // crc (unchecked)
+        put(out, streamed ? 0 : quint32(f.data.size()), 4);
+        put(out, streamed ? 0 : quint32(f.data.size()), 4);
+        put(out, quint32(f.name.size()), 2);
+        put(out, 4, 2);  // an extra field the directory does not repeat
+        out += f.name;
+        out += QByteArray(4, '\x7f');
+        out += f.data;
+        if (streamed) out += QByteArray(16, '\0');  // the data descriptor
+        put(cd, 0x02014b50, 4);
+        put(cd, 20, 2);
+        put(cd, 20, 2);
+        put(cd, flags, 2);
+        put(cd, f.method, 2);
+        put(cd, 0, 4);
+        put(cd, 0, 4);
+        put(cd, quint32(f.data.size()), 4);
+        put(cd, quint32(f.data.size()), 4);
+        put(cd, quint32(f.name.size()), 2);
+        put(cd, 0, 2);
+        put(cd, 0, 2);
+        put(cd, 0, 2);
+        put(cd, 0, 2);
+        put(cd, 0, 4);
+        put(cd, local, 4);
+        cd += f.name;
+    }
+    const quint32 cdOffset = quint32(out.size());
+    out += cd;
+    put(out, 0x06054b50, 4);
+    put(out, 0, 4);
+    put(out, quint32(files.size()), 2);
+    put(out, quint32(files.size()), 2);
+    put(out, quint32(cd.size()), 4);
+    put(out, cdOffset, 4);
+    put(out, quint32(comment.size()), 2);
+    out += comment;
+    return out;
 }
 
 class TestMirrorProto : public QObject {
@@ -666,6 +746,54 @@ private slots:
         QCOMPARE(mapToVideo({10, 10}, {0, 0}, {1920, 1080}), QPoint(0, 0));  // degenerate widget
     }
 
+
+    // bd remora-7oih.2 — the splash reads bootanimation.zip itself instead of forking unzip. An
+    // entry's bytes are where its LOCAL header says, sizes come from the directory (a streamed
+    // entry's local sizes are zero), a trailing comment does not hide the end record, and a
+    // compressed entry is reported by method rather than handed out as if it were the data.
+    void zipIndexReadsStoredEntries() {
+        const QByteArray zip = buildZip(
+            {{"desc.txt", "1080 360 60\nc 1 0 part0\n"},
+             {"part0/", ""},
+             {"part0/00000.png", QByteArray("\x89PNG\0\xff", 6)},
+             {"part1/big.png", QByteArray(70000, 'x'), 8}},
+            /*streamed=*/true, "a comment after the end record");
+        const ZipIndex idx = indexZip(zip);
+        QVERIFY2(idx.error.isEmpty(), qPrintable(idx.error));
+        QCOMPARE(idx.entries.size(), 4);
+        const auto bytes = [&](const ZipEntry &e) { return zip.mid(e.offset, e.size); };
+        QCOMPARE(idx.entries[0].name, QStringLiteral("desc.txt"));
+        QCOMPARE(bytes(idx.entries[0]), QByteArray("1080 360 60\nc 1 0 part0\n"));
+        QCOMPARE(idx.entries[1].name, QStringLiteral("part0/"));
+        QCOMPARE(bytes(idx.entries[2]), QByteArray("\x89PNG\0\xff", 6));
+        QCOMPARE(idx.entries[2].method, quint16(0));
+        QCOMPARE(idx.entries[3].method, quint16(8));
+        QCOMPARE(idx.entries[3].size, qint64(70000));
+        // an encrypted entry is never "stored", whatever method it claims
+        QCOMPARE(indexZip(buildZip({{"x", "y", 0, 0x1}})).entries.value(0).method, quint16(0xFFFF));
+    }
+
+    // A truncated pull or a stray file must fail as an error, not read past the end.
+    void zipIndexRefusesDamage() {
+        const QByteArray zip = buildZip({{"desc.txt", "1080 360 60\n"}, {"a.png", "png"}});
+        QVERIFY(!indexZip(QByteArray()).error.isEmpty());
+        QVERIFY(!indexZip(QByteArray("PK not really a zip")).error.isEmpty());
+        for (int cut : {1, 10, 23, int(zip.size() / 2)})
+            QVERIFY2(!indexZip(zip.left(zip.size() - cut)).error.isEmpty(), qPrintable(QString::number(cut)));
+        QByteArray badLocal = zip;
+        badLocal[0] = 'X';  // the first local header's signature
+        QVERIFY(!indexZip(badLocal).error.isEmpty());
+        QVERIFY(indexZip(badLocal).entries.isEmpty());
+    }
+
+    void zipEntryNamesStayInside() {
+        for (const char *ok : {"desc.txt", "part0/", "part0/00001.png", "a..b/c"})
+            QVERIFY2(zipEntryNameIsSafe(QString::fromLatin1(ok)), ok);
+        for (const char *bad : {"", "/etc/passwd", "../x", "part0/../../x", "..", "a\\b",
+                                "C:/x", "a.png:stream"})
+            QVERIFY2(!zipEntryNameIsSafe(QString::fromLatin1(bad)), bad);
+    }
+
     void bootAnimDescParsing() {
         const auto d = parseBootAnimDesc(QStringLiteral(
             "3760 1992 30\n"
@@ -724,6 +852,76 @@ private slots:
         QVERIFY(s.attach);
         s = parseSplashStatus(QString());
         QVERIFY(!s.booting && !s.attach && !s.abort && s.text.isEmpty());
+    }
+
+    // Hardware decode selection (bd remora-7oih.4) ---------------------------------------------
+    //
+    // Which decode APIs each --hwdec mode reaches, per platform. Order is the contract: the decoder
+    // keeps the first device that opens.
+
+    void hwDecodeOffIsSoftwareEverywhere() {
+        for (const char *m : {"", "off", "OFF", "0"}) {
+            QVERIFY2(!hwDecodeRequested(QString::fromLatin1(m)), m);
+            QVERIFY(hwPlan(m, HwDecodePlatform::Linux).isEmpty());
+            QVERIFY(hwPlan(m, HwDecodePlatform::Windows).isEmpty());
+        }
+    }
+
+    void hwDecodeAutoPerPlatform() {
+        // CUDA first on both (zero-copy on Windows, the cross-GPU lesson on Linux), then the
+        // platform's own API.
+        for (const char *m : {"auto", "AUTO", "1"}) {
+            QCOMPARE(hwPlan(m, HwDecodePlatform::Linux),
+                     (QStringList{QStringLiteral("cuda"), QStringLiteral("vaapi-probe")}));
+            QCOMPARE(hwPlan(m, HwDecodePlatform::Windows),
+                     (QStringList{QStringLiteral("cuda"), QStringLiteral("d3d11va")}));
+        }
+    }
+
+    void hwDecodeApisStayOnTheirPlatform() {
+        // Windows never reaches VAAPI or a /dev/dri node, and Linux never asks for D3D11VA.
+        for (const char *m : {"auto", "1", "cuda", "nvdec", "d3d11va", "vaapi",
+                              "/dev/dri/renderD128", "dxva2"}) {
+            for (const HwDecodeAttempt &a : hwDecodeAttempts(QString::fromLatin1(m),
+                                                             HwDecodePlatform::Windows))
+                QVERIFY2(a.api != HwDecodeApi::Vaapi, m);
+            for (const HwDecodeAttempt &a : hwDecodeAttempts(QString::fromLatin1(m),
+                                                             HwDecodePlatform::Linux))
+                QVERIFY2(a.api != HwDecodeApi::D3d11va, m);
+        }
+    }
+
+    void hwDecodeExplicitModes() {
+        const QStringList cuda{QStringLiteral("cuda")};
+        for (const char *m : {"cuda", "nvdec", "NVDEC"}) {
+            QCOMPARE(hwPlan(m, HwDecodePlatform::Linux), cuda);
+            QCOMPARE(hwPlan(m, HwDecodePlatform::Windows), cuda);
+        }
+        QCOMPARE(hwPlan("d3d11va", HwDecodePlatform::Windows),
+                 QStringList{QStringLiteral("d3d11va")});
+        QCOMPARE(hwPlan("vaapi", HwDecodePlatform::Linux),
+                 QStringList{QStringLiteral("vaapi-probe")});
+        // The node keeps its case: lowercased, renderD129 is a path that does not exist.
+        QCOMPARE(hwPlan("/dev/dri/renderD129", HwDecodePlatform::Linux),
+                 QStringList{QStringLiteral("vaapi:/dev/dri/renderD129")});
+        // Requested, but nothing on the platform serves it: the decoder warns and decodes in
+        // software rather than taking the name for something else.
+        for (const char *m : {"d3d11va", "D3D11VA"}) {
+            QVERIFY(hwDecodeRequested(QString::fromLatin1(m)));
+            QVERIFY(hwPlan(m, HwDecodePlatform::Linux).isEmpty());
+        }
+        for (const char *m : {"vaapi", "/dev/dri/renderD128", "dxva2"}) {
+            QVERIFY(hwDecodeRequested(QString::fromLatin1(m)));
+            QVERIFY2(hwPlan(m, HwDecodePlatform::Windows).isEmpty(), m);
+        }
+    }
+
+    void hwDecodeHostPlatform() {
+#ifdef Q_OS_WIN
+        QCOMPARE(kHostHwDecodePlatform, HwDecodePlatform::Windows);
+#else
+        QCOMPARE(kHostHwDecodePlatform, HwDecodePlatform::Linux);
+#endif
     }
 
     void deviceFramingErrorLatches() {

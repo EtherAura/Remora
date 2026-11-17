@@ -57,7 +57,7 @@ distribution:
 | openssh | deploying to a docker host over ssh (the `remote` target) |
 | NVIDIA userspace utilities | NVIDIA acceleration through the Venus render server |
 | python | fetching official images and their updates, adding Google Play, and sharing host input devices with the container (`shared_inputs`) |
-| unzip | showing the boot animation in the mirror while Android starts |
+| unzip | fetching the Magisk payload for an image build or add-on |
 | polkit | opening a device's storage from the workspace |
 
 ## To build the Android image
@@ -92,7 +92,7 @@ built.
 |---|---|
 | A C++20 compiler | |
 | CMake 3.20 or newer | |
-| Qt 6 | the `Core`, `Widgets`, `Test`, `Network`, `DBus`, `OpenGLWidgets`, `Multimedia` and `WebEngineWidgets` modules |
+| Qt 6 | the `Core`, `Widgets`, `Test`, `Network`, `Sql` (with its SQLite driver), `DBus`, `OpenGLWidgets`, `Multimedia` and `WebEngineWidgets` modules |
 | FFmpeg development libraries | `libavcodec`, `libavformat`, `libavutil`, `libswscale`, `libswresample` |
 | FFmpeg's NVIDIA codec headers (`ffnvcodec`) | headers only. The mirror loads the driver at runtime, so you do not need an NVIDIA GPU to build |
 | Your C library's static archive (`libc.a`) | two of the small native helpers in `vendor/native` are static. On most distributions it is part of glibc's development files |
@@ -109,7 +109,7 @@ built.
 ### Gentoo
 
 ```sh
-sudo emerge -av dev-qt/qtbase:6 dev-qt/qtmultimedia:6 dev-qt/qtwebengine:6 \
+sudo emerge -av "dev-qt/qtbase:6[sqlite]" dev-qt/qtmultimedia:6 dev-qt/qtwebengine:6 \
     dev-build/cmake media-video/ffmpeg media-libs/nv-codec-headers dev-util/android-tools
 ```
 
@@ -122,8 +122,8 @@ sudo pacman -S qt6-base qt6-multimedia qt6-webengine cmake ffmpeg ffnvcodec-head
 ### Debian and Ubuntu
 
 ```sh
-sudo apt install build-essential cmake qt6-base-dev qt6-multimedia-dev qt6-webengine-dev \
-    libgl1-mesa-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+sudo apt install build-essential cmake qt6-base-dev libqt6sql6-sqlite qt6-multimedia-dev \
+    qt6-webengine-dev libgl1-mesa-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
     libswresample-dev libffmpeg-nvenc-dev adb
 ```
 

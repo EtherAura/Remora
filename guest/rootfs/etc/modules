@@ -1,0 +1,4 @@
+virtio_net
+virtio_rng
+qemu_fw_cfg
+overlay

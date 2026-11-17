@@ -61,8 +61,8 @@ instance that is already running, without any bring-up.
 | `max_size` | 0 | longest side of the mirrored video. 0 means the display's full size |
 | `max_fps` | unset, or 60 when `fps` is above 60 | cap on the encoder's frame rate |
 | `audio` | off | mirror audio |
-| `hw_decode` | on | decode on this machine's GPU: NVDEC, then VA-API, then software. `false` forces software |
-| `host_encode` | off | encode on the host GPU instead of inside Android. `gpu_mode=host` and the Venus stack only |
+| `hw_decode` | on | decode on this machine's GPU: NVDEC, then VA-API (D3D11VA on Windows), then software. `false` forces software |
+| `host_encode` | off | encode on the host GPU instead of inside Android. `bare`, `gpu_mode=host` and the Venus stack only |
 | `host_encode_max_size` | 0 | cap on the host encoder's output size, longest side |
 
 With `host_encode`, frames go from Remora's own hwcomposer to a hardware encoder on the host GPU,

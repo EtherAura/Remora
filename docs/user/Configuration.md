@@ -82,7 +82,7 @@ Profiles created in the workspace get their own `container_name`, `data_dir`
 | `hwcomposer` | image default | composer HAL. Remora's own is the only one the image ships |
 | `vulkan` | per driver | Vulkan driver: `intel`, `radeon`, `virtio` (Venus), `broadcom`, `freedreno`, `panfrost`, or `pastel` (software) in guest mode |
 | `va_driver` | per driver | VA-API driver for video: iHD on Intel, `radeonsi` on amdgpu |
-| `venus` | automatic | NVIDIA through Venus. `false` pins it off, `true` forces it on |
+| `venus` | automatic on `bare` | NVIDIA through Venus. `false` pins it off, `true` forces it on. Bare only: always off on `remote`, where `true` is refused |
 | `venus_socket_dir` | `~/.cache/remora/venus` | render-server socket directory (one per container when `host_encode` is on) |
 | `venus_lib_dir` / `venus_server` | probed | guest libraries and render-server binary, as installed by `remora venus-build` |
 
@@ -95,9 +95,9 @@ Profiles created in the workspace get their own `container_name`, `data_dir`
 | `max_size` | 0 | longest side of the mirrored video. 0 is the display's full size |
 | `audio` | off | mirror audio |
 | `hw_decode` | on | decode the mirror on this machine's GPU |
-| `host_encode` | off | encode the mirror on the host GPU. `gpu_mode=host` and the Venus stack only |
+| `host_encode` | off | encode the mirror on the host GPU. `bare`, `gpu_mode=host` and the Venus stack only |
 | `host_encode_max_size` | 0 | cap on the host encoder's output size, longest side |
-| `host_decode` | off | decode in-Android video on the host GPU. `gpu_mode=host` only |
+| `host_decode` | off | decode in-Android video on the host GPU. `bare` and `gpu_mode=host` only |
 
 ## Mirror window and input
 
@@ -139,7 +139,7 @@ Malformed binding values are refused with an error, not quietly replaced.
 
 | key | default | meaning |
 |---|---|---|
-| `desktop_menu` | on | refresh the profile's launcher folder after each connect |
+| `desktop_menu` | on (off on Windows) | refresh the profile's launcher folder after each connect. The folder is a Linux desktop's application menu, so a Windows client skips it |
 | `app_modes` | freeform | per app, `<pkg>=desktop` or `<pkg>=freeform` |
 | `auto_update_apps` / `auto_update_hours` | off / 24 | run the Play update sweep after a connect when this many hours have passed |
 | `arm_apps` | none | packages pinned to their arm64 build |
@@ -167,10 +167,10 @@ Changing `shared_folders` or `companion_apps` recreates the container on the nex
 | `image_tag` | resolved from the features | deploy exactly this image |
 | `features` | the version's defaults | build features, see [Image Features](Image-Features.md) |
 | `android_version` | 16 | 16 or 17 |
-| `build_host` | this machine | docker host that builds and holds images |
+| `build_host` | this machine; on Windows, the profile's `ssh_host` | docker host that builds and holds images. A Windows client has no local docker, so it uses the profile's docker host, with `build_dir` and `output_dir` defaulting to the same paths in that host's home |
 | `build_dir` | `~/.cache/remora/image-build` | overlay-build context |
 | `output_dir` | `~/.local/share/remora/images` | where exported image archives land |
-| `source_host` | this machine | host where the source tree lives and compiles |
+| `source_host` | this machine; required on Windows | host where the source tree lives and compiles. A Windows client refuses source pulls and builds without one |
 | `source_tree` | none, required for a source build | the LineageOS or AOSP checkout |
 | `source_kind` | `lineage` | `lineage` or `aosp` |
 | `source_repo` / `source_ref` | the LineageOS manifest / unset | where to sync from, and which revision |

@@ -115,6 +115,7 @@ private:
     void wireAutosave();          // connect every config widget's change signal to autosave()
     bool suppressAutosave_ = false;  // guard while programmatically loading widgets
     Backend currentBackend() const;
+    bool dataDirIsLocal() const;
     void applyToConfig();
     void setRunning(bool running);
     void runImageCommand(const QStringList &args, const QString &title);  // the images helper
@@ -323,6 +324,7 @@ private:
     QString sourceTreePath() const;
     QString buildHostStr() const;
     QString sourceHostStr() const;
+    QString sourceHostRefusal() const;
     QString recordPath_;      // the mp4 the current/last recording writes to
     QString recordingDep_;    // deployment name whose mirror is recording (empty = none)
 

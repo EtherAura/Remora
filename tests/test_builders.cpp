@@ -1,5 +1,6 @@
 #include <QtTest>
 
+#include "TestPlatform.h"
 #include "core/Backend.h"
 #include "core/Builders.h"
 #include "core/Config.h"
@@ -13,6 +14,8 @@
 #include <QRegularExpression>
 #include <QTemporaryDir>
 #include "core/Gating.h"
+#include "core/Guest.h"
+#include "core/ManagedHost.h"
 #include "core/SourcePatches.h"
 
 using namespace remora;
@@ -90,6 +93,29 @@ static ResolvedConfig macvlanCfg() {
 class TestBuilders : public QObject {
     Q_OBJECT
 private slots:
+    // The Alt+D LaunchSpec round-trips any argv byte-for-byte (bd remora-7oih.2): it replaced a
+    // shell line, and the whole point is that nothing re-parses an argument on the way. Anything
+    // that is not a spec — the shell line a mirror from an older Remora carries, an empty argv,
+    // garbage — decodes to nullopt, so the caller can tell the two apart.
+    void launchSpecRoundTrips() {
+        const LaunchSpec in{{QStringLiteral("C:/Program Files/Remora/remora.exe"),
+                             QStringLiteral("mirror"), QStringLiteral("--window-title"),
+                             QStringLiteral("it's \"$HOME\" & ü\\n")},
+                            {{QStringLiteral("REMORA_IS_DESKTOP"), QStringLiteral("1")}},
+                            {QStringLiteral("REMORA_X")}};
+        const QString wire = encodeLaunchSpec(in);
+        QVERIFY(!wire.contains(QLatin1Char('\n')));  // one line: it rides an env var
+        const std::optional<LaunchSpec> out = decodeLaunchSpec(wire);
+        QVERIFY(out.has_value());
+        QCOMPARE(out->argv, in.argv);
+        QCOMPARE(out->set, in.set);
+        QCOMPARE(out->unset, in.unset);
+        QVERIFY(!decodeLaunchSpec(QStringLiteral("env -u REMORA_IS_DESKTOP 'remora' 'mirror' &")));
+        QVERIFY(!decodeLaunchSpec(QStringLiteral("{\"argv\":[]}")));
+        QVERIFY(!decodeLaunchSpec(QStringLiteral("{\"argv\":[1,2]}")));
+        QVERIFY(!decodeLaunchSpec(QString()));
+    }
+
     void bareDefaultDockerVector() {
         const QStringList expected{
             "docker", "run", "-d", "--privileged", "--name", "remora-bm",
@@ -210,6 +236,7 @@ private slots:
     }
 
     void appWindowUsesSoftwareAvcWhenHostMirrorUsesHevcWithoutVaapi() {
+        SKIP_ON_WINDOWS("venus and host encode are bare only, and Windows has no bare");
         RemoraConfig cfg;
         cfg.gpu.mode = GpuMode::Host;
         cfg.gpu.venus = true;
@@ -620,6 +647,7 @@ private slots:
     // composes natively, so there is no compose-capable jar to gate on. PIP still opts out on
     // its own ResolvedConfig copy (buildPipMirrorArgv clears the flag).
     void hostEncodeDrivesTheMirrorByItself() {
+        SKIP_ON_WINDOWS("venus and host encode are bare only, and Windows has no bare");
         RemoraConfig c;
         c.gpu.mode = GpuMode::Host;
         HostCapabilities caps;
@@ -706,6 +734,137 @@ private slots:
         QCOMPARE(argv.mid(argv.size() - boot.size()), boot);
     }
 
+    // bd remora-7oih.3 — venus, host_encode and host_decode are BARE ONLY: each runs a helper on
+    // the machine running Remora, and a remote deploy has nothing that starts one on the docker
+    // host. On remote they resolve OFF even with the whole stack probed there; an explicit request
+    // is recorded so preflight, check and plan can refuse it by name. Bare is unchanged.
+    void bareOnlyHostGpuHelpersNeverResolveOnRemote() {
+        HostCapabilities caps;
+        caps.renderNodes = {RenderNode{QStringLiteral("/dev/dri/renderD129"),
+                                       QStringLiteral("xe"), QStringLiteral("/dev/dri/card0")},
+                            RenderNode{QStringLiteral("/dev/dri/renderD128"),
+                                       QStringLiteral("nvidia"), QStringLiteral("/dev/dri/card1")}};
+        caps.hostRenderNode = QStringLiteral("/dev/dri/renderD129");
+        caps.hostRenderDriver = QStringLiteral("xe");
+        caps.hostNvidiaRenderNode = QStringLiteral("/dev/dri/renderD128");
+        caps.venusServerPath = QStringLiteral("/opt/venus/bin/virgl_test_server");
+        caps.venusLibDir = QStringLiteral("/opt/venus/guest-libs");
+        RemoraConfig c;
+        c.gpu.mode = GpuMode::Host;
+        // AUTO: off for remote (on for bare, below) — and nothing to refuse, because nothing was
+        // asked.
+        const ResolvedConfig autoRemote = resolve(c, Backend::Remote, caps);
+        QVERIFY(!autoRemote.venus);
+        QVERIFY(!autoRemote.venusSocketDir.has_value());
+        QVERIFY(autoRemote.bareOnlyRequested.isEmpty());
+        QCOMPARE(*autoRemote.gpuNode, QStringLiteral("/dev/dri/renderD129"));  // host mode stays
+        // EXPLICIT: still off on remote, and recorded in remorarc's spelling.
+        c.gpu.venus = true;
+        c.mirror.hostEncode = true;
+        c.mirror.hostDecode = true;
+        const ResolvedConfig r = resolve(c, Backend::Remote, caps);
+        QVERIFY(!r.venus);
+        QVERIFY(!r.hostEncode);
+        QVERIFY(!r.hostEncodeDrivesMirror);
+        QVERIFY(!r.hostDecode);
+        QCOMPARE(r.bareOnlyRequested,
+                 (QStringList{QStringLiteral("venus=true"), QStringLiteral("host_encode=true"),
+                              QStringLiteral("host_decode=true")}));
+        const QString argv = buildDockerRunArgv(r).join(QLatin1Char(' '));
+        QVERIFY(!argv.contains(QStringLiteral("/dev/venus")));
+        QVERIFY(!argv.contains(QStringLiteral("/dev/remora-frames")));
+        QVERIFY(!argv.contains(QStringLiteral("/dev/remora-decode")));
+        QVERIFY(!buildMirrorArgv(r, r.target).second.join(QLatin1Char(' '))
+                     .contains(QStringLiteral("--external-video-socket")));
+        const QString refusal = bareOnlyFeaturesRefusal(r.bareOnlyRequested);
+        QVERIFY(refusal.contains(QStringLiteral("venus=true, host_encode=true, host_decode=true")));
+        QVERIFY(refusal.contains(QStringLiteral("delete venus=, host_encode=, host_decode=")));
+        QVERIFY(refusal.contains(QStringLiteral("backend=bare")));
+        QVERIFY(bareOnlyFeaturesRefusal({}).isEmpty());
+        // Guest mode resolves all three off on every backend already, so there is nothing to
+        // refuse: a setting that never did anything is no reason to stop a deploy.
+        c.gpu.mode = GpuMode::Guest;
+        QVERIFY(resolve(c, Backend::Remote, caps).bareOnlyRequested.isEmpty());
+    }
+
+    // …and bare honours the same profiles exactly as before: Venus on by itself when the stack is
+    // probed, all three when asked, and nothing recorded to refuse.
+    void bareKeepsTheHostGpuHelpers() {
+        SKIP_ON_WINDOWS("venus and host encode are bare only, and Windows has no bare");
+        HostCapabilities caps;
+        caps.renderNodes = {RenderNode{QStringLiteral("/dev/dri/renderD129"),
+                                       QStringLiteral("xe"), QStringLiteral("/dev/dri/card0")},
+                            RenderNode{QStringLiteral("/dev/dri/renderD128"),
+                                       QStringLiteral("nvidia"), QStringLiteral("/dev/dri/card1")}};
+        caps.hostRenderNode = QStringLiteral("/dev/dri/renderD129");
+        caps.hostRenderDriver = QStringLiteral("xe");
+        caps.hostNvidiaRenderNode = QStringLiteral("/dev/dri/renderD128");
+        caps.venusServerPath = QStringLiteral("/opt/venus/bin/virgl_test_server");
+        caps.venusLibDir = QStringLiteral("/opt/venus/guest-libs");
+        RemoraConfig c;
+        c.gpu.mode = GpuMode::Host;
+        QVERIFY(resolve(c, Backend::Bare, caps).venus);
+        c.gpu.venus = true;
+        c.mirror.hostEncode = true;
+        c.mirror.hostDecode = true;
+        const ResolvedConfig bare = resolve(c, Backend::Bare, caps);
+        QVERIFY(bare.venus && bare.hostEncode && bare.hostDecode);
+        QVERIFY(bare.bareOnlyRequested.isEmpty());
+    }
+
+    // bd remora-7oih.3 — a Windows client has no local docker, so resolve() there moves an unset
+    // build_host to the profile's docker host. The defaults that named THIS machine's home move
+    // with it, to ~ paths the remote shell expands; anything the profile set stays as written.
+    void buildOnTheDockerHostMovesOnlyWhatWasDefaulted() {
+        RemoraConfig c;
+        c.backend.sshHost = QStringLiteral("me@vm");
+        ResolvedConfig r = resolve(c, Backend::Remote);
+        buildOnTheDockerHost(r, c);
+        QCOMPARE(r.buildHost, std::optional<QString>(QStringLiteral("me@vm")));
+        QCOMPARE(r.buildDir, QStringLiteral("~/.cache/remora/image-build"));
+        QCOMPARE(r.outputDir, QStringLiteral("~/.local/share/remora/images"));
+        // A named build host, or set dirs, are the profile's word.
+        c.image.outputDir = QStringLiteral("/srv/images");
+        r = resolve(c, Backend::Remote);
+        buildOnTheDockerHost(r, c);
+        QCOMPARE(r.outputDir, QStringLiteral("/srv/images"));
+        c.image.buildHost = QStringLiteral("builder@big");
+        r = resolve(c, Backend::Remote);
+        const QString dir = r.buildDir;
+        buildOnTheDockerHost(r, c);
+        QCOMPARE(r.buildHost, std::optional<QString>(QStringLiteral("builder@big")));
+        QCOMPARE(r.buildDir, dir);
+        // No docker host to move to: nothing moves — where this machine's docker is a local
+        // daemon. Where it is Remora's own guest, a blank host is the guest, and the build goes
+        // there.
+        RemoraConfig blank;
+        {
+            const ScopedLocalDockerIsGuest daemon(false);
+            r = resolve(blank, Backend::Bare);
+            buildOnTheDockerHost(r, blank);
+            QVERIFY(!r.buildHost.has_value());
+        }
+        const ScopedLocalDockerIsGuest guest(true);
+        r = resolve(blank, Backend::Bare);
+        buildOnTheDockerHost(r, blank);
+        QCOMPARE(r.buildHost, std::optional<QString>(guestAlias()));
+    }
+
+    // …and the mirror argv keeps the local socket out of a REMOTE vector even when a hand-built
+    // config sets the flag: the encoder that would serve it does not exist beside that container.
+    void remoteMirrorNeverTakesTheLocalVideoSocket() {
+        ResolvedConfig c = macvlanCfg();
+        c.hostEncode = true;
+        c.hostEncodeDrivesMirror = true;
+        c.hostEncodeVideoSocket = QStringLiteral("/tmp/remora-video-remora-lineage.sock");
+        const QStringList argv = buildMirrorArgv(c, c.target, false).second;
+        for (const QString &a : argv)
+            QVERIFY2(!a.startsWith(QStringLiteral("--external-video-socket")), qPrintable(a));
+        c.backend = Backend::Bare;  // the same config on bare still takes it
+        QVERIFY(buildMirrorArgv(c, c.target, false).second.contains(
+            QStringLiteral("--external-video-socket=/tmp/remora-video-remora-lineage.sock")));
+    }
+
     // bd remora-n4qx — on a multi-GPU host, every NON-selected GPU's nodes are masked with
     // /dev/null binds: --device only states the selection, the privileged container sees all of
     // /dev/dri, and the in-container stack discovers devices itself (amd-host-b rendered on a
@@ -740,8 +899,13 @@ private slots:
         const ResolvedConfig one = resolve(c, Backend::Remote, caps);
         QVERIFY(one.maskedGpuNodes.isEmpty());
         QVERIFY(buildDockerRunArgv(one).filter(QStringLiteral("/dev/null:")).isEmpty());
-        // Venus: the NVIDIA node is deliberately a second GPU — exempt from masking; a THIRD
-        // GPU still masks.
+    }
+
+    // Venus: the NVIDIA node is deliberately a second GPU — exempt from masking; a THIRD GPU still
+    // masks.
+    void venusLeavesItsNvidiaNodeUnmasked() {
+        SKIP_ON_WINDOWS("venus is bare only, and Windows has no bare");
+        HostCapabilities caps;
         caps.renderNodes = {RenderNode{QStringLiteral("/dev/dri/renderD129"),
                                        QStringLiteral("xe"), QStringLiteral("/dev/dri/card0")},
                             RenderNode{QStringLiteral("/dev/dri/renderD128"),
@@ -1076,7 +1240,7 @@ private slots:
     // The replacement contract is narrower and still catches the failure that mattered: the file
     // must do exactly its two derivations and must NOT have quietly regrown into a mapper.
     void bootPropsRcDerivesOnlyWhatCannotBeDeferred() {
-        QFile rc(QStringLiteral(REMORA_SOURCE_VENDOR_DIR)
+        QFile rc(sourcePath(QStringLiteral("vendor"))
                  + QStringLiteral("/container-scripts/remora.props.rc"));
         QVERIFY(rc.open(QIODevice::ReadOnly));
         const QString shim = QString::fromUtf8(rc.readAll());
@@ -1099,7 +1263,7 @@ private slots:
                 QVERIFY2(!line.contains(name, Qt::CaseInsensitive), qPrintable(line));
         }
         // and it stays byte-identical on both delivery roads (bake + bind-mount)
-        QFile baked(QStringLiteral(REMORA_SOURCE_VENDOR_DIR)
+        QFile baked(sourcePath(QStringLiteral("vendor"))
                     + QStringLiteral("/source-build/vendor-remora/remora.props.rc"));
         QVERIFY(baked.open(QIODevice::ReadOnly));
         QCOMPARE(QString::fromUtf8(baked.readAll()), shim);
@@ -1109,7 +1273,7 @@ private slots:
     // test, fixture or build file — the device agent's included — may carry forbiddenNames(), in
     // code, data or comments alike.
     void sourceTreeCarriesNoForbiddenNames() {
-        const QString root = QDir(QStringLiteral(REMORA_SOURCE_VENDOR_DIR "/..")).absolutePath();
+        const QString root = sourcePath(QString());
         QStringList files{root + QStringLiteral("/CMakeLists.txt")};
         for (const QString &sub :
              {QStringLiteral("src"), QStringLiteral("tests"), QStringLiteral("agent/src")}) {
@@ -1134,10 +1298,10 @@ private slots:
     // different behaviour depending on which image is underneath, invisibly — and the baked copy
     // is the one an image uses when something other than Remora starts it.
     void bootPropsShimBakeAndMountAreIdentical() {
-        QFile mount(QStringLiteral(REMORA_SOURCE_VENDOR_DIR)
+        QFile mount(sourcePath(QStringLiteral("vendor"))
                     + QStringLiteral("/container-scripts/remora.props.rc"));
         QVERIFY(mount.open(QIODevice::ReadOnly));
-        QFile baked(QStringLiteral(REMORA_SOURCE_VENDOR_DIR)
+        QFile baked(sourcePath(QStringLiteral("vendor"))
                     + QStringLiteral("/source-build/vendor-remora/remora.props.rc"));
         QVERIFY2(baked.open(QIODevice::ReadOnly),
                  "vendor/remora has no remora.props.rc — the image would boot with no boot-property "
@@ -1396,6 +1560,7 @@ private slots:
     // bd remora-4ei.56 — Venus AUTO. The whole point of the three-part precondition is that
     // enabling this by default can never switch a box onto a stack whose pieces are absent.
     void resolverVenusAutoNeedsAllThreePrerequisites() {
+        SKIP_ON_WINDOWS("venus and host encode are bare only, and Windows has no bare");
         RemoraConfig c;
         c.gpu.mode = GpuMode::Host;
         HostCapabilities caps;
@@ -1460,6 +1625,49 @@ private slots:
         caps.hostRenderDriver = QStringLiteral("someothergpu");
         QVERIFY(!resolve(c, Backend::Bare, caps).vulkan.has_value());
 
+        // An explicit vulkan= is the user's statement and beats every rule above.
+        c.gpu.vulkan = QStringLiteral("pastel");
+        QCOMPARE(*resolve(c, Backend::Bare, caps).vulkan, QStringLiteral("pastel"));
+    }
+
+    // The legacy `radeon` kernel driver is not amdgpu and is unmapped: it gets no automatic ICD,
+    // least of all the radeon one, while amdgpu on the same node still does. Pinned on both
+    // targets, and an explicit vulkan= still goes through.
+    void resolverVulkanIcdNoneForLegacyRadeonDriver() {
+        for (const Backend backend : {Backend::Bare, Backend::Remote}) {
+            RemoraConfig c;
+            c.gpu.mode = GpuMode::Host;
+            HostCapabilities caps;
+            caps.hostRenderNode = QStringLiteral("/dev/dri/renderD128");
+            const QString vkPrefix = QStringLiteral("androidboot.remora_vulkan=");
+
+            caps.hostRenderDriver = QStringLiteral("radeon");
+            const ResolvedConfig legacy = resolve(c, backend, caps);
+            QCOMPARE(*legacy.gpuNode, QStringLiteral("/dev/dri/renderD128"));
+            QVERIFY(!legacy.vulkan.has_value());
+            QVERIFY(buildDockerRunArgv(legacy).filter(vkPrefix).isEmpty());
+
+            caps.hostRenderDriver = QStringLiteral("amdgpu");
+            const ResolvedConfig amd = resolve(c, backend, caps);
+            QCOMPARE(*amd.vulkan, QStringLiteral("radeon"));
+            QVERIFY(buildDockerRunArgv(amd).contains(vkPrefix + QStringLiteral("radeon")));
+
+            // No mapping is not a prohibition: the user's explicit choice is honoured.
+            caps.hostRenderDriver = QStringLiteral("radeon");
+            c.gpu.vulkan = QStringLiteral("radeon");
+            const ResolvedConfig chosen = resolve(c, backend, caps);
+            QCOMPARE(*chosen.vulkan, QStringLiteral("radeon"));
+            QVERIFY(buildDockerRunArgv(chosen).contains(vkPrefix + QStringLiteral("radeon")));
+        }
+    }
+
+    // …and the Venus route, which a node's own driver cannot reveal.
+    void resolverVulkanIcdIsVirtioUnderVenus() {
+        SKIP_ON_WINDOWS("venus is bare only, and Windows has no bare");
+        RemoraConfig c;
+        c.gpu.mode = GpuMode::Host;
+        HostCapabilities caps;
+        caps.hostRenderNode = QStringLiteral("/dev/dri/renderD129");
         // THE CASE THAT SETTLES IT. With Venus the selected node stays the INTEL one — that is
         // where gralloc allocates — while rendering leaves for NVIDIA over vtest. Reading the
         // node's own driver would answer "intel"; the right answer is virtio, and only the host
@@ -1741,13 +1949,6 @@ private slots:
         RemoraConfig cfg;
         cfg.image.androidVersion = 17;
         cfg.image.imageTag = QStringLiteral("remora24:x86_64-public");  // registered with it
-        cfg.backend.containerName = QStringLiteral("remora-a");
-        ResolvedConfig r = resolve(cfg, Backend::Bare);
-        const QString dir = QDir::homePath() + "/.local/share/remora/updater/remora-a";
-        QCOMPARE(r.updaterDir, dir);
-        const QStringList argv = buildDockerRunArgv(r);
-        QVERIFY(argv.contains(dir + ":/rezmods/updater"));
-        QVERIFY(argv.indexOf(dir + ":/rezmods/updater") < argv.indexOf(r.imageTag));
         // another container on the same host gets its own: one Apply cannot reach both devices
         cfg.backend.containerName = QStringLiteral("remora-b");
         QVERIFY(resolve(cfg, Backend::Bare).updaterDir.endsWith("/remora-b"));
@@ -1765,9 +1966,24 @@ private slots:
         cfg.image.features.clear();
         cfg.image.androidVersion = 16;
         cfg.image.imageTag = QStringLiteral("remora23:x86_64-gapps");
-        r = resolve(cfg, Backend::Bare);
+        const ResolvedConfig r = resolve(cfg, Backend::Bare);
         QVERIFY(r.updaterDir.isEmpty());
         for (const QString &t : buildDockerRunArgv(r)) QVERIFY(!t.contains("/rezmods"));
+    }
+
+    // On bare the channel is a directory in this machine's home, bound ahead of the image.
+    void bareUpdaterChannelIsInThisHome() {
+        SKIP_ON_WINDOWS("bare's channel is a directory on this machine, and Windows has no bare");
+        RemoraConfig cfg;
+        cfg.image.androidVersion = 17;
+        cfg.image.imageTag = QStringLiteral("remora24:x86_64-public");
+        cfg.backend.containerName = QStringLiteral("remora-a");
+        const ResolvedConfig r = resolve(cfg, Backend::Bare);
+        const QString dir = QDir::homePath() + "/.local/share/remora/updater/remora-a";
+        QCOMPARE(r.updaterDir, dir);
+        const QStringList argv = buildDockerRunArgv(r);
+        QVERIFY(argv.contains(dir + ":/rezmods/updater"));
+        QVERIFY(argv.indexOf(dir + ":/rezmods/updater") < argv.indexOf(r.imageTag));
     }
 
     void updaterBindStalenessReadsTheMountPointOnly() {
@@ -2265,7 +2481,7 @@ private slots:
     // concern — see bd remora-4ei.33, install(DIRECTORY) never prunes.
     void everyRegisteredPatchFileExists() {
         const QString vendor =
-            QStringLiteral(REMORA_SOURCE_VENDOR_DIR) + QStringLiteral("/source-patches");
+            sourcePath(QStringLiteral("vendor")) + QStringLiteral("/source-patches");
         QVERIFY2(QDir(vendor).exists(), qPrintable(QStringLiteral("no source-patches at ") + vendor));
         for (const SourcePatch &p : sourcePatches())
             for (const QString &f : p.patches) {
@@ -2288,7 +2504,7 @@ private slots:
     // any apply path.
     void everyPatchFileOnDiskIsRegistered() {
         const QString vendor =
-            QStringLiteral(REMORA_SOURCE_VENDOR_DIR) + QStringLiteral("/source-patches");
+            sourcePath(QStringLiteral("vendor")) + QStringLiteral("/source-patches");
         QHash<QString, QSet<QString>> declared;  // dir → union of names across entries
         QSet<QString> globbed;
         for (const SourcePatch &p : sourcePatches()) {
@@ -2351,6 +2567,7 @@ private slots:
     // had worked. Executed for real, because this is shell: the guard is only worth anything if it
     // actually exits non-zero, and quoting bugs in these strings have shipped before.
     void sourcePatchMissingFileHardFails() {
+        SKIP_ON_WINDOWS("runs the generated guard through sh");
         QTemporaryDir root;
         QVERIFY(root.isValid());
         const QString dir = root.path() + QStringLiteral("/frameworks-base");
@@ -2394,6 +2611,7 @@ private slots:
     // the real driver un-updated. Executed from a deliberately different cwd, because that is the
     // entire failure: a string-level test would have passed against the broken version.
     void sourcePatchUnionAttributesIgnoreCwd() {
+        SKIP_ON_WINDOWS("runs the generated command through sh and git");
         QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
         const QString proj = tmp.path() + QStringLiteral("/tree/packages/apps/Settings");
@@ -2725,6 +2943,7 @@ private slots:
     // one failure mode this project keeps paying for. The Vulkan half must stay INDEPENDENT of
     // that refusal, or the incremental per-driver path the feature exists to offer disappears.
     void mesaSourceRefusesAPartialGlCluster() {
+        SKIP_ON_WINDOWS("runs mesa.mk through make, as the Linux image build does");
         if (QStandardPaths::findExecutable(QStringLiteral("make")).isEmpty())
             QSKIP("make not on PATH");
         QTemporaryDir tmp;
@@ -2733,7 +2952,7 @@ private slots:
         for (const QString &sub : {QStringLiteral("lib64/dri"), QStringLiteral("lib64/egl"),
                                    QStringLiteral("lib64/hw"), QStringLiteral("lib64/gbm")})
             QVERIFY(QDir().mkpath(d + QLatin1Char('/') + sub));
-        QVERIFY(QFile::copy(QStringLiteral(REMORA_SOURCE_VENDOR_DIR)
+        QVERIFY(QFile::copy(sourcePath(QStringLiteral("vendor"))
                                 + QStringLiteral("/source-build/features/mesa_source/mesa.mk"),
                             d + QStringLiteral("/mesa.mk")));
         // inherit-product-if-exists is the only build-system callable mesa.mk still uses; stubbing
@@ -2913,7 +3132,7 @@ private slots:
         // inconsistent; the same call against /usr/share is what catches a stale install.
         auto sourceTree = [](const QString &rel) {
             QList<QPair<QString, QByteArray>> out;
-            const QString root = QStringLiteral(REMORA_SOURCE_VENDOR_DIR) + QLatin1Char('/');
+            const QString root = sourcePath(QStringLiteral("vendor")) + QLatin1Char('/');
             QDirIterator it(root + rel, QDir::Files, QDirIterator::Subdirectories);
             while (it.hasNext()) {
                 QFile f(it.next());
@@ -3274,7 +3493,7 @@ private slots:
         // all 24 container stamps on EVERY build and forced a full reset, sync and re-apply — the
         // exact work the state exists to skip. Pin the script's own line so the two cannot drift
         // apart again silently; a change there must be made here too.
-        QFile acp(QStringLiteral(REMORA_SOURCE_VENDOR_DIR)
+        QFile acp(sourcePath(QStringLiteral("vendor"))
                   + QStringLiteral("/source-build/apply-container-patches.sh"));
         QVERIFY(acp.open(QIODevice::ReadOnly));
         QVERIFY2(QString::fromUtf8(acp.readAll())
@@ -3350,6 +3569,7 @@ private slots:
     // show that, so this runs the generated shell for real against a temporary tree. Still an offline
     // unit test — /bin/sh and a temp directory, no network, no docker, no source tree.
     void patchStateShellScopesWorkPerProject() {
+        SKIP_ON_WINDOWS("runs the generated prologue and epilogue through sh and git");
         QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
         const QString tree = tmp.path();
@@ -3614,9 +3834,6 @@ private slots:
     // pinning data_dir to it in remorarc restores the instance exactly.
     void resolverBackendDefaultsAreRemoraNamed() {
         RemoraConfig rc;
-        QCOMPARE(resolve(rc, Backend::Bare).containerName, QStringLiteral("remora-bm"));
-        QVERIFY(resolve(rc, Backend::Bare).dataDir.endsWith(QStringLiteral("/.remora-bm-data")));
-        QCOMPARE(resolve(rc, Backend::Bare).hostAdbPort, 5555);
         QCOMPARE(resolve(rc, Backend::Remote).containerName, QStringLiteral("remora-remote"));
         // and every resolved default carries the Remora identity, nothing else
         static const QRegularExpression remoraLeaf(QStringLiteral("/\\.?remora-[^/]+$"));
@@ -3632,11 +3849,22 @@ private slots:
         }
     }
 
+    // …bare's own, which an unpinned local profile has had all along.
+    void bareBackendDefaultsAreRemoraNamed() {
+        SKIP_ON_WINDOWS("bare's defaults, and Windows has no bare");
+        RemoraConfig rc;
+        QCOMPARE(resolve(rc, Backend::Bare).containerName, QStringLiteral("remora-bm"));
+        QVERIFY(resolve(rc, Backend::Bare).dataDir.endsWith(QStringLiteral("/.remora-bm-data")));
+        QCOMPARE(resolve(rc, Backend::Bare).hostAdbPort, 5555);
+        QVERIFY(resolve(rc, Backend::Bare).dataBaseDir.endsWith("/.remora-data-base"));
+    }
+
     // bd remora-4u4.9 — a CAPTURING profile gets its own venus socket dir, hence its own render
     // server. Frame capture is fixed at server start, so a host_encode profile needs a server to
     // itself by definition; deriving the path from the container name makes two impossible to
     // collide without probing anything.
     void hostEncodeProfilesGetTheirOwnVenusSocketDir() {
+        SKIP_ON_WINDOWS("venus and host encode are bare only, and Windows has no bare");
         RemoraConfig rc;
         rc.gpu.mode = GpuMode::Host;
         rc.gpu.venus = true;
@@ -3656,6 +3884,7 @@ private slots:
     // …and a RENDER-ONLY profile keeps the shared default. That is where sharing is real
     // (--multi-clients) and a second server would cost GPU memory for nothing.
     void renderOnlyProfilesShareTheDefaultVenusSocketDir() {
+        SKIP_ON_WINDOWS("venus and host encode are bare only, and Windows has no bare");
         RemoraConfig rc;
         rc.gpu.mode = GpuMode::Host;
         rc.gpu.venus = true;
@@ -3671,6 +3900,7 @@ private slots:
 
     // An explicit venus_socket_dir still wins — the derivation is a DEFAULT, not an override.
     void explicitVenusSocketDirBeatsThePerProfileDefault() {
+        SKIP_ON_WINDOWS("venus and host encode are bare only, and Windows has no bare");
         RemoraConfig rc;
         rc.gpu.mode = GpuMode::Host;
         rc.gpu.venus = true;
@@ -3707,9 +3937,9 @@ private slots:
         QVERIFY(!buildDockerRunArgv(bareCfg())
                      .join(QLatin1Char(' '))
                      .contains(QLatin1String(":/data-base")));
-        // resolver defaults: a static per-backend base path every profile shares
+        // resolver defaults: a static per-backend base path every profile shares (bare's is
+        // bareBackendDefaultsAreRemoraNamed's)
         RemoraConfig rc;
-        QVERIFY(resolve(rc, Backend::Bare).dataBaseDir.endsWith("/.remora-data-base"));
         QCOMPARE(resolve(rc, Backend::Remote).dataBaseDir, QStringLiteral("~/remora-data-base"));
     }
 
@@ -3849,31 +4079,38 @@ private slots:
         QCOMPARE(pipWindowTitle(QString()), QStringLiteral("Remora PIP"));
     }
 
+    // The host side of the container's one -p publish, or nothing.
+    static QString adbPublish(const ResolvedConfig &rc) {
+        const QStringList a = buildDockerRunArgv(rc);
+        const int i = a.indexOf(QStringLiteral("-p"));
+        return i < 0 ? QString() : a.value(i + 1);
+    }
+
     // adb is a root shell into the device, so where its port is published is a security decision.
     // A bare instance is only ever reached from this machine: publish on loopback, not on every
     // interface the host has. Remote is reached from another machine, so it keeps publishing
     // everywhere; adb_bind= overrides either, and macvlan publishes nothing at all.
     void adbPublishedOnLoopbackForBare() {
-        const auto publish = [](const ResolvedConfig &rc) {
-            const QStringList a = buildDockerRunArgv(rc);
-            const int i = a.indexOf(QStringLiteral("-p"));
-            return i < 0 ? QString() : a.value(i + 1);
-        };
+        SKIP_ON_WINDOWS("bare's publish, and Windows has no bare");
         RemoraConfig cfg;
-        QCOMPARE(publish(resolve(cfg, Backend::Bare)), QStringLiteral("127.0.0.1:5555:5556"));
+        QCOMPARE(adbPublish(resolve(cfg, Backend::Bare)), QStringLiteral("127.0.0.1:5555:5556"));
         QCOMPARE(resolve(cfg, Backend::Bare).target, QStringLiteral("localhost:5555"));
-        cfg.backend.sshHost = QStringLiteral("me@dockerhost");
-        QCOMPARE(publish(resolve(cfg, Backend::Remote)), QStringLiteral("5555:5556"));
         RemoraConfig open;
         open.backend.adbBindAddress = QStringLiteral("0.0.0.0");
-        QCOMPARE(publish(resolve(open, Backend::Bare)), QStringLiteral("5555:5556"));
+        QCOMPARE(adbPublish(resolve(open, Backend::Bare)), QStringLiteral("5555:5556"));
+        RemoraConfig mv;
+        mv.network.networkMode = QStringLiteral("macvlan");
+        QVERIFY(adbPublish(resolve(mv, Backend::Bare)).isEmpty());
+    }
+    void adbPublishedEverywhereForRemote() {
+        RemoraConfig cfg;
+        cfg.backend.sshHost = QStringLiteral("me@dockerhost");
+        QCOMPARE(adbPublish(resolve(cfg, Backend::Remote)), QStringLiteral("5555:5556"));
         RemoraConfig narrow;
         narrow.backend.sshHost = QStringLiteral("me@dockerhost");
         narrow.backend.adbBindAddress = QStringLiteral("10.0.0.2");
-        QCOMPARE(publish(resolve(narrow, Backend::Remote)), QStringLiteral("10.0.0.2:5555:5556"));
-        RemoraConfig mv;
-        mv.network.networkMode = QStringLiteral("macvlan");
-        QVERIFY(publish(resolve(mv, Backend::Bare)).isEmpty());
+        QCOMPARE(adbPublish(resolve(narrow, Backend::Remote)),
+                 QStringLiteral("10.0.0.2:5555:5556"));
     }
 
     // bd remora-hsdz. Guest mode has no host GPU in the container, so the VAAPI HEVC encoder has
@@ -3965,6 +4202,104 @@ private slots:
         // …but still capped: inheriting the codec must not drag the mirror's bit rate in with it.
         QVERIFY(p.contains(QStringLiteral("--video-bit-rate=6M")));
         QVERIFY(p.contains(QStringLiteral("--max-size=960")));
+    }
+
+    // ── Remora's own Linux guest (bd remora-7oih.5) ──
+    // Golden: how QEMU is started is the guest's whole contract with the host, as the docker argv
+    // is the container's. The loopback-only forwards are a security property, not a detail.
+    void guestQemuArgvIsTheContract() {
+        GuestLaunch g;
+        g.qemu = QStringLiteral("qemu-system-x86_64");
+        g.firmwareDir = QStringLiteral("C:/Remora/qemu/share");
+        g.accel = QStringLiteral("whpx");
+        g.memoryMb = 6144;
+        g.cpus = 4;
+        g.kernel = QStringLiteral("C:/Remora/guest/vmlinuz");
+        g.cmdline = QStringLiteral("root=/dev/vda rw");
+        g.systemDisk = QStringLiteral("C:/state/system-overlay.qcow2");
+        g.dataDisk = QStringLiteral("C:/state/data,1.qcow2");  // a comma QEMU must not split on
+        g.sshPort = 47022;
+        g.adbLocalFirst = 47555;
+        g.adbCount = 2;
+        g.qmpPort = 47021;
+        g.authorizedKey = QStringLiteral("C:/state/client.pub");
+        g.hostKey = QStringLiteral("C:/state/ssh_host_ed25519_key");
+        g.consoleLog = QStringLiteral("C:/state/console.log");
+        const QStringList want{
+            "qemu-system-x86_64", "-name", "remora-guest", "-accel", "whpx,kernel-irqchip=off",
+            "-machine", "q35", "-cpu", "max", "-smp", "4", "-m", "6144", "-nodefaults",
+            "-no-user-config", "-display", "none", "-L", "C:/Remora/qemu/share",
+            "-kernel", "C:/Remora/guest/vmlinuz", "-append", "root=/dev/vda rw",
+            "-drive", "file=C:/state/system-overlay.qcow2,if=virtio,format=qcow2",
+            "-drive", "file=C:/state/data,,1.qcow2,if=virtio,format=qcow2,discard=unmap,"
+                      "detect-zeroes=unmap",
+            "-netdev", "user,id=n0,hostfwd=tcp:127.0.0.1:47022-:22,"
+                       "hostfwd=tcp:127.0.0.1:47555-:5555,hostfwd=tcp:127.0.0.1:47556-:5556",
+            "-device", "virtio-net-pci,netdev=n0,romfile=", "-device", "virtio-rng-pci",
+            "-fw_cfg", "name=opt/remora/authorized_key,file=C:/state/client.pub",
+            "-fw_cfg", "name=opt/remora/host_key,file=C:/state/ssh_host_ed25519_key",
+            "-serial", "file:C:/state/console.log", "-monitor", "none",
+            "-qmp", "tcp:127.0.0.1:47021,server=on,wait=off"};
+        QCOMPARE(buildGuestQemuArgv(g), want);
+        // KVM passes the CPU through; an initramfs, when an image ships one, is handed over.
+        g.accel = QStringLiteral("kvm");
+        g.initrd = QStringLiteral("/img/initramfs");
+        const QStringList kvm = buildGuestQemuArgv(g);
+        QVERIFY(kvm.join(' ').contains(QStringLiteral("-accel kvm -machine q35 -cpu host")));
+        QVERIFY(kvm.join(' ').contains(QStringLiteral("-initrd /img/initramfs -append")));
+    }
+
+    // Where this machine's docker is the guest (Windows), a profile with no ssh_host is the guest:
+    // remote, reached by its reserved name, with adb on the loopback port QEMU forwards to the
+    // one the profile publishes in the guest. Nowhere else does any of that change.
+    void blankHostIsTheGuestWhereLocalDockerIsTheGuest() {
+        ManagedHost h;
+        h.alias = guestAlias();
+        h.user = QStringLiteral("remora");
+        h.sshPort = 47022;
+        h.identityFile = QStringLiteral("/state/client");
+        h.knownHostsFile = QStringLiteral("/state/known_hosts");
+        h.adbLocalFirst = 47555;
+        h.adbCount = 20;
+        registerManagedHost(h);
+        const RemoraConfig blank;
+        {
+            const ScopedLocalDockerIsGuest daemon(false);
+            QCOMPARE(inferBackend(blank), Backend::Bare);
+            QCOMPARE(resolve(blank, Backend::Bare).target, QStringLiteral("localhost:5555"));
+        }
+        {
+            const ScopedLocalDockerIsGuest guest(true);
+            QCOMPARE(inferBackend(blank), Backend::Remote);
+            QCOMPARE(backendFromString(QStringLiteral("bare")), Backend::Remote);
+            const ResolvedConfig rc = resolve(blank, Backend::Bare);
+            QCOMPARE(rc.sshHost.value_or(QString()), guestAlias());
+            QCOMPARE(rc.target, QStringLiteral("127.0.0.1:47555"));
+            // A real host stays a real host, guest or no guest.
+            RemoraConfig named;
+            named.backend.sshHost = QStringLiteral("me@nas");
+            QCOMPARE(resolve(named, Backend::Remote).target, QStringLiteral("nas:5555"));
+        }
+        forgetManagedHost(guestAlias());
+        // Unregistered, the name stays a name: the deploy path provisions before dialling it.
+        RemoraConfig guest;
+        guest.backend.sshHost = guestAlias();
+        QCOMPARE(resolve(guest, Backend::Remote).target, QStringLiteral("remora-guest:5555"));
+    }
+
+    void managedAdbPortsCoverOnlyTheForwardedRange() {
+        ManagedHost h;
+        h.adbLocalFirst = 47555;
+        h.adbCount = 20;
+        QCOMPARE(managedAdbPort(h, 5555), std::optional<int>(47555));
+        QCOMPARE(managedAdbPort(h, 5574), std::optional<int>(47574));
+        QCOMPARE(managedAdbPort(h, 5575), std::optional<int>());
+        QCOMPARE(managedAdbPort(h, 5554), std::optional<int>());
+        QCOMPARE(managedSshDestination(h), QStringLiteral("127.0.0.1"));
+        h.user = QStringLiteral("remora");
+        QCOMPARE(managedSshDestination(h), QStringLiteral("remora@127.0.0.1"));
+        QCOMPARE(managedSshOptions(h, false).first(), QStringLiteral("-p"));
+        QCOMPARE(managedSshOptions(h, true).first(), QStringLiteral("-P"));
     }
 };
 

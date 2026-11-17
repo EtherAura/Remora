@@ -132,9 +132,21 @@ QVector<AppMenuEntry> appMenuEntries(const QString &slug) {
     return out;
 }
 
+// The menu is .desktop files for an XDG desktop, written by a bash script: a Windows client has
+// neither, so both operations are a SKIP there with the reason, never a failure — a step that fails
+// after every connect teaches the eye to ignore step states. A Start-menu equivalent is separate
+// work (bd remora-7oih.2).
+static bool skippedOffLinux(Spawner &sp, LogSink &sink, const QString &step) {
+    if (sp.localOs() != LocalOs::Windows) return false;
+    sink.state(step, StepState::Skipped,
+               linuxDesktopOnlyMessage(QStringLiteral("The desktop app menu")));
+    return true;
+}
+
 bool appMenuSync(Spawner &sp, const RemoraConfig &cfg, Backend backend, const QString &instance,
                  LogSink &sink) {
     const QString step = QStringLiteral("app-menu");
+    if (skippedOffLinux(sp, sink, step)) return true;
     sink.state(step, StepState::Running, QStringLiteral("refreshing the '%1' app-menu folder")
                                              .arg(instance));
     const RunContext ctx = makeContext(cfg, backend, std::nullopt, QString());
@@ -202,6 +214,7 @@ bool appMenuSync(Spawner &sp, const RemoraConfig &cfg, Backend backend, const QS
 
 bool appMenuRemove(Spawner &sp, const QString &instance, LogSink &sink) {
     const QString step = QStringLiteral("app-menu");
+    if (skippedOffLinux(sp, sink, step)) return true;  // nothing was ever written to remove
     const ProcResult r = sp.run(
         {QStringLiteral("bash"),
          vendorScript(QStringLiteral("host-scripts"), QStringLiteral("remora-app-menu.sh")),

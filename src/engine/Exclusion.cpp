@@ -55,9 +55,10 @@ void ExclusionService::stop(Backend backend, const QString &containerName, const
     else
         sp_.run(Spawner::sshArgv(guest_, "docker rm -f " + containerName));
     // Always local, whatever the backend: the mirror clients run on THIS machine even when the
-    // container is remote, and the encoder only ever exists where the venus stack does — bare.
+    // container is remote, and the encoder only ever exists where the venus stack does — bare,
+    // so its half of the reap is asked for there alone (bd remora-7oih.3).
     // Without this the session outlived its container (bd remora-e5x.19.1).
-    reapSessionOrphans(sp_, containerName, target, {});
+    reapSessionOrphans(sp_, containerName, target, {}, backend);
 }
 
 std::optional<Conflict> conflictFor(const ClusterState &s, Backend backend,

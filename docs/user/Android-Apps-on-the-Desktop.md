@@ -24,6 +24,10 @@ remora apps <profile> --remove   # remove the folder (purely local)
 `desktop_menu=false` turns the automatic refresh off. Existing entries then stay as they are until
 you refresh or remove them yourself.
 
+The folder is a set of freedesktop `.desktop` files, which only a Linux desktop reads. On Windows
+`desktop_menu` defaults to off, `remora apps` reports the step as skipped, and the Apps page's
+list stays empty. There is no Start menu equivalent yet: launch an app with `remora app`.
+
 ## One app, one window
 
 ```sh
@@ -88,6 +92,10 @@ systemctl --user start remora-<profile>.service
 
 Characters in the profile name other than letters, digits, `_`, `.` and `-` become `-` in the unit
 name. The command prints the exact names it installed.
+
+The login service needs systemd, so `remora service` refuses on Windows and writes nothing there.
+`remora auto-sleep` and `remora update-watch` still run in the foreground. Deleting a profile on a
+machine without systemd has no units to disable, and removes only the profile.
 
 ## Installing an APK
 

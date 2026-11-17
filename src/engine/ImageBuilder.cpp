@@ -64,6 +64,14 @@ QVector<Step> imageBuildSteps(Spawner &sp, const ResolvedConfig &rc, const Image
                                           .arg(*rc.buildHost, rc.buildDir, p));
                           }
                       } else {
+#ifdef Q_OS_WIN
+                          // resolve() already moved an unset build_host to the profile's docker
+                          // host; reaching here means there was none to move it to.
+                          return StepResult::fail(QStringLiteral(
+                              "an image build runs on a Linux docker host, and on Windows there "
+                              "is no local one — set ssh_host on the profile, or build_host in "
+                              "remorarc"));
+#endif
                           if (!QDir().mkpath(rc.buildDir))
                               return StepResult::fail(
                                   QStringLiteral("cannot create build dir %1").arg(rc.buildDir));

@@ -3,6 +3,7 @@
 #include "engine/PlayInstall.h"
 #include "engine/Addons.h"
 #include "engine/PublicImages.h"
+#include "engine/HostShell.h"
 #include <algorithm>
 #ifdef Q_OS_UNIX
 #include <csignal>   // ::killpg
@@ -176,55 +177,8 @@ QIcon themeIcon(std::initializer_list<const char *> names) {
 // POSIX construct. Pin the child's SHELL to /bin/sh for the pty-wrapped spawns.
 
 
-// Wait for a QProcess WITHOUT wedging the GUI when we happen to be on the main thread.
-//
-// runShell/runShellRc are documented "worker thread only" and fourteen call sites invoke them from
-// the GUI thread regardless. onBuildFromSource is the worst: it runs `df`, then `du -sk <tree>/out`,
-// BEFORE it prompts — and that `du` measures 7.0s on the A16 tree's 110 GiB out/ with a warm cache
-// and an idle disk, against a 60s timeout. QProcess::waitForFinished polls its OWN fd set, not the
-// application's, so for that entire window the main loop dispatches nothing: no repaints, no D-Bus,
-// and the compositor marks the window "not responding" (bd remora-51z).
-//
-// Off the main thread nothing is at stake, so block plainly. On the main thread run a nested event
-// loop instead, so repaints and D-Bus keep flowing and the window stays alive to the compositor.
-// ExcludeUserInputEvents is what makes the nesting safe — input is queued rather than delivered, so
-// the handler that called us cannot be re-entered by a second click. This is strictly MORE
-// restrictive than what these same handlers already do: every QMessageBox in them nests an event
-// loop that does not exclude input.
-static bool waitForProcess(QProcess &p, int timeoutMs) {
-    if (QThread::currentThread() != QApplication::instance()->thread())
-        return p.waitForFinished(timeoutMs);
-    if (p.state() == QProcess::NotRunning) return true;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&p, &QProcess::finished, &loop, &QEventLoop::quit);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    if (timeoutMs > 0) timer.start(timeoutMs);
-    loop.exec(QEventLoop::ExcludeUserInputEvents);
-    return p.state() == QProcess::NotRunning;
-}
-
-// Run a shell command on the build host (ssh) or locally, returning stdout. Blocking, but the main
-// loop keeps turning when called from the GUI thread (see waitForProcess). Empty host = local.
-// Remote commands are POSIX sh — but "ssh host cmd" hands cmd to the login shell, which may
-// be fish (ours is) and reject $(...)/[..]/{..} syntax. Run a remote `sh` and feed the command
-// over stdin instead: no login-shell parsing, no quoting games.
-QString runShell(const QString &host, const QString &cmd, int timeoutMs = 120000) {
-    QProcess p;
-    if (host.isEmpty()) {
-        p.start(QStringLiteral("sh"), {QStringLiteral("-c"), cmd});
-    } else {
-        p.start(QStringLiteral("ssh"),
-                {QStringLiteral("-o"), QStringLiteral("BatchMode=yes"),
-                 QStringLiteral("-o"), QStringLiteral("ConnectTimeout=6"), host,
-                 QStringLiteral("sh")});
-        p.write(cmd.toUtf8() + '\n');
-        p.closeWriteChannel();
-    }
-    if (!waitForProcess(p, timeoutMs) || p.exitCode() != 0) return QString();
-    return QString::fromUtf8(p.readAllStandardOutput());
-}
+// The shell helpers (runShell, runShellRc, waitForProcess) live in engine/HostShell, where their
+// failure modes are tested offline; every call site below is unchanged by the move.
 
 // A killed or failed 'repo sync' leaves three kinds of wreckage that break the next sync:
 // stale git lock files (index.lock left by a checkout that died holding it), worktrees that
@@ -247,33 +201,6 @@ int cleanupStaleWorktrees(const QString &host, const QString &tree) {
             .arg(tree),
         60000);
     return out.trimmed().toInt();
-}
-
-// runShell with the truth attached: exit code + merged output. runShell() returns an empty
-// string on failure, which callers must never mistake for "no errors printed".
-struct ShellResult {
-    int rc;
-    QString out;
-};
-ShellResult runShellRc(const QString &host, const QString &cmd, int timeoutMs = 120000) {
-    QProcess p;
-    p.setProcessChannelMode(QProcess::MergedChannels);
-    if (host.isEmpty()) {
-        p.start(QStringLiteral("sh"), {QStringLiteral("-c"), cmd});
-    } else {
-        p.start(QStringLiteral("ssh"),
-                {QStringLiteral("-o"), QStringLiteral("BatchMode=yes"),
-                 QStringLiteral("-o"), QStringLiteral("ConnectTimeout=6"), host,
-                 QStringLiteral("sh")});
-        p.write(cmd.toUtf8() + '\n');
-        p.closeWriteChannel();
-    }
-    if (!waitForProcess(p, timeoutMs)) {
-        p.kill();
-        return {124, QString::fromUtf8(p.readAll())};
-    }
-    const int rc = p.exitStatus() == QProcess::NormalExit ? p.exitCode() : 128;
-    return {rc, QString::fromUtf8(p.readAll())};
 }
 
 // Total size in bytes of a directory tree, on the build host or locally. -1 if it doesn't exist.
@@ -502,7 +429,10 @@ struct SourceImage {
 // of docker-save archives — remote when it carries a user@host: prefix — walked by the same
 // scan the library already runs on the build host's output dir, so tags resolve through the
 // same ArchiveTagCache instead of streaming multi-GB tars twice.
-QList<SourceImage> scanSourceLocation(const ImageSource &s, const QString &settingsPath) {
+// `catalogHost` is the docker host the official catalog is verified on: blank (this machine) on
+// Linux, the profile's docker host on Windows, where nothing local can run the helper.
+QList<SourceImage> scanSourceLocation(const ImageSource &s, const QString &settingsPath,
+                                      const QString &catalogHost = QString()) {
     QList<SourceImage> out;
     const QString loc = s.location;
     if (loc.isEmpty()) return out;
@@ -513,7 +443,7 @@ QList<SourceImage> scanSourceLocation(const ImageSource &s, const QString &setti
     // the index.txt contract below that it was added under.
     if (loc == kPublicImageSource) {
         RealSpawner sp;
-        const auto verified = runPublicImages(sp, {"list", "--source", loc});
+        const auto verified = runPublicImages(sp, {"list", "--source", loc}, catalogHost);
         if (verified.rc) {
             SourceImage error;
             error.source = s.name;
@@ -536,11 +466,11 @@ QList<SourceImage> scanSourceLocation(const ImageSource &s, const QString &setti
         return out;
     }
     if (loc.startsWith(QLatin1String("http://")) || loc.startsWith(QLatin1String("https://"))) {
-        // -f: a 404 must read as "no index", never as an index of one HTML error page.
-        const QString idx = runShell(
-            QString(),
-            QStringLiteral("curl -fsSL -m 15 %1").arg(shellQuote(loc + QStringLiteral("/index.txt"))),
-            20000);
+        // An error status must read as "no index", never as an index of one HTML error page —
+        // httpGetSmall returns nothing for one. Qt rather than a local curl, which Windows does
+        // not have (bd remora-7oih.3).
+        const QString idx = QString::fromUtf8(
+            httpGetSmall(loc + QStringLiteral("/index.txt"), 15000));
         for (const QString &raw : idx.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
             const QString line = raw.section(QLatin1Char('#'), 0, 0).trimmed();
             if (line.isEmpty()) continue;
@@ -562,6 +492,20 @@ QList<SourceImage> scanSourceLocation(const ImageSource &s, const QString &setti
         host = loc.left(colon);
         dir = loc.mid(colon + 1);
     }
+#ifdef Q_OS_WIN
+    // Reading a docker-save archive's tag takes a POSIX shell and tar, and a local directory's
+    // archives would then have to reach a docker host anyway (bd remora-7oih.3). "C:" is a drive,
+    // not an ssh host.
+    if (host.isEmpty() || (colon == 1 && loc.at(0).isLetter())) {
+        SourceImage e;
+        e.source = s.name;
+        e.location = loc;
+        e.error = QStringLiteral("a local directory source cannot be read on Windows — keep the "
+                                 "archives on a Linux host and name them as user@host:/dir");
+        out << e;
+        return out;
+    }
+#endif
     for (const ImageArchive &a : scanImageArchives(dir, settingsPath, host)) {
         SourceImage im;
         im.source = s.name;
@@ -649,11 +593,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         // `remora check` already carries. It used to be `b == Vm`, so the GPU/Venus readiness rows
         // could never appear in the GUI on bare or remote however the profile was configured.
         const ResolvedConfig rc = resolve(cfg_, b);
-        auto *w = new ReadinessWorker(b, cfg_.backend.sshHost.value_or(QString()).trimmed(),
+        auto *w = new ReadinessWorker(b, dockerHostOf(cfg_.backend.sshHost.value_or(QString())),
                                       rc.gpuMode == GpuMode::Host,
                                       rc.networkMode == QLatin1String("macvlan"),
                                       !rc.sharedInputs.isEmpty(),
-                                      releaseNeedsAshmem(rc.androidVersion), nullptr);
+                                      releaseNeedsAshmem(rc.androidVersion), rc.bareOnlyRequested,
+                                      nullptr);
         connect(w, &ReadinessWorker::sigReady, this, [this](bool ready, QStringList lines) {
             appendLog(QStringLiteral("── deploy-target readiness ──"));
             for (const QString &l : lines) appendLog(l);
@@ -1244,6 +1189,15 @@ void MainWindow::buildUi() {
         integrationsTree_->header()->setStretchLastSection(false);
         integrationsTree_->setMinimumHeight(160);
         rebuildIntegrationsList();
+        // The list IS the desktop menu folder's .desktop files, which only a Linux desktop has, so
+        // on Windows it stays empty. Say so instead of showing an empty table (bd remora-7oih.2).
+        if (kLocalOs == LocalOs::Windows)
+            v->addWidget(hintLabel(
+                linuxDesktopOnlyMessage(QStringLiteral("The app list (the desktop app menu)")),
+                QStringLiteral("This list is read from the launcher entries Remora writes for a "
+                               "Linux desktop menu. Windows has none, so it stays empty here; "
+                               "start an app with `remora app <profile> <package>`. A Start menu "
+                               "equivalent is not built yet.")));
         v->addWidget(integrationsTree_);
         // Flat, icon-led action bar: bulk window-mode ops on the left, app transfer on the right.
         auto *btns = new QWidget();
@@ -1471,7 +1425,11 @@ void MainWindow::buildUi() {
             "Freeze the device (docker pause) after this many minutes with no mirror/app/desktop "
             "window attached — it stops burning host CPU/GPU, and any Connect wakes it in ~1s "
             "with the session intact. Blank/0 = off. Enforced by the auto-sleep watcher that "
-            "`remora service` installs; changes apply on its next poll."));
+            "`remora service` installs; changes apply on its next poll.")
+            + (kLocalOs == LocalOs::Windows
+                   ? QStringLiteral(" `remora service` is Linux-only: on Windows, run `remora "
+                                    "auto-sleep <profile>` yourself.")
+                   : QString()));
         setFieldChars(autoSleepEdit_, 4);  // minutes
 
         // ── Power: the idle freeze ──
@@ -1810,7 +1768,8 @@ void MainWindow::buildUi() {
             "open the NVIDIA node directly, so guest Vulkan goes over a unix socket to a host "
             "virglrenderer render server driving the proprietary driver, with ANGLE supplying GL "
             "on top. It needs an image built with the minigbm_gbm_mesa_vtest patch; install the "
-            "stack with `remora venus-build` and `remora check` names anything missing.\n\n"
+            "stack with `remora venus-build` and `remora check` names anything missing. Bare "
+            "only: the render server runs on this machine, so a remote profile refuses it.\n\n"
             "Leaving this on auto leaves Venus on auto too — it engages only when an NVIDIA render "
             "node, the render server and all five guest libraries are present, so auto can never "
             "switch a machine onto a stack whose pieces are missing. Picking a specific GPU turns "
@@ -1850,7 +1809,7 @@ void MainWindow::buildUi() {
         venusCombo_->addItem(QStringLiteral("on (force)"), QStringLiteral("true"));
         venusCombo_->addItem(QStringLiteral("off"), QStringLiteral("false"));
         venusCombo_->setToolTip(QStringLiteral(
-            "NVIDIA acceleration for the bare/remote backends via Mesa Venus: guest Vulkan goes "
+            "NVIDIA acceleration for the bare backend via Mesa Venus: guest Vulkan goes "
             "over a unix socket to a host virglrenderer render server driving the proprietary "
             "NVIDIA driver, with ANGLE supplying GL on top.\n\n"
             "Auto turns it on only when an NVIDIA render node, the render server and all five "
@@ -2964,6 +2923,17 @@ void MainWindow::populateKbdIdentities() {
     kbdIdentityCombo_->addItem(QStringLiteral("Auto — first real keyboard"), QString());
     kbdIdentityCombo_->addItem(QStringLiteral("Generic — no Gboard toolbar"),
                                QStringLiteral("none"));
+    // The list is THIS machine's /proc/bus/input/devices, and a Windows client has no /proc: say
+    // so in the list itself rather than leave two entries that look like all there is. Auto still
+    // works — it picks on the docker host at deploy (bd remora-7oih.2).
+    if (kLocalOs == LocalOs::Windows) {
+        kbdIdentityCombo_->addItem(
+            QStringLiteral("(keyboards are listed on a Linux client — Auto picks on the docker "
+                           "host)"));
+        if (auto *m = qobject_cast<QStandardItemModel *>(kbdIdentityCombo_->model()))
+            m->item(kbdIdentityCombo_->count() - 1)->setEnabled(false);
+        return;
+    }
     QFile f(QStringLiteral("/proc/bus/input/devices"));
     if (!f.open(QIODevice::ReadOnly)) return;
     const QList<KbdIdentity> ks = parseInputDevicesKeyboards(QString::fromUtf8(f.readAll()));
@@ -3011,6 +2981,16 @@ static std::optional<QStringList> splitJoinedNames(const QString &joined, const 
 void MainWindow::populateSharedInputs() {
     if (!sharedInputsList_) return;
     sharedInputsList_->clear();
+    // Same source as the keyboard picker, and the same reason it is empty on Windows. The row is
+    // not checkable, so it can never be saved as a device name (bd remora-7oih.2).
+    if (kLocalOs == LocalOs::Windows) {
+        auto *note = new QListWidgetItem(QStringLiteral(
+            "Input devices are read from /proc on a Linux client — a Windows client cannot list "
+            "them. A shared_inputs= list in the profile still applies on the docker host."));
+        note->setFlags(Qt::NoItemFlags);
+        sharedInputsList_->addItem(note);
+        return;
+    }
     QFile f(QStringLiteral("/proc/bus/input/devices"));
     if (!f.open(QIODevice::ReadOnly)) return;
     for (const KbdIdentity &k : parseInputDevices(QString::fromUtf8(f.readAll()))) {
@@ -3232,6 +3212,7 @@ void MainWindow::loadConfig() {
         QStringList missing = want;
         for (int i = 0; i < sharedInputsList_->count(); ++i) {
             auto *it = sharedInputsList_->item(i);
+            if (!(it->flags() & Qt::ItemIsUserCheckable)) continue;  // the Windows note row
             const QString name = it->data(Qt::UserRole).toString();
             const bool on = want.contains(name);
             it->setCheckState(on ? Qt::Checked : Qt::Unchecked);
@@ -3393,10 +3374,21 @@ void MainWindow::applyToConfig() {
     cfg_.backend.backend = std::nullopt;
     // sshHost + containerName are deliberately untouched: the host lives on
     // the Runners rows now, the name is pinned at profile creation.
-    cfg_.backend.dataDir = readStr(dataDirEdit_);
-    // expand the display-only ~ back to $HOME — the stored path must stay absolute
-    if (cfg_.backend.dataDir && cfg_.backend.dataDir->startsWith(QLatin1Char('~')))
-        cfg_.backend.dataDir->replace(0, 1, QDir::homePath());
+    // The field shows ~ for this machine's home (tildify). Shown unchanged, the stored path is kept
+    // byte for byte: re-deriving it on every autosave would repoint a remote profile whose stored
+    // path spells out THIS machine's home, and a repointed /data is an empty Android with the real
+    // one left behind (bd remora-4ei.89).
+    const std::optional<QString> typedDir = readStr(dataDirEdit_);
+    if (!(typedDir && cfg_.backend.dataDir && *typedDir == tildify(*cfg_.backend.dataDir))) {
+        cfg_.backend.dataDir = typedDir;
+        // A typed ~ means this machine's home only where docker runs HERE: a bare -v source must
+        // be absolute, because docker does not expand tildes. A remote path lives on the docker
+        // host, whose shell expands ~ to ITS home — expanding it here was wrong whenever the two
+        // user names differ, and on Windows, which runs no local docker, always (bd remora-7oih.3).
+        if (dataDirIsLocal() && cfg_.backend.dataDir &&
+            cfg_.backend.dataDir->startsWith(QLatin1Char('~')))
+            cfg_.backend.dataDir->replace(0, 1, QDir::homePath());
+    }
     cfg_.backend.hostAdbPort = readInt(hostAdbPortEdit_);
     // android_version is deliberately NOT written: it is creation-time state (onNewProfile),
     // has no widget here, and rewriting it from one would be the only way this page could
@@ -3625,6 +3617,16 @@ void MainWindow::applyToConfig() {
 Backend MainWindow::currentBackend() const {
     // inferred, never chosen: blank docker host = this machine, anything else = remote ssh
     return inferBackend(cfg_);
+}
+
+// Whether this profile's data dir is a path on THIS machine: a bare profile's, except on Windows,
+// where there is no local docker for any profile to use (bd remora-7oih.3).
+bool MainWindow::dataDirIsLocal() const {
+#ifdef Q_OS_WIN
+    return false;
+#else
+    return currentBackend() == Backend::Bare;
+#endif
 }
 
 // The single writer of every feature checkbox's tooltip. Two callers contribute to it and neither
@@ -4286,11 +4288,35 @@ static QString humanSize(qint64 bytes) {
 // The build-side paths (docker context, output dir, source tree) all live on the build host —
 // so does the GUI when build_host is unset. Empty = operate locally, which is the default and
 // the only thing the UI offers: both hosts read remorarc-only keys, their widgets are retired.
+//
+// Except on Windows, which has no local docker or shell to operate on (bd remora-7oih.3): there an
+// unset build_host means the profile's own docker host — its ssh_host, which is also how the
+// managed Linux VM appears — so the library, prune and push work against the machine the profile
+// deploys to. The source host does NOT follow: a source build needs a machine sized for one, and
+// is refused without an explicit source_host instead (sourceHostRefusal).
 QString MainWindow::buildHostStr() const {
-    return cfg_.image.buildHost.value_or(QString()).trimmed();
+    const QString set = cfg_.image.buildHost.value_or(QString()).trimmed();
+#ifdef Q_OS_WIN
+    if (set.isEmpty() && currentBackend() == Backend::Remote)
+        return dockerHostOf(cfg_.backend.sshHost.value_or(QString()));
+#endif
+    return set;
 }
 QString MainWindow::sourceHostStr() const {
     return cfg_.image.sourceHost.value_or(QString()).trimmed();
+}
+// Empty when the source tree is reachable; otherwise why not. On Linux a blank source_host is this
+// machine. On Windows it is nothing at all: repo, git, script(1) and the build itself are Linux
+// tools, and there is no local tree for them to work in (bd remora-7oih.3).
+QString MainWindow::sourceHostRefusal() const {
+#ifdef Q_OS_WIN
+    if (sourceHostStr().isEmpty())
+        return QStringLiteral(
+            "source builds run on a Linux build machine, and on Windows there is no local one — "
+            "set source_host=<user>@<host> for this profile in remorarc (a machine with the disk "
+            "and memory for an Android build), then try again");
+#endif
+    return QString();
 }
 QString MainWindow::buildDirPath() const {
     // From the config, not a widget — the field was retired; build_dir= in remorarc still wins.
@@ -4508,7 +4534,11 @@ void MainWindow::onRefreshArchives() {
         }
         for (const ImageSource &src : srcs) {
             if (!src.enabled || src.location.isEmpty()) continue;
+#ifdef Q_OS_WIN
+            const QList<SourceImage> offered = scanSourceLocation(src, settings, host);
+#else
             const QList<SourceImage> offered = scanSourceLocation(src, settings);
+#endif
             QMetaObject::invokeMethod(
                 this,
                 [this, gen, settings, here, offered] {
@@ -5022,7 +5052,7 @@ void MainWindow::onPruneImages() {
     const QString bhost = buildHostStr();
     const QString shost = sourceHostStr();
     QStringList hosts{bhost};
-    if (shost != bhost) hosts << shost;
+    if (shost != bhost && sourceHostRefusal().isEmpty()) hosts << shost;
     // Tell the operator up front what pruning will actually free — no more reclaiming blind.
     PrunableStat prunable;
     for (const QString &h : hosts) {
@@ -5155,6 +5185,8 @@ void MainWindow::onRefreshSourceRefs() {
     const QString repo = sourceRepoStr();
     if (repo.isEmpty() || repo == lastRefRepo_) return;
     lastRefRepo_ = repo;
+    // No build machine, no refs to list from it — the pull and build say why when asked.
+    if (!sourceHostRefusal().isEmpty()) return;
     const QString host = sourceHostStr();
     auto *thread = QThread::create([this, host, repo] {
         const QString listing = runShell(
@@ -5237,6 +5269,13 @@ void MainWindow::refreshSourceState() {
     // A deterministic screenshot must not touch the tree, and a probe in flight at quit would be
     // destroyed mid-run — the same reason refreshAppsPage() bails here.
     if (qEnvironmentVariableIsSet("REMORA_SHOT")) return;
+    // On Windows without a source host there is no tree to describe (bd remora-7oih.3).
+    if (const QString why = sourceHostRefusal(); !why.isEmpty()) {
+        sourceStateLabel_->setText(QStringLiteral("source: no build machine"));
+        sourceStateLabel_->setToolTip(why);
+        sourceStateLabel_->show();
+        return;
+    }
     const QString host = sourceHostStr();
     const QString dir = sourceTreePath();
     const QString built = cfg_.image.builtCommit.value_or(QString());
@@ -5455,17 +5494,17 @@ void MainWindow::populateSourceRefCombo() {
 // Ensure the vendored source assets (patches, local_manifest, do-build.sh) exist on the source
 // host; returns the root path to use there. Local host → the install's vendor dir unchanged.
 QString MainWindow::stageSourceAssets(const QString &host) {
-    const QString localVendor = QStringLiteral(REMORA_VENDOR_DIR);
+    const QString localVendor = vendorDir();
     if (host.isEmpty()) return localVendor + QStringLiteral("/source-patches");
     const QString remoteRoot = QStringLiteral("~/.cache/remora/source-assets");
     // create the remote dir, then scp the source-build + source-patches trees into it
     runShell(host, QStringLiteral("mkdir -p %1").arg(remoteRoot), 20000);
     QProcess scp;
-    scp.start(QStringLiteral("scp"),
-              {QStringLiteral("-r"), QStringLiteral("-q"),
-               localVendor + QStringLiteral("/source-build"),
-               localVendor + QStringLiteral("/source-patches"),
-               host + QStringLiteral(":") + remoteRoot + QStringLiteral("/")});
+    const QStringList scpArgv = Spawner::scpArgv(
+        {localVendor + QStringLiteral("/source-build"), localVendor + QStringLiteral("/source-patches"),
+         host + QStringLiteral(":") + remoteRoot + QStringLiteral("/")},
+        {QStringLiteral("-r"), QStringLiteral("-q")});
+    scp.start(scpArgv.first(), scpArgv.mid(1));
     waitForProcess(scp, 120000);
     return remoteRoot + QStringLiteral("/source-patches");
 }
@@ -5475,6 +5514,10 @@ void MainWindow::onPullSource() {
     if (running_) {
         statusBar()->showMessage(QStringLiteral("an operation is already running — wait for it to "
                                                 "finish before starting another"), 5000);
+        return;
+    }
+    if (const QString why = sourceHostRefusal(); !why.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Pull source"), why);
         return;
     }
     const QString host = sourceHostStr();
@@ -5699,6 +5742,7 @@ void MainWindow::onPullSource() {
 // than nothing.
 static QString oomdKillNote(int rc) {
     if (rc != 137) return QString();
+    if (kLocalOs == LocalOs::Windows) return QString();  // no journal to ask (bd remora-7oih.2)
     QProcess j;
     j.start(QStringLiteral("journalctl"),
             {QStringLiteral("-u"), QStringLiteral("systemd-oomd"), QStringLiteral("--since"),
@@ -5717,6 +5761,10 @@ void MainWindow::onBuildFromSource() {
     if (running_) {
         statusBar()->showMessage(QStringLiteral("an operation is already running — wait for it to "
                                                 "finish before starting another"), 5000);
+        return;
+    }
+    if (const QString why = sourceHostRefusal(); !why.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Build from source"), why);
         return;
     }
     // BOTH tiers — this list is the build's actual patch set (SourceBuildPlan::enabledPatches),
@@ -6167,6 +6215,10 @@ void MainWindow::onBuildFromSource() {
 }
 
 void MainWindow::onCleanSourceOutput() {
+    if (const QString why = sourceHostRefusal(); !why.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Clean build output"), why);
+        return;
+    }
     const QString host = sourceHostStr();
     const QString out = sourceTreePath() + QStringLiteral("/out");
     reclaimDir(host, out, QStringLiteral("Clean build output"),
@@ -6229,7 +6281,7 @@ bool MainWindow::deploymentDialog(Deployment &d, bool isNew) {
         // registry offers that were never pulled don't belong in a "boot this now" picker
         const Backend backend = inferBackend(cfg);
         const QString host =
-            backend == Backend::Bare ? QString() : cfg.backend.sshHost.value_or(QString());
+            backend == Backend::Bare ? QString() : dockerHostOf(cfg.backend.sshHost.value_or(QString()));
         const int ver = cfg.image.androidVersion.value_or(16);
         QPointer<QComboBox> combo(imgCombo);
         const QString settings = path_;
@@ -6558,7 +6610,7 @@ void MainWindow::probeRunStatuses() {
             const Backend backend = inferBackend(cfg);
             const ResolvedConfig rc = resolve(cfg, backend);
             const QString host =
-                backend == Backend::Bare ? QString() : cfg.backend.sshHost.value_or(QString());
+                backend == Backend::Bare ? QString() : dockerHostOf(cfg.backend.sshHost.value_or(QString()));
             const ShellResult ps = runShellRc(
                 host, QStringLiteral("docker ps --filter name=^%1$ --format '{{.Names}}' 2>&1")
                           .arg(rc.containerName),
@@ -6682,6 +6734,10 @@ void MainWindow::runProfile(const QString &name, const QString &hostOverride, in
 // Record the source dir's current HEAD as the built commit (called after a source build so a
 // later pull correctly flags PENDING). Async: read HEAD on the source host, save, refresh.
 void MainWindow::onMarkBuilt() {
+    if (const QString why = sourceHostRefusal(); !why.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Mark built"), why);
+        return;
+    }
     const QString host = sourceHostStr();
     const QString dir = sourceTreePath();
     auto *thread = QThread::create([this, host, dir] {
@@ -6787,7 +6843,13 @@ void MainWindow::rebuildProfilesList() {
         // BEFORE connect, so population never fires the write-back; each handler edits the ROW's
         // profile on disk and mirrors into cfg_ only when the row is the active one.
         auto *menuCb = new QCheckBox();
-        menuCb->setChecked(pc.integration.desktopMenu.value_or(true));
+        menuCb->setChecked(pc.integration.desktopMenu.value_or(kDesktopMenuDefault));
+        // An XDG menu folder, which a Windows desktop does not read (bd remora-7oih.2).
+        if (kLocalOs == LocalOs::Windows) {
+            menuCb->setEnabled(false);
+            menuCb->setToolTip(
+                linuxDesktopOnlyMessage(QStringLiteral("The desktop app menu")) + QLatin1Char('.'));
+        }
         connect(menuCb, &QCheckBox::toggled, this, [this, name](bool on) {
             RemoraConfig c = loadInstance(path_, name);
             // On is the default → store only the opt-out.
@@ -7115,7 +7177,13 @@ void MainWindow::onNewProfile() {
         if (orc.networkMode == QLatin1String("macvlan")) continue;
         takenPorts.insert(orc.hostAdbPort);
     }
+    // Against this machine's home where a new profile deploys here; on Windows, where it never
+    // does, against the docker host's — a literal ~ its shell expands (bd remora-7oih.3).
+#ifdef Q_OS_WIN
+    const InstanceIdentity id = allocateInstanceIdentity(clean, QStringLiteral("~"), takenPorts);
+#else
     const InstanceIdentity id = allocateInstanceIdentity(clean, QDir::homePath(), takenPorts);
+#endif
     fresh.backend.dataDir = id.dataDir;
     fresh.backend.containerName = id.containerName;
     fresh.backend.hostAdbPort = id.hostAdbPort;
@@ -7542,7 +7610,7 @@ void MainWindow::refreshAppsPage() {
     rebuildIntegrationsList();
     if (running_ || appsRefreshInFlight_) return;
     // menu disabled (the Profiles table's desktop-menu column, Settings page)
-    if (!cfg_.integration.desktopMenu.value_or(true)) return;
+    if (!cfg_.integration.desktopMenu.value_or(kDesktopMenuDefault)) return;
     // REMORA_SHOT renders quit ~500ms in — a device probe mid-flight would be destroyed while
     // running (QThread abort), and a deterministic screenshot must not touch the device anyway
     if (qEnvironmentVariableIsSet("REMORA_SHOT")) return;
@@ -7635,13 +7703,20 @@ void MainWindow::setDataDirLocked(bool locked) {
     if (!dataDirPickAct_) return;
     // Greyed rather than removed: a menu whose entries come and go teaches you nothing, while a
     // disabled entry that says why is the answer to "how do I move this?" — stop the device.
-    dataDirPickAct_->setEnabled(!locked);
+    // A folder picker browses THIS machine, so it can only name a local data dir. A remote one
+    // is typed: it is a path on the docker host (bd remora-7oih.3).
+    const bool local = dataDirIsLocal();
+    dataDirPickAct_->setEnabled(!locked && local);
     dataDirPickAct_->setToolTip(
         locked ? QStringLiteral("The device is running: it is bound to this path, so it can only "
                                 "be repointed while stopped.")
-               : QStringLiteral("Move this profile's /data elsewhere. The next Start uses "
-                                "whatever path is here — the existing folder is not moved for "
-                                "you."));
+        : !local
+            ? QStringLiteral("This profile's /data lives on its docker host, not on this "
+                             "machine, so there is no folder here to pick — type the path on that "
+                             "host into the field (~ is that host's home).")
+            : QStringLiteral("Move this profile's /data elsewhere. The next Start uses "
+                             "whatever path is here — the existing folder is not moved for "
+                             "you."));
 }
 
 // Ask docker whether THIS profile's container is up. Off-thread: the Device page must not stall
@@ -7660,7 +7735,7 @@ void MainWindow::refreshDataDirLock() {
     const ResolvedConfig rc = resolve(cfg, backend);
     const QString container = rc.containerName;
     const QString host =
-        backend == Backend::Bare ? QString() : cfg.backend.sshHost.value_or(QString());
+        backend == Backend::Bare ? QString() : dockerHostOf(cfg.backend.sshHost.value_or(QString()));
     const QString profile = instance_;
     QPointer<MainWindow> self(this);
     auto *thread = QThread::create([self, container, host, profile] {
@@ -7725,6 +7800,25 @@ void MainWindow::onOpenDeviceStorage() {
                           + (rc.useOverlayfs ? QStringLiteral("/upper/media/0")
                                              : QStringLiteral("/media/0"));
     QUrl url;
+    // Windows (bd remora-7oih.2): bare has no data dir on this machine to open — and mkpath would
+    // only have made a Linux path under C:\ — and Explorer has no sftp:// handler, so the remote
+    // URL opened nothing at all. Say where the files are instead.
+    if (kLocalOs == LocalOs::Windows) {
+        if (currentBackend() == Backend::Bare) {
+            QMessageBox::information(this, QStringLiteral("Device storage"),
+                                     bareNeedsLinuxMessage());
+        } else {
+            const QString host = rc.sshHost.value_or(QString());
+            QMessageBox::information(
+                this, QStringLiteral("Device storage"),
+                QStringLiteral("This device's storage lives on its docker host, at\n\n%1:%2\n\n"
+                               "Windows Explorer cannot browse sftp://. Open that location in an "
+                               "SFTP client (WinSCP, FileZilla), or copy files with "
+                               "scp \"%1:%2/<file>\" .")
+                    .arg(host, media));
+        }
+        return;
+    }
     if (currentBackend() == Backend::Bare) {
         QDir().mkpath(media);  // browsable even before the first deploy
         // Once the device has booted once, init hands /data/media to Android's media_rw (gid
@@ -8217,7 +8311,7 @@ void MainWindow::onPushImage() {
     const QString defTarget =
         currentBackend() == Backend::Bare
             ? QString()
-            : cfg_.backend.sshHost.value_or(QString()).trimmed();
+            : dockerHostOf(cfg_.backend.sshHost.value_or(QString()));
     bool ok = false;
     const QString target = QInputDialog::getText(
         this, QStringLiteral("Push image to host"),
@@ -8255,53 +8349,58 @@ void MainWindow::onPushImage() {
             == QMessageBox::Yes)
             promoteBase = base;
     }
-    // build the save|load pipeline; the orchestrating machine (local) runs it via sh -c, so it
-    // works for any src/target combination. Each remote side is a single quoted ssh command.
-    const QString saveCmd = srcHost.isEmpty()
-                                ? QStringLiteral("docker save %1").arg(shellQuote(tag))
-                                : QStringLiteral("ssh %1 %2").arg(srcHost,
-                                      shellQuote(QStringLiteral("docker save %1").arg(tag)));
-    const QString loadCmd = target.isEmpty()
-                                ? QStringLiteral("docker load")
-                                : QStringLiteral("ssh %1 %2").arg(target,
-                                      shellQuote(QStringLiteral("docker load")));
-    QString cmd = saveCmd + QStringLiteral(" | ") + loadCmd;
-    if (!promoteBase.isEmpty()) {
-        // MOVE the tag like onPromoteImage does (tag then untag -src); the subshell keeps a
-        // benign rmi failure from failing the whole push, while a failed `docker tag` still does.
-        const QString retag = QStringLiteral("docker tag %1 %2 && (docker rmi %1 >/dev/null 2>&1 || true)")
-                                  .arg(tag, promoteBase);
-        cmd += QStringLiteral(" && ")
-               + (target.isEmpty() ? retag
-                                   : QStringLiteral("ssh %1 %2").arg(target, shellQuote(retag)));
-        // ...and the same move on the source, so its plain tag tracks the promoted build
-        // instead of going stale (bd remora-blo).
-        cmd += QStringLiteral(" && ")
-               + (srcHost.isEmpty() ? retag
-                                    : QStringLiteral("ssh %1 %2").arg(srcHost, shellQuote(retag)));
+#ifdef Q_OS_WIN
+    // Blank is THIS machine, and on Windows it has no docker to save from or load into
+    // (bd remora-7oih.3).
+    if (target.isEmpty() || srcHost.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Push image"),
+                             QStringLiteral("Both ends of a push are docker hosts, and this "
+                                            "machine is not one: %1.")
+                                 .arg(noLocalShellMessage()));
+        return;
     }
-    // The multi-GB load fills the target's page cache, which forces the running Android
-    // container's memory into zram and its file working set out of cache — minutes of A/V
-    // stutter while it faults back (bd remora-8xq). Drop the now-useless cache via the
-    // guest helper. Best-effort: sudo -n only succeeds where the one-time root install
-    // (remora-drop-caches-install.sh) has been run; anywhere else this is a silent no-op.
-    {
-        const QString drop = QStringLiteral(
-            "(sudo -n /usr/local/sbin/remora-drop-caches >/dev/null 2>&1 || true)");
-        cmd += QStringLiteral(" && ")
-               + (target.isEmpty() ? drop
-                                   : QStringLiteral("ssh %1 %2").arg(target, shellQuote(drop)));
-    }
+#endif
     checklist_->clear();
     onState(QStringLiteral("push-image"), QStringLiteral("running"),
             QStringLiteral("%1 → %2 …").arg(srcHost.isEmpty() ? QStringLiteral("local") : srcHost,
                                             target.isEmpty() ? QStringLiteral("local") : target),
             QString());
     setRunning(true);
-    auto *thread = QThread::create([this, cmd, tag, target, promoteBase] {
+    auto *thread = QThread::create([this, tag, srcHost, target, promoteBase] {
         QElapsedTimer clock;
         clock.start();
-        const ShellResult r = runShellRc(QString(), cmd, 1800000);  // 30 min, multi-GB transfer
+        // docker save | docker load, each end on its own host, piped HERE by Qt rather than by a
+        // local `sh -c` — the same pipe for any src/target combination, and one a Windows client
+        // can run (bd remora-7oih.3). 30 min: a multi-GB transfer.
+        ShellResult r = runHostPipe({srcHost, {QStringLiteral("docker"), QStringLiteral("save"), tag}},
+                                    {target, {QStringLiteral("docker"), QStringLiteral("load")}},
+                                    1800000);
+        if (r.rc == 0 && !promoteBase.isEmpty()) {
+            // MOVE the tag like onPromoteImage does (tag then untag -src); the subshell keeps a
+            // benign rmi failure from failing the whole push, while a failed `docker tag` still
+            // does. Then the same move on the source, so its plain tag tracks the promoted build
+            // instead of going stale (bd remora-blo).
+            const QString retag =
+                QStringLiteral("docker tag %1 %2 && (docker rmi %1 >/dev/null 2>&1 || true)")
+                    .arg(tag, promoteBase);
+            for (const QString &h : {target, srcHost}) {
+                const ShellResult t = runShellRc(h, retag, 120000);
+                r.out += t.out;
+                if (t.rc != 0) {
+                    r.rc = t.rc;
+                    break;
+                }
+            }
+        }
+        // The multi-GB load fills the target's page cache, which forces the running Android
+        // container's memory into zram and its file working set out of cache — minutes of A/V
+        // stutter while it faults back (bd remora-8xq). Drop the now-useless cache via the
+        // guest helper. Best-effort: sudo -n only succeeds where the one-time root install
+        // (remora-drop-caches-install.sh) has been run; anywhere else this is a silent no-op.
+        if (r.rc == 0)
+            runShellRc(target,
+                       QStringLiteral("sudo -n /usr/local/sbin/remora-drop-caches >/dev/null 2>&1"),
+                       60000);
         const qint64 s = clock.elapsed() / 1000;
         const QString took = QStringLiteral("%1:%2").arg(s / 60).arg(s % 60, 2, 10,
                                                                      QLatin1Char('0'));
@@ -8327,8 +8426,8 @@ void MainWindow::onPushImage() {
 }
 
 // Fetch a source row's image onto the build host (bd remora-pht9): stream the source's archive
-// straight into `docker load` — curl for an http(s) mirror, `ssh … cat` for a remote directory,
-// `cat` for a local one. The local machine orchestrates the pipe like onPushImage, so every
+// straight into `docker load` — an HTTP GET for an http(s) mirror, `ssh … cat` for a remote
+// directory, `cat` for a local one. The local machine orchestrates the pipe like onPushImage, so every
 // source/build-host combination works; no archive is written anywhere, and the refresh at the
 // end flips the row to "local ✓".
 void MainWindow::onFetchSourceImage() {
@@ -8394,35 +8493,25 @@ void MainWindow::onFetchSourceImage() {
                      host.isEmpty() ? QStringLiteral("this machine") : host))
         != QMessageBox::Yes)
         return;
-    // Producer side of the pipe, by location shape (the same three scanSourceLocation reads).
-    QString catCmd;
-    if (http) {
-        catCmd = QStringLiteral("curl -fsSL %1").arg(shellQuote(loc + QLatin1Char('/') + file));
-    } else {
-        QString shost, dir = loc;  // user@host:/dir, or a plain local directory
+    // Producer side of the pipe, by location shape (the same three scanSourceLocation reads): Qt's
+    // own HTTP for a mirror, `ssh … cat` for a remote directory, `cat` for a local one — no local
+    // sh or curl anywhere, so this also runs on Windows (bd remora-7oih.3).
+    QString shost, dir = loc;  // user@host:/dir, or a plain local directory
+    if (!http) {
         const int colon = loc.indexOf(QLatin1Char(':'));
         if (colon > 0 && !loc.startsWith(QLatin1Char('/'))) {
             shost = loc.left(colon);
             dir = loc.mid(colon + 1);
         }
-        const QString cat =
-            QStringLiteral("cat %1").arg(shellQuote(dir + QLatin1Char('/') + file));
-        catCmd = shost.isEmpty() ? cat : QStringLiteral("ssh %1 %2").arg(shost, shellQuote(cat));
     }
-    const QString loadCmd = host.isEmpty()
-                                ? QStringLiteral("docker load")
-                                : QStringLiteral("ssh %1 %2").arg(host,
-                                      shellQuote(QStringLiteral("docker load")));
-    QString cmd = catCmd + QStringLiteral(" | ") + loadCmd;
-    // Same page-cache eviction as onPushImage: the multi-GB load forces a running container's
-    // working set into zram (bd remora-8xq). Best-effort where the root helper is installed.
-    {
-        const QString drop = QStringLiteral(
-            "(sudo -n /usr/local/sbin/remora-drop-caches >/dev/null 2>&1 || true)");
-        cmd += QStringLiteral(" && ")
-               + (host.isEmpty() ? drop
-                                 : QStringLiteral("ssh %1 %2").arg(host, shellQuote(drop)));
+#ifdef Q_OS_WIN
+    if (host.isEmpty() || (!http && shost.isEmpty())) {
+        QMessageBox::warning(this, QStringLiteral("Fetch image"),
+                             QStringLiteral("This fetch would read or load on this machine: %1.")
+                                 .arg(noLocalShellMessage()));
+        return;
     }
+#endif
     checklist_->clear();
     onState(QStringLiteral("fetch-image"), QStringLiteral("running"),
             QStringLiteral("%1 from %2 → %3 …")
@@ -8430,10 +8519,21 @@ void MainWindow::onFetchSourceImage() {
                      host.isEmpty() ? QStringLiteral("local") : host),
             QString());
     setRunning(true);
-    auto *thread = QThread::create([this, cmd, what, sourceName, host] {
+    auto *thread = QThread::create([this, http, loc, file, shost, dir, what, sourceName, host] {
         QElapsedTimer clock;
         clock.start();
-        const ShellResult r = runShellRc(QString(), cmd, 1800000);  // 30 min, multi-GB transfer
+        const HostCommand load{host, {QStringLiteral("docker"), QStringLiteral("load")}};
+        // 30 min, multi-GB transfer. Streamed straight into docker load either way.
+        ShellResult r =
+            http ? runHttpToHost(loc + QLatin1Char('/') + file, load, 1800000)
+                 : runHostPipe({shost, {QStringLiteral("cat"), dir + QLatin1Char('/') + file}},
+                               load, 1800000);
+        // Same page-cache eviction as onPushImage: the multi-GB load forces a running container's
+        // working set into zram (bd remora-8xq). Best-effort where the root helper is installed.
+        if (r.rc == 0)
+            runShellRc(host,
+                       QStringLiteral("sudo -n /usr/local/sbin/remora-drop-caches >/dev/null 2>&1"),
+                       60000);
         const qint64 s = clock.elapsed() / 1000;
         const QString took = QStringLiteral("%1:%2").arg(s / 60).arg(s % 60, 2, 10,
                                                                      QLatin1Char('0'));

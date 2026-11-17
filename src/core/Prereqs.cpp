@@ -12,7 +12,8 @@ static bool flag(const std::optional<bool> &v) { return v.has_value() && *v; }
 bool releaseNeedsAshmem(int androidVersion) { return androidVersion < 17; }
 
 QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &caps, bool gpuHost,
-                                     bool macvlan, bool sharedInputs, bool needsAshmem) {
+                                     bool macvlan, bool sharedInputs, bool needsAshmem,
+                                     const QStringList &bareOnlyRequested) {
     QVector<PrereqResult> out;
     const auto add = [&](const QString &key, const QString &label, bool ok, const QString &remedy,
                          const QString &severity = QStringLiteral("required")) {
@@ -21,12 +22,20 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
 
     // Every target's connect launches the local adb client — a missing tool otherwise
     // surface only as a confusing late failure inside the connect step.
-    add("adb", "adb present on the host", caps.adbPresent, "install android-tools (provides adb)");
+    const bool windows = caps.localOs == LocalOs::Windows;
+    add("adb", "adb present on the host", caps.adbPresent,
+        windows ? QStringLiteral("install Android SDK Platform-Tools and put adb.exe on PATH")
+                : QStringLiteral("install android-tools (provides adb)"));
     // No mirror-client prereq: the client lives inside the remora binary, and its device half is
     // the agent the image bakes — an image without it gets the client's own refusal at connect,
     // where the deployed image is known.
 
-    if (target == Backend::Bare) {
+    if (target == Backend::Bare && windows) {
+        // The three rows below are all questions about a local Linux docker host, and this client
+        // is not one. One refusal names the real problem; three MISSING rows with Linux remedies
+        // (usermod, systemctl, modprobe) would send a Windows user after the wrong fix.
+        add("bare_linux", "Linux kernel for backend=bare", false, bareNeedsLinuxMessage());
+    } else if (target == Backend::Bare) {
         add("docker_group", "user in the 'docker' group", caps.inDockerGroup,
             "sudo usermod -aG docker $USER, then re-login");
         // Membership is not a daemon. With docker stopped, or DOCKER_HOST naming a socket that is
@@ -43,6 +52,13 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
             "confirm ssh access (key-based) to the remote host");
         add("remote_docker", "docker usable on the remote", flag(caps.remoteDockerOk),
             "install docker and add the remote user to the docker group");
+        // A profile fact, not a host one, but `check` is what someone runs before `up`, and `up`
+        // refuses this at preflight — so it is a required row here too, with the same words.
+        if (!bareOnlyRequested.isEmpty())
+            add("bare_only_gpu",
+                QStringLiteral("no bare-only GPU settings (%1)")
+                    .arg(bareOnlyRequested.join(QStringLiteral(", "))),
+                false, bareOnlyFeaturesRefusal(bareOnlyRequested));
     }
 
     // macvlan needs a parent NIC, a subnet and a gateway, and none of them is typed by hand — the
@@ -108,12 +124,13 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
             "gpu");
     }
 
-    // NVIDIA Venus, on the backends that deploy through the docker argv (bd remora-4ei.56).
-    // "gpu" severity throughout: without these the xe/SwiftShader path is still correct, so these
-    // lines exist to explain why Venus is or is not on — never to block a deploy that did not want
-    // it. They are reported even when all three are missing, because otherwise there is no way to
-    // discover the feature or see which piece is short.
-    if (gpuHost) {
+    // NVIDIA Venus (bd remora-4ei.56), on bare alone: it and host encode run their helpers on
+    // this machine, so neither exists on remote (bd remora-7oih.3) and the remote probe no longer
+    // scans for their pieces. "gpu" severity throughout: without these the xe/SwiftShader path is
+    // still correct, so these lines exist to explain why Venus is or is not on — never to block a
+    // deploy that did not want it. They are reported even when all three are missing, because
+    // otherwise there is no way to discover the feature or see which piece is short.
+    if (gpuHost && target == Backend::Bare) {
         add("venus_nvidia_node", "NVIDIA render node present",
             caps.hostNvidiaRenderNode.has_value(),
             "no /dev/dri/renderD* is driven by 'nvidia' — the proprietary driver must be loaded",

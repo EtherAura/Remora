@@ -1,4 +1,5 @@
 #pragma once
+#include <QByteArrayView>
 #include <QList>
 #include <QString>
 
@@ -58,5 +59,28 @@ SplashStatus parseSplashStatus(const QString &fileContents);
 
 // Android's bootanimation.zip search order, which the acquirer tries in sequence.
 QStringList bootAnimSearchPaths();
+
+// The splash unpacks bootanimation.zip itself rather than forking `unzip`, which a Windows client
+// does not have (bd remora-7oih.2). Android's own player reads frames in place and so only plays
+// STORED entries, which makes "stored" the whole format that has to be read; a compressed entry is
+// reported by its method and left to the caller to skip.
+struct ZipEntry {
+    QString name;          // as stored: '/'-separated, a trailing '/' for a directory
+    quint16 method = 0;    // 0 = stored, 8 = deflate, … (an encrypted entry reports 0xFFFF)
+    qint64 offset = 0;     // where the entry's bytes start in the archive
+    qint64 size = 0;       // how many bytes are stored there
+};
+struct ZipIndex {
+    QList<ZipEntry> entries;
+    QString error;  // non-empty: not a zip this reader can trust, and `entries` is empty
+};
+// Walks the CENTRAL DIRECTORY, not the local headers: a writer that streams sets bit 3 and leaves
+// the local sizes zero, and only the directory has them then. Every offset is bounds-checked
+// against the archive, so a truncated pull is an error rather than a read past the end. ZIP64 is
+// refused — a boot animation is nowhere near 4 GiB.
+ZipIndex indexZip(QByteArrayView zip);
+// A name that stays inside the directory it is unpacked into: relative, no "..", no backslash and
+// no drive or stream colon. Anything else is skipped, never followed.
+bool zipEntryNameIsSafe(const QString &name);
 
 }  // namespace remora::mirror

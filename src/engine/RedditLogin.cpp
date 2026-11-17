@@ -2,7 +2,12 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QSqlDatabase>
+#include <QSqlError>
+#include <QSqlQuery>
 #include <QTemporaryDir>
+#include <QUuid>
+#include <optional>
 
 #include "core/RedditSession.h"
 
@@ -11,7 +16,86 @@ namespace remora {
 static const QString kPkg = QStringLiteral("com.reddit.frontpage");
 
 // Escape a value for embedding in a single-quoted SQL literal.
-static QString sqlq(QString s) { return s.replace(QLatin1Char('\''), QStringLiteral("''")); }
+// The account row Android's AccountManager reads, written into the two pulled databases with Qt's
+// own SQLite (bd remora-7oih.3). This was the host's sqlite3 CLI, which a Windows client does not
+// have, fed the cookie through a .read file so it stayed out of argv; bound parameters keep it out
+// of every command line with no file at all, and nothing is quoted by hand. Returns the account
+// id; nullopt with *error set when the credential database could not be updated. The DE row is
+// best-effort, as it always was: AccountManager rebuilds it from CE.
+static std::optional<qint64> writeAccountRows(const QString &ce, const QString &de,
+                                              const RedditArtifacts &art, QString *error) {
+    const QString conn =
+        QStringLiteral("remora-accounts-") + QUuid::createUuid().toString(QUuid::Id128);
+    std::optional<qint64> id;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+        const auto run = [&db](const QString &sql, const QVariantList &values) {
+            QSqlQuery q(db);
+            if (!q.prepare(sql)) return q;
+            for (const QVariant &v : values) q.addBindValue(v);
+            q.exec();
+            return q;
+        };
+        const auto failed = [&](const QString &what, const QSqlError &e) {
+            *error = QStringLiteral("%1: %2").arg(what, e.text());
+        };
+        db.setDatabaseName(ce);
+        if (!db.isValid()) {
+            *error = QStringLiteral("Qt's SQLite driver (QSQLITE) is not installed");
+        } else if (!db.open()) {
+            failed(QStringLiteral("could not open accounts_ce.db"), db.lastError());
+        } else {
+            // Reuse the account's existing id if present, else the next free one.
+            QSqlQuery sel = run(QStringLiteral(
+                                    "SELECT COALESCE((SELECT _id FROM accounts WHERE name=? AND "
+                                    "type=?),(SELECT COALESCE(MAX(_id),0)+1 FROM accounts))"),
+                                {art.accountName, art.accountType});
+            bool numeric = false;
+            const qint64 nid = sel.next() ? sel.value(0).toLongLong(&numeric) : 0;
+            if (!numeric) {
+                failed(QStringLiteral("could not read the account table"), sel.lastError());
+            } else if (!db.transaction()) {
+                failed(QStringLiteral("could not start a transaction"), db.lastError());
+            } else {
+                QSqlQuery a = run(QStringLiteral("INSERT OR IGNORE INTO accounts(_id,name,type,"
+                                                 "password) VALUES(?,?,?,'')"),
+                                  {nid, art.accountName, art.accountType});
+                QSqlQuery x = run(QStringLiteral("INSERT OR REPLACE INTO extras(accounts_id,key,"
+                                                 "value) VALUES(?,?,?)"),
+                                  {nid, art.cookieExtraKey, art.cookieExtraValue});
+                QSqlQuery s = run(QStringLiteral("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE "
+                                                 "name='accounts'"),
+                                  {nid});
+                const bool ok = a.isActive() && x.isActive() && s.isActive();
+                if (ok && db.commit()) {
+                    id = nid;
+                } else {
+                    db.rollback();
+                    failed(QStringLiteral("could not add the account"),
+                           !a.isActive() ? a.lastError() : !x.isActive() ? x.lastError()
+                                                                          : s.lastError());
+                }
+            }
+            // Fold any WAL back into the file: only the main database is pushed back.
+            run(QStringLiteral("PRAGMA wal_checkpoint(TRUNCATE)"), {});
+            db.close();
+        }
+        if (id) {
+            db.setDatabaseName(de);
+            if (db.open()) {
+                run(QStringLiteral("INSERT OR IGNORE INTO accounts(_id,name,type,previous_name,"
+                                   "last_password_entry_time_millis_epoch) VALUES(?,?,?,NULL,0)"),
+                    {*id, art.accountName, art.accountType});
+                run(QStringLiteral("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='accounts'"),
+                    {*id});
+                run(QStringLiteral("PRAGMA wal_checkpoint(TRUNCATE)"), {});
+                db.close();
+            }
+        }
+    }
+    QSqlDatabase::removeDatabase(conn);
+    return id;
+}
 
 // Run a POSIX-sh command inside the target container (docker exec, backend-aware).
 static ProcResult csh(Spawner &sp, const RunContext &ctx, const QString &inner,
@@ -43,8 +127,8 @@ static bool cpOut(Spawner &sp, const RunContext &ctx, const QString &containerPa
                        .arg(ctx.rc.containerName, containerPath)));
     const QString rtmp = made.out.trimmed().section(QLatin1Char('\n'), -1);
     if (made.rc != 0 || !rtmp.startsWith(QLatin1String("/tmp/remora-rl."))) return false;
-    const bool ok = sp.run({QStringLiteral("scp"), QStringLiteral("-q"),
-                            ctx.guest + QLatin1Char(':') + rtmp, local})
+    const bool ok = sp.run(Spawner::scpArgv({ctx.guest + QLatin1Char(':') + rtmp, local},
+                                            {QStringLiteral("-q")}))
                             .rc == 0
                     && QFileInfo(local).size() > 0;
     sp.run(Spawner::sshArgv(ctx.guest, QStringLiteral("rm -f %1").arg(rtmp)));
@@ -68,8 +152,7 @@ static bool cpIn(Spawner &sp, const RunContext &ctx, const QString &local,
     const QString rtmp = made.out.trimmed().section(QLatin1Char('\n'), -1);
     if (made.rc != 0 || !rtmp.startsWith(QLatin1String("/tmp/remora-rl."))) return false;
     const bool ok =
-        sp.run({QStringLiteral("scp"), QStringLiteral("-q"), local,
-                ctx.guest + QLatin1Char(':') + rtmp})
+        sp.run(Spawner::scpArgv({local, ctx.guest + QLatin1Char(':') + rtmp}, {QStringLiteral("-q")}))
                 .rc == 0
         && sp.run(Spawner::sshArgv(ctx.guest,
                                    QStringLiteral("docker exec -i %1 sh -c 'cat > %2' < '%3'")
@@ -155,8 +238,8 @@ bool injectRedditSession(Spawner &sp, const RunContext &ctx, const QString &user
         }
 
     // 2) AccountManager row. The container's own sqlite3 crashes (aborts even on :memory:), so the
-    // account db is edited offline: stop the framework to release it, pull, edit with the host's
-    // sqlite3, drop the stale WAL/SHM, push back, restart.
+    // account db is edited offline: stop the framework to release it, pull, edit here with Qt's
+    // SQLite, drop the stale WAL/SHM, push back, restart.
     note(QStringLiteral("Registering AccountManager account '%1'…").arg(art.accountName));
     csh(sp, ctx, QStringLiteral("stop"));
     sp.waitMs(4000);
@@ -174,40 +257,12 @@ bool injectRedditSession(Spawner &sp, const RunContext &ctx, const QString &user
         QStringLiteral("rm -f /data/system_ce/0/accounts_ce.db-wal /data/system_ce/0/accounts_ce.db-shm "
                        "/data/system_de/0/accounts_de.db-wal /data/system_de/0/accounts_de.db-shm"));
 
-    // Reuse the account's existing id if present, else the next free one.
-    const QString sel =
-        QStringLiteral("SELECT COALESCE((SELECT _id FROM accounts WHERE name='%1' AND type='%2'),"
-                       "(SELECT COALESCE(MAX(_id),0)+1 FROM accounts));")
-            .arg(sqlq(art.accountName), sqlq(art.accountType));
-    const QString nid = sp.run({QStringLiteral("sqlite3"), ce, sel}).out.trimmed();
-    if (nid.isEmpty() || !nid.at(0).isDigit()) {
-        note(QStringLiteral("Host sqlite3 failed (is it installed?)."));
+    QString dbError;
+    if (!writeAccountRows(ce, de, art, &dbError)) {
+        note(QStringLiteral("Could not add the account to the database (%1).").arg(dbError));
         resume();
         return false;
     }
-    // The cookie goes in as an extras row, so this SQL is read from a private file rather than
-    // passed as an argument, for the same ps reason as the DataStore files above.
-    const QString ceSql = tmp.filePath(QStringLiteral("accounts_ce.sql"));
-    if (!writePrivate(ceSql,
-                      QStringLiteral(
-                          "INSERT OR IGNORE INTO accounts(_id,name,type,password) VALUES(%1,'%2','%3','');"
-                          "INSERT OR REPLACE INTO extras(accounts_id,key,value) VALUES(%1,'%4','%5');"
-                          "UPDATE sqlite_sequence SET seq=MAX(seq,%1) WHERE name='accounts';"
-                          "PRAGMA wal_checkpoint(TRUNCATE);\n")
-                          .arg(nid, sqlq(art.accountName), sqlq(art.accountType),
-                               sqlq(art.cookieExtraKey), sqlq(art.cookieExtraValue))
-                          .toUtf8())
-        || sp.run({QStringLiteral("sqlite3"), ce, QStringLiteral(".read ") + ceSql}).rc != 0) {
-        note(QStringLiteral("Could not add the account to the database."));
-        resume();
-        return false;
-    }
-    sp.run({QStringLiteral("sqlite3"), de,
-            QStringLiteral("INSERT OR IGNORE INTO accounts(_id,name,type,previous_name,"
-                           "last_password_entry_time_millis_epoch) VALUES(%1,'%2','%3',NULL,0);"
-                           "UPDATE sqlite_sequence SET seq=MAX(seq,%1) WHERE name='accounts';"
-                           "PRAGMA wal_checkpoint(TRUNCATE);")
-                .arg(nid, sqlq(art.accountName), sqlq(art.accountType))});
 
     if (!cpIn(sp, ctx, ce, QStringLiteral("/data/system_ce/0/accounts_ce.db"))
         || !cpIn(sp, ctx, de, QStringLiteral("/data/system_de/0/accounts_de.db"))) {

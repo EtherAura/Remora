@@ -71,12 +71,21 @@ struct UnitRemovalResult {
     bool ok = true;
     QStringList removed;  // paths deleted
     QStringList errors;   // one line per unit that was kept, plus a failed reload
+    bool noServiceManager = false;  // there was no systemctl to ask; see kNoServiceManagerRc
 };
+// The runner's rc for "systemctl could not be started at all" — RealSpawner's, and the shell's,
+// code for a missing program. systemctl itself never exits with it.
+inline constexpr int kNoServiceManagerRc = 127;
 // Stop + disable each of the profile's units, then delete its file and its <unit>.d drop-in
 // directory from unitDir, then daemon-reload. A unit whose disable fails is deleted only when the
 // manager explicitly reports it not-found and inactive (stopping a running orphan first); a
 // missing local file proves nothing about what is loaded. Anything uncertain keeps that unit's
 // files and fails. Symlinks are unlinked, never followed.
+//
+// No systemctl at all (Windows, or a Linux without systemd) is not uncertain: nothing can have
+// loaded these units, so there is nothing to disable or reload, and their files — if a unit was
+// ever written — are only files. They are deleted and the removal succeeds; before, every call
+// failed, the unit state read "unknown" and Delete profile could never delete (bd remora-7oih.2).
 UnitRemovalResult removeServiceUnits(const QString &unitDir, const QString &profile,
                                      const UnitCommandRunner &run);
 

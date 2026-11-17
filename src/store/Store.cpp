@@ -72,6 +72,9 @@ RemoraConfig loadInstance(const QString &path, const QString &name) {
         if (has("data_base_dir")) c.backend.dataBaseDir = s.value("data_base_dir").toString();
         if (has("host_adb_port")) c.backend.hostAdbPort = s.value("host_adb_port").toInt();
         if (has("adb_bind")) c.backend.adbBindAddress = s.value("adb_bind").toString().trimmed();
+        if (has("guest_accel")) c.backend.guestAccel = s.value("guest_accel").toString().trimmed();
+        if (has("guest_memory_mb")) c.backend.guestMemoryMb = s.value("guest_memory_mb").toInt();
+        if (has("guest_cpus")) c.backend.guestCpus = s.value("guest_cpus").toInt();
         if (has("width")) c.display.width = s.value("width").toInt();
         if (has("height")) c.display.height = s.value("height").toInt();
         if (has("dpi")) c.display.dpi = s.value("dpi").toInt();
@@ -277,6 +280,9 @@ void saveInstance(const QString &path, const QString &name, const RemoraConfig &
     wStr("data_base_dir", c.backend.dataBaseDir);
     wInt("host_adb_port", c.backend.hostAdbPort);
     wStr("adb_bind", c.backend.adbBindAddress);
+    wStr("guest_accel", c.backend.guestAccel);
+    wInt("guest_memory_mb", c.backend.guestMemoryMb);
+    wInt("guest_cpus", c.backend.guestCpus);
     wInt("width", c.display.width);
     wInt("height", c.display.height);
     wInt("dpi", c.display.dpi);
@@ -589,9 +595,13 @@ UnitRemovalResult removeServiceUnits(const QString &unitDir, const QString &prof
     UnitRemovalResult res;
     const QString sc = QStringLiteral("systemctl"), user = QStringLiteral("--user");
     for (const QString &unit : serviceUnitNames(profile)) {
-        const UnitCommandResult dis = run({sc, user, QStringLiteral("disable"),
-                                           QStringLiteral("--now"), unit});
-        if (dis.rc != 0) {
+        const UnitCommandResult dis =
+            res.noServiceManager
+                ? UnitCommandResult{kNoServiceManagerRc, {}, {}}
+                : run({sc, user, QStringLiteral("disable"), QStringLiteral("--now"), unit});
+        if (dis.rc == kNoServiceManagerRc) {
+            res.noServiceManager = true;  // asked once; the files below still go
+        } else if (dis.rc != 0) {
             // disable fails for a unit with no file on disk, which is also how a running orphan
             // looks. Only the manager's explicit not-found + inactive makes that harmless.
             UnitState st = queryUnit(run, unit);
@@ -623,6 +633,7 @@ UnitRemovalResult removeServiceUnits(const QString &unitDir, const QString &prof
             }
         }
     }
+    if (res.noServiceManager) return res;
     const UnitCommandResult reload = run({sc, user, QStringLiteral("daemon-reload")});
     if (reload.rc != 0) {
         res.ok = false;

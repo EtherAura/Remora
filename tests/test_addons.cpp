@@ -1,5 +1,6 @@
 #include <QtTest>
 
+#include "TestPlatform.h"
 #include "core/ImageBuild.h"
 #include "core/Resolver.h"
 #include "engine/Addons.h"
@@ -25,8 +26,23 @@ public:
         const QString j = argv.join(QLatin1Char(' '));
         if (j.contains(QLatin1String("{{.Id}}"))) return {0, baseInspect, {}};
         if (j.contains(QLatin1String("org.remora.addons.recipe"))) return have;
+        // AddonPaths::stageOnHost: the scratch dir, the Dockerfile that travels by scp, and the
+        // fetched payload copied back from the host.
+        if (j.contains(QLatin1String("mktemp -d /tmp/remora-addons.")))
+            return {0, QStringLiteral("/tmp/remora-addons.AbCdEf1234\n"), {}};
+        if (argv.value(0) == QLatin1String("scp")) {
+            const QString from = argv.value(argv.size() - 2), to = argv.last();
+            if (to.endsWith(QLatin1String("/ctx/Dockerfile"))) {
+                QFile f(from);
+                if (f.open(QIODevice::ReadOnly)) dockerfile = QString::fromUtf8(f.readAll());
+            }
+            if (from.contains(QLatin1String("/fetched/magisk")) && !fetchInto.isEmpty())
+                writeMagisk(to);
+            return {0, {}, {}};
+        }
         if (j.contains(QLatin1String("fetch-payloads.sh"))) {
-            if (!fetchInto.isEmpty()) writeMagisk(env.value("REMORA_PAYLOAD_DIR"));
+            const QString into = env.value("REMORA_PAYLOAD_DIR");
+            if (!fetchInto.isEmpty() && !into.isEmpty()) writeMagisk(into);
             return {fetchInto.isEmpty() ? 1 : 0, {}, {}};
         }
         if (j.contains(QLatin1String("docker build"))) {
@@ -73,7 +89,7 @@ class AddonsTest : public QObject {
     QTemporaryDir tmp_;
     AddonPaths paths() const {
         return {{tmp_.path() + QStringLiteral("/payloads"), tmp_.path() + QStringLiteral("/none")},
-                QStringLiteral(REMORA_SOURCE_VENDOR_DIR),
+                sourcePath(QStringLiteral("vendor")),
                 tmp_.path() + QStringLiteral("/cache")};
     }
     static RemoraConfig profile(const QStringList &addons) {
@@ -264,10 +280,21 @@ private slots:
         QVERIFY(inspectOverSsh);
         QVERIFY(streamed);
         QVERIFY(!sp.dockerfile.isEmpty());
+        // No host is refused before anything runs, where this machine's docker is a local daemon.
+        // Where it is Remora's own guest (Windows), a blank host is the guest, and the layer is
+        // built there.
         RemoraConfig nohost = profile({"arm_translate"});
-        AddonSpawner none;
-        QVERIFY(!ensureAddonOverlay(none, nohost, Backend::Remote, {}, paths()).ok);
-        QVERIFY(none.calls.isEmpty());
+        {
+            const ScopedLocalDockerIsGuest daemon(false);
+            AddonSpawner none;
+            QVERIFY(!ensureAddonOverlay(none, nohost, Backend::Remote, {}, paths()).ok);
+            QVERIFY(none.calls.isEmpty());
+        }
+        const ScopedLocalDockerIsGuest guest(true);
+        AddonSpawner toGuest;
+        const StepResult g = ensureAddonOverlay(toGuest, nohost, Backend::Remote, {}, paths());
+        QVERIFY2(g.ok, qPrintable(g.detail + g.stderrTail));
+        QVERIFY(toGuest.ran(guestAlias()));
     }
 
     // bd remora-6laf.3: root is never added for the user, so a spoof list without it is refused
@@ -313,6 +340,86 @@ private slots:
         QVERIFY(sp.dockerfile.contains("COPY shamiko/ /system/etc/remora-spoof/shamiko/\n"));
         QVERIFY(sp.dockerfile.contains(
             "LABEL org.remora.addons.list=\"arm_translate magisk_root play_spoof shamiko\""));
+    }
+
+    // bd remora-7oih.3 — a client with no local sh, cp or tar (Windows) stages on the Docker host:
+    // the payload and Remora's halves are copied into a fresh mktemp directory there, the same
+    // staging script runs there against the copies, and docker build reads the context there. Only
+    // ssh and scp run here, and the scratch directory goes when the step returns.
+    void hostStagedLayerIsAssembledAndBuiltOnTheDockerHost() {
+        putArm();
+        RemoraConfig c = profile({"arm_translate"});
+        c.backend.sshHost = QStringLiteral("user@dockerhost");
+        AddonSpawner local;
+        RemoraConfig lc = c;
+        QVERIFY(ensureAddonOverlay(local, lc, Backend::Remote, {}, paths()).ok);
+
+        AddonSpawner sp;
+        AddonPaths onHost = paths();
+        onHost.stageOnHost = true;
+        const StepResult r = ensureAddonOverlay(sp, c, Backend::Remote, {}, onHost);
+        QVERIFY2(r.ok, qPrintable(r.detail + r.stderrTail));
+        const QString d = QStringLiteral("/tmp/remora-addons.AbCdEf1234");
+        bool payloadSent = false, scriptSent = false, staged = false, built = false;
+        for (const QStringList &call : sp.calls) {
+            const QString j = call.join(QLatin1Char(' '));
+            QVERIFY2(call.value(0) == QLatin1String("ssh") || call.value(0) == QLatin1String("scp"),
+                     qPrintable(j));
+            if (call.value(0) == QLatin1String("scp")) {
+                if (call.last() == QStringLiteral("user@dockerhost:") + d + QStringLiteral("/payloads") &&
+                    call.value(call.size() - 2).endsWith(QLatin1String("/payloads/ndk_translation")))
+                    payloadSent = true;
+                if (call.last().endsWith(d + QStringLiteral("/sb/stage-arm-layer.sh")))
+                    scriptSent = true;
+            } else {
+                if (j.contains(d + QStringLiteral("/sb/stage-arm-layer.sh")) &&
+                    j.contains(d + QStringLiteral("/payloads/ndk_translation")))
+                    staged = true;
+                if (j.contains(QLatin1String("docker")) && j.contains(QLatin1String("build")) &&
+                    j.contains(d + QStringLiteral("/ctx")))
+                    built = true;
+            }
+        }
+        QVERIFY(payloadSent);
+        QVERIFY(scriptSent);
+        QVERIFY(staged);
+        QVERIFY(built);
+        QVERIFY(sp.ran(QStringLiteral("7f454c46")));  // modes restored before anything is staged
+        QVERIFY(sp.dockerfile.startsWith(QLatin1String("FROM remora24:x86_64-public\n")));
+        // The same inputs make the same layer, whichever side assembled it.
+        QCOMPARE(c.image.addonOverlay, lc.image.addonOverlay);
+        QVERIFY(sp.calls.last().join(QLatin1Char(' ')).contains(QStringLiteral("rm -rf")));
+        QVERIFY(sp.calls.last().join(QLatin1Char(' ')).contains(d));
+        // Nothing was assembled here.
+        QVERIFY(QDir(tmp_.path() + QStringLiteral("/cache"))
+                    .entryList(QDir::Dirs | QDir::NoDotAndDotDot)
+                    .isEmpty());
+    }
+
+    // …and a missing Magisk is fetched ON the host, where curl and unzip are, then copied back
+    // into the payload dir here so the recipe reads the same bytes as a local fetch.
+    void hostStagedMagiskIsFetchedOnTheHostAndKeptHere() {
+        QTemporaryDir own;
+        QVERIFY(own.isValid());
+        AddonPaths onHost{{own.path() + QStringLiteral("/payloads")},
+                          sourcePath(QStringLiteral("vendor")),
+                          own.path() + QStringLiteral("/cache"),
+                          true};
+        AddonSpawner sp;
+        sp.fetchInto = QStringLiteral("set");
+        RemoraConfig c = profile({"magisk_root"});
+        c.backend.sshHost = QStringLiteral("user@dockerhost");
+        const StepResult r = ensureAddonOverlay(sp, c, Backend::Remote, {}, onHost);
+        QVERIFY2(r.ok, qPrintable(r.detail + r.stderrTail));
+        QVERIFY(sp.ran(QStringLiteral("REMORA_PAYLOAD_DIR=")));
+        QVERIFY(QFileInfo::exists(own.path() + QStringLiteral("/payloads/magisk/magisk/magiskinit")));
+        for (const QStringList &call : sp.calls)
+            QVERIFY(call.value(0) == QLatin1String("ssh") || call.value(0) == QLatin1String("scp"));
+        // A host-staged profile with no docker host to stage on is refused before anything runs.
+        AddonSpawner none;
+        RemoraConfig bare = profile({"magisk_root"});
+        QVERIFY(!ensureAddonOverlay(none, bare, Backend::Bare, {}, onHost).ok);
+        QVERIFY(none.calls.isEmpty());
     }
 
     void buildFailureRecordsNoLayer() {

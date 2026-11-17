@@ -4,6 +4,7 @@
 #include <optional>
 
 #include "core/Backend.h"
+#include "core/ManagedHost.h"
 
 namespace remora {
 
@@ -237,8 +238,8 @@ struct MirrorConfig {
     // Vulkan pipeline must be sized to fit up front — ffmpeg crashes rather than reporting an
     // out-of-memory, so there is no recovering afterwards.
     std::optional<int> hostEncodeMaxSize;
-    // Client-side GPU decode (CUDA/NVDEC first, then VAAPI). Unset = on; hw_decode=false forces
-    // software on a host whose decoder misbehaves.
+    // Client-side GPU decode (CUDA/NVDEC first, then VAAPI, or D3D11VA on Windows). Unset = on;
+    // hw_decode=false forces software on a host whose decoder misbehaves.
     std::optional<bool> hwDecode;
     // Mirror audio (bd remora-28ix.2.2). Off by default: opt-in until it has earned its place.
     std::optional<bool> audio;
@@ -288,6 +289,11 @@ struct BackendConfig {
     // every interface explicitly.
     std::optional<QString> adbBindAddress;
     std::optional<QString> sshHost;
+    // Remora's own Linux guest, where this machine's docker is one (Windows, bd remora-7oih.5):
+    // guest_accel = auto | whpx | kvm | tcg, guest_memory_mb, guest_cpus. One guest serves every
+    // profile, so these belong in [Defaults]; the first profile to start it decides.
+    std::optional<QString> guestAccel;
+    std::optional<int> guestMemoryMb, guestCpus;
     // Set by the loader when the profile on disk still says backend=vm. Not a config knob and never
     // written back — it exists so preflight can refuse with migration instructions (bd remora-d5v).
     bool retiredVmBackend = false;
@@ -371,10 +377,14 @@ struct RemoraConfig {
 // machine's docker, anything else is a docker host reached over ssh. An explicit backend= key
 // (or the CLI's --backend) still wins, but the GUI neither offers nor writes it, and Remora does
 // not start VMs: a guest is just another host once it is running.
+//
+// Where this machine's docker is Remora's own guest (Windows, bd remora-7oih.5), "this machine"
+// is that guest over ssh, so bare comes out as remote: see effectiveBackend.
 inline Backend inferBackend(const RemoraConfig &c) {
-    if (c.backend.backend) return *c.backend.backend;
-    return c.backend.sshHost.value_or(QString()).trimmed().isEmpty() ? Backend::Bare
-                                                                     : Backend::Remote;
+    if (c.backend.backend) return effectiveBackend(*c.backend.backend);
+    return effectiveBackend(c.backend.sshHost.value_or(QString()).trimmed().isEmpty()
+                                ? Backend::Bare
+                                : Backend::Remote);
 }
 
 }  // namespace remora

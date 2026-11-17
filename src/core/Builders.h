@@ -144,6 +144,21 @@ std::pair<QMap<QString, QString>, QStringList> buildPipMirrorArgv(const Resolved
 // The toggle's match target — kept beside the builder so the two cannot drift apart.
 QString pipWindowTitle(const QString &instance);
 
+// One side of the Alt+D mirror ↔ desktop toggle, as the engine hands it to a mirror in the
+// environment: the argv to start, and the variables to set and remove in the child. It used to be
+// a POSIX shell line run with `sh -c`, which a Windows client has no shell for (bd remora-7oih.2);
+// as data it starts the same way everywhere, with QProcess and no shell to re-parse an argument.
+struct LaunchSpec {
+    QStringList argv;
+    QMap<QString, QString> set;
+    QStringList unset;
+};
+// Compact JSON: {"argv":[…],"set":{…},"unset":[…]}. One line, so it rides an env var.
+QString encodeLaunchSpec(const LaunchSpec &spec);
+// nullopt for anything that is not that object with a non-empty argv — including the shell line a
+// mirror started by an older Remora still carries, which the caller may still run as one.
+std::optional<LaunchSpec> decodeLaunchSpec(const QString &text);
+
 // Make one profile's /sdcard browsable from the desktop file manager, without binding anything as
 // a shared folder and without touching the user's account.
 //

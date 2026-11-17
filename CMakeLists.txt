@@ -21,7 +21,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)  # for Q_OBJECT (Qt Test; later the UI/engine QObjects)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Widgets Test Network OpenGLWidgets Multimedia)
+# Sql (with its SQLite driver, QSQLITE): the Reddit sign-in edits Android's account databases with
+# it, so no sqlite3 binary is needed on either platform (bd remora-7oih.3).
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Widgets Test Network Sql OpenGLWidgets Multimedia)
 # DBus: org.freedesktop.FileManager1, so "show this folder" is asked as itself rather than as an
 # inode/directory mime lookup that any media player can win (see showFolder in MainWindow.cpp).
 # A freedesktop session bus is a Linux desktop's, so the Windows client (bd remora-7oih) asks
@@ -56,8 +58,12 @@ add_library(remora_core STATIC
     src/core/Features.cpp
     src/core/Gating.cpp
     src/core/ImageBuild.cpp
+    src/core/Guest.cpp
+    src/core/ManagedHost.cpp
+    src/core/MirrorHwDecode.cpp
     src/core/MirrorInput.cpp
     src/core/MirrorProto.cpp
+    src/core/MirrorRegistry.cpp
     src/core/Parsers.cpp
     src/core/Prereqs.cpp
     src/core/RedditSession.cpp
@@ -74,6 +80,8 @@ add_library(remora_engine STATIC
     src/engine/Addons.cpp
     src/engine/SourceBuild.cpp
     src/engine/Spawner.cpp
+    src/engine/GuestVm.cpp
+    src/engine/MirrorRegistry.cpp
     src/engine/Chain.cpp
     src/engine/Deployers.cpp
     src/engine/Exclusion.cpp
@@ -83,9 +91,14 @@ add_library(remora_engine STATIC
     src/engine/AppMenu.cpp
     src/engine/AppTransfer.cpp
     src/engine/RedditLogin.cpp
+    src/engine/HostShell.cpp
 )
 target_include_directories(remora_engine PUBLIC src)
-target_link_libraries(remora_engine PUBLIC remora_core Qt6::Core)
+# Network: GuestVm talks to its QEMU's control port and probes loopback ports (bd remora-7oih.5),
+# and the image side fetches over HTTP with Qt. Sql: the Reddit sign-in edits account databases
+# with Qt. Both replace a local curl and sqlite3, which a Windows client does not have
+# (bd remora-7oih.3).
+target_link_libraries(remora_engine PUBLIC remora_core Qt6::Core Qt6::Network Qt6::Sql)
 # The drift audit (bd remora-y9y9) needs both trees' locations and which one this binary reads:
 # REMORA_VENDOR_DIR is what it stages from, the other two are the counterpart candidates it
 # byte-compares against. The installed path is a candidate, not the truth — remora-install
@@ -121,7 +134,9 @@ add_library(remora_mirror STATIC
     src/mirror/VideoReader.cpp
 )
 target_include_directories(remora_mirror PUBLIC src)
-target_link_libraries(remora_mirror PUBLIC remora_core Qt6::Widgets Qt6::Network
+# remora_engine for the mirror registry alone (engine/MirrorRegistry.h): a mirror registers
+# itself through the same code the engine reads it back with.
+target_link_libraries(remora_mirror PUBLIC remora_core remora_engine Qt6::Widgets Qt6::Network
     Qt6::OpenGLWidgets Qt6::Multimedia PkgConfig::FFMPEG)
 
 # --- GUI (QtWidgets config workspace) ---
@@ -147,6 +162,24 @@ target_compile_definitions(remora_gui PRIVATE REMORA_VENDOR_DIR="${REMORA_VENDOR
 add_executable(remora src/main.cpp)
 target_link_libraries(remora PRIVATE remora_gui remora_mirror remora_engine remora_store remora_core Qt6::Widgets)
 target_compile_definitions(remora PRIVATE REMORA_VERSION_STRING="${REMORA_VERSION}")
+# The window icon. Linux finds it in the icon theme the install puts it in, or at its installed
+# path; Windows has neither, so the binary carries it as :/remora/<id>.svg (core/Branding.h).
+if(WIN32)
+    qt_add_resources(remora remora_branding PREFIX "/remora" BASE packaging
+        FILES packaging/io.github.EtherAura.Remora.svg)
+    # The same program for Explorer and the Start menu (bd remora-7oih.6). remora.exe is a console
+    # program, which is what a terminal wants, and started from Explorer it opens a console
+    # window behind the workspace. remora-gui.exe is a Windows-subsystem build of the same
+    # main.cpp: with no arguments it opens the workspace, and the mirrors it starts are
+    # remora-gui.exe too, so none of them ever has a console.
+    add_executable(remora-gui WIN32 src/main.cpp)
+    target_link_libraries(remora-gui PRIVATE remora_gui remora_mirror remora_engine remora_store
+        remora_core Qt6::Widgets)
+    target_compile_definitions(remora-gui PRIVATE REMORA_VERSION_STRING="${REMORA_VERSION}"
+        REMORA_GUI_BY_DEFAULT=1)
+    qt_add_resources(remora-gui remora_gui_branding PREFIX "/remora" BASE packaging
+        FILES packaging/io.github.EtherAura.Remora.svg)
+endif()
 
 # --- vendored native helpers (vendor/native) ---
 # Built IN PLACE, into vendor/native/, because that is where both kinds of build look for them: a
@@ -248,9 +281,17 @@ file(MAKE_DIRECTORY "${REMORA_TEST_HOME}/.config" "${REMORA_TEST_HOME}/.local/sh
 # machine without it still configures and builds Remora; those tests then do not run, and this
 # says so. -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON turns a missing interpreter into a configure
 # error instead: CI and the packages' own test runs pass it, so the suites cannot drop out quietly.
-find_package(Python3 COMPONENTS Interpreter)
+#
+# A Windows build registers none of them and gives prereqs no interpreter: what they test is Linux
+# tooling (the Play installer, the ARM fetch and the image helper all run on the docker host, the
+# audit in the release pipeline), and the interpreter a cross build would find is this machine's.
 set(REMORA_TEST_PYTHON "")
-if(Python3_Interpreter_FOUND)
+if(NOT WIN32)
+    find_package(Python3 COMPONENTS Interpreter)
+endif()
+if(WIN32)
+    message(STATUS "tests: a Windows build registers no Python suites — they test Linux tooling")
+elseif(Python3_Interpreter_FOUND)
     set(REMORA_TEST_PYTHON "${Python3_EXECUTABLE}")
     add_test(NAME play_install COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_play_install.py)
     add_test(NAME arm_fetch COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_arm_fetch.py)
@@ -260,54 +301,74 @@ else()
     message(STATUS "tests: Python 3 not found — play_install, arm_fetch, public_images and public_audit are "
         "not registered, and prereqs skips its two image-helper cases")
 endif()
+# A cross-built suite is a Windows program, so ctest runs it through Wine (tools/windows-wine.sh):
+# a smoke test, not a sign-off — tools/windows-stage.sh --tests stages the suites for a real
+# Windows machine. The SDK is named outright, because the HOME a test runs with is the isolated
+# one below. Set before the suites are created, which is when a target takes it.
+if(WIN32 AND CMAKE_CROSSCOMPILING AND NOT CMAKE_CROSSCOMPILING_EMULATOR)
+    set(CMAKE_CROSSCOMPILING_EMULATOR "${CMAKE_COMMAND}" -E env
+        "REMORA_WINDOWS_SDK=${REMORA_WINDOWS_SDK}" "${CMAKE_SOURCE_DIR}/tools/windows-wine.sh")
+endif()
+# Registers suite <name>, built as test_<name>. Every suite finds the checkout's fixtures and
+# vendor files through sourcePath() (tests/TestPlatform.h): from this root, or from
+# REMORA_TEST_SOURCE_DIR where it runs on another machine. On Windows the log also goes to a file
+# in test-results/, because QtTest prints nothing to a Wine console.
+function(remora_suite_test name)
+    target_compile_definitions(test_${name} PRIVATE REMORA_TEST_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
+    if(WIN32)
+        add_test(NAME ${name} COMMAND test_${name}
+            -o "${CMAKE_BINARY_DIR}/test-results/${name}.txt,txt" -o "-,txt")
+    else()
+        add_test(NAME ${name} COMMAND test_${name})
+    endif()
+endfunction()
+if(WIN32)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test-results")
+endif()
 add_executable(test_play_engine tests/test_play_engine.cpp)
 target_link_libraries(test_play_engine PRIVATE remora_engine Qt6::Test)
-add_test(NAME play_engine COMMAND test_play_engine)
+remora_suite_test(play_engine)
 add_executable(test_addons tests/test_addons.cpp)
 target_link_libraries(test_addons PRIVATE remora_engine Qt6::Test)
-target_compile_definitions(test_addons PRIVATE REMORA_SOURCE_VENDOR_DIR="${CMAKE_SOURCE_DIR}/vendor")
-add_test(NAME addons COMMAND test_addons)
+remora_suite_test(addons)
 add_executable(test_builders tests/test_builders.cpp)
 target_link_libraries(test_builders PRIVATE remora_core Qt6::Test)
-target_compile_definitions(test_builders PRIVATE REMORA_VENDOR_DIR="${REMORA_VENDOR_PATH}" REMORA_SOURCE_VENDOR_DIR="${CMAKE_SOURCE_DIR}/vendor")
-add_test(NAME builders COMMAND test_builders)
+remora_suite_test(builders)
 
 add_executable(test_gating tests/test_gating.cpp)
 target_link_libraries(test_gating PRIVATE remora_core Qt6::Test)
-add_test(NAME gating COMMAND test_gating)
+remora_suite_test(gating)
 
 add_executable(test_parsers tests/test_parsers.cpp)
 target_link_libraries(test_parsers PRIVATE remora_core Qt6::Test)
-target_compile_definitions(test_parsers PRIVATE FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")
-add_test(NAME parsers COMMAND test_parsers)
+remora_suite_test(parsers)
 
 add_executable(test_mirrorproto tests/test_mirrorproto.cpp)
 target_link_libraries(test_mirrorproto PRIVATE remora_core Qt6::Test)
-add_test(NAME mirrorproto COMMAND test_mirrorproto)
+remora_suite_test(mirrorproto)
 
 add_executable(test_prereqs tests/test_prereqs.cpp)
 target_link_libraries(test_prereqs PRIVATE remora_core Qt6::Test)
 # The image-fetch cache regression is the helper's own Python; this suite runs it. REMORA_PYTHON is
-# empty when no interpreter was found, and those cases skip.
-target_compile_definitions(test_prereqs PRIVATE REMORA_PYTHON="${REMORA_TEST_PYTHON}" REMORA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-add_test(NAME prereqs COMMAND test_prereqs)
+# empty when no interpreter was found, and those cases skip, as they do on Windows.
+target_compile_definitions(test_prereqs PRIVATE REMORA_PYTHON="${REMORA_TEST_PYTHON}")
+remora_suite_test(prereqs)
 
 add_executable(test_engine tests/test_engine.cpp)
 target_link_libraries(test_engine PRIVATE remora_engine remora_store remora_core Qt6::Test)
 # Same fixtures as test_parsers: the phantom-keyboard identity tests feed the engine a REAL
 # /proc/bus/input/devices dump rather than a hand-made one, so a parser change that stops
 # recognising the host's own keyboard fails here too.
-target_compile_definitions(test_engine PRIVATE FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")
-add_test(NAME engine COMMAND test_engine)
+remora_suite_test(engine)
 
 add_executable(test_reddit_session tests/test_reddit_session.cpp)
 target_link_libraries(test_reddit_session PRIVATE remora_core Qt6::Test)
-add_test(NAME reddit_session COMMAND test_reddit_session)
+remora_suite_test(reddit_session)
 
 add_executable(test_store tests/test_store.cpp)
 target_link_libraries(test_store PRIVATE remora_store remora_core Qt6::Test)
 target_compile_definitions(test_store PRIVATE REMORA_TEST_HOME="${REMORA_TEST_HOME}")
-add_test(NAME store COMMAND test_store)
+remora_suite_test(store)
 
 # --- fuzz targets (off by default; Clang only, in a build directory of their own; bd remora-fdcv) ---
 # The parser under test is compiled again, instrumented, into a library of its own: linking the
@@ -481,6 +542,9 @@ set(CPACK_DEBIAN_PACKAGE_SECTION utils)
 set(CPACK_DEBIAN_PACKAGE_PRIORITY optional)
 set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${CPACK_PACKAGE_HOMEPAGE_URL}")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+# The one runtime dependency no ELF names: Qt loads its SQLite driver as a plugin, and the Reddit
+# sign-in edits account databases through it (bd remora-7oih.3). SHLIBDEPS appends to this.
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6sql6-sqlite")
 set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "docker.io | docker-ce, adb")
 set(CPACK_DEBIAN_PACKAGE_SUGGESTS "openssh-client, python3, unzip, pkexec")
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)

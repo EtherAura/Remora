@@ -26,7 +26,7 @@ struct SessionOptions {
     QString serial;      // adb target
     QString videoCodec;  // empty = h264
     QString videoEncoder;         // pin a specific device encoder (the h265 hwc2 case)
-    QString hwDecode;             // Decoder hw mode: off|auto|cuda|nvdec|vaapi|/dev/dri/…
+    QString hwDecode;             // Decoder hw mode: off|auto|cuda|nvdec|vaapi|d3d11va|/dev/dri/…
     // Opt-in audio (bd remora-28ix.2.2): the second tunnel socket, opus by default, played via
     // QAudioSink. Off by default until it has proven itself as the daily driver.
     bool audio = false;
@@ -114,6 +114,11 @@ signals:
     void deviceClipboard(const QString &text);
     void failed(const QString &why);
     void finished();
+    // The agent's control connection closed under a live session, and the client is still here:
+    // in compose mode the video comes from the host encoder's socket, so nothing else ends the
+    // process — it lives on as a husk (bd remora-8d7). Reported into the mirror registry, which
+    // is how the husk reaper sees it where there is no `ss` to ask (bd remora-7oih.1).
+    void controlLost();
 
 private:
     void onVideoData();

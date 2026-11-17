@@ -1,4 +1,5 @@
 #pragma once
+#include <QtCore/qsystemdetection.h>
 
 // The one place the installed desktop-entry id is written down.
 //
@@ -16,6 +17,13 @@ namespace remora {
 inline constexpr char kDesktopId[] = "io.github.EtherAura.Remora";
 // Where the installer puts the scalable icon, for the case where no icon theme is loaded (a bare
 // session, or a mirror launched before the theme is up) and QIcon::fromTheme comes back empty.
+// Windows has no icon theme and no /usr/share, so the binary carries the icon as a Qt resource
+// there (CMakeLists.txt); the Linux path was read as C:/usr/share/… and failed on every start
+// (bd remora-7oih.2).
+#ifdef Q_OS_WIN
+inline constexpr char kIconPathTemplate[] = ":/remora/%1.svg";
+#else
 inline constexpr char kIconPathTemplate[] = "/usr/share/icons/hicolor/scalable/apps/%1.svg";
+#endif
 
 }  // namespace remora

@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QHostAddress>
@@ -100,9 +101,18 @@ void MirrorSession::warmDecoder() { decoder_.warmHardware(opts_.hwDecode); }
 // session's forward look identical from the outside — ownership has to be recorded. A QLockFile
 // per forwarded port does it with kernel truth: the lock dies with the process (SIGKILL
 // included), and QLockFile's own PID check reaps a crashed owner's file (bd remora-6f92).
+//
+// On Windows Qt's runtime location is the user's profile root itself, so the locks would litter
+// C:\Users\<name>; they sit beside the mirror registry's entries instead (engine/MirrorRegistry).
 static QString tunnelLockPath(quint16 port) {
+#ifdef Q_OS_WIN
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
+                        QStringLiteral("/remora/mirrors");
+    QDir().mkpath(dir);
+#else
     QString dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
     if (dir.isEmpty()) dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+#endif
     return dir + QStringLiteral("/remora-mirror-tunnel-%1.lock").arg(port);
 }
 
@@ -331,6 +341,9 @@ void MirrorSession::agentSessionOpen(QTcpSocket *sock, quint32 id, const QByteAr
     control_ = sock;
     control_->setSocketOption(QAbstractSocket::LowDelayOption, 1);
     connect(control_, &QTcpSocket::readyRead, this, &MirrorSession::onControlData);
+    connect(control_, &QTcpSocket::disconnected, this, [this] {
+        if (!stopping_) emit controlLost();
+    });
     if (!leftover.isEmpty()) deviceMsgs_.feed(leftover);
     onControlData();
 
