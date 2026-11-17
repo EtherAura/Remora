@@ -266,6 +266,31 @@ private slots:
                  (QList<E>{E::Started, E::Format, E::Error}));              // FRAME with no data
     }
 
+    void streamShortBodies() {
+        // A body shorter than its known fields is a framing error, never read past and never
+        // taken for a status: an END with no reason byte is an Error, not Unavailable or Failed.
+        StreamDemuxer start(StreamDemuxer::Kind::Video);
+        start.feed(hex("00000001" "01"));
+        QCOMPARE(drain(start).events, (QList<E>{E::Error}));
+        QVERIFY(start.errorString().contains(QStringLiteral("START without a codec")));
+        QCOMPARE(start.next(), E::Error);  // latched
+
+        StreamDemuxer format(StreamDemuxer::Kind::Video);
+        format.feed(hex("00000002" "01" "01"                       // START h264
+                        "00000009" "02" "0000001000000010"));      // FORMAT, flags byte missing
+        QCOMPARE(drain(format).events, (QList<E>{E::Started, E::Error}));
+        QCOMPARE(format.codec(), kCodecH264);
+        QVERIFY(format.errorString().contains(QStringLiteral("FORMAT body of 8 bytes")));
+        QCOMPARE(format.next(), E::Error);
+
+        StreamDemuxer end(StreamDemuxer::Kind::Video);
+        end.feed(hex("00000001" "05"));
+        QCOMPARE(drain(end).events, (QList<E>{E::Error}));
+        QVERIFY(end.errorString().contains(QStringLiteral("END without a reason")));
+        QVERIFY(end.detail().isEmpty());
+        QCOMPARE(end.next(), E::Error);
+    }
+
     void configMerging() {
         PacketMerger m;
         MediaPacket config{std::nullopt, true, false, hex("0102")};
