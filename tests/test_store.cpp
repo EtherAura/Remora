@@ -172,6 +172,24 @@ private slots:
         QVERIFY(!s.contains(QStringLiteral("shared_inputs")));
     }
 
+    // A value written before the newline join is space-joined, and its name boundaries cannot be
+    // recovered from the string. It must load as one entry for the UI to reconcile: re-splitting on
+    // spaces would bring back the bogus per-word rows the newline join was introduced to remove.
+    void legacySpaceJoinedSharedInputsLoadAsOneEntry() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        const QString legacy =
+            QStringLiteral("Keychron K8 Pro Keyboard Logitech USB Receiver Mouse");
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.beginGroup(QStringLiteral("Instance-x"));
+            s.setValue("shared_inputs", legacy);
+            s.endGroup();
+            s.sync();
+        }
+        QCOMPARE(loadInstance(path, QStringLiteral("x")).input.sharedInputs, QStringList{legacy});
+    }
+
     void saveInstanceStillDeletesKnownUnsetKeys() {
         // "Unset optional deletes the key" is load-bearing — an fps the user cleared must fall
         // back to the resolver default, not linger — and must keep working without the group
