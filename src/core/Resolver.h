@@ -21,10 +21,10 @@ namespace remora {
 // the two can never disagree about what the host can do.
 bool driverHasVaEncode(const QString &drmDriver);
 
-// desktop_menu's default. The menu is XDG .desktop files, which only a Linux desktop reads, so it
-// is on there and off on Windows, where refreshing it would fail after every connect
+// desktop_menu's default: on, on Linux (a launcher folder of .desktop files) and on Windows (a
+// Start-menu folder of shortcuts) alike. It was off on Windows until the Start-menu folder existed
 // (bd remora-7oih.2). The GUI's checkboxes read the same constant as the resolver.
-inline constexpr bool kDesktopMenuDefault = kLocalOs != LocalOs::Windows;
+inline constexpr bool kDesktopMenuDefault = true;
 
 // Substitute the proven per-backend default for each unset field. gpuNode is only ever a live
 // probed node, never a bake — see resolveHostGpu().

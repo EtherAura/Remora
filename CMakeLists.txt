@@ -69,6 +69,7 @@ add_library(remora_core STATIC
     src/core/RedditSession.cpp
     src/core/SourcePatches.cpp
     src/core/SplashFormats.cpp
+    src/core/StartMenu.cpp
 )
 target_include_directories(remora_core PUBLIC src)
 target_link_libraries(remora_core PUBLIC Qt6::Core)
@@ -99,6 +100,10 @@ target_include_directories(remora_engine PUBLIC src)
 # with Qt. Both replace a local curl and sqlite3, which a Windows client does not have
 # (bd remora-7oih.3).
 target_link_libraries(remora_engine PUBLIC remora_core Qt6::Core Qt6::Network Qt6::Sql)
+# Start-menu shortcuts are written through the shell's COM objects (Spawner::writeShortcut).
+if(WIN32)
+    target_link_libraries(remora_engine PUBLIC ole32 uuid)
+endif()
 # The drift audit (bd remora-y9y9) needs both trees' locations and which one this binary reads:
 # REMORA_VENDOR_DIR is what it stages from, the other two are the counterpart candidates it
 # byte-compares against. The installed path is a candidate, not the truth — remora-install
@@ -163,10 +168,18 @@ add_executable(remora src/main.cpp)
 target_link_libraries(remora PRIVATE remora_gui remora_mirror remora_engine remora_store remora_core Qt6::Widgets)
 target_compile_definitions(remora PRIVATE REMORA_VERSION_STRING="${REMORA_VERSION}")
 # The window icon. Linux finds it in the icon theme the install puts it in, or at its installed
-# path; Windows has neither, so the binary carries it as :/remora/<id>.svg (core/Branding.h).
+# path; Windows has neither, so the binary carries it as :/remora/<id>.ico (core/Branding.h): the
+# same .ico the executables carry for Explorer, through packaging/windows/remora.rc.in, which a
+# light title bar and a dark taskbar can both show (tools/windows-icon.sh).
 if(WIN32)
-    qt_add_resources(remora remora_branding PREFIX "/remora" BASE packaging
-        FILES packaging/io.github.EtherAura.Remora.svg)
+    string(REPLACE "." "," REMORA_VERSION_COMMAS "${REMORA_VERSION}")
+    set(REMORA_ICO "${CMAKE_SOURCE_DIR}/packaging/windows/io.github.EtherAura.Remora.ico")
+    foreach(REMORA_EXE remora remora-gui)
+        configure_file(packaging/windows/remora.rc.in "${CMAKE_BINARY_DIR}/${REMORA_EXE}.rc" @ONLY)
+    endforeach()
+    target_sources(remora PRIVATE "${CMAKE_BINARY_DIR}/remora.rc")
+    qt_add_resources(remora remora_branding PREFIX "/remora" BASE packaging/windows
+        FILES packaging/windows/io.github.EtherAura.Remora.ico)
     # The same program for Explorer and the Start menu (bd remora-7oih.6). remora.exe is a console
     # program, which is what a terminal wants, and started from Explorer it opens a console
     # window behind the workspace. remora-gui.exe is a Windows-subsystem build of the same
@@ -177,8 +190,9 @@ if(WIN32)
         remora_core Qt6::Widgets)
     target_compile_definitions(remora-gui PRIVATE REMORA_VERSION_STRING="${REMORA_VERSION}"
         REMORA_GUI_BY_DEFAULT=1)
-    qt_add_resources(remora-gui remora_gui_branding PREFIX "/remora" BASE packaging
-        FILES packaging/io.github.EtherAura.Remora.svg)
+    target_sources(remora-gui PRIVATE "${CMAKE_BINARY_DIR}/remora-gui.rc")
+    qt_add_resources(remora-gui remora_gui_branding PREFIX "/remora" BASE packaging/windows
+        FILES packaging/windows/io.github.EtherAura.Remora.ico)
 endif()
 
 # --- vendored native helpers (vendor/native) ---

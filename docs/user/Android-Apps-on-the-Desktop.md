@@ -7,8 +7,8 @@ onto it and between instances.
 ## The application-menu folder
 
 After each successful connect, Remora refreshes a launcher folder named after the profile in your
-desktop's application menu. It holds one entry per installed Android app, under the app's real
-icon, plus three entries for the device itself:
+desktop's application menu, or in the Start menu on Windows. It holds one entry per installed
+Android app, under the app's real icon, plus three entries for the device itself:
 
 | entry | what it opens |
 |---|---|
@@ -19,14 +19,16 @@ icon, plus three entries for the device itself:
 ```sh
 remora apps <profile>            # refresh the folder now (the device must be running)
 remora apps <profile> --remove   # remove the folder (purely local)
+remora apps --remove-all         # remove every profile's folder, deleted profiles' included
 ```
 
 `desktop_menu=false` turns the automatic refresh off. Existing entries then stay as they are until
 you refresh or remove them yourself.
 
-The folder is a set of freedesktop `.desktop` files, which only a Linux desktop reads. On Windows
-`desktop_menu` defaults to off, `remora apps` reports the step as skipped, and the Apps page's
-list stays empty. There is no Start menu equivalent yet: launch an app with `remora app`.
+On Linux the folder is a set of freedesktop `.desktop` files. On Windows it is a folder of
+shortcuts in your Start menu, and the icons they show are kept in `%LOCALAPPDATA%\remora\menu`.
+Remora changes only the shortcuts it wrote itself, so anything else in a Start-menu folder that
+shares a profile's name is left alone. Uninstalling Remora removes the shortcuts.
 
 ## One app, one window
 
@@ -37,7 +39,8 @@ remora app <profile> <package> --title "My App"
 
 This launches one Android app in a window of its own, on its own Android display, and brings the
 device up first if it is not running. It is what each generated menu entry runs. The window is
-paired with its menu entry, so your desktop shows the app's own name and icon.
+paired with its menu entry, so your desktop's taskbar shows the app's own name and icon, on
+Windows as on Linux.
 
 Each app opens in one of two window modes, recorded per app in the profile's `app_modes`:
 

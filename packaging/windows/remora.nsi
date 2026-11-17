@@ -6,8 +6,9 @@
 ; What installing does: copies the folder to Program Files, adds a Start-menu shortcut to
 ; remora-gui.exe and an Apps & features entry, and — because Remora runs Android in a Linux guest
 ; that needs it — turns on the Windows Hypervisor Platform when it is off, which takes a restart.
-; Uninstalling removes the program and leaves %LOCALAPPDATA%\remora alone: the guest's data disk
-; holds every Android image and every profile's /data, and is the user's to delete.
+; Uninstalling stops the guest, removes the Start-menu folders Remora wrote for its profiles and
+; then the program, and leaves %LOCALAPPDATA%\remora alone: the guest's data disk holds every
+; Android image and every profile's /data, and is the user's to delete.
 
 Unicode true
 SetCompressor /SOLID lzma
@@ -19,6 +20,9 @@ OutFile "${OUTFILE}"
 InstallDir "$PROGRAMFILES64\Remora"
 InstallDirRegKey HKLM "Software\Remora" "InstallDir"
 BrandingText "Remora ${VERSION}"
+; tools/windows-icon.sh's, which the executables carry too. makensis runs from this directory.
+Icon "io.github.EtherAura.Remora.ico"
+UninstallIcon "io.github.EtherAura.Remora.ico"
 
 !include "LogicLib.nsh"
 !include "x64.nsh"
@@ -45,8 +49,19 @@ Function un.onInit
     SetShellVarContext all
 FunctionEnd
 
+; A running guest holds files under qemu\ open, which an update could not replace and an uninstall
+; could not delete. `guest stop` powers it down cleanly and returns at once when it is not running.
+!macro StopGuest
+    ${If} ${FileExists} "$INSTDIR\remora.exe"
+        DetailPrint "Stopping Remora's Linux guest, if it is running..."
+        nsExec::ExecToLog '"$INSTDIR\remora.exe" guest stop'
+        Pop $0
+    ${EndIf}
+!macroend
+
 Section "Remora"
     SetOutPath "$INSTDIR"
+    !insertmacro StopGuest
     ; A clean copy: files a previous version shipped and this one does not must not linger,
     ; least of all a stale guest image or vendor script.
     RMDir /r "$INSTDIR\guest"
@@ -90,6 +105,11 @@ Section "Windows Hypervisor Platform"
 SectionEnd
 
 Section "Uninstall"
+    !insertmacro StopGuest
+    ; The profiles' Start-menu folders (`remora apps`) are the user's, under their own Start menu:
+    ; remora.exe runs as that user and removes what its records say it wrote.
+    nsExec::ExecToLog '"$INSTDIR\remora.exe" apps --remove-all'
+    Pop $0
     Delete "$SMPROGRAMS\Remora.lnk"
     RMDir /r "$INSTDIR"
     DeleteRegKey HKLM "${UNINST}"

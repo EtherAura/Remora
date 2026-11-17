@@ -14,10 +14,12 @@
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QTemporaryDir>
+#include <QtEndian>
 #include "core/Gating.h"
 #include "core/Guest.h"
 #include "core/ManagedHost.h"
 #include "core/SourcePatches.h"
+#include "core/StartMenu.h"
 
 using namespace remora;
 
@@ -4367,6 +4369,79 @@ private slots:
             QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/state/known_hosts")};
         QCOMPARE(managedSshOptions(h, false), ssh);
         QCOMPARE(managedSshOptions(h, true), scp);
+    }
+
+    // ── The Windows Start-menu folder (bd remora-7oih) ──
+    // The app list is remora-app-menu.sh's awk contract: a marker, the name (spaces and all), the
+    // package last. Anything else on the client's stdout is not an app.
+    void listAppsParsesTheMenuContract() {
+        const QVector<ListedApp> apps = parseListApps(QStringLiteral(
+            "[server] listing apps\n"
+            " * Google Play Store  com.android.vending\r\n"
+            " - Chrome   com.android.chrome\n"
+            " - NoPackage  nodots\n"
+            "   *  Files by Google  com.google.android.apps.nbu.files  \n"
+            "* lone.package.only\n"));
+        QCOMPARE(apps.size(), 3);
+        QCOMPARE(apps[0].name, QStringLiteral("Google Play Store"));
+        QCOMPARE(apps[0].pkg, QStringLiteral("com.android.vending"));
+        QCOMPARE(apps[1].name, QStringLiteral("Chrome"));
+        QCOMPARE(apps[2].name, QStringLiteral("Files by Google"));
+        QCOMPARE(apps[2].pkg, QStringLiteral("com.google.android.apps.nbu.files"));
+    }
+
+    // A shortcut's arguments are one command line, which the program's argv parser
+    // (CommandLineToArgvW, and Qt's on Windows) splits back up: these are its rules, golden.
+    void windowsArgumentsSurviveTheRoundTrip() {
+        QCOMPARE(windowsQuoteArg(QStringLiteral("com.a")), QStringLiteral("com.a"));
+        QCOMPARE(windowsQuoteArg(QStringLiteral("My Phone")), QStringLiteral("\"My Phone\""));
+        QCOMPARE(windowsQuoteArg(QString()), QStringLiteral("\"\""));
+        QCOMPARE(windowsQuoteArg(QStringLiteral("say \"hi\"")),
+                 QStringLiteral("\"say \\\"hi\\\"\""));
+        // Backslashes are literal, except before a quote, including the closing one.
+        QCOMPARE(windowsQuoteArg(QStringLiteral("C:\\dir\\x")), QStringLiteral("C:\\dir\\x"));
+        QCOMPARE(windowsQuoteArg(QStringLiteral("C:\\my dir\\")),
+                 QStringLiteral("\"C:\\my dir\\\\\""));
+        QCOMPARE(windowsQuoteArg(QStringLiteral("a\\\"b")), QStringLiteral("\"a\\\\\\\"b\""));
+        QCOMPARE(windowsArgs({QStringLiteral("app"), QStringLiteral("My Phone"),
+                              QStringLiteral("com.a"), QStringLiteral("--title"),
+                              QStringLiteral("App A")}),
+                 QStringLiteral("app \"My Phone\" com.a --title \"App A\""));
+    }
+
+    void windowsFileNamesAreOnesWindowsAccepts() {
+        QCOMPARE(windowsFileName(QStringLiteral("Android 16")), QStringLiteral("Android 16"));
+        QCOMPARE(windowsFileName(QStringLiteral("Phone: Pro?")), QStringLiteral("Phone_ Pro_"));
+        QCOMPARE(windowsFileName(QStringLiteral("a/b\\c|d*")), QStringLiteral("a_b_c_d_"));
+        QCOMPARE(windowsFileName(QStringLiteral("Done. ")), QStringLiteral("Done"));
+        QCOMPARE(windowsFileName(QStringLiteral("CON")), QStringLiteral("CON_"));
+        QCOMPARE(windowsFileName(QStringLiteral("nul.txt")), QStringLiteral("nul.txt_"));
+        QCOMPARE(windowsFileName(QStringLiteral("Console")), QStringLiteral("Console"));
+        QCOMPARE(windowsFileName(QString()), QStringLiteral("_"));
+        QCOMPARE(windowsFileName(QString(300, QLatin1Char('x'))).size(), 100);
+    }
+
+    // The agent renders 192-pixel PNGs; Windows reads a PNG inside an .ico as it is.
+    void icoWrapsThePngItWasGiven() {
+        const auto png = [](quint32 w, quint32 h) {
+            QByteArray b("\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR", 16);
+            for (quint32 v : {w, h})
+                for (int shift : {24, 16, 8, 0}) b += char((v >> shift) & 0xff);
+            return b + QByteArray("rest-of-the-png");
+        };
+        const QByteArray p = png(192, 192);
+        const QByteArray ico = icoFromPng(p);
+        QCOMPARE(ico.size(), 6 + 16 + p.size());
+        QCOMPARE(ico.left(6), QByteArray("\0\0\1\0\1\0", 6));  // an icon, one image
+        QCOMPARE(quint8(ico[6]), quint8(192));                   // width
+        QCOMPARE(quint8(ico[7]), quint8(192));                   // height
+        QCOMPARE(qFromLittleEndian<quint32>(ico.constData() + 14), quint32(p.size()));
+        QCOMPARE(qFromLittleEndian<quint32>(ico.constData() + 18), quint32(22));  // where it starts
+        QCOMPARE(ico.mid(22), p);
+        QCOMPARE(quint8(icoFromPng(png(256, 256))[6]), quint8(0));  // 0 means 256
+        QVERIFY(icoFromPng(png(300, 300)).isEmpty());
+        QVERIFY(icoFromPng(QByteArray("GIF89a not a png at all")).isEmpty());
+        QVERIFY(icoFromPng(QByteArray()).isEmpty());  // a failed render is an empty file
     }
 };
 

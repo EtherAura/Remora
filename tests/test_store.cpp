@@ -1,4 +1,5 @@
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QSettings>
 #include <QStandardPaths>
@@ -349,6 +350,21 @@ private slots:
         const RemoraConfig y = loadInstance(path, QStringLiteral("y"));
         QVERIFY(!y.gpu.mode.has_value());
         QCOMPARE(y.gpu.unrecognisedMode, std::optional<QString>(QStringLiteral("hots")));
+    }
+
+    // shortcut_mod is comma-separated alternatives, and a comma is QSettings' INI list separator:
+    // a hand-written unquoted value arrives as a QStringList, whose toString() is empty — the
+    // setting silently became the client default. The store must not drop what the user wrote.
+    void loadInstanceJoinsHandWrittenCommaShortcutMod() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write("[Instance-x]\nshortcut_mod=lctrl,lalt\n");
+        }
+        QCOMPARE(loadInstance(path, QStringLiteral("x")).input.shortcutMod,
+                 std::optional<QString>(QStringLiteral("lctrl,lalt")));
     }
 
     // bd remora-82c.5 — source_patches is a pin, so the loader maps a retired key onto the entry

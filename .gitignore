@@ -9,6 +9,8 @@ venv/
 # this tree silently left them out, failing every test that checks registered patches exist.
 /build*/
 dist/
+# tools/windows-stage.sh output: the staged Windows folder and its test suites
+/dist-*/
 
 # tooling caches
 .pytest_cache/

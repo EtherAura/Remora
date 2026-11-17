@@ -139,7 +139,7 @@ Malformed binding values are refused with an error, not quietly replaced.
 
 | key | default | meaning |
 |---|---|---|
-| `desktop_menu` | on (off on Windows) | refresh the profile's launcher folder after each connect. The folder is a Linux desktop's application menu, so a Windows client skips it |
+| `desktop_menu` | on | refresh the profile's launcher folder after each connect: in the desktop's application menu on Linux, in the Start menu on Windows |
 | `app_modes` | freeform | per app, `<pkg>=desktop` or `<pkg>=freeform` |
 | `auto_update_apps` / `auto_update_hours` | off / 24 | run the Play update sweep after a connect when this many hours have passed |
 | `arm_apps` | none | packages pinned to their arm64 build |

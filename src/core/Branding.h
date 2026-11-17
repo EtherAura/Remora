@@ -19,9 +19,10 @@ inline constexpr char kDesktopId[] = "io.github.EtherAura.Remora";
 // session, or a mirror launched before the theme is up) and QIcon::fromTheme comes back empty.
 // Windows has no icon theme and no /usr/share, so the binary carries the icon as a Qt resource
 // there (CMakeLists.txt); the Linux path was read as C:/usr/share/… and failed on every start
-// (bd remora-7oih.2).
+// (bd remora-7oih.2). It is the .ico the executables carry, which reads on a light title bar as
+// well as a dark one; the white SVG a dark Linux theme gets would vanish on Windows' default.
 #ifdef Q_OS_WIN
-inline constexpr char kIconPathTemplate[] = ":/remora/%1.svg";
+inline constexpr char kIconPathTemplate[] = ":/remora/%1.ico";
 #else
 inline constexpr char kIconPathTemplate[] = "/usr/share/icons/hicolor/scalable/apps/%1.svg";
 #endif

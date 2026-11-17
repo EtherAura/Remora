@@ -34,6 +34,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIcon>
+#include <QFontDatabase>
 #include <QIconEngine>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -144,6 +145,50 @@ private:
     QHash<quint64, QPixmap> cache_;
 };
 
+#ifdef Q_OS_WIN
+// Windows has no icon theme. Qt draws the freedesktop names it knows from the system's icon font,
+// and only those: 157 names, with neither an app grid nor a gear among them, so the Apps and
+// Settings rows had no icon at all. These few are drawn from the same font, by code point: Segoe
+// Fluent Icons on Windows 11, Segoe MDL2 Assets (the same code points) on Windows 10.
+class GlyphIconEngine : public QIconEngine {
+public:
+    explicit GlyphIconEngine(char16_t glyph) : glyph_(glyph) {}
+    void paint(QPainter *p, const QRect &r, QIcon::Mode, QIcon::State) override {
+        static const QString family =
+            QFontDatabase::hasFamily(QStringLiteral("Segoe Fluent Icons"))
+                ? QStringLiteral("Segoe Fluent Icons")
+                : QStringLiteral("Segoe MDL2 Assets");
+        QFont f(family);
+        f.setPixelSize(r.height());  // the glyphs are drawn to fill the em square, as Qt's are
+        p->save();
+        p->setFont(f);
+        p->setPen(Qt::black);  // AccentIconEngine recolours whatever is opaque
+        p->drawText(r, Qt::AlignCenter, QString(QChar(glyph_)));
+        p->restore();
+    }
+    QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override {
+        QPixmap px(size);
+        px.fill(Qt::transparent);
+        QPainter p(&px);
+        paint(&p, QRect(QPoint(), size), mode, state);
+        return px;
+    }
+    QIconEngine *clone() const override { return new GlyphIconEngine(glyph_); }
+
+private:
+    char16_t glyph_;
+};
+
+static QIcon windowsGlyphIcon(const char *name) {
+    static const QHash<QByteArray, char16_t> kGlyphs{
+        {"view-list-icons", 0xE71D},  // AllApps
+        {"configure", 0xE713},        // Setting
+    };
+    const auto it = kGlyphs.constFind(QByteArray(name));
+    return it == kGlyphs.constEnd() ? QIcon() : QIcon(new GlyphIconEngine(*it));
+}
+#endif
+
 // Themed icon with fallbacks (first theme match wins) — Breeze names only, no emoji.
 // Tinted + cached: themeIcon is called from per-second progress updates.
 QIcon themeIcon(std::initializer_list<const char *> names) {
@@ -160,6 +205,12 @@ QIcon themeIcon(std::initializer_list<const char *> names) {
             break;
         }
     }
+#ifdef Q_OS_WIN
+    for (const char *n : names) {
+        if (!found.isNull()) break;
+        if (const QIcon ic = windowsGlyphIcon(n); !ic.isNull()) found = QIcon(new AccentIconEngine(ic));
+    }
+#endif
     cache.insert(key, found);
     return found;
 }
@@ -1189,15 +1240,6 @@ void MainWindow::buildUi() {
         integrationsTree_->header()->setStretchLastSection(false);
         integrationsTree_->setMinimumHeight(160);
         rebuildIntegrationsList();
-        // The list IS the desktop menu folder's .desktop files, which only a Linux desktop has, so
-        // on Windows it stays empty. Say so instead of showing an empty table (bd remora-7oih.2).
-        if (kLocalOs == LocalOs::Windows)
-            v->addWidget(hintLabel(
-                linuxDesktopOnlyMessage(QStringLiteral("The app list (the desktop app menu)")),
-                QStringLiteral("This list is read from the launcher entries Remora writes for a "
-                               "Linux desktop menu. Windows has none, so it stays empty here; "
-                               "start an app with `remora app <profile> <package>`. A Start menu "
-                               "equivalent is not built yet.")));
         v->addWidget(integrationsTree_);
         // Flat, icon-led action bar: bulk window-mode ops on the left, app transfer on the right.
         auto *btns = new QWidget();
@@ -6844,12 +6886,6 @@ void MainWindow::rebuildProfilesList() {
         // profile on disk and mirrors into cfg_ only when the row is the active one.
         auto *menuCb = new QCheckBox();
         menuCb->setChecked(pc.integration.desktopMenu.value_or(kDesktopMenuDefault));
-        // An XDG menu folder, which a Windows desktop does not read (bd remora-7oih.2).
-        if (kLocalOs == LocalOs::Windows) {
-            menuCb->setEnabled(false);
-            menuCb->setToolTip(
-                linuxDesktopOnlyMessage(QStringLiteral("The desktop app menu")) + QLatin1Char('.'));
-        }
         connect(menuCb, &QCheckBox::toggled, this, [this, name](bool on) {
             RemoraConfig c = loadInstance(path_, name);
             // On is the default → store only the opt-out.

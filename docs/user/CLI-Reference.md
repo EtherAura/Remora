@@ -47,7 +47,8 @@ the command line is also the way to drive Remora over ssh.
 | command | what it does |
 |---|---|
 | `remora app <profile> <pkg> [--title <name>]` | Launch one Android app in its own window, bringing the device up first if needed |
-| `remora apps [<profile>] [--remove]` | Refresh the profile's application-menu folder (the device must be running), or remove it. On Windows, which has no such menu, both report the step as skipped |
+| `remora apps [<profile>] [--remove]` | Refresh the profile's application-menu folder (the Start menu on Windows; the device must be running), or remove it |
+| `remora apps --remove-all` | Remove every profile's menu folder, including those of profiles that no longer exist |
 | `remora desktop [<profile>]` | Open a separate desktop-mode display, with no specific app |
 | `remora pip [<profile>]` | Toggle a small always-on-top second mirror. The device must be up |
 | `remora record [<profile>] [<out.mp4>]` | Relaunch the mirror with recording on. Close the mirror window to finish the file |

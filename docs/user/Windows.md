@@ -46,9 +46,9 @@ If it is missing, the first connect stops with a message saying so, before anyth
 
 Run `remora-setup.exe`. It installs Remora under Program Files, adds **Remora** to the Start menu,
 and turns on the Windows Hypervisor Platform if it is off, in which case it asks you to restart
-Windows. Uninstalling, from **Settings → Apps**, removes the program and keeps
-`%LOCALAPPDATA%\remora`: the guest's data disk there holds your Android images and data, and is
-yours to delete.
+Windows. Uninstalling, from **Settings → Apps**, stops the guest, removes the program and the
+profiles' Start-menu folders, and keeps `%LOCALAPPDATA%\remora`: the guest's data disk there holds
+your Android images and data, and is yours to delete.
 
 ## The two programs
 
@@ -87,7 +87,10 @@ Set these in `[Defaults]`: there is one guest, shared by every profile.
 - **Rendering and video are software.** The guest has no GPU, so Android renders with
   SwiftShader and encodes the mirror's video on the CPU. Expect it to be slower than on a Linux
   PC with a GPU. [GPU Acceleration](GPU-Acceleration.md) does not apply.
-- **Linux-desktop integration is not available**: the app-menu folder, `remora service`,
-  auto-sleep and the KWin window placement.
+- **The app-menu folder is in the Start menu.** Each profile gets a Start-menu folder of its
+  apps, as it gets an application-menu folder on Linux
+  ([Android Apps on the Desktop](Android-Apps-on-the-Desktop.md)).
+- **Linux-desktop integration is not available**: `remora service`, auto-sleep and the KWin
+  window placement.
 - **Building images from source** needs a Linux build host (`source_host`). Fetching the
   ready-made image, `remora play-install` and add-on layers work, and run inside the guest.

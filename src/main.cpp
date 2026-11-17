@@ -1299,12 +1299,14 @@ static int cmdApp(const QStringList &a) {
 
 // remora apps [<profile>] [--remove]  — refresh (or remove) the profile's desktop-menu folder.
 // Refresh needs the device running (Connect / `remora up` first); remove is purely local.
+// remora apps --remove-all — every profile's folder, deleted profiles' included (the uninstaller).
 static int cmdApps(const QStringList &a) {
+    RealSpawner sp;
+    ConsoleSink sink;
+    if (a.contains(QStringLiteral("--remove-all"))) return appMenuRemoveAll(sp, sink) ? 0 : 1;
     const QStringList pos = positional(a);
     const QString path = defaultRemorarcPath();
     const QString inst = pos.isEmpty() ? activeInstance(path) : requireInstance(pos[0]);
-    RealSpawner sp;
-    ConsoleSink sink;
     if (a.contains(QStringLiteral("--remove"))) return appMenuRemove(sp, inst, sink) ? 0 : 1;
     const RemoraConfig cfg = loadInstance(path, inst);
     return appMenuSync(sp, cfg, inferBackend(cfg), inst, sink) ? 0 : 1;
@@ -2602,7 +2604,8 @@ static void printUsage(QTextStream &out) {
         << "  reconnect [--backend …]   attach to a running instance\n"
         << "  guest     [status|start|stop|reset-system]  Remora's own Linux guest (Windows)\n"
         << "  app       <profile> <pkg> launch one Android app in its own window\n"
-        << "  apps      [<profile>] [--remove]  refresh/remove the desktop app-menu folder\n"
+        << "  apps      [<profile>] [--remove]  refresh/remove the app-menu (Start-menu) folder\n"
+        << "  apps      --remove-all    remove every profile's menu folder\n"
         << "  desktop   [<profile>]     open a separate desktop-mode display (no specific app)\n"
         << "  pip       [<profile>]     toggle a small always-on-top second mirror (device up)\n"
         << "  shell     [<profile>] [cmd…]   adb shell on the device (interactive without cmd)\n"

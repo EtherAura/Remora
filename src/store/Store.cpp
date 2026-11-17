@@ -31,6 +31,13 @@ static QStringList splitNames(const QString &s) {
     return s.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
 }
 
+// shortcut_mod and key_bind carry commas, QSettings' own INI list separator — a hand-written
+// unquoted key_bind=F1:b,F2:h arrives as a QStringList, whose toString() is empty, so join it back.
+static QString commaJoined(const QVariant &v) {
+    return v.userType() == QMetaType::QStringList ? v.toStringList().join(QLatin1Char(','))
+                                                  : v.toString();
+}
+
 QStringList listInstances(const QString &path) {
     QSettings s(path, QSettings::IniFormat);
     QStringList out;
@@ -160,15 +167,8 @@ RemoraConfig loadInstance(const QString &path, const QString &name) {
         // it: nothing silently changes meaning, the setting simply reverts.
         // keyboard_mode / mouse_mode are RETIRED keys — sdk-style input is the only kind.
         if (has("mouse_bind")) c.input.mouseBind = s.value("mouse_bind").toString();
-        if (has("shortcut_mod")) c.input.shortcutMod = s.value("shortcut_mod").toString();
-        if (has("key_bind")) {
-            // The value carries commas, QSettings' own INI list separator — a hand-written
-            // unquoted key_bind=F1:b,F2:h arrives as a QStringList, so join it back.
-            const QVariant v = s.value("key_bind");
-            c.input.keyBind = v.userType() == QMetaType::QStringList
-                                  ? v.toStringList().join(QLatin1Char(','))
-                                  : v.toString();
-        }
+        if (has("shortcut_mod")) c.input.shortcutMod = commaJoined(s.value("shortcut_mod"));
+        if (has("key_bind")) c.input.keyBind = commaJoined(s.value("key_bind"));
         if (has("pip_width")) c.mirror.pipWidth = s.value("pip_width").toInt();
         if (has("pip_height")) c.mirror.pipHeight = s.value("pip_height").toInt();
         if (has("kbd_identity")) c.input.kbdIdentity = s.value("kbd_identity").toString();

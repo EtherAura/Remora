@@ -14,6 +14,7 @@
 #include "core/MirrorRegistry.h"  // MirrorEntry, kDesktopTitlePrefix
 #include "core/Parsers.h"
 #include "core/SourcePatches.h"  // VendorDriftRow — auditVendorTreeDrift's row type
+#include "core/StartMenu.h"      // Shortcut — writeShortcut's argument
 #include "core/Resolved.h"
 
 namespace remora {
@@ -86,6 +87,13 @@ public:
     // The last `lines` lines of a LOCAL file, as `tail -n` prints them; empty when unreadable.
     // Reading a file is impurity like waiting is, so it has a real default the same way.
     virtual QString readTail(const QString &path, int lines);
+    // Write a Start-menu shortcut, replacing any at its path; the error, or empty on success. The
+    // shell's own IShellLink writes it, so only RealSpawner on Windows can. INERT by default, as
+    // mirrors() is: a fake that forgot to override it must not write into a real Start menu.
+    virtual QString writeShortcut(const Shortcut &s) {
+        (void)s;
+        return QStringLiteral("this spawner writes no shortcuts");
+    }
 
     static QStringList sshArgv(const QString &host, const QString &remote, int connectTimeout = 5);
     // scp of operands (sources…, destination), each local or host:path. A host Remora manages
@@ -113,6 +121,7 @@ public:
     bool detachedAlive(const Detached &d) override;
     QVector<MirrorEntry> mirrors() override;
     QList<qint64> terminate(const QList<qint64> &pids, int graceMs, bool force = true) override;
+    QString writeShortcut(const Shortcut &s) override;
 };
 
 // ─────────── steps + chain runner ───────────
@@ -602,6 +611,12 @@ struct AppMenuEntry {
 };
 QString appMenuSlug(const QString &instance);
 QVector<AppMenuEntry> appMenuEntries(const QString &slug);  // one folder's app entries
+// The icon a Windows menu entry was given for this app window id (remora-<slug>-<pkg>, the
+// mirror's --app-id), for the window's own title bar; empty when there is none.
+QString appMenuIconForAppId(const QString &appId);
+// Where a Windows profile's Start-menu folder goes: the user's Start menu, or, under QStandardPaths'
+// test mode, a directory beside the rest of the test data.
+QString startMenuRoot();
 // Per-app window mode ("desktop" | "freeform" | "" = ask on first launch), kept in
 // cfg.integration.appModes as "<pkg>=<mode>".
 QString appModeFor(const RemoraConfig &cfg, const QString &pkg);
@@ -618,6 +633,7 @@ QStringList armPinsNeedingRepair(Spawner &sp, const RemoraConfig &cfg, Backend b
 bool appMenuSync(Spawner &sp, const RemoraConfig &cfg, Backend backend, const QString &instance,
                  LogSink &sink);
 bool appMenuRemove(Spawner &sp, const QString &instance, LogSink &sink);
+bool appMenuRemoveAll(Spawner &sp, LogSink &sink);  // every folder, deleted profiles' included
 
 class ConsoleSink : public LogSink {
 public:

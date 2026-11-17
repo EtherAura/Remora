@@ -9,12 +9,14 @@
 #ifdef Q_OS_WIN
 #include <QWinEventNotifier>
 #include <windows.h>
+#include <shobjidl.h>
 #else
 #include <unistd.h>
 #endif
 
 #include "core/Branding.h"
 #include "core/MirrorRegistry.h"
+#include "engine/Engine.h"  // appMenuIconForAppId
 #include "engine/MirrorRegistry.h"
 #include "CudaInterop.h"
 #include "MirrorSession.h"
@@ -243,6 +245,16 @@ int runMirrorMain(QApplication &app) {
     // The association drives the TASKBAR; the titlebar needs a real QIcon on top of it (App.cpp
     // sets the same pair for the workspace window, for the same reason).
     QIcon icon = QIcon::fromTheme(appId.isEmpty() ? QString::fromLatin1(kDesktopId) : appId);
+#ifdef Q_OS_WIN
+    // Windows pairs a window with a Start-menu entry by AppUserModelID, which the app's entry
+    // carries as this same id (engine/AppMenu.cpp): set before any window exists, it puts the
+    // app's name and icon on the taskbar. The title bar takes the icon that entry points at.
+    if (!appId.isEmpty()) {
+        ::SetCurrentProcessExplicitAppUserModelID(reinterpret_cast<PCWSTR>(appId.utf16()));
+        if (const QString ico = appMenuIconForAppId(appId); icon.isNull() && !ico.isEmpty())
+            icon = QIcon(ico);
+    }
+#endif
     if (icon.isNull() && appId.isEmpty())
         icon = QIcon(QString::fromLatin1(kIconPathTemplate).arg(QString::fromLatin1(kDesktopId)));
     if (!icon.isNull()) QApplication::setWindowIcon(icon);

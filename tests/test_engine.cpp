@@ -29,6 +29,12 @@
 #include "engine/MirrorRegistry.h"
 #include "store/Store.h"
 #include "engine/SourceBuild.h"
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <objbase.h>
+#include <propsys.h>
+#include <shlobj.h>
+#endif
 
 using namespace remora;
 
@@ -672,6 +678,53 @@ private:
             return v;
         }
         return l.isEmpty() ? def : l.first();
+    }
+};
+
+// Whether a folder holds this file. Not QFile::exists: on Windows Qt takes a .lnk for the shortcut
+// it is and asks about its target, and a placeholder shortcut has none, so every one of them read
+// as missing there and a check that one was deleted passed whatever happened.
+static bool holds(const QString &folder, const QString &name) {
+    return QDir(folder).entryList(QDir::Files | QDir::System | QDir::Hidden).contains(name);
+}
+
+// A Windows client with a device of two apps (bd remora-7oih). The icon render succeeds for com.a
+// and leaves an empty file for com.b, and the pull lands nested, as `adb pull` does into a
+// destination that exists. Shortcuts are recorded, and written as placeholder files so a refresh
+// can be seen to delete what it no longer lists.
+class StartMenuFake : public Spawner {
+public:
+    QString listApps = QStringLiteral(" * App A  com.a\n - App B  com.b\n");
+    QStringList calls;
+    QVector<Shortcut> links;
+    int waits = 0;
+    ProcResult run(const QStringList &argv, const QMap<QString, QString> &,
+                   const LineSink &) override {
+        calls << argv.join(QLatin1Char(' '));
+        if (argv.contains(QStringLiteral("--list-apps"))) return {0, listApps, {}};
+        if (argv.value(0) == QStringLiteral("adb") && argv.value(4).contains("IconDump"))
+            return {0, QStringLiteral("OK com.a\nOK com.b\n"), {}};
+        if (argv.value(0) == QStringLiteral("adb") && argv.value(3) == QStringLiteral("pull")) {
+            const QString dir = argv.value(5) + QStringLiteral("/remora-icons");
+            QDir().mkpath(dir);
+            QFile a(dir + QStringLiteral("/com.a.png"));
+            if (a.open(QIODevice::WriteOnly))
+                a.write(QByteArray("\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR\0\0\0\xc0\0\0\0\xc0png", 27));
+            QFile b(dir + QStringLiteral("/com.b.png"));
+            if (b.open(QIODevice::WriteOnly)) b.close();
+        }
+        return {0, {}, {}};
+    }
+    Detached spawnDetached(const QStringList &, const QMap<QString, QString> &) override {
+        return {};
+    }
+    bool detachedAlive(const Detached &) override { return false; }
+    void waitMs(int) override { ++waits; }
+    LocalOs localOs() const override { return LocalOs::Windows; }
+    QString writeShortcut(const Shortcut &s) override {
+        links << s;
+        QFile f(s.path);
+        return f.open(QIODevice::WriteOnly) ? QString() : f.errorString();
     }
 };
 
@@ -5332,9 +5385,9 @@ private slots:
         QVERIFY(!QFileInfo::exists(rc.buildDir + "/Dockerfile") || true);
     }
 
-    // Desktop app-menu integration: auto-refresh defaults on where there is an XDG menu (not on
-    // Windows), checkbox opt-out resolves through, and the profile→slug mapping matches slugify()
-    // in remora-app-menu.sh.
+    // Desktop app-menu integration: auto-refresh defaults on (an XDG menu on Linux, the Start menu
+    // on Windows), checkbox opt-out resolves through, and the profile→slug mapping matches
+    // slugify() in remora-app-menu.sh.
     void desktopMenuIntegration() {
         RemoraConfig cfg;
         QCOMPARE(resolve(cfg, Backend::Remote).desktopMenu, kDesktopMenuDefault);
@@ -5345,26 +5398,178 @@ private slots:
                  QStringLiteral("daily-driver-vm"));
     }
 
-    // bd remora-7oih.2 — the menu is XDG .desktop files written by a bash script. On a Windows
-    // client both halves were a FAILED step (bash is not there), so the post-connect refresh
-    // failed after every connect. Now they are a skip that says why, and nothing runs.
-    void windowsAppMenuIsASkipNotAFailure() {
-        FakeSpawner sp;
-        sp.os = LocalOs::Windows;
+    // bd remora-7oih — on Windows the menu folder is a Start-menu folder of shortcuts, written
+    // through Spawner::writeShortcut, with the agent's icon renders converted to .ico. It is the
+    // Linux folder entry for entry, and it touches only the files its manifest says it wrote.
+    void windowsStartMenuIsTheAppMenuFolder() {
+        const QString menuRoot = startMenuRoot();
+        const QString state = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
+                              QStringLiteral("/remora/menu");
+        // Test mode only: the paths this deletes must never be a real Start menu.
+        QVERIFY2(menuRoot.contains(QStringLiteral("qttest")) &&
+                     state.contains(QStringLiteral("qttest")),
+                 qPrintable(menuRoot + QLatin1Char(' ') + state));
+        const QString folder = menuRoot + QStringLiteral("/My Phone");
+        QDir(folder).removeRecursively();
+        QDir(state).removeRecursively();
+        // Somebody else's shortcut, in a folder that happens to have the profile's name.
+        QVERIFY(QDir().mkpath(folder));
+        QFile other(folder + QStringLiteral("/Other.lnk"));
+        QVERIFY(other.open(QIODevice::WriteOnly));
+        other.close();
+
+        StartMenuFake sp;
         RecordingSink sink;
-        QVERIFY(appMenuSync(sp, withGuest(), Backend::Remote, QStringLiteral("p"), sink));
-        QCOMPARE(sink.of(QStringLiteral("app-menu")), StepState::Skipped);
-        QVERIFY2(sink.details.join(QLatin1Char('\n')).contains(QStringLiteral("not available on Windows")),
-                 qPrintable(sink.details.join(QLatin1Char('\n'))));
+        QVERIFY(appMenuSync(sp, withGuest(), Backend::Remote, QStringLiteral("My Phone"), sink));
+        QCOMPARE(sink.of(QStringLiteral("app-menu")), StepState::Ok);
+        QCOMPARE(sp.links.size(), 5);
+        // The device's three entries, as the Linux folder has them…
+        QCOMPARE(QFileInfo(sp.links[0].path).fileName(), QStringLiteral("Android (mirror).lnk"));
+        QCOMPARE(sp.links[0].arguments, QStringLiteral("up \"My Phone\""));
+        QCOMPARE(sp.links[1].arguments, QStringLiteral("desktop \"My Phone\""));
+        QCOMPARE(sp.links[2].arguments, QStringLiteral("pip \"My Phone\""));
+        QVERIFY(sp.links[0].appId.isEmpty());
+        // …and one per app, paired with the app's window by its AppUserModelID.
+        const Shortcut &a = sp.links[3];
+        QCOMPARE(QDir::cleanPath(a.path), QDir::cleanPath(folder + QStringLiteral("/App A.lnk")));
+        QCOMPARE(a.arguments, QStringLiteral("app \"My Phone\" com.a --title \"App A\""));
+        QCOMPARE(a.appId, QStringLiteral("remora-my-phone-com.a"));
+        QCOMPARE(a.description, QStringLiteral("App A — My Phone (com.a)"));
+        QCOMPARE(a.iconPath, state + QStringLiteral("/my-phone/com.a.ico"));
+        {
+            // Closed again before the removal below: Windows does not delete an open file.
+            QFile ico(a.iconPath);
+            QVERIFY(ico.open(QIODevice::ReadOnly));
+            QVERIFY(ico.readAll().startsWith(QByteArray("\0\0\1\0\1\0", 6)));
+        }
+        QCOMPARE(appMenuIconForAppId(a.appId), a.iconPath);  // what the app's window shows
+        // The render failed for com.b (an empty file): no icon, so the entry has Remora's.
+        QVERIFY(sp.links[4].iconPath.isEmpty());
+        QVERIFY(appMenuIconForAppId(QStringLiteral("remora-my-phone-com.b")).isEmpty());
+        // The Apps page lists what the menu holds.
+        const QVector<AppMenuEntry> listed = appMenuEntries(QStringLiteral("my-phone"));
+        QCOMPARE(listed.size(), 2);
+        QCOMPARE(listed[0].pkg, QStringLiteral("com.a"));
+        QCOMPARE(listed[1].name, QStringLiteral("App B"));
+
+        // com.b uninstalled: its entry and icon go, everything else stays.
+        sp.listApps = QStringLiteral(" * App A  com.a\n");
+        QVERIFY(appMenuSync(sp, withGuest(), Backend::Remote, QStringLiteral("My Phone"), sink));
+        QVERIFY(!holds(folder, QStringLiteral("App B.lnk")));
+        QVERIFY(holds(folder, QStringLiteral("App A.lnk")));
+        QVERIFY(holds(folder, QStringLiteral("Android (PIP).lnk")));
+        QVERIFY(holds(folder, QStringLiteral("Other.lnk")));
+
+        // Removal takes Remora's shortcuts and icons and leaves the folder to its other owner.
         RecordingSink rm;
-        QVERIFY(appMenuRemove(sp, QStringLiteral("p"), rm));
-        QCOMPARE(rm.of(QStringLiteral("app-menu")), StepState::Skipped);
-        QVERIFY(sp.calls.isEmpty());  // no bash, no adb, nothing
-        // Linux still runs the script
+        QVERIFY(appMenuRemove(sp, QStringLiteral("My Phone"), rm));
+        QCOMPARE(rm.of(QStringLiteral("app-menu")), StepState::Ok);
+        QVERIFY(!holds(folder, QStringLiteral("App A.lnk")));
+        QVERIFY(!holds(folder, QStringLiteral("Android (mirror).lnk")));
+        QVERIFY(holds(folder, QStringLiteral("Other.lnk")));
+        QVERIFY(!QDir(state + QStringLiteral("/my-phone")).exists());
+        QVERIFY(appMenuEntries(QStringLiteral("my-phone")).isEmpty());
+        QDir(folder).removeRecursively();
+
+        // Linux still runs the script.
         FakeSpawner lin;
         RecordingSink lsink;
         appMenuRemove(lin, QStringLiteral("p"), lsink);
         QVERIFY(spawnsProgram(lin, "bash"));
+    }
+
+    // The real writer, through the shell's own IShellLink: what it wrote is read back the same
+    // way, the AppUserModelID included, since that is what pairs a window with its entry.
+    void windowsShortcutsAreWhatTheShellReadsBack() {
+#ifndef Q_OS_WIN
+        RealSpawner sp;
+        QVERIFY(!sp.writeShortcut(Shortcut{}).isEmpty());  // nowhere else to write one
+        QSKIP("writes a .lnk through the Windows shell");
+#else
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        Shortcut s;
+        s.path = dir.filePath(QStringLiteral("App A.lnk"));
+        s.target = QCoreApplication::applicationFilePath();
+        s.arguments = windowsArgs({QStringLiteral("app"), QStringLiteral("My Phone"),
+                                   QStringLiteral("com.a"), QStringLiteral("--title"),
+                                   QStringLiteral("App \"A\"")});
+        s.workingDir = QCoreApplication::applicationDirPath();
+        s.description = QStringLiteral("App A — My Phone (com.a)");
+        s.appId = QStringLiteral("remora-my-phone-com.a");
+        RealSpawner sp;
+        QCOMPARE(sp.writeShortcut(s), QString());
+        QVERIFY(QFileInfo(s.path).size() > 0);
+
+        QVERIFY(SUCCEEDED(::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)));
+        IShellLinkW *link = nullptr;
+        QVERIFY(SUCCEEDED(::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                             IID_IShellLinkW, reinterpret_cast<void **>(&link))));
+        IPersistFile *file = nullptr;
+        QVERIFY(SUCCEEDED(link->QueryInterface(IID_IPersistFile, reinterpret_cast<void **>(&file))));
+        QVERIFY(SUCCEEDED(file->Load(reinterpret_cast<LPCOLESTR>(
+                                         QDir::toNativeSeparators(s.path).utf16()),
+                                     STGM_READ)));
+        wchar_t buf[1024] = {};
+        QVERIFY(SUCCEEDED(link->GetArguments(buf, 1024)));
+        QCOMPARE(QString::fromWCharArray(buf), s.arguments);
+        QVERIFY(SUCCEEDED(link->GetPath(buf, 1024, nullptr, 0)));
+        QCOMPARE(QFileInfo(QString::fromWCharArray(buf)), QFileInfo(s.target));
+        IPropertyStore *store = nullptr;
+        QVERIFY(SUCCEEDED(link->QueryInterface(IID_IPropertyStore, reinterpret_cast<void **>(&store))));
+        static const PROPERTYKEY kAppUserModelId = {
+            {0x9F4C2855, 0x9F79, 0x4B39, {0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3}}, 5};
+        PROPVARIANT v;
+        PropVariantInit(&v);
+        QVERIFY(SUCCEEDED(store->GetValue(kAppUserModelId, &v)));
+        QCOMPARE(v.vt, VARTYPE(VT_LPWSTR));
+        QCOMPARE(QString::fromWCharArray(v.pwszVal), s.appId);
+        ::PropVariantClear(&v);
+        store->Release();
+        file->Release();
+        link->Release();
+        ::CoUninitialize();
+#endif
+    }
+
+    // remora-app-menu.sh's guards hold on Windows too: a device that reports a fraction of the
+    // menu is still booting, and the menu is kept rather than emptied (bd remora-5sd); without a
+    // device address the app entries are left alone and only the device's own are rewritten.
+    void windowsStartMenuKeepsWhatItCannotCheck() {
+        const QString menuRoot = startMenuRoot();
+        QVERIFY(menuRoot.contains(QStringLiteral("qttest")));
+        const QString folder = menuRoot + QStringLiteral("/Settle");
+        StartMenuFake sp;
+        RecordingSink sink;
+        QString six;
+        for (int i = 0; i < 6; ++i) six += QStringLiteral(" - App %1  com.app%1\n").arg(i);
+        sp.listApps = six;
+        QVERIFY(appMenuSync(sp, withGuest(), Backend::Remote, QStringLiteral("Settle"), sink));
+        QCOMPARE(appMenuEntries(QStringLiteral("settle")).size(), 6);
+
+        sp.listApps = QStringLiteral(" - App 0  com.app0\n");
+        RecordingSink settling;
+        QVERIFY(appMenuSync(sp, withGuest(), Backend::Remote, QStringLiteral("Settle"), settling));
+        QCOMPARE(settling.of(QStringLiteral("app-menu")), StepState::Skipped);
+        QCOMPARE(sp.waits, 8);
+        QVERIFY(holds(folder, QStringLiteral("App 5.lnk")));
+        QCOMPARE(appMenuEntries(QStringLiteral("settle")).size(), 6);
+
+        // macvlan with no address read: no target, so no app list to judge by.
+        sp.links.clear();
+        RecordingSink plain;
+        QVERIFY(appMenuSync(sp, withMacvlan(), Backend::Remote, QStringLiteral("Settle"), plain));
+        QCOMPARE(plain.of(QStringLiteral("app-menu")), StepState::Ok);
+        QCOMPARE(sp.links.size(), 3);  // the device's entries only
+        QCOMPARE(appMenuEntries(QStringLiteral("settle")).size(), 6);
+        QVERIFY(holds(folder, QStringLiteral("App 5.lnk")));
+
+        // What the uninstaller runs: every folder, whichever profile it was for.
+        RecordingSink all;
+        QVERIFY(appMenuRemoveAll(sp, all));
+        QVERIFY(!holds(folder, QStringLiteral("App 5.lnk")));
+        QVERIFY(!QDir(folder).exists());
+        QVERIFY(appMenuEntries(QStringLiteral("settle")).isEmpty());
     }
 
     // Per-app window modes ("<pkg>=desktop|freeform"): unset asks, set round-trips, re-set

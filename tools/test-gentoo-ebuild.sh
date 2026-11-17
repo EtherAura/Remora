@@ -105,7 +105,7 @@ gentoo_for() {
     fi
     case "$1" in
         gcc-libs|glibc)      echo "system" ;;
-        qt6-base)            echo "DEPEND,RDEPEND dev-qt/qtbase:6[dbus,gui,network,opengl,widgets]" ;;
+        qt6-base)            echo "DEPEND,RDEPEND dev-qt/qtbase:6[dbus,gui,network,opengl,sql,sqlite,widgets]" ;;
         qt6-multimedia)      echo "DEPEND,RDEPEND dev-qt/qtmultimedia:6" ;;
         qt6-webengine)       echo "DEPEND,RDEPEND dev-qt/qtwebengine:6[widgets]" ;;
         ffmpeg)              echo "DEPEND,RDEPEND media-video/ffmpeg:=" ;;

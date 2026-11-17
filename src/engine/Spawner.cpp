@@ -21,6 +21,9 @@
 
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include <objbase.h>
+#include <propsys.h>
+#include <shlobj.h>
 #endif
 
 namespace remora {
@@ -363,6 +366,76 @@ QVector<MirrorEntry> RealSpawner::mirrors() {
         if (!known) all << e;
     }
     return all;
+}
+
+#ifdef Q_OS_WIN
+// PKEY_AppUserModel_ID, spelled out: libuuid carries the interface ids but not the property keys.
+static const PROPERTYKEY kAppUserModelId = {
+    {0x9F4C2855, 0x9F79, 0x4B39, {0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3}}, 5};
+
+template <typename T>
+struct ComPtr {
+    T *p = nullptr;
+    ~ComPtr() {
+        if (p) p->Release();
+    }
+    void **out() { return reinterpret_cast<void **>(&p); }
+};
+
+static QString hresultError(const QString &what, HRESULT hr) {
+    return QStringLiteral("%1 (0x%2)").arg(what).arg(quint32(hr), 8, 16, QLatin1Char('0'));
+}
+#endif
+
+QString RealSpawner::writeShortcut(const Shortcut &s) {
+#ifdef Q_OS_WIN
+    // COM for this thread while the write lasts. One already set up here (Qt's GUI thread is an
+    // OLE apartment) is used as it is, and only a set-up made here is undone.
+    const HRESULT init = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    struct Uninit {
+        bool on;
+        ~Uninit() {
+            if (on) ::CoUninitialize();
+        }
+    } uninit{SUCCEEDED(init)};
+    const auto native = [](const QString &path) {
+        return QDir::toNativeSeparators(path).toStdWString();
+    };
+    ComPtr<IShellLinkW> link;
+    HRESULT hr = ::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                    IID_IShellLinkW, link.out());
+    if (FAILED(hr)) return hresultError(QStringLiteral("the shell has no shortcut object"), hr);
+    link.p->SetPath(native(s.target).c_str());
+    link.p->SetArguments(s.arguments.toStdWString().c_str());
+    if (!s.workingDir.isEmpty()) link.p->SetWorkingDirectory(native(s.workingDir).c_str());
+    if (!s.description.isEmpty()) link.p->SetDescription(s.description.toStdWString().c_str());
+    if (!s.iconPath.isEmpty()) link.p->SetIconLocation(native(s.iconPath).c_str(), 0);
+    if (!s.appId.isEmpty()) {
+        ComPtr<IPropertyStore> store;
+        hr = link.p->QueryInterface(IID_IPropertyStore, store.out());
+        if (SUCCEEDED(hr)) {
+            const std::wstring id = s.appId.toStdWString();
+            PROPVARIANT v;
+            PropVariantInit(&v);
+            v.vt = VT_LPWSTR;
+            v.pwszVal = static_cast<LPWSTR>(::CoTaskMemAlloc((id.size() + 1) * sizeof(wchar_t)));
+            if (!v.pwszVal) return QStringLiteral("out of memory");
+            std::copy(id.c_str(), id.c_str() + id.size() + 1, v.pwszVal);
+            hr = store.p->SetValue(kAppUserModelId, v);
+            if (SUCCEEDED(hr)) hr = store.p->Commit();
+            ::PropVariantClear(&v);
+        }
+        if (FAILED(hr)) return hresultError(QStringLiteral("could not set the entry's app id"), hr);
+    }
+    ComPtr<IPersistFile> file;
+    hr = link.p->QueryInterface(IID_IPersistFile, file.out());
+    if (SUCCEEDED(hr)) hr = file.p->Save(native(s.path).c_str(), TRUE);
+    if (FAILED(hr)) return hresultError(QStringLiteral("could not write %1").arg(s.path), hr);
+    return {};
+#else
+    (void)s;
+    return QStringLiteral("Start-menu shortcuts are a Windows feature");
+#endif
 }
 
 #ifdef Q_OS_WIN

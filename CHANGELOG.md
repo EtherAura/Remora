@@ -7,6 +7,43 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Added
+
+- **A Start-menu folder per profile on Windows.** Windows now gets in the Start menu the folder
+  Linux gets in the application menu: one entry per Android app under the app's own icon, plus
+  the mirror, desktop and PIP entries. It is refreshed after each connect and by `remora apps`.
+  `desktop_menu` is now on by default on Windows too. An app's window shows the app's name and
+  icon on the taskbar, and the Apps page lists the apps on Windows as well. Remora changes only
+  the shortcuts it wrote, so anything else in a Start-menu folder that shares a profile's name is
+  left alone.
+
+- **`remora apps --remove-all`** removes every profile's menu folder, including those of profiles
+  that no longer exist. The Windows uninstaller runs it.
+
+### Changed
+
+- **The Windows installer stops Remora's guest before it installs or uninstalls.** A running guest
+  held QEMU's files open, so an update could not replace them and an uninstall could not delete
+  them.
+
+### Fixed
+
+- **Remora for Windows has its icon.** `remora.exe`, `remora-gui.exe`, the installer, its
+  Start-menu entry and every window carry Remora's icon. Before this, Explorer and the taskbar
+  showed a blank program icon. The windows used the white icon made for a dark Linux theme, which
+  is invisible on Windows' light default. The Windows icon is the dark silhouette with a light
+  outline, so it shows on a light Start menu and on a dark taskbar. `tools/windows-icon.sh`
+  makes it from the SVG.
+
+- **The Apps and Settings pages have their sidebar icons on Windows.** Qt draws Windows icons from
+  the system icon font, which has no icon under any name those two pages asked for. They are now
+  drawn from the same font.
+
+- **A hand-written comma-separated `shortcut_mod` is kept.** A remorarc line such as
+  `shortcut_mod=lctrl,lalt`, written without quotes, used to be read as empty, so the mirror fell
+  back to its default shortcut modifiers. It now reaches the mirror as written, the way `key_bind`
+  already did.
+
 ## [2026.11.4] - 2026-11-17
 
 ### Added

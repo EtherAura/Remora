@@ -1,0 +1,30 @@
+// What Windows shows for remora.exe and remora-gui.exe (bd remora-7oih): the icon in Explorer, on
+// the taskbar and in the Start menu, and the name and version in Task Manager and Properties.
+// CMakeLists.txt fills in the version; the icon is tools/windows-icon.sh's.
+#include <winver.h>
+
+IDI_ICON1 ICON "@REMORA_ICO@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION @REMORA_VERSION_COMMAS@,0
+PRODUCTVERSION @REMORA_VERSION_COMMAS@,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "Remora"
+            VALUE "FileVersion", "@REMORA_VERSION@"
+            VALUE "ProductName", "Remora"
+            VALUE "ProductVersion", "@REMORA_VERSION@"
+            VALUE "InternalName", "@REMORA_EXE@"
+            VALUE "OriginalFilename", "@REMORA_EXE@.exe"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
