@@ -511,6 +511,13 @@ std::pair<QMap<QString, QString>, QStringList> buildMirrorArgv(const ResolvedCon
     // codec options the host path drops. PIP opts out for the same reason (buildPipMirrorArgv).
     const bool newDisplay = fullscreenDisplay && cfg.fullscreenSeparateDisplay;
     const bool hostEncoded = cfg.hostEncodeDrivesMirror && !newDisplay;
+    // The main mirror's HEVC choice belongs to its host encoder. App displays
+    // need a device encoder. Software AVC also avoids the Venus buffer import
+    // path when the profile selected host encoding for its main display.
+    const bool softwareAppEncode = newDisplay &&
+        (cfg.vaEncodeUnusable || (cfg.hostEncodeDrivesMirror && cfg.venus));
+    const QString videoCodec = softwareAppEncode
+                                   ? QStringLiteral("h264") : cfg.videoCodec;
     // argv[0] is the contract; the spawn sites substitute the running binary's absolute path so
     // a dev build launches itself, not whatever PATH resolves first.
     QStringList a{"remora",
@@ -537,8 +544,8 @@ std::pair<QMap<QString, QString>, QStringList> buildMirrorArgv(const ResolvedCon
     }
     // Opt-in: only emit --video-codec when non-default (h265/av1), so the default vector is stable.
     // NB: h265 needs an on-device HEVC encoder → deploy with the codec2 pipeline on (use_codec2).
-    else if (!cfg.videoCodec.isEmpty() && cfg.videoCodec != QLatin1String("h264")) {
-        a << QStringLiteral("--video-codec=%1").arg(cfg.videoCodec);
+    else if (!videoCodec.isEmpty() && videoCodec != QLatin1String("h264")) {
+        a << QStringLiteral("--video-codec=%1").arg(videoCodec);
         // Pin the VAAPI HW HEVC encoder on the -hwc2 image. Auto-select for h265 probes the
         // vendor encoder, its capability-based configure intermittently fails, and it silently
         // falls back to the software c2.android.avc.encoder. Pinning skips that and uses the HW
@@ -550,7 +557,7 @@ std::pair<QMap<QString, QString>, QStringList> buildMirrorArgv(const ResolvedCon
         // Registration is not function, so it was also run: the component was created live with no
         // errors ("Created component [c2.remora.vaapi.hevc.encoder]"). Images carry BOTH spellings
         // while the dual registration lasts, so this is reversible by editing one string.
-        if (cfg.videoCodec == QLatin1String("h265") && imageCarriesC2Va(cfg.capabilityTag()))
+        if (videoCodec == QLatin1String("h265") && imageCarriesC2Va(cfg.capabilityTag()))
             a << QStringLiteral("--video-encoder=c2.remora.vaapi.hevc.encoder");
     }
     // The -hwc2 image ranks the vendor VAAPI AVC encoder first for h264, but that vendor AVC
@@ -562,7 +569,7 @@ std::pair<QMap<QString, QString>, QStringList> buildMirrorArgv(const ResolvedCon
     // c2.android.avc.encoder is in every AOSP image, so the pin costs nothing where it is not
     // needed. Measured: unpinned, the overlay's mirror died five times on the VAAPI AVC encoder
     // in guest mode (bd remora-wzaa.3).
-    else if (imageCarriesC2Va(cfg.capabilityTag()) ||
+    else if (softwareAppEncode || imageCarriesC2Va(cfg.capabilityTag()) ||
              (cfg.vaEncodeUnusable && !findImageTag(cfg.capabilityTag())))
         a << QStringLiteral("--video-encoder=c2.android.avc.encoder");
     // Encoder frame cap: forwarded to the c2-va component (vendor tuning), which drops at its

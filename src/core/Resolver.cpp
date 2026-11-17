@@ -618,11 +618,12 @@ ResolvedConfig resolve(const RemoraConfig &c, Backend backend,
     }
     // The same two conditions, recorded whatever codec was asked for: h264 on such a host is just
     // as unable to use the VAAPI AVC encoder, and nothing above says so when h264 was the choice.
+    // Device encoding is still used by app windows and PIP when the main mirror
+    // uses the host encoder. Record the device capability independently of it.
     r.vaEncodeUnusable =
-        !r.hostEncode &&
-        (r.gpuMode == GpuMode::Guest ||
-         (hostGpuBackend && !g.vaDriver.has_value() && caps.has_value() &&
-          caps->hostRenderDriver.has_value() && !driverHasVaEncode(*caps->hostRenderDriver)));
+        r.gpuMode == GpuMode::Guest ||
+        (hostGpuBackend && !g.vaDriver.has_value() && caps.has_value() &&
+         caps->hostRenderDriver.has_value() && !driverHasVaEncode(*caps->hostRenderDriver));
 
     // GOOGLE PLAY, LAST (bd remora-6laf.8). Everything above decided what the image can do from
     // the registered tag; the overlay only adds Google's apps, so the swap to the image the

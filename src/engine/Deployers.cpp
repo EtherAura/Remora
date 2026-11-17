@@ -395,6 +395,14 @@ static QString rezygiskArmCmd() {
         ">/dev/null 2>&1 </dev/null &");
 }
 
+// An explicitly marked private image may let Magisk own the Zygisk lifecycle.
+// Its modules and boot settings must not be replaced by the ReZygisk installer.
+static bool bootManagedZygisk(Spawner &sp, const QString &container, const LineSink &log) {
+    return sp.run({"docker", "exec", container, "sh", "-c",
+                   "cat /system/etc/remora-spoof/zygisk-runtime 2>/dev/null || true"}, {}, log)
+               .out.trimmed() == QLatin1String("magisk");
+}
+
 // Install the spoof modules into /data if the image carries newer ones. Returns false when this
 // image has no spoof payload at all.
 static bool spoofModulesReady(Spawner &sp, const RunContext &ctx, const LineSink &log) {
@@ -557,6 +565,8 @@ static StepResult playSpoofArm(Spawner &sp, const RunContext &ctx, LogSink &sink
     bool armed = false;
     for (; waited < kBudgetMs; waited += kPollMs) {
         if (sp.run({"docker", "exec", c, "sh", "-c", ready}, {}, log).rc == 0) {
+            if (bootManagedZygisk(sp, c, log))
+                return StepResult::good("Magisk manages the image's Zygisk startup");
             armed = true;
             break;
         }
@@ -575,7 +585,8 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     auto log = mkLog(sink, "play-spoof");
     const QString c = ctx.rc.containerName;
     if (!ctx.rc.playSpoof) return StepResult::good("play_spoof off");
-    if (!spoofModulesReady(sp, ctx, log))
+    const bool magiskManaged = bootManagedZygisk(sp, c, log);
+    if (!magiskManaged && !spoofModulesReady(sp, ctx, log))
         return StepResult::good(
             "play_spoof is on but this image was not built with the play_spoof feature — rebuild "
             "with it, or turn the option off");
@@ -630,6 +641,19 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
             "Rebuild with a matched pair, or redeploy the last known-good image. Or set "
             "play_spoof=false to bring the device up without root.")
                                     .arg(why));
+    }
+
+    if (magiskManaged) {
+        const QString probe = QStringLiteral(
+            "export PATH=/debug_ramdisk:/sbin:$PATH; "
+            "p=$(pgrep -x zygiskd64 | head -1); [ -n \"$p\" ] || exit 1; "
+            "test \"/proc/$p/exe\" -ef \"$(command -v magisk)\" || exit 1; "
+            "magisk --sqlite \"SELECT value FROM settings WHERE key='zygisk'\" | grep -qx 'value=1'");
+        if (sp.run({"docker", "exec", c, "sh", "-c", probe}, {}, log).rc != 0)
+            return StepResult::fail(
+                "the image selects Magisk's built-in Zygisk, but its injector is not running; "
+                "check the image's module setup and restart the container");
+        return StepResult::good("using the image's boot-managed Magisk Zygisk and modules");
     }
 
     // Make the NEXT boot free. Costs one file write; saves a whole Android boot every cold deploy

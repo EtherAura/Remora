@@ -9,6 +9,11 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Added
 
+- **Explicit support for private images managed by Magisk's built-in Zygisk.** Reconnect
+  verifies their root and native companion instead of replacing their modules with ReZygisk.
+  An opt-in source patch documents the Android 17 container build validated with Shamiko 0.7.5.
+  Shamiko 1.2.5 remains unsupported on this container.
+
 - **Root on the official image without a source build.** `magisk_root` can now be layered onto an
   existing image, the official `remora24:x86_64-public` included, the way `gapps` and
   `widevine_l3` already could: `remora recipe --base <image>` prints the layer and `remora build
@@ -36,7 +41,7 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   outside the vendor tree.
 
 - **Play spoof and Shamiko as add-ons.** The Add-ons row also offers **Play spoof**, the stack that
-  makes Google Play see a certified Pixel inside Play services only, and **Shamiko**, which hides
+  presents Pixel device properties inside Play services, and **Shamiko**, which hides
   Magisk's changes from apps on the DenyList. Both are layered over the image like the other
   add-ons, so the official image gets them without a source build, and ticking Play spoof turns on
   the `play_spoof` setting too. Play spoof needs Root and Shamiko needs both; the page offers each
@@ -46,6 +51,41 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   stages the same layer for `remora build --base`.
 
 ### Fixed
+
+- **App windows check their own video path.** Sonar and other separate displays no longer wait
+  for a packet from the main mirror's host encoder or report a false `serve unconfirmed` warning.
+  An unrelated host-encoder failure also cannot reject the app window or restart Android during
+  its launch.
+
+- **Magisk startup builds the environment upstream expects.** BusyBox now has its applet
+  directory, the daemon receives the certificate that identifies its official manager, and
+  module mounting gets its scratch filesystem. This fixes boot errors and the official
+  manager being rejected for a signature mismatch.
+
+- **Rooted containers can install Magisk modules normally.** Startup now supplies the missing
+  installer helpers in Magisk's data directory. Existing manager-installed helpers are preserved.
+
+- **ARM downloads recover from an empty tablet-profile response.** When Play supplies no files for
+  an automatically chosen density profile, the installer tries its ARM phone profile before
+  changing the installed app. This fixes Sonar's empty download. Explicit profile choices are kept.
+
+- **Sonar's ARM build opens from Remora's app launcher.** Its Flutter GPU renderer could crash or
+  leave a black window on the host GPU. Remora restarts Sonar with its software-rendering launch flags;
+  other apps keep their renderer.
+
+- **App windows use a working encoder on NVIDIA.** A main mirror encoded on the host GPU could
+  leave app windows trying the device's unusable HEVC encoder. Those windows now use software AVC
+  when device VAAPI encoding is unavailable or a Venus profile uses host encoding, including
+  hybrid Intel/NVIDIA systems. The main mirror keeps its host encoder.
+
+- **CPU-rendered app surfaces display correctly with Venus.** CPU-write buffers now require
+  linear memory, so a scanout preference cannot give a software renderer tiled memory and corrupt
+  its pixels. GPU-only scanout buffers retain their preferred layout.
+
+- **Denylisted apps lose access to Magisk's mounted files.** The container now uses the mount name
+  ReZygisk's cleanup expects. The old generic mount name left Magisk and `su` visible in app
+  namespaces. Shamiko's unsupported status and the failed basic-integrity verdict remain separate
+  limitations.
 
 - **The mirror stays up with the Play spoof stack on.** On a device's first boot with the stack,
   the mirror failed to connect with `DeadSystemException`: the framework restart that brings the

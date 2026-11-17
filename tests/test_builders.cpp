@@ -209,6 +209,43 @@ private slots:
             QVERIFY2(!a.startsWith(QStringLiteral("--video-codec")), qPrintable(a));
     }
 
+    void appWindowUsesSoftwareAvcWhenHostMirrorUsesHevcWithoutVaapi() {
+        RemoraConfig cfg;
+        cfg.gpu.mode = GpuMode::Host;
+        cfg.gpu.venus = true;
+        cfg.mirror.hostEncode = true;
+        cfg.mirror.videoCodec = QStringLiteral("h265");
+        cfg.mirror.fullscreenSeparateDisplay = true;
+        cfg.mirror.fullscreenApp = QStringLiteral("software.sonar.sonar_mobile");
+        HostCapabilities caps;
+        caps.hostRenderNode = QStringLiteral("/dev/dri/renderD128");
+        caps.hostRenderDriver = QStringLiteral("nvidia");
+        caps.hostNvidiaRenderNode = caps.hostRenderNode;
+        for (const QString &tag : {QStringLiteral("remora24:x86_64-public"),
+                                   QStringLiteral("remora-local:private-agent")}) {
+            cfg.image.imageTag = tag;
+            const auto r = resolve(cfg, Backend::Bare, caps);
+            QVERIFY(r.hostEncodeDrivesMirror);
+            QVERIFY(r.vaEncodeUnusable);
+            const auto app = buildMirrorArgv(r, QStringLiteral("localhost:5555"), true).second;
+            QVERIFY(!app.contains(QStringLiteral("--video-codec=h265")));
+            QVERIFY(app.contains(QStringLiteral("--video-encoder=c2.android.avc.encoder")));
+            QVERIFY(app.filter(QStringLiteral("--external-video-socket=")).isEmpty());
+            const auto main = buildMirrorArgv(r, QStringLiteral("localhost:5555"), false).second;
+            QVERIFY(!main.filter(QStringLiteral("--external-video-socket=")).isEmpty());
+            QVERIFY(main.filter(QStringLiteral("--video-encoder=")).isEmpty());
+        }
+        // A hybrid Venus profile may name Intel VA explicitly, and app launches
+        // can resolve without a fresh host probe. Its app window still needs AVC.
+        cfg.gpu.vaDriver = QStringLiteral("iHD");
+        const auto hybrid = resolve(cfg, Backend::Bare);
+        QVERIFY(hybrid.hostEncodeDrivesMirror);
+        QVERIFY(!hybrid.vaEncodeUnusable);
+        const auto app = buildMirrorArgv(hybrid, QStringLiteral("localhost:5555"), true).second;
+        QVERIFY(!app.contains(QStringLiteral("--video-codec=h265")));
+        QVERIFY(app.contains(QStringLiteral("--video-encoder=c2.android.avc.encoder")));
+    }
+
     // The cap is an escape hatch for a GPU that cannot fit the full pipeline, so it must be
     // absent unless asked for — a silently downscaled mirror would be worse than a clear failure.
     void hostEncoderSizeCapIsOptOut() {

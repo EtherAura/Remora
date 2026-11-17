@@ -1641,6 +1641,10 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
     const LineSink log = [&](const QString &stream, const QString &text) {
         sink.line(QStringLiteral("connect"), stream, text);
     };
+    // App/desktop displays use their own Android encoder even on a host-encode profile.
+    // Only the main mirror can be judged by the host encoder's consumers and packet log.
+    const bool hostEncode = ctx.rc.hostEncode && !ctx.extraWindow();
+    const bool hostVideo = hostEncode && ctx.rc.hostEncodeDrivesMirror;
     // No server-jar preflight since the v1 purge (bd remora-28ix.5): the device half is the
     // agent the image bakes, so there is no host-side file whose absence could fail a session —
     // an image that predates the bake gets the client's own plain refusal in the tail.
@@ -1661,7 +1665,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
     // Non-fatal on failure, like the render server above: a mirror that cannot host-encode should
     // still connect and mirror the ordinary way rather than refuse to start.
     bool encoderReboundStarved = false;
-    if (ctx.rc.hostEncode) {
+    if (hostEncode) {
         const StepResult e = ensureHostEncoder(sp, ctx.rc, log, &encoderReboundStarved);
         log(e.ok ? QStringLiteral("stdout") : QStringLiteral("stderr"),
             e.ok ? e.detail : QStringLiteral("host encoder: %1").arg(e.detail));
@@ -2197,7 +2201,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
         return ok ? n : -1;
     };
     const auto encoderNote = [&]() -> QString {
-        if (!ctx.rc.hostEncode || !ctx.rc.hostEncodeDrivesMirror) return QString();
+        if (!hostVideo) return QString();
         const bool alive =
             sp.run({"sh", "-c",
                     QStringLiteral("ps -C remora-frame-encoder -o args= 2>/dev/null | "
@@ -2254,7 +2258,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
     // definition not served.
     QString encoderLog;
     int packetBaseline = -1;
-    if (ctx.rc.hostEncode && ctx.rc.hostEncodeDrivesMirror) {
+    if (hostVideo) {
         encoderLog =
             sp.run({"sh", "-c",
                     QStringLiteral("pid=$(ps -C remora-frame-encoder -o pid=,args= 2>/dev/null | "
@@ -2284,7 +2288,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
     // and passes untouched. Fail-open (the bd remora-82x lesson): a wake composes within ~1 s
     // when the screen was off — the observed cascade — while a screen that is on-but-static
     // self-heals on the user's first input, so expiry warns rather than refuses.
-    if (ctx.rc.hostEncode && ctx.rc.hostEncodeDrivesMirror) {
+    if (hostVideo) {
         const auto encoderStatus = [&]() -> std::optional<EncoderStatus> {
             const ProcResult st =
                 sp.run({"sh", "-c",
@@ -2414,7 +2418,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
         // the question was "is it receiving video". Treat it as a failed attempt so the retry loop
         // gets a chance — a consumer that lost a race for a slot may well win the next one.
         int handoffWaitedMs = 0;
-        if (alive && !broken && ctx.rc.hostEncode && ctx.rc.hostEncodeDrivesMirror) {
+        if (alive && !broken && hostVideo) {
             int served = servedConsumers();
             // An ADOPTED SPLASH is not starved — it is not connected YET, and the difference is
             // invisible to this probe. It was told to attach one livenessDelayMs ago and still has
@@ -2479,8 +2483,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
                     // user can already see the device. Measured: the consumer attaches ~6.0s into
                     // an 8.2s connect, so the whole tail after it is this loop and the liveness
                     // delay above it.
-                    if (ctx.rc.hostEncode && ctx.rc.hostEncodeDrivesMirror
-                        && servedConsumers() > 0)
+                    if (hostVideo && servedConsumers() > 0)
                         break;
                     sp.waitMs(1000);
                     if (!sp.detachedAlive(det)) { held = false; break; }
@@ -2541,7 +2544,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
             // DELAYS the verdict — grace expiry is a pass with a note, and only a death, which
             // no healthy mirror exhibits, fails it.
             QString serveNote;
-            if (ctx.rc.hostEncode && ctx.rc.hostEncodeDrivesMirror) {
+            if (hostVideo) {
                 constexpr int kServeGraceMs = 6000;  // comfortably above the ~1.2 s healthy serve
                 constexpr int kServePollMs = 200;    // kArrivalPollMs' reasoning: the probes are
                                                      // local and cheap; a coarse poll only adds
@@ -2621,7 +2624,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
             // observed deaths with margin; paid only on host-encode profiles, after the serve
             // gate's ~1.2 s fast path, and it buys the retry loop (or an honest failure) in
             // place of a silent no-window connect.
-            if (ctx.rc.hostEncode && ctx.rc.hostEncodeDrivesMirror) {
+            if (hostVideo) {
                 constexpr int kSurviveHoldMs = 3000;
                 bool survived = true;
                 for (int w = 0; w < kSurviveHoldMs; w += 1000) {
@@ -2665,7 +2668,7 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
             // Read at success time rather than at the encoder step, so a degradation during this
             // very connect's settle is already visible. Always a local read — the encoder only
             // exists where the venus stack does.
-            if (ctx.rc.hostEncode) {
+            if (hostEncode) {
                 const ProcResult st =
                     sp.run({"sh", "-c",
                             QStringLiteral("cat %1 2>/dev/null")

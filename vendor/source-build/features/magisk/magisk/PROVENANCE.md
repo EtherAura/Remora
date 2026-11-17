@@ -67,8 +67,10 @@ fetched.
 | `util_functions.sh` | `assets/util_functions.sh`    | `efe385ffdb72c7fc`  |
 | `boot_patch.sh`     | `assets/boot_patch.sh`        | `20de7208d610a267`  |
 
-`magiskinit`, `magiskboot`, `boot_patch.sh` and `stub.apk` are **boot-image tooling and unused at
-runtime here** — a container never patches a boot image. They are kept so the payload is a complete,
+`magiskinit`, `magiskboot` and `boot_patch.sh` are **boot-image tooling and unused at
+runtime here** — a container never patches a boot image. `stub.apk` supplies the signing certificate
+used to trust the official manager: `magisk-setup.sh` copies it into MAGISKTMP for the daemon's
+post-fs-data stage to consume. The boot-image tools are kept so the payload is a complete,
 checkable copy of one upstream release rather than a subset someone has to reason about.
 
 ## Updating

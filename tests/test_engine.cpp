@@ -116,6 +116,8 @@ public:
     // test staging the upstream-Magisk failure sets the gap token the probe would print
     // (NO_SBIN / NO_DAEMON / NO_SU).
     QString rootProbeGap;
+    bool bootManagedZygisk = false;
+    bool nativeZygiskReady = true;
     QString macvlanIp = QStringLiteral("192.168.0.90");  // "" = discovery reads nothing back
     bool macvlanNetPresent = true;   // `docker network inspect <name>` succeeds
     bool macvlanCreateOk = true;     // `docker network create …` succeeds
@@ -250,6 +252,9 @@ public:
         if (cmd.contains(".remora-boot-stable"))
             return cmd.contains("touch") ? R(0) : R(dataBootedBefore ? 0 : 1);
         if (cmd.contains("service\\.sh")) return R(0, pop(firstBootStates, "idle"));
+        if (cmd.contains("cat /system/etc/remora-spoof/zygisk-runtime"))
+            return R(0, bootManagedZygisk ? QStringLiteral("magisk\n") : QString());
+        if (cmd.contains("pgrep -x zygiskd64")) return R(nativeZygiskReady ? 0 : 1);
         // play-spoof's root-stack gate (bd remora-82c.13). Must answer explicitly: the fake's
         // default empty-output R(0) would read as a gap and fail every deploy test.
         if (cmd.contains("pgrep -x magiskd"))
@@ -1520,6 +1525,38 @@ private slots:
         QVERIFY(runChain(makeDeployer(Backend::Bare, sp, 24, 0)->steps(ctx), sink));
         QCOMPARE(sink.of("play-spoof"), StepState::Ok);
         QVERIFY(hasCall(sp, "/system/etc/remora-spoof"));  // image gate consulted
+    }
+
+    void markedMagiskImageKeepsItsModulesAndInjector() {
+        FakeSpawner sp;
+        sp.bootManagedZygisk = true;
+        sp.spoofModulesDrifted = true;
+        RemoraConfig cfg;
+        cfg.advanced.playSpoof = true;
+        RecordingSink sink;
+        QVERIFY(runChain(makeDeployer(Backend::Bare, sp, 24, 0)->steps(makeContext(cfg, Backend::Bare)),
+                         sink));
+        QVERIFY(hasCall(sp, "pgrep -x zygiskd64"));
+        QVERIFY(!hasCall(sp, "remora-spoof/install.sh"));
+        QVERIFY(!hasCall(sp, "zygisk-ptrace64 monitor"));
+        QVERIFY(!hasCall(sp, "post-fs-data.d/50-rezygisk-pif.sh"));
+    }
+
+    void markedMagiskImageRequiresRootAndNativeInjection() {
+        for (bool rootMissing : {false, true}) {
+            FakeSpawner sp;
+            sp.bootManagedZygisk = true;
+            sp.nativeZygiskReady = false;
+            if (rootMissing) sp.rootProbeGap = QStringLiteral("NO_DAEMON");
+            RemoraConfig cfg;
+            cfg.advanced.playSpoof = true;
+            RecordingSink sink;
+            QVERIFY(!runChain(makeDeployer(Backend::Bare, sp, 24, 0)->steps(makeContext(cfg, Backend::Bare)),
+                              sink));
+            QCOMPARE(sink.of("play-spoof"), StepState::Failed);
+            QVERIFY(!hasCall(sp, "zygisk-ptrace64 monitor"));
+            QVERIFY(!hasCall(sp, "remora-spoof/install.sh"));
+        }
     }
 
     // bd remora-4ei.86. /data is a persistent volume, so a module installed once stays installed:
@@ -3683,6 +3720,42 @@ private slots:
         // the encoder's log rides along as evidence — it is the only place the death explains itself
         QVERIFY2(r.stderrTail.contains(QStringLiteral("SIGSEGV was here")),
                  qPrintable(r.stderrTail));
+    }
+
+    void separateDisplayDoesNotDependOnTheMainHostEncoder() {
+        for (bool app : {false, true}) {
+            FakeSpawner sp;
+            sp.hostEncoderProcAlive = false;
+            sp.servedConsumers = 0;
+            sp.firstPacketCounts = {QStringLiteral("0")};
+            RemoraConfig cfg = withGuest();
+            cfg.mirror.fullscreenSeparateDisplay = true;
+            if (app) cfg.mirror.fullscreenApp = QStringLiteral("software.sonar.sonar_mobile");
+            auto ctx = makeContext(cfg, Backend::Bare, std::nullopt, {}, true);
+            ctx.rc.hostEncode = true;
+            ctx.rc.hostEncodeDrivesMirror = true;
+            RecordingSink sink;
+            const StepResult r = doConnect(sp, ctx, sink, 5, 0, 0, 1);
+            QVERIFY2(r.ok, qPrintable(r.detail));
+            QVERIFY(!r.detail.contains(QStringLiteral("serve unconfirmed")));
+            QVERIFY(!hasCall(sp, "remora-frame-encoder"));
+            QVERIFY(!hasCall(sp, "first decodable packet"));
+            QVERIFY(!hasCall(sp, "stop && start"));
+        }
+    }
+
+    void fullscreenMirrorStillRequiresItsHostEncoder() {
+        FakeSpawner sp;
+        sp.hostEncoderProcAlive = false;
+        sp.servedConsumers = 1;
+        sp.firstPacketCounts = {QStringLiteral("0")};
+        auto ctx = makeContext(withGuest(), Backend::Bare, std::nullopt, {}, true);
+        ctx.rc.hostEncode = true;
+        ctx.rc.hostEncodeDrivesMirror = true;
+        RecordingSink sink;
+        const StepResult r = doConnect(sp, ctx, sink, 5, 0, 0, 1);
+        QVERIFY(!r.ok);
+        QVERIFY2(r.detail.contains(QStringLiteral("host encoder DIED")), qPrintable(r.detail));
     }
 
     // A dead encoder is named with ITS last words, not a guess. The incident: an encoder that

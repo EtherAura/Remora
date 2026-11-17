@@ -153,8 +153,10 @@ AUTHTOKEN=$(sqlite3 "$WORK/acc.db" \
 if [ -z "$EMAIL" ] || { [ -z "$TOKEN" ] && [ -z "$AUTHTOKEN" ]; }; then
     echo "no Google account with a usable Play token in $C" >&2
     echo "  account found : ${EMAIL:-<none>}" >&2
-    echo "  master token  : ${TOKEN:+found}${TOKEN:-not found}" >&2
-    echo "  play token    : ${AUTHTOKEN:+found}${AUTHTOKEN:-not found}" >&2
+    if [ -n "$TOKEN" ]; then echo "  master token  : found" >&2
+    else echo "  master token  : not found" >&2; fi
+    if [ -n "$AUTHTOKEN" ]; then echo "  play token    : found" >&2
+    else echo "  play token    : not found" >&2; fi
     echo "  Sign in to Google on the device (Settings > Passwords & accounts), then retry." >&2
     echo "  If the account is signed in but no token is found, GMS may have moved it again:" >&2
     echo "  find it with  docker exec $C sh -c 'grep -rl aas_et /data/system_ce /data/data/com.google.android.gms 2>/dev/null'" >&2
@@ -196,7 +198,8 @@ else
 fi
 echo "fetching $PKG (arm64, device profile $DEV for ${DENSITY:-unknown} dpi) from Google Play…"
 OPTS="split_apk=1,device=$DEV"
-mkdir -p "$WORK/dl"   # apkeep requires the output dir to already exist
+DOWNLOAD_ROOT="$WORK/dl"
+mkdir -p "$DOWNLOAD_ROOT"   # apkeep requires the output dir to already exist
 # Capture apkeep's output instead of discarding it. It used to go to /dev/null, which made every
 # failure indistinguishable from every other: the script would exit non-zero with nothing to say,
 # the caller reported "ARM install failed — see the Log pane", and the Log pane held only the two
@@ -220,7 +223,24 @@ attempt=1
 delay="$FETCH_DELAY"
 while :; do
   if "$APKEEP" -a "$PKG" -d google-play -e "$EMAIL" "$@" -o "$OPTS" --accept-tos \
-          "$WORK/dl" >"$WORK/apkeep.log" 2>&1; then
+          "$DOWNLOAD_ROOT" >"$WORK/apkeep.log" 2>&1; then
+    # Density-matched profiles are not interchangeable in Play's catalog. Sonar is
+    # installable on the device but px_tablet receives no files, while the same
+    # account and token with px_9a receive the complete arm64 split set. Retry the
+    # known arm64-only phone profile once, before touching the installed app.
+    # An explicit profile is a caller constraint, so never override it.
+    if [ -z "$(ls -A "$DOWNLOAD_ROOT/$PKG" 2>/dev/null)" ] \
+        && [ -z "${REMORA_APKEEP_DEVICE:-}" ] && [ "$DEV" != "px_9a" ]; then
+      echo "  Play supplied no files for $DEV — trying the arm64 phone profile px_9a…"
+      DEV=px_9a
+      OPTS="split_apk=1,device=$DEV"
+      # apkeep refuses an existing package directory, even when it is empty.
+      DOWNLOAD_ROOT="$WORK/dl-phone"
+      mkdir -p "$DOWNLOAD_ROOT"
+      attempt=1
+      delay="$FETCH_DELAY"
+      continue
+    fi
     break
   fi
   if grep -qE "Could not log in|Invalid payload|credentials" "$WORK/apkeep.log" 2>/dev/null \
@@ -242,16 +262,15 @@ while :; do
   fi
   exit 1
 done
-DIR="$WORK/dl/$PKG"
+DIR="$DOWNLOAD_ROOT/$PKG"
 # apkeep 1.0.0 EXITS 0 WHEN PLAY DELIVERS NOTHING AT ALL — it prints "Downloading <pkg>…", omits
 # its "downloaded successfully!" line, writes no file, and reports success. So an empty directory
-# is the only evidence, and it means something categorically different from "this app has no split
-# for the ABI we asked about": nothing arrived, for any ABI (bd remora-rvf). Separated because the
-# per-app message sent the last diagnosis at the app instead of at the request.
+# is the only evidence. It describes this request's device profile, not every ABI
+# or the account's entitlement: another profile can deliver the same app.
 if [ -z "$(ls -A "$DIR" 2>/dev/null)" ]; then
   echo "Google Play delivered NOTHING for $PKG (apkeep reported success and wrote no file)." >&2
-  echo "  -> Nothing arrived for ANY ABI, so this is the request or the account, not the app's" >&2
-  echo "     split set. Check the device's Play login, and whether $PKG is available to it." >&2
+  echo "  -> No files arrived for the requested ARM device profile ($DEV)." >&2
+  echo "     Check the device's Play login and whether $PKG is offered to that profile." >&2
   exit 1
 fi
 ARM=$(ls "$DIR"/*arm64_v8a*.apk 2>/dev/null | head -1)

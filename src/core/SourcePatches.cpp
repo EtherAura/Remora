@@ -140,7 +140,10 @@ const QVector<SourcePatch> &sourcePatches() {
           // ran the same image for two days). Note gralloc.gbm.device cannot work around it —
           // that property is honoured by the CALLER, which runs open_drm_dev anyway, and the
           // crash is inside its loop before the callback is ever reached.
-          "0012-gbm_mesa-skip-glob-hits-that-are-not-DRM-devices.patch"},
+          "0012-gbm_mesa-skip-glob-hits-that-are-not-DRM-devices.patch",
+          // Software-rendered app surfaces are CPU writers too. Read-only maps
+          // still use shadow detiling; GPU-only scanout retains its modifiers.
+          "0013-gbm_mesa-CPU-writers-require-linear-buffers.patch"},
          false, false, "gpu", {17}, {.venus = true}},
         // ITS OWN ENTRY, not a fourth file in the minigbm_rendernode series, for two reasons. The
         // series resolves per version and the -a<ver> directory REPLACES the shared one rather than

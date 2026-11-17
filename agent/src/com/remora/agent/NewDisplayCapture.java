@@ -248,6 +248,18 @@ public final class NewDisplayCapture implements Capture {
         options.setLaunchDisplayId(inputDisplayId());
         Bundle bundle = options.toBundle();
         try {
+            // Sonar's translated Flutter GPU path stalls on a Vulkan fence, and GL
+            // cannot create its context on an app display. Flutter's supported launch
+            // flags select CPU rendering for this ARM build; the device keeps Vulkan.
+            if ("software.sonar.sonar_mobile".equals(pkg)
+                    && "arm64-v8a".equals(pm.getApplicationInfo(pkg, 0).primaryCpuAbi)) {
+                intent.putExtra("enable-impeller", false);
+                intent.putExtra("enable-software-rendering", true);
+                // Flutter reads renderer flags when its engine is created. A
+                // process left by an Android-icon launch must restart as well.
+                forceStop = true;
+                Ln.i("using Sonar's software renderer for its translated ARM build");
+            }
             if (forceStop) {
                 android.app.ActivityManager am =
                         Main.context().getSystemService(android.app.ActivityManager.class);

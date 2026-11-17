@@ -109,13 +109,17 @@ connect builds a new layer over it. The base image is never modified, and Androi
 Unticking an add-on runs the device without it. In a profile file the option is `addons`; see
 [Configuration](Configuration.md#root-and-play).
 
-**Play spoof** layers the stack that makes Google Play see a certified Pixel inside Play services
-only, and turns on the `play_spoof` setting with it, unless the profile sets `play_spoof=false`.
+**Play spoof** layers the stack that presents Pixel device properties inside Play services, and
+turns on the `play_spoof` setting with it, unless the profile sets `play_spoof=false`.
 It is aimed at the basic integrity verdict and Play sign-in. Apps that require device or strong
 integrity are not expected to work, and Remora never uses an attestation keybox. With ARM
 translation it also carries the fixes TikTok and Amazon need under translation. It needs Root, and
 **Shamiko**, which hides Magisk's changes from apps on the DenyList, needs both: each is offered
 once what it needs is ticked, and unticking Root takes them off too.
+
+On the Android 17 container tested, Shamiko reported **Unsupported environment**.
+The native DenyList cleanup was tested with a real app and hides Magisk's mounted files, but
+complete root hiding and basic integrity remain unverified. See the [live add-on results](../ADDONS.md#the-acceptance-target-which-is-not-a-result).
 
 Each add-on needs its payload on the computer running Remora:
 

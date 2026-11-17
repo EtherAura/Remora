@@ -218,7 +218,7 @@ set(REMORA_TEST_ENV
     "XDG_STATE_HOME=${REMORA_TEST_HOME}/.local/state")
 file(MAKE_DIRECTORY "${REMORA_TEST_HOME}/.config" "${REMORA_TEST_HOME}/.local/share"
      "${REMORA_TEST_HOME}/.cache" "${REMORA_TEST_HOME}/.local/state")
-# Python runs three suites and two prereqs cases, and nothing that is built or installed, so a
+# Python runs four suites and two prereqs cases, and nothing that is built or installed, so a
 # machine without it still configures and builds Remora; those tests then do not run, and this
 # says so. -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON turns a missing interpreter into a configure
 # error instead: CI and the packages' own test runs pass it, so the suites cannot drop out quietly.
@@ -227,10 +227,11 @@ set(REMORA_TEST_PYTHON "")
 if(Python3_Interpreter_FOUND)
     set(REMORA_TEST_PYTHON "${Python3_EXECUTABLE}")
     add_test(NAME play_install COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_play_install.py)
+    add_test(NAME arm_fetch COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_arm_fetch.py)
     add_test(NAME public_images COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_public_images.py)
     add_test(NAME public_audit COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_public_audit.py)
 else()
-    message(STATUS "tests: Python 3 not found — play_install, public_images and public_audit are "
+    message(STATUS "tests: Python 3 not found — play_install, arm_fetch, public_images and public_audit are "
         "not registered, and prereqs skips its two image-helper cases")
 endif()
 add_executable(test_play_engine tests/test_play_engine.cpp)

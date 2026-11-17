@@ -13,8 +13,9 @@
 #   * the tmpfs is /debug_ramdisk — HARDCODED upstream, and already what Remora uses (bd
 #     remora-4ei.94 moved it off /sbin because a bare /sbin directory is itself a root tell)
 #   * it validates its own location with "parent should be tmpfs", so a plain directory is refused
-#   * it expects magisk64 (and magisk32 on multilib), .magisk/busybox, and the .magisk skeleton:
-#     config, modules, preinit, rootdir, device/{log,preinit,socket}
+#   * it expects magisk64 (and magisk32 on multilib), a .magisk/busybox applet directory,
+#     the signed stub.apk as its manager certificate anchor, and a mounted worker tmpfs
+#   * the .magisk skeleton holds config, modules, preinit, rootdir, device/{log,preinit,socket}
 # The daemon then starts with `magisk --daemon`, and the init hooks upstream DOES provide
 # (post-fs-data, service, boot-complete, zygote-restart) drive the rest — see magisk.rc.
 #
@@ -39,7 +40,9 @@ log() { echo "magisk-setup: $*"; }
 # The tmpfs itself. Already-mounted is the normal case on a re-exec, not an error.
 if ! mountpoint -q "$MAGISKTMP" 2>/dev/null; then
     mkdir -p "$MAGISKTMP" 2>/dev/null
-    mount -t tmpfs -o mode=0755 tmpfs "$MAGISKTMP" || { log "FATAL: cannot mount tmpfs at $MAGISKTMP"; exit 1; }
+    # ReZygisk's Magisk cleanup identifies root mounts by this source name.
+    # A generic "tmpfs" leaves MAGISKTMP visible in denylisted app namespaces.
+    mount -t tmpfs -o mode=0755 magisk "$MAGISKTMP" || { log "FATAL: cannot mount tmpfs at $MAGISKTMP"; exit 1; }
 fi
 
 # The binaries. magisk64 is what the daemon execs; `magisk` is the name every consumer types, so
@@ -62,7 +65,21 @@ done
 # The .magisk skeleton the daemon expects to find rather than create.
 mkdir -p "$MAGISKTMP/.magisk/modules" "$MAGISKTMP/.magisk/device" \
          "$MAGISKTMP/.magisk/preinit" "$MAGISKTMP/.magisk/rootdir" 2>/dev/null
-cp -f "$SRC/busybox" "$MAGISKTMP/.magisk/busybox" 2>/dev/null && chmod 755 "$MAGISKTMP/.magisk/busybox"
+# Upstream creates busybox/busybox and installs its applet symlinks beside it.
+# Migrate the old single-file layout if setup is run on an older environment.
+[ ! -f "$MAGISKTMP/.magisk/busybox" ] || rm -f "$MAGISKTMP/.magisk/busybox"
+mkdir -p "$MAGISKTMP/.magisk/busybox" || exit 1
+cp -f "$SRC/busybox" "$MAGISKTMP/.magisk/busybox/busybox" || exit 1
+chmod 755 "$MAGISKTMP/.magisk/busybox/busybox" || exit 1
+# preserve_stub_apk reads the certificate before removing this temporary copy.
+# Without it the daemon rejects even the official manager as an untrusted APK.
+cp -f "$SRC/stub.apk" "$MAGISKTMP/stub.apk" || exit 1
+chmod 644 "$MAGISKTMP/stub.apk" || exit 1
+# magiskinit normally mounts this scratch filesystem before module mounting.
+mkdir -p "$MAGISKTMP/.magisk/worker" || exit 1
+if ! mountpoint -q "$MAGISKTMP/.magisk/worker" 2>/dev/null; then
+    mount -t tmpfs -o mode=0755 magisk "$MAGISKTMP/.magisk/worker" || exit 1
+fi
 # config is read as key=value; an absent one makes the daemon assume defaults that do not match a
 # container (it would look for a boot-image install).
 [ -f "$MAGISKTMP/.magisk/config" ] || cat > "$MAGISKTMP/.magisk/config" <<EOF
@@ -74,5 +91,16 @@ EOF
 # The daemon's own state lives on /data, which init has mounted by post-fs-data.
 mkdir -p /data/adb/modules /data/adb/post-fs-data.d /data/adb/service.d 2>/dev/null
 chmod 700 /data/adb 2>/dev/null
+
+# The upstream module installer reads these from MAGISKBIN, even though the
+# daemon itself runs from tmpfs. Without them --install-module reports an
+# incomplete install. Keep helpers a manager has already installed.
+mkdir -p /data/adb/magisk || exit 1
+for f in util_functions.sh busybox; do
+    if [ ! -e "/data/adb/magisk/$f" ]; then
+        cp -f "$SRC/$f" "/data/adb/magisk/$f" || exit 1
+        chmod 755 "/data/adb/magisk/$f" || exit 1
+    fi
+done
 
 log "environment ready at $MAGISKTMP ($(ls "$MAGISKTMP" | tr '\n' ' '))"

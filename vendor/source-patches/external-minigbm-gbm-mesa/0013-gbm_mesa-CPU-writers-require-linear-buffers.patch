@@ -1,0 +1,24 @@
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -601,14 +601,14 @@
+ 		 * and the untouched ones stay zeroed, and a zeroed YUV buffer converts
+ 		 * to green, which is exactly what a live preview showed.
+ 		 *
+-		 * Scoped to CAMERA_WRITE and not to BO_USE_SW_MASK on purpose:
+-		 * promoting every CPU-mapped composited buffer above scanout would
+-		 * undo the ranking that venus-nvidia 0023 exists to establish. A
+-		 * camera buffer is the narrow case where the producer is unavoidably
+-		 * the CPU.
++		 * CPU write usage has the same requirement: a software renderer writes
++		 * linear rows, so a scanout-capable tiled allocation corrupts its pixels.
++		 * Read-only CPU mappings keep the existing shadow-read detile path;
++		 * GPU-only scanout buffers keep their preferred modifier.
+ 		 */
+ 		.linear_required = (use_flags & (BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER |
+-						 BO_USE_CAMERA_WRITE)) != 0,
++						 BO_USE_CAMERA_WRITE | BO_USE_SW_WRITE_OFTEN |
++						 BO_USE_SW_WRITE_RARELY)) != 0,
+ 	};
+ 
+ 	/* Alignment for RPI4 CSI camera. Since we do not care about other cameras, keep this

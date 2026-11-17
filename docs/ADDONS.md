@@ -54,9 +54,9 @@ not inside it, so the `magisk/*.sh` wildcard does not match it and its explicit 
 declaration. The wildcard is evaluated against the staged tree, so today it picks up exactly the
 two upstream scripts. `PROVENANCE.md`, `Android.mk` and `magisk.mk` are not installed.
 
-Per `PROVENANCE.md`, `magiskboot`, `magiskinit`, `boot_patch.sh` and `stub.apk` are boot-image
-tooling that a container never runs. They ship anyway so the payload is a complete copy of one
-upstream release.
+`magiskboot`, `magiskinit` and `boot_patch.sh` are boot-image tooling that a container never
+runs. `stub.apk` also supplies the signing certificate the daemon uses to trust the official
+manager; startup copies it to the temporary Magisk environment before post-fs-data consumes it.
 
 ### Properties
 
@@ -75,8 +75,9 @@ the image as a file:
   - mounts a tmpfs (mode 0755) at `/debug_ramdisk` (`MAGISKTMP`), which upstream hardcodes;
   - copies `magisk` to `magisk64` and `magisk`, copies `magiskpolicy`, and `chmod 755`s all three;
   - creates the `su` and `resetprop` symlinks to `./magisk`;
-  - creates `.magisk/{modules,device,preinit,rootdir}`, copies `busybox` into `.magisk/`, and
-    writes `.magisk/config` if it is absent;
+  - creates `.magisk/{modules,device,preinit,rootdir}`, installs `busybox/busybox` under
+    `.magisk/` for upstream's applet symlinks, and writes `.magisk/config` if it is absent;
+  - supplies the signed `stub.apk` and mounts the `.magisk/worker` scratch tmpfs;
   - creates `/data/adb/{modules,post-fs-data.d,service.d}` and sets `/data/adb` to mode 700.
 
   Next comes `magiskpolicy --live --magisk`. It runs only if `/sys/fs/selinux/policy` exists, and
@@ -88,6 +89,14 @@ the image as a file:
   exists. A `/data` that still holds a differently signed Magisk app fails here with
   `INSTALL_FAILED_UPDATE_INCOMPATIBLE`.
 - **`on property:init.svc.zygote=restarting|stopped`**: `magisk --zygote-restart`.
+
+**Bootstrap validation.** A separate Android 17 instance with stock Magisk v30.7
+booted twice with the corrected BusyBox directory, manager certificate and worker mount. The
+official manager remained installed across the second boot without a signature mismatch;
+`su -c id` returned root, and a temporary no-op module installed through `--install-module`
+and activated at the next boot. The prior `Not a directory` and worker `Invalid argument`
+errors disappeared. These checks establish the bootstrap repair; built-in Zygisk and Shamiko
+compatibility require separate validation.
 
 The execs run in the context `u:r:su:s0`. The sources call that context inert, because the
 container runs with SELinux disabled.
@@ -435,8 +444,62 @@ with `magisk_root`'s fragment beside it, which the requirement adds.
   `zygisk_shamiko`. The DenyList held Play services, its DroidGuard process, the Play Store and GSF.
   `su -c id` returned uid 0.
 
-That establishes the stack runs on the layer. It is not the acceptance target below: no Play
-sign-in, Store install or Integrity verdict was attempted.
+That establishes the stack runs on the layer. The later live check signed in to
+Google Play and installed DRM Info and an Integrity checker directly from the Store. DRM Info
+reported Widevine L3. The Integrity checker returned no device verdict labels, with application
+and account checks `UNEVALUATED`; basic integrity remains unmet (remora-6laf.11).
+
+Shamiko v1.2.5 reports **Unsupported environment** on this Android 17 container even though its
+companion runs. Restoring its original service script did not change that status. ReZygisk's own
+DenyList cleanup now hides the Magisk filesystem: `magisk-setup.sh` names the tmpfs source
+`magisk`, which is how ReZygisk identifies it for unmounting. A real app UID could read
+`/debug_ramdisk/magisk` and `su` before denylisting and could see neither afterward. The generic
+`tmpfs` source previously left this mount behind. `/data/adb` still exists and Shamiko's status
+remains unsupported; the observed mount cleanup is not proof of complete root hiding
+(remora-6laf.12).
+
+A further live compatibility trial used the original Zygisk Next 1.5.3 and 1.4.5 installers. Both
+injected on this container but deliberately skipped standalone Shamiko, as documented by Zygisk
+Next's [1.3.0 release](https://github.com/Dr-TSNG/ZygiskNext/releases/tag/v1.3.0). The earlier 1.2.8
+release failed to inject init on this Android 17 build. Shamiko 0.7.5 loaded with ReZygisk, but an
+app-UID control still hid the same files with that module disabled, so the result did not establish
+Shamiko hiding. All these trial modules were removed and the original stack restored. None was
+added to the repository or image payloads.
+
+An isolated x86_64 build of PIF v19's Java/JNI layer also loaded and changed the requested fields,
+including `SDK_INT` in DroidGuard. Current Canary, legacy SDK and signature options still returned
+no device labels. This validation build omitted the ARM-only native property hook; it is not a
+complete x86 port of v19. A further native-code trial replaced ShadowHook with an x86 Funchook
+backend. A separate Android process proved property interception and clean unhooking, and the
+DroidGuard log confirmed native fingerprint, patch-level and first-API property changes. Current
+Canary and legacy SDK configurations still returned no device labels. All trial binaries and
+configurations were reverted. Those trials established neither basic integrity nor Shamiko
+compatibility; a running companion or property hook alone proves neither.
+
+**Later native-Magisk validation.** A private x86_64 v30.7 build with the upstream
+Android 17 JNI update and two container fixes runs Magisk's built-in Zygisk. One fix authenticates
+root Android zygote executables when peer security labels are unavailable. The other uses plain
+`fstat` for companion socket identity: requesting its SELinux attribute returned `EOPNOTSUPP`,
+skipped the module handler and stalled zygote children. The source patch and build instructions
+are in [magisk/patches/README.md](../vendor/source-build/features/magisk/patches/README.md).
+
+Unmodified Shamiko **0.7.5 (194)** works in that private stack. With ReZygisk disabled and native
+DenyList enforcement off, a real UID 10114 probe could see Magisk when unlisted, lost access
+when listed, regained access with Shamiko disabled, and lost it again after re-enabling the
+module. Android booted once and normal Remora startup and reconnect preserved the stack.
+Shamiko **1.2.5 (414)** still reported unsupported. This is a validated compatibility path for
+the older module, not a claim of complete detection resistance or an integrity verdict. Keep
+the module files intact: renaming 0.7.5's `service.sh` triggers its corruption check.
+
+The private image uses the explicit `zygisk-runtime` marker documented with the source patch.
+This leaves its installed modules under Magisk's boot lifecycle; ordinary images retain the
+ReZygisk path. The custom binary and proprietary module remain local, and this experiment does
+not change the default add-on payload or publish a Shamiko binary.
+
+The module-installation trial exposed a separate root setup defect: the upstream installer could
+not find its helpers in `/data/adb/magisk`. Startup now copies missing `util_functions.sh` and
+BusyBox there from the already staged upstream payload, preserving existing files. This restores
+normal module installation; it does not change an integrity verdict.
 
 ### The acceptance target, which is not a result
 
@@ -445,11 +508,11 @@ sign-in, Store install or Integrity verdict was attempted.
 - the device verdict `MEETS_BASIC_INTEGRITY`;
 - a Google account signing in to the Play Store, and apps then installing from it.
 
-That is the chosen target, not a measurement. No instance has been shown to meet it: no Play
-Integrity verdict, authenticated sign-in or Store install has been recorded for this feature. An
-earlier check of the optional Play installer on the public base saw the Store open to its signed-out
-screen, without any spoofing. That shows the Store starts. It says nothing about sign-in, installs
-or a verdict, and it is not evidence for this target.
+The sign-in and install part has been observed, as recorded above. No instance has been shown to
+meet the basic-integrity part. The Play-installed checker still returned no labels when tested
+with the existing profile, its legacy SDK option, a current public Canary profile, and the
+native-property hook disabled. Those trials were reverted. Registering an ID or loading the
+module does not establish that the target was met.
 
 Even the basic verdict is not promised. Google describes `MEETS_BASIC_INTEGRITY` as basic system
 checks that allow a locked or unlocked bootloader and verified or unverified boot, but on Android 13
