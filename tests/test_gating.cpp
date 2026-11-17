@@ -470,6 +470,29 @@ private slots:
         QVERIFY(!hasGate(featureGates({"gapps"}), "gapps", "warn"));  // native x86_64 APKs
     }
 
+    // One warning per missing dependency, none for a satisfied one, and none once normalize()
+    // has closed the set. Compared as sets so the order the gates come out in does not matter.
+    void unmetRequiresNameEachMissingDependency() {
+        auto warnReasons = [](const QVector<Gate> &gates, const QString &key) {
+            QSet<QString> out;
+            for (const Gate &g : gates)
+                if (g.key == key && g.severity == QStringLiteral("warn")) out.insert(g.reason);
+            return out;
+        };
+
+        QCOMPARE(warnReasons(featureGates({"shamiko"}), "shamiko"),
+                 QSet<QString>({"requires magisk_root", "requires play_spoof"}));
+        QCOMPARE(warnReasons(featureGates({"shamiko", "magisk_root"}), "shamiko"),
+                 QSet<QString>({"requires play_spoof"}));
+
+        const QSet<QString> closed = normalize({"shamiko"});
+        QVERIFY(closed.contains("magisk_root"));
+        QVERIFY(closed.contains("play_spoof"));
+        for (const Gate &g : featureGates(closed))
+            QVERIFY2(!(g.severity == QStringLiteral("warn") && g.reason.startsWith("requires")),
+                     qPrintable(g.key + QStringLiteral(": ") + g.reason));
+    }
+
     // --- vendored PIF profile staleness (bd remora-4ei.47) ---
     void pifStalenessReportsOnlyOldProfiles() {
         const QDate today(2026, 7, 29);
