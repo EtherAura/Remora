@@ -4301,6 +4301,30 @@ private slots:
         QCOMPARE(managedSshOptions(h, false).first(), QStringLiteral("-p"));
         QCOMPARE(managedSshOptions(h, true).first(), QStringLiteral("-P"));
     }
+
+    // The whole option list, in order, for both tools: ssh and scp differ only in the port flag.
+    void managedSshOptionsAreGoldenForSshAndScp() {
+        ManagedHost h;
+        h.sshPort = 47022;
+        h.identityFile = QStringLiteral("/state/client");
+        h.knownHostsFile = QStringLiteral("/state/known_hosts");
+        const QStringList ssh = {
+            QStringLiteral("-p"), QStringLiteral("47022"),
+            QStringLiteral("-i"), QStringLiteral("/state/client"),
+            QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
+            QStringLiteral("-o"), QStringLiteral("BatchMode=yes"),
+            QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=yes"),
+            QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/state/known_hosts")};
+        const QStringList scp = {
+            QStringLiteral("-P"), QStringLiteral("47022"),
+            QStringLiteral("-i"), QStringLiteral("/state/client"),
+            QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
+            QStringLiteral("-o"), QStringLiteral("BatchMode=yes"),
+            QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=yes"),
+            QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/state/known_hosts")};
+        QCOMPARE(managedSshOptions(h, false), ssh);
+        QCOMPARE(managedSshOptions(h, true), scp);
+    }
 };
 
 QTEST_MAIN(TestBuilders)
