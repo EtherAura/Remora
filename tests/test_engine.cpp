@@ -107,6 +107,9 @@ public:
     QString checkinScanOut;
     QString checkinRestoreOut = QStringLiteral("OK\n");
     QStringList bootStates{"1"};
+    // A container that stopped while booting: what `docker inspect` reports for its state and
+    // exit code ("exited 129"). Empty = it is running, and `docker exec` reaches it.
+    QString containerExit;
     QStringList adbStates{"device"};
     bool detachedDead = false;   // legacy: every launched detached process reports dead
     int detachedDiesFirst = 0;   // the first N spawnDetached()s report dead, then alive (retry sim)
@@ -257,6 +260,11 @@ public:
         auto R = [](int rc, QString out = {}, QString err = {}) { return ProcResult{rc, out, err}; };
 
         if (argv.value(0) == "id") return R(0, groupsStr());
+        // The boot wait's "is it still there?" (bd remora-7oih), first: its format is unique.
+        if (cmd.contains("State.Status")) return R(0, containerExit.isEmpty() ? "running 0\n"
+                                                                              : containerExit + "\n");
+        if (!containerExit.isEmpty() && argv.mid(0, 2) == QStringList{"docker", "exec"})
+            return R(1, {}, "Error response from daemon: container is not running");
         if (argv.value(0) == "python3" && cmd.contains("install.py"))
             return R(playInstallRc, playInstallOut,
                      playInstallRc ? QStringLiteral("Play installation failed: boom") : QString());
@@ -637,6 +645,10 @@ private:
     ProcResult ssh(const QString &remote) {
         auto R = [](int rc, QString out = {}, QString err = {}) { return ProcResult{rc, out, err}; };
         if (remote == "echo ok") return sshOk ? R(0, "ok\n") : R(1);
+        if (remote.contains("State.Status"))
+            return R(0, containerExit.isEmpty() ? "running 0\n" : containerExit + "\n");
+        if (!containerExit.isEmpty() && remote.contains("docker exec"))
+            return R(1, {}, "Error response from daemon: container is not running");
         if (remote.contains("docker info")) return dockerOk ? R(0, "ok\n") : R(0, "");
         if (remote.contains("HostConfig.PortBindings")) return R(0, inspectFacts(guestPs));
         if (remote.contains("docker ps")) return R(0, guestPs);
@@ -5570,6 +5582,36 @@ private slots:
         QVERIFY(!holds(folder, QStringLiteral("App 5.lnk")));
         QVERIFY(!QDir(folder).exists());
         QVERIFY(appMenuEntries(QStringLiteral("settle")).isEmpty());
+    }
+
+    // A container that stops while Android boots ends the boot wait at once, saying why. It was
+    // polled for the whole budget: half an hour under an emulated guest on the Windows VM, when
+    // Android asked to reboot nine minutes in (bd remora-7oih).
+    void bootWaitStopsWhenTheContainerStops() {
+        for (Backend b : deployTargets()) {
+            FakeSpawner sp;
+            sp.containerExit = QStringLiteral("exited 129");
+            const RunContext ctx =
+                makeContext(b == Backend::Remote ? withGuest() : RemoraConfig{}, b);
+            RecordingSink sink;
+            QVERIFY(!runChain(makeDeployer(b, sp, 1800, 0)->steps(ctx), sink));
+            QCOMPARE(sink.of(QStringLiteral("boot-wait")), StepState::Failed);
+            QCOMPARE(countCalls(sp, QStringLiteral("sys.boot_completed")), 1);
+            const QString d = sink.details.join(QLatin1Char('\n'));
+            QVERIFY2(d.contains(QStringLiteral("Android asked to reboot")), qPrintable(d));
+        }
+        // A boot that is merely slow waits out its budget, and never asks docker anything more.
+        for (Backend b : deployTargets()) {
+            FakeSpawner sp;
+            sp.bootStates = {};  // getprop answers "0" (not booted) every time
+            const RunContext ctx =
+                makeContext(b == Backend::Remote ? withGuest() : RemoraConfig{}, b);
+            RecordingSink sink;
+            QVERIFY(!runChain(makeDeployer(b, sp, 5, 0)->steps(ctx), sink));
+            QCOMPARE(countCalls(sp, QStringLiteral("sys.boot_completed")), 5);
+            QCOMPARE(countCalls(sp, QStringLiteral("State.Status")), 0);
+            QVERIFY(sink.details.join(QLatin1Char('\n')).contains(QStringLiteral("after 5 polls")));
+        }
     }
 
     // bd remora-a766 — the props rc carries the container's sysrq mask, so every deploy has to

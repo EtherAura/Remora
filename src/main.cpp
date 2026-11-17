@@ -2651,7 +2651,24 @@ int main(int argc, char **argv) {
     // adb's mDNS discovery listens on the network, which is what makes Windows Firewall stop the
     // first adb server Remora starts with an "allow this app?" prompt. Remora reaches devices by
     // address, never by discovery, and its server listens on localhost, which needs no rule.
+    // Seen on the test VM: the same adb raised the prompt without this and started quietly with it.
     if (qEnvironmentVariableIsEmpty("ADB_MDNS")) qputenv("ADB_MDNS", "0");
+    // Remora's own folder first on PATH, for everything it starts. The package carries adb.exe
+    // beside remora.exe, and that adb is the one to use: the preflight's `where adb` looked only
+    // at PATH and the working directory, so Remora refused to deploy unless it had been started
+    // from its own folder (seen on the test VM), and an SDK's adb earlier on PATH would have been
+    // used instead, whose server a different adb version restarts on every call. _wputenv_s, not
+    // qputenv: it keeps a non-ASCII install path, and children inherit what it sets.
+    {
+        std::wstring self(32768, L'\0');
+        const DWORD n = ::GetModuleFileNameW(nullptr, self.data(), DWORD(self.size()));
+        if (n > 0 && n < self.size()) {
+            const QString dir = QDir::toNativeSeparators(
+                QFileInfo(QString::fromWCharArray(self.data(), int(n))).absolutePath());
+            const QString path = dir + QLatin1Char(';') + qEnvironmentVariable("PATH");
+            _wputenv_s(L"PATH", reinterpret_cast<const wchar_t *>(path.utf16()));
+        }
+    }
 #endif
 #ifdef REMORA_GUI_BY_DEFAULT
     // remora-gui.exe (Windows): no arguments is a double-click, and a double-click means the

@@ -10,6 +10,17 @@ namespace remora {
 // real fixtures captured on the dev host. Only the engine's probe shells out; these hold no I/O.
 
 std::optional<bool> parseBootCompleted(const QString &getpropOut);
+// `docker inspect -f '{{.State.Status}} {{.State.ExitCode}}'` for a container that has STOPPED
+// (exited or dead); nullopt for one still running, starting or restarting, and for anything that
+// is not that output. A boot wait asks only once `docker exec` has failed, to tell "not up yet"
+// from "gone": Android asking to reboot or power off ends a container (bd remora-7oih).
+struct ContainerExit {
+    QString status;
+    int code = 0;
+};
+std::optional<ContainerExit> parseContainerExit(const QString &inspectOut);
+// What a boot wait says about a container that stopped under it.
+QString containerExitMessage(const ContainerExit &e, const QString &container);
 std::optional<QString> parseGralloc(const QString &getpropOut);
 std::optional<QString> parseSurfaceflingerGles(const QString &dumpsysOut);
 // One physical keyboard as /proc/bus/input/devices describes it. This is what the guest's uinput

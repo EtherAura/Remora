@@ -22,9 +22,10 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Changed
 
-- **The Windows installer stops Remora's guest before it installs or uninstalls.** A running guest
-  held QEMU's files open, so an update could not replace them and an uninstall could not delete
-  them.
+- **The Windows installer stops Remora's guest and adb's server before it installs or
+  uninstalls.** A running guest held QEMU's files open, and the adb server Remora starts, which
+  keeps running after Remora exits, held adb's. An update could not replace them and an uninstall
+  left them behind.
 
 ### Fixed
 
@@ -35,6 +36,17 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   happening in Remora's own Windows guest. Every container now masks the trigger at boot, through
   the init file each deploy mounts, so the next deploy protects existing images without a
   rebuild.
+
+- **A container that stops while Android boots is reported at once.** The boot wait kept polling
+  a container that had already exited until its time ran out, which is half an hour on Remora's
+  emulated Windows guest. It now stops as soon as the container is gone and says why: when the
+  exit code shows that Android asked to reboot or power off, it says that.
+
+- **Remora for Windows deploys whatever folder it is started from.** It looked for adb on `PATH`
+  and in the working directory only, so it refused to deploy ("adb not found") unless it had been
+  started from its own folder, though the package carries adb beside it. Remora's own folder now
+  comes first on `PATH` for everything it starts, so its adb is always the one used, rather than
+  another adb that happens to be on `PATH`.
 
 - **Remora for Windows has its icon.** `remora.exe`, `remora-gui.exe`, the installer, its
   Start-menu entry and every window carry Remora's icon. Before this, Explorer and the taskbar

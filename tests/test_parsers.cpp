@@ -23,6 +23,29 @@ private slots:
         QVERIFY(!parseBootCompleted("").has_value());
     }
 
+    // bd remora-7oih — `docker inspect -f '{{.State.Status}} {{.State.ExitCode}}'`: only a stopped
+    // container is an answer; a running, starting or restarting one is "keep waiting".
+    void containerExit() {
+        const auto e = parseContainerExit(QStringLiteral("exited 129\r\n"));
+        QVERIFY(e.has_value());
+        QCOMPARE(e->status, QStringLiteral("exited"));
+        QCOMPARE(e->code, 129);
+        QCOMPARE(parseContainerExit(QStringLiteral("dead 137"))->code, 137);
+        QVERIFY(!parseContainerExit(QStringLiteral("running 0")).has_value());
+        QVERIFY(!parseContainerExit(QStringLiteral("restarting 129")).has_value());
+        QVERIFY(!parseContainerExit(QStringLiteral("created 0")).has_value());
+        QVERIFY(!parseContainerExit(QString()).has_value());  // no such container
+        QVERIFY(!parseContainerExit(QStringLiteral("exited")).has_value());
+        QVERIFY(containerExitMessage(*e, QStringLiteral("remora-x")).contains(
+            QStringLiteral("remora-x stopped while Android was booting: Android asked to reboot")));
+        QVERIFY(containerExitMessage({QStringLiteral("exited"), 130}, QStringLiteral("c"))
+                    .contains(QStringLiteral("asked to power off")));
+        QVERIFY(containerExitMessage({QStringLiteral("exited"), 137}, QStringLiteral("c"))
+                    .contains(QStringLiteral("it was killed")));
+        QVERIFY(containerExitMessage({QStringLiteral("exited"), 1}, QStringLiteral("c"))
+                    .contains(QStringLiteral("exited with code 1")));
+    }
+
     void gralloc() {
         QVERIFY(parseGralloc(fx("getprop_gralloc.txt")) == std::optional<QString>("gbm"));
     }

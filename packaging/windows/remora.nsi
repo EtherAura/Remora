@@ -49,19 +49,26 @@ Function un.onInit
     SetShellVarContext all
 FunctionEnd
 
-; A running guest holds files under qemu\ open, which an update could not replace and an uninstall
-; could not delete. `guest stop` powers it down cleanly and returns at once when it is not running.
-!macro StopGuest
+; What keeps files in $INSTDIR open after Remora itself has exited, which an update could not
+; replace and an uninstall could not delete: a running guest holds qemu\, and adb's server, which
+; Remora starts and which outlives it, holds adb.exe and its two DLLs (seen on the test VM: the
+; uninstall left all three behind). `guest stop` powers the guest down cleanly; both return at once
+; when there is nothing running.
+!macro StopRemora
     ${If} ${FileExists} "$INSTDIR\remora.exe"
         DetailPrint "Stopping Remora's Linux guest, if it is running..."
         nsExec::ExecToLog '"$INSTDIR\remora.exe" guest stop'
+        Pop $0
+    ${EndIf}
+    ${If} ${FileExists} "$INSTDIR\adb.exe"
+        nsExec::ExecToLog '"$INSTDIR\adb.exe" kill-server'
         Pop $0
     ${EndIf}
 !macroend
 
 Section "Remora"
     SetOutPath "$INSTDIR"
-    !insertmacro StopGuest
+    !insertmacro StopRemora
     ; A clean copy: files a previous version shipped and this one does not must not linger,
     ; least of all a stale guest image or vendor script.
     RMDir /r "$INSTDIR\guest"
@@ -105,7 +112,7 @@ Section "Windows Hypervisor Platform"
 SectionEnd
 
 Section "Uninstall"
-    !insertmacro StopGuest
+    !insertmacro StopRemora
     ; The profiles' Start-menu folders (`remora apps`) are the user's, under their own Start menu:
     ; remora.exe runs as that user and removes what its records say it wrote.
     nsExec::ExecToLog '"$INSTDIR\remora.exe" apps --remove-all'

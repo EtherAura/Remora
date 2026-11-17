@@ -860,6 +860,9 @@ static StepResult ensureImageOn(Spawner &sp, const QString &host, const QString 
             : QStringLiteral("image %1 present on %2 (no local copy to compare)").arg(tag, where));
 }
 
+// What a boot wait asks docker once `docker exec` fails: core/Parsers.h parseContainerExit.
+static const char kStateAndExitCode[] = "{{.State.Status}} {{.State.ExitCode}}";
+
 // Every backend's connect launches the local adb + mirror clients — catch missing tools in
 // preflight, not as a confusing late failure inside the connect step.
 static std::optional<StepResult> missingHostTools(Spawner &sp, const LineSink &log) {
@@ -1311,6 +1314,15 @@ private:
                              {}, log);
             if (parseBootCompleted(r.out) == std::optional<bool>(true))
                 return StepResult::good(QStringLiteral("booted (after %1 polls)").arg(i + 1));
+            // A failed exec is either a container not up yet or one that is gone; only the second
+            // ends the wait (see the remote deployer's bootWait).
+            if (r.rc != 0) {
+                const auto st = sp_.run({"docker", "inspect", "-f", kStateAndExitCode,
+                                         ctx.rc.containerName},
+                                        {}, log);
+                if (const auto gone = parseContainerExit(st.out))
+                    return StepResult::fail(containerExitMessage(*gone, ctx.rc.containerName));
+            }
             sp_.waitMs(bootIntervalMs_);
         }
         return StepResult::fail(QStringLiteral("boot did not complete after %1 polls").arg(bootAttempts_));
@@ -1592,6 +1604,18 @@ private:
                              {}, log);
             if (parseBootCompleted(r.out) == std::optional<bool>(true))
                 return StepResult::good(QStringLiteral("booted (after %1 polls)").arg(i + 1));
+            // A container that stopped under the wait is not going to boot. Without this the wait
+            // polled one for its whole budget: half an hour under an emulated guest, seen on the
+            // Windows VM, when Android asked to reboot nine minutes in (bd remora-7oih). Asked only
+            // when the exec failed, so a boot that is merely slow costs nothing extra.
+            if (r.rc != 0) {
+                const auto st = sp_.run(Spawner::sshArgv(ctx.guest,
+                                                         QStringLiteral("docker inspect -f '%1' %2")
+                                                             .arg(QLatin1String(kStateAndExitCode), c)),
+                                        {}, log);
+                if (const auto gone = parseContainerExit(st.out))
+                    return StepResult::fail(containerExitMessage(*gone, c));
+            }
             sp_.waitMs(bootIntervalMs_);
         }
         return StepResult::fail(QStringLiteral("boot did not complete after %1 polls").arg(bootAttempts_));

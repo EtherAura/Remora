@@ -18,6 +18,33 @@ std::optional<bool> parseBootCompleted(const QString &getpropOut) {
     return v == QLatin1String("1");
 }
 
+std::optional<ContainerExit> parseContainerExit(const QString &inspectOut) {
+    const QStringList f = stripCr(inspectOut).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (f.size() != 2 || (f[0] != QLatin1String("exited") && f[0] != QLatin1String("dead")))
+        return std::nullopt;
+    bool ok = false;
+    const int code = f[1].toInt(&ok);
+    if (!ok) return std::nullopt;
+    return ContainerExit{f[0], code};
+}
+
+QString containerExitMessage(const ContainerExit &e, const QString &container) {
+    // The kernel ends a container's init with SIGHUP when it asks to restart and SIGINT when it
+    // asks to power off or halt (reboot(2) in a PID namespace); docker reports 128 + the signal.
+    // Android takes either path when a critical service keeps failing, and its init logs why to
+    // the kernel log, not to docker's.
+    // 137 is SIGKILL: the kernel's out-of-memory killer, or someone stopping it by hand.
+    const QString why =
+        e.code == 129   ? QStringLiteral("Android asked to reboot, which ends a container")
+        : e.code == 130 ? QStringLiteral("Android asked to power off")
+        : e.code == 137 ? QStringLiteral("it was killed (out of memory on the docker host, or "
+                                         "stopped by hand)")
+                        : QStringLiteral("it %1 with code %2").arg(e.status).arg(e.code);
+    return QStringLiteral("%1 stopped while Android was booting: %2. The docker host's kernel log "
+                          "(dmesg, the lines from init) says why; Up starts it again.")
+        .arg(container, why);
+}
+
 std::optional<QString> parseGralloc(const QString &getpropOut) {
     const QString v = stripCr(getpropOut);
     return v.isEmpty() ? std::optional<QString>{} : std::optional<QString>{v};

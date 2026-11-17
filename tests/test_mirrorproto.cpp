@@ -473,6 +473,24 @@ private slots:
         QVERIFY(!p.error());
     }
 
+    void deviceEmptyClipboard() {
+        // A cleared device clipboard: the body is all text, so the type byte alone is a complete
+        // message with empty text, and it neither consumes nor rejects the record after it.
+        DeviceMessageParser p;
+        p.feed(hex("00000001" "01"
+                   "00000009" "02" "0000000000000005"));
+        auto clip = p.next();
+        QVERIFY(clip.has_value());
+        QCOMPARE(clip->type, DeviceRecord::Clipboard);
+        QVERIFY(clip->clipboardText.isEmpty());
+        auto ack = p.next();
+        QVERIFY(ack.has_value());
+        QCOMPARE(ack->type, DeviceRecord::ClipboardAck);
+        QCOMPARE(ack->sequence, Q_UINT64_C(5));
+        QVERIFY(!p.next().has_value());
+        QVERIFY(!p.error());
+    }
+
     void mirrorForwardCandidates() {
         QCOMPARE(adbForwardListArgv("adb"), (QStringList{"adb", "forward", "--list"}));
         // The observed leak (bd remora-6f92): agent forwards from crashed sessions. Rows for other
