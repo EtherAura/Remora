@@ -128,6 +128,17 @@ private slots:
         QCOMPARE(buildDockerRunArgv(bareCfg()), expected);
     }
 
+    // The image build pipeline's argv and archive name, pinned whole: swapping the tag and the
+    // archive path in the save argv, or sanitising only one of ':' and '/', must fail here.
+    void imagePipelineArgvGoldens() {
+        QCOMPARE(buildImageBuildArgv(QStringLiteral("remora:a17"), QStringLiteral("/b")),
+                 (QStringList{"docker", "build", "-t", "remora:a17", "/b"}));
+        QCOMPARE(buildImageSaveArgv(QStringLiteral("remora:a17"), QStringLiteral("/o/x.tar")),
+                 (QStringList{"docker", "save", "-o", "/o/x.tar", "remora:a17"}));
+        QCOMPARE(imageArchivePath(QStringLiteral("/o"), QStringLiteral("ghcr.io/x/remora:a17")),
+                 QStringLiteral("/o/ghcr.io-x-remora-a17.tar"));
+    }
+
     // With the host encoder driving the mirror, the mirror reads the stream from a socket and the
     // device-encoder options must NOT be emitted — they would configure a codec2 encoder this
     // session never starts.
