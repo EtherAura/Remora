@@ -28,6 +28,14 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- **An Android shutdown can no longer hit the docker host.** When a shutdown goes wrong, Android's
+  init writes to the kernel's sysrq trigger: it tells every process to stop or kills it, remounts
+  every filesystem read-only and finally crashes the kernel. That trigger is the host's, not the
+  container's, so on a bare Linux host this would end the whole desktop session. It was seen
+  happening in Remora's own Windows guest. Every container now masks the trigger at boot, through
+  the init file each deploy mounts, so the next deploy protects existing images without a
+  rebuild.
+
 - **Remora for Windows has its icon.** `remora.exe`, `remora-gui.exe`, the installer, its
   Start-menu entry and every window carry Remora's icon. Before this, Explorer and the taskbar
   showed a blank program icon. The windows used the white icon made for a dark Linux theme, which

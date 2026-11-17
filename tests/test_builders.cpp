@@ -1283,6 +1283,28 @@ private slots:
         QCOMPARE(QString::fromUtf8(baked.readAll()), shim);
     }
 
+    // bd remora-a766 — Android's init writes the HOST kernel's sysrq trigger when a shutdown goes
+    // wrong (SIGTERM or SIGKILL to every process, read-only remount, a kernel crash). The props rc
+    // is the file every deploy mounts, so it carries the mask: unconditional, at early-init, before
+    // anything can fail. A property condition here would leave whatever image lacks the property
+    // exposed.
+    void containerMasksTheHostSysrqTrigger() {
+        QFile rc(sourcePath(QStringLiteral("vendor"))
+                 + QStringLiteral("/container-scripts/remora.props.rc"));
+        QVERIFY(rc.open(QIODevice::ReadOnly));
+        const QStringList lines = QString::fromUtf8(rc.readAll()).split(QLatin1Char('\n'));
+        const qsizetype mount =
+            lines.indexOf(QStringLiteral("    mount none /dev/null /proc/sysrq-trigger bind"));
+        QVERIFY2(mount > 0, "remora.props.rc no longer masks /proc/sysrq-trigger");
+        QCOMPARE(lines.at(mount - 1), QStringLiteral("on early-init"));
+        // and the mount that delivers it is in every deploy's argv (both backends set the path)
+        RemoraConfig c;
+        ResolvedConfig r = resolve(c, Backend::Bare);
+        r.propsInitRcPath = QStringLiteral("/v/remora.props.rc");
+        QVERIFY(buildDockerRunArgv(r).contains(
+            QStringLiteral("/v/remora.props.rc:/vendor/etc/init/remora.props.rc:ro")));
+    }
+
     // Remora is its own project and does not describe itself relative to another one: no source,
     // test, fixture or build file — the device agent's included — may carry forbiddenNames(), in
     // code, data or comments alike.

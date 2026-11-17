@@ -5572,6 +5572,18 @@ private slots:
         QVERIFY(appMenuEntries(QStringLiteral("settle")).isEmpty());
     }
 
+    // bd remora-a766 — the props rc carries the container's sysrq mask, so every deploy has to
+    // mount it, on either backend: no gate, unlike the agent's files, which wait for a built dex.
+    void everyDeployMountsTheSysrqGuard() {
+        for (Backend b : {Backend::Bare, Backend::Remote}) {
+            const RunContext ctx =
+                makeContext(b == Backend::Remote ? withGuest() : RemoraConfig{}, b);
+            QVERIFY(ctx.rc.propsInitRcPath.has_value());
+            QVERIFY(buildDockerRunArgv(ctx.rc).contains(
+                *ctx.rc.propsInitRcPath + QStringLiteral(":/vendor/etc/init/remora.props.rc:ro")));
+        }
+    }
+
     // Per-app window modes ("<pkg>=desktop|freeform"): unset asks, set round-trips, re-set
     // replaces; the freeform popup geometry has a phone-shaped resolver default.
     void appWindowModes() {

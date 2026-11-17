@@ -947,6 +947,18 @@ private slots:
         QVERIFY(!atCap.next().has_value());
         QVERIFY(!atCap.error());
     }
+
+    void deviceShortAckLatches() {
+        // A 7-byte ACK body is one short of its u64 sequence: the parser's own latch, not the
+        // record reader's, and the valid clipboard record queued behind it is never delivered.
+        DeviceMessageParser p;
+        p.feed(hex("00000008" "02" "00000000000000" "00000003" "01" "6869"));
+        QVERIFY(!p.next().has_value());
+        QVERIFY(p.error());
+        p.feed(hex("00000003" "01" "6869"));  // a valid message after the poison
+        QVERIFY(!p.next().has_value());       // stays latched
+        QVERIFY(p.error());
+    }
 };
 
 QTEST_APPLESS_MAIN(TestMirrorProto)

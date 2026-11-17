@@ -1,4 +1,5 @@
-# Remora boot-property setup (bd remora-28ix.4).
+# Remora boot-property setup (bd remora-28ix.4), and the one early-init guard every deploy must
+# carry (bd remora-a766).
 #
 # The host contract is androidboot.remora_*; init turns every androidboot.<key> on its own argv
 # into ro.boot.<key>. Two of those need a second property set from them, and that is all this
@@ -23,6 +24,9 @@
 #     pin is write-once and beat every runtime decision (bd remora-xqt1), so the ICD is a boot
 #     arg and this is where it lands.
 #
+# AND ONE GUARD, at the end: the kernel's sysrq trigger masked inside the container. It is here
+# because this is the file every deploy delivers, however old the image underneath.
+#
 # ONE FILE, TWO DELIVERY ROADS, and it must stay byte-identical on both (test-enforced):
 #   - bind-mounted to /vendor/etc/init/remora.props.rc by buildDockerRunArgv on every deploy,
 #     the same road as remora-fwd.rc;
@@ -34,3 +38,21 @@ on early-init && property:ro.boot.remora_dpi=*
 
 on early-init && property:ro.boot.remora_vulkan=*
     setprop ro.hardware.vulkan ${ro.boot.remora_vulkan}
+
+# /proc/sysrq-trigger is the HOST kernel's, not the container's: procfs does not namespace it, a
+# privileged container gets it writable, and kernel.sysrq does not gate writes to it. Android's
+# init (system/core/init/reboot.cpp) writes to it whenever a shutdown goes wrong: when it cannot
+# unmount its partitions it signals every process ('e' terminates, 'i' kills); when the shutdown
+# then hangs past its timeout it dumps stacks ('l', 'w') and, powering off, syncs and remounts
+# every filesystem read-only ('s', 'u'); last of all it crashes the kernel ('c'). In a container
+# each of those lands on the host. Seen in Remora's own guest: a critical service
+# failed, init could not unmount /data on the way down, wrote 'e', and the kernel sent SIGTERM to
+# every process on the docker host, sshd and dockerd included. On a bare host that is the whole
+# desktop session, and 'u' or 'c' would be the whole machine.
+#
+# Docker cannot mask it for a privileged container, and runc refuses a bind mount inside /proc
+# from the docker argv, so init does it, first thing, in the container's own mount namespace:
+# /dev/null over the trigger, the way docker masks /proc files for unprivileged containers.
+# Writes then succeed and go nowhere, and init carries on with its shutdown.
+on early-init
+    mount none /dev/null /proc/sysrq-trigger bind
