@@ -602,6 +602,21 @@ private slots:
         // A failure whose u16 reason length has not fully arrived is not a reply yet.
         QVERIFY(!parseSessionReply(hex("01" "00000000"), nullptr).has_value());
         QVERIFY(!parseSessionReply(hex("01" "00000000" "00"), nullptr).has_value());
+
+        // A zero-length reason is a valid prefix: the refusal is complete at byte 7, with or
+        // without more on the wire behind it.
+        consumed = 0;
+        const auto bare = parseSessionReply(hex("01" "00000000" "0000"), &consumed);
+        QVERIFY(bare.has_value());
+        QCOMPARE(bare->status, quint8(1));
+        QVERIFY(bare->reason.isEmpty());
+        QCOMPARE(consumed, 7);
+        consumed = 0;
+        const auto bareTail = parseSessionReply(hex("01" "00000000" "0000" "00000001"), &consumed);
+        QVERIFY(bareTail.has_value());
+        QCOMPARE(bareTail->status, quint8(1));
+        QVERIFY(bareTail->reason.isEmpty());
+        QCOMPARE(consumed, 7);
     }
 
     void agentTunnelArgvGolden() {

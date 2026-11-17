@@ -2100,6 +2100,43 @@ private slots:
         // the pin not on the host, or nothing printed at all
         QCOMPARE(parseImageRootProbe("ROOT\nLAYERS\nsha256:a " + pub + "\n", pin), QString());
         QCOMPARE(parseImageRootProbe(QString(), pin), QString());
+        // labels naming nothing registered, or a LAYERS row with no tags, answer nothing
+        QCOMPARE(parseImageRootProbe("ROOT\nexample/android:16.0.0-latest\nLAYERS\n", pin),
+                 QString());
+        QCOMPARE(parseImageRootProbe("ROOT\nLAYERS\nsha256:a\n", pin), QString());
+    }
+
+    // Labels that name the pin itself say nothing about a base: its own tags — every alias of it,
+    // not only the pin's spelling — must not supply a root by the name-suffix rule.
+    void imageRootProbeIgnoresALabelNamingThePinItself() {
+        const QString pin = QStringLiteral("remora24:x86_64-public-mine");
+        const QString other = QStringLiteral("remora24:x86_64-public-other");
+        const QString self = "sha256:a,sha256:b " + pin + "," + other + "\n";
+        // two tags, and one: no registered image under its layers, so no root
+        QCOMPARE(parseImageRootProbe("ROOT\n" + pin + "\n" + other + "\nLAYERS\n" + self, pin),
+                 QString());
+        QCOMPARE(parseImageRootProbe("ROOT\n" + pin + "\nLAYERS\nsha256:a,sha256:b " + pin + "\n",
+                                     pin),
+                 QString());
+        // a pin spelled without its tag is still itself
+        QCOMPARE(parseImageRootProbe("ROOT\nmine:latest\nremora24:x86_64-public-other\nLAYERS\n"
+                                     "sha256:a mine:latest," + other + "\n",
+                                     QStringLiteral("mine")),
+                 QString());
+        // the layers still answer: a registered image they genuinely start with is the root
+        QCOMPARE(parseImageRootProbe("ROOT\n" + pin + "\n" + other + "\nLAYERS\n" + self +
+                                     "sha256:a remora24:x86_64\n", pin),
+                 QStringLiteral("remora24:x86_64"));
+        // and a registered alias of the pin itself is that image, retagged
+        const QString pub = QStringLiteral("remora24:x86_64-public");
+        QCOMPARE(parseImageRootProbe("ROOT\nremora-local:mine\n" + pub +
+                                     "\nLAYERS\nsha256:a remora-local:mine," + pub + "\n",
+                                     QStringLiteral("remora-local:mine")),
+                 pub);
+        // a label naming another image keeps answering, under its registered alias
+        QCOMPARE(parseImageRootProbe("ROOT\n" + pub + "-src\n" + pub +
+                                     "\nLAYERS\n" + self, pin),
+                 pub);
     }
 
     // The in-Android updater's channel (it was a VM-only bind until the vm backend retired): one

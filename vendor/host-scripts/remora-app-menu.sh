@@ -171,6 +171,20 @@ for f in "$APPDIR"/remora-*.desktop; do
 done
 
 enumerate
+SETTLE_TRIES="${REMORA_MENU_SETTLE_TRIES:-8}"
+SETTLE_SLEEP="${REMORA_MENU_SETTLE_SLEEP:-8}"
+# A device that lists no apps at all right after its boot may still be settling, so a first menu
+# waits as a refresh does (below) before calling it a failure. The Start-menu folder on Windows
+# does the same (src/engine/AppMenu.cpp).
+if [ -z "$APPS" ] && [ "$EXISTING" -le 3 ]; then
+    tries=0
+    while [ -z "$APPS" ] && [ "$tries" -lt "$SETTLE_TRIES" ]; do
+        echo "  device lists no apps yet (still booting?) — retrying…"
+        sleep "$SETTLE_SLEEP"
+        enumerate
+        tries=$((tries + 1))
+    done
+fi
 [ -n "$APPS" ] || [ "$EXISTING" -gt 3 ] \
     || { echo "No apps found (is the device connected?)"; exit 1; }
 
@@ -180,8 +194,6 @@ enumerate
 # and exit 3, the "kept, not failed" code. This fires on cold deploys, where the step runs right
 # after boot — reporting it as a failure trained the eye to ignore a step state that fails on
 # every single run (bd remora-5sd), when keeping the menu is the guard doing its job.
-SETTLE_TRIES="${REMORA_MENU_SETTLE_TRIES:-8}"
-SETTLE_SLEEP="${REMORA_MENU_SETTLE_SLEEP:-8}"
 if [ "$EXISTING" -gt 3 ]; then
     tries=0
     while [ $((NAPPS * 2)) -lt "$EXISTING" ] && [ "$tries" -lt "$SETTLE_TRIES" ]; do

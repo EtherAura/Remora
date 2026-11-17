@@ -717,10 +717,12 @@ public:
     QStringList calls;
     QVector<Shortcut> links;
     int waits = 0;
+    int emptyListsFirst = 0;  // a device just booted: its first N app lists come back empty
     ProcResult run(const QStringList &argv, const QMap<QString, QString> &,
                    const LineSink &) override {
         calls << argv.join(QLatin1Char(' '));
-        if (argv.contains(QStringLiteral("--list-apps"))) return {0, listApps, {}};
+        if (argv.contains(QStringLiteral("--list-apps")))
+            return {0, emptyListsFirst-- > 0 ? QString() : listApps, {}};
         if (argv.value(0) == QStringLiteral("adb") && argv.value(4).contains("IconDump"))
             return {0, QStringLiteral("OK com.a\nOK com.b\n"), {}};
         if (argv.value(0) == QStringLiteral("adb") && argv.value(3) == QStringLiteral("pull")) {
@@ -5661,6 +5663,31 @@ private slots:
             QCOMPARE(countCalls(sp, QStringLiteral("State.Status")), 0);
             QVERIFY(sink.details.join(QLatin1Char('\n')).contains(QStringLiteral("after 5 polls")));
         }
+    }
+
+    // A device that lists no apps right after its boot is waited for before a first menu fails
+    // (an emulated guest on the Windows VM did that for a few seconds after boot_completed), and
+    // one that never lists any still fails, after the same wait a refresh gives a settling device.
+    void windowsStartMenuWaitsForAFirstAppList() {
+        const QString menuRoot = startMenuRoot();
+        QVERIFY(menuRoot.contains(QStringLiteral("qttest")));
+        StartMenuFake sp;
+        sp.emptyListsFirst = 2;
+        RecordingSink sink;
+        QVERIFY(appMenuSync(sp, withGuest(), Backend::Remote, QStringLiteral("Fresh"), sink));
+        QCOMPARE(sink.of(QStringLiteral("app-menu")), StepState::Ok);
+        QCOMPARE(sp.waits, 2);
+        QCOMPARE(appMenuEntries(QStringLiteral("fresh")).size(), 2);
+        RecordingSink rm;
+        QVERIFY(appMenuRemove(sp, QStringLiteral("Fresh"), rm));
+
+        StartMenuFake none;
+        none.listApps.clear();
+        RecordingSink failed;
+        QVERIFY(!appMenuSync(none, withGuest(), Backend::Remote, QStringLiteral("Empty"), failed));
+        QCOMPARE(failed.of(QStringLiteral("app-menu")), StepState::Failed);
+        QCOMPARE(none.waits, 8);
+        QVERIFY(none.links.isEmpty());
     }
 
     // bd remora-a766 — the props rc carries the container's sysrq mask, so every deploy has to

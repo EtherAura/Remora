@@ -323,9 +323,17 @@ static bool startMenuSync(Spawner &sp, const RemoraConfig &cfg, Backend backend,
                                      .out);
         };
         enumerate();
-        // remora-app-menu.sh's two guards, for the same reasons. No apps and no menu to protect
-        // is a failure; a list that shrank below half the menu is a device still settling after
-        // boot, retried for a while and then left alone (kept, not failed: bd remora-5sd).
+        // remora-app-menu.sh's guards, for the same reasons. A device that lists no apps at all
+        // right after its boot may still be settling (an emulated guest did, for several
+        // seconds), so a first menu waits as a refresh does before calling it a failure; a list
+        // that shrank below half the menu is the same condition, retried for a while and then
+        // left alone (kept, not failed: bd remora-5sd).
+        for (int tries = 0; apps.isEmpty() && oldApps <= 3 && tries < 8; ++tries) {
+            sink.line(step, QStringLiteral("stdout"),
+                      QStringLiteral("  device lists no apps yet (still booting?) — retrying…"));
+            sp.waitMs(8000);
+            enumerate();
+        }
         if (apps.isEmpty() && oldApps <= 3) {
             sink.state(step, StepState::Failed,
                        QStringLiteral("no apps found on %1 (is the device connected?)").arg(target));

@@ -59,8 +59,6 @@ QString parseImageRootProbe(const QString &out, const QString &pin) {
         else if (line == QLatin1String("LAYERS")) section = &layerLines;
         else if (!line.isEmpty() && section) *section << line;
     }
-    if (const QString root = registeredTagAmong(rootTags); !root.isEmpty()) return root;
-
     struct Image { QStringList layers, tags; };
     QList<Image> images;
     for (const QString &l : layerLines) {
@@ -74,6 +72,14 @@ QString parseImageRootProbe(const QString &out, const QString &pin) {
                               ? pin : pin + QStringLiteral(":latest");
     const auto self = std::find_if(images.cbegin(), images.cend(),
                                    [&](const Image &i) { return i.tags.contains(named); });
+    // Labels naming the pin itself name no base: every one of its tags is its own, so none of them
+    // may answer by the suffix rule. A registered alias of it is still found below, by exact name.
+    const bool selfRoot = rootTags.contains(named) ||
+                          (self != images.cend() &&
+                           std::any_of(rootTags.cbegin(), rootTags.cend(),
+                                       [&](const QString &t) { return self->tags.contains(t); }));
+    if (!selfRoot)
+        if (const QString root = registeredTagAmong(rootTags); !root.isEmpty()) return root;
     if (self == images.cend() || self->layers.isEmpty()) return QString();
     // Exact names only from here on: layers are evidence, and the suffix rule is a guess from a
     // name, which is all the label path has left once a root's plain tag has moved on.

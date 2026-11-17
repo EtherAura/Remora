@@ -629,7 +629,13 @@ static RemoraConfig configForArg(const QStringList &a, QString &instOut) {
 static void syncAppMenuDetached(Spawner &sp, const QString &instance) {
     const QString self = QCoreApplication::applicationFilePath();
     if (self.isEmpty()) return;
-    sp.spawnDetached({self, QStringLiteral("apps"), instance}, {});
+    // Named only when it is a configured profile. `up` with no argument runs the active profile
+    // even when remorarc has no section for it (a fresh install's "default"), and `apps <name>`
+    // refuses any name without one, so the menu of exactly that first profile was never written
+    // (seen on the Windows VM). Unnamed, `apps` picks the active profile the same way `up` did.
+    QStringList argv{self, QStringLiteral("apps")};
+    if (listInstances(defaultRemorarcPath()).contains(instance)) argv << instance;
+    sp.spawnDetached(argv, {});
 }
 
 static int cmdUp(const QStringList &a) {

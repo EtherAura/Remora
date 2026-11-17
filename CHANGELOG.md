@@ -29,6 +29,16 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- **A first menu waits for a device that has only just booted.** Right after a slow boot the
+  device can list no apps for a few seconds, and a menu that did not exist yet was then reported
+  as failed instead of written. It is now retried for a while first, as a refresh of an existing
+  menu already was, on Linux and Windows alike.
+
+- **The menu folder is written for a profile that has no section of its own.** `remora up`
+  with no profile runs the active one even when `remorarc` has no section for it, as on a fresh
+  install, but the menu refresh it starts afterwards asked for that profile by name and was
+  refused, so the folder never appeared. The refresh now picks the active profile the same way.
+
 - **A profile pinned to a local image built on one of Remora's keeps that image's hardware
   encoder.** Remora decides what an image can do, such as encode HEVC in hardware, carry the
   mirror agent or carry the updater, from the list of images it builds. A local image built on
@@ -36,7 +46,10 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   Pinned with `image_tag`, it counted as carrying nothing. The Viewer page greyed out h265 and
   switched the page to h264, and Connect offered h264 instead. Remora now asks the docker host
   which of its images such an image was built on, from the labels its own layers carry or else
-  from the image's layers, and answers as that image does. `remora plan` names it.
+  from the image's layers, and answers as that image does. `remora plan` names it. Labels that
+  name the image itself are ignored, under any of its tags: a local image tagged like one of
+  Remora's no longer takes that image's capabilities from its name alone, and is judged by its
+  layers instead.
 
 - **An Android shutdown can no longer hit the docker host.** When a shutdown goes wrong, Android's
   init writes to the kernel's sysrq trigger: it tells every process to stop or kills it, remounts
