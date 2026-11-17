@@ -311,6 +311,19 @@ private slots:
         QCOMPARE(end.next(), E::Error);
     }
 
+    void streamErrorLatches() {
+        // A framing violation leaves no way to find the next record: bytes fed afterwards are
+        // never parsed, even a valid START, and the first diagnostic stands.
+        StreamDemuxer d(StreamDemuxer::Kind::Video);
+        d.feed(hex("00000000"));
+        QCOMPARE(d.next(), E::Error);
+        d.feed(hex("00000002" "01" "01"));
+        QCOMPARE(d.next(), E::Error);
+        QCOMPARE(d.next(), E::Error);
+        QCOMPARE(d.codec(), quint8(0));
+        QVERIFY(d.errorString().contains(QStringLiteral("size 0")));
+    }
+
     void configMerging() {
         PacketMerger m;
         MediaPacket config{std::nullopt, true, false, hex("0102")};
