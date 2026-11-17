@@ -12,6 +12,7 @@
 #include <QStandardPaths>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include "core/Gating.h"
 #include "core/Guest.h"
@@ -4285,6 +4286,37 @@ private slots:
         RemoraConfig guest;
         guest.backend.sshHost = guestAlias();
         QCOMPARE(resolve(guest, Backend::Remote).target, QStringLiteral("remora-guest:5555"));
+    }
+
+    // A profile may name the guest bare, as user@alias, or with stray whitespace; any other name is
+    // no managed host. A blank ssh_host is the guest only where the local docker is the guest.
+    void managedHostLooksUpByAliasOrUserAtAlias() {
+        const std::optional<ManagedHost> before = managedHost(guestAlias());
+        const auto restore = qScopeGuard([&] {
+            forgetManagedHost(guestAlias());
+            if (before) registerManagedHost(*before);
+        });
+        ManagedHost h;
+        h.alias = guestAlias();
+        h.user = QStringLiteral("remora");
+        h.sshPort = 47022;
+        registerManagedHost(h);
+        QVERIFY(managedHost(guestAlias()).has_value());
+        QVERIFY(managedHost(QStringLiteral("remora@") + guestAlias()).has_value());
+        QVERIFY(managedHost(QStringLiteral("  ") + guestAlias() + QStringLiteral(" ")).has_value());
+        QCOMPARE(managedHost(QStringLiteral("remora@") + guestAlias())->sshPort, 47022);
+        QVERIFY(!managedHost(QStringLiteral("me@nas")).has_value());
+        {
+            const ScopedLocalDockerIsGuest guest(true);
+            QCOMPARE(dockerHostOf(QString()), guestAlias());
+        }
+        {
+            const ScopedLocalDockerIsGuest daemon(false);
+            QCOMPARE(dockerHostOf(QString()), QString());
+        }
+        QCOMPARE(dockerHostOf(QStringLiteral(" me@nas ")), QStringLiteral("me@nas"));
+        forgetManagedHost(guestAlias());
+        QVERIFY(!managedHost(guestAlias()).has_value());
     }
 
     void managedAdbPortsCoverOnlyTheForwardedRange() {
