@@ -250,6 +250,26 @@ private slots:
         QCOMPARE(drain(d).events, (QList<E>{E::Started, E::Format}));
     }
 
+    void streamRecordsIgnoreTrailingBytesAndFlags() {
+        // A receiver reads the fields it knows and ignores the rest (protocol section 1), and only
+        // bit 0 of the FORMAT and FRAME flags is defined: a newer agent's extension bytes and
+        // flag bits must neither fail the stream nor turn into a resize or a key frame. A FRAME's
+        // bytes after its flags are its data, so its payload is exactly "11".
+        StreamDemuxer d(StreamDemuxer::Kind::Video);
+        d.feed(hex("00000003" "01" "01" "ff"                                // START h264 + 1
+                   "0000000b" "02" "00000780" "00000438" "fe" "aa"          // FORMAT + 1
+                   "0000000b" "04" "0000000000000000" "fe" "11"));          // FRAME, flags 0xfe
+        const auto [events, packets] = drain(d);
+        QCOMPARE(events, (QList<E>{E::Started, E::Format, E::Packet}));
+        QCOMPARE(d.codec(), kCodecH264);
+        QCOMPARE(d.format().width, quint32(1920));
+        QCOMPARE(d.format().height, quint32(1080));
+        QVERIFY(!d.format().clientResized);
+        QVERIFY(!packets[0].config);
+        QVERIFY(!packets[0].keyFrame);
+        QCOMPARE(packets[0].payload, hex("11"));
+    }
+
     void streamFramingViolations() {
         const auto events = [](const QByteArray &bytes) {
             StreamDemuxer d(StreamDemuxer::Kind::Video);
