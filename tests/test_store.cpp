@@ -281,6 +281,259 @@ private slots:
         QVERIFY(!s.contains(QStringLiteral("addons")));
     }
 
+    // saveInstance and loadInstance each name every key by hand, in two independent lists, so a
+    // typo or a missing line in either one drops that setting on the next GUI save. Every
+    // persisted field gets its own distinct non-default value, so a dropped key comes back unset
+    // and two swapped keys come back crossed. container_name is left out on purpose: the loader
+    // derives it when unset, which its own test covers. The non-persisted overlay and loader
+    // markers are left at their defaults.
+    void everyPersistedKeyRoundTrips() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        RemoraConfig c;
+
+        c.backend.backend = Backend::Remote;
+        c.backend.sshHost = QStringLiteral("ssh-host-value");
+        c.backend.dataDir = QStringLiteral("/srv/data-dir");
+        c.backend.dataBaseDir = QStringLiteral("/srv/data-base-dir");
+        c.backend.hostAdbPort = 1001;
+        c.backend.adbBindAddress = QStringLiteral("10.0.0.2");
+        c.backend.guestAccel = QStringLiteral("tcg");
+        c.backend.guestMemoryMb = 1002;
+        c.backend.guestCpus = 1003;
+
+        c.display.width = 1004;
+        c.display.height = 1005;
+        c.display.dpi = 1006;
+        c.display.fps = 1007;
+        c.display.maxFps = 1008;
+        c.display.useMemfd = false;
+        c.display.timezone = QStringLiteral("Etc/GMT-3");
+
+        c.gpu.mode = GpuMode::Host;
+        c.gpu.gpuNode = QStringLiteral("/dev/dri/renderD201");
+        c.gpu.gpuDriver = QStringLiteral("gpu-driver-value");
+        c.gpu.gralloc = QStringLiteral("gralloc-value");
+        c.gpu.hwcomposer = QStringLiteral("hwcomposer-value");
+        c.gpu.vulkan = QStringLiteral("vulkan-value");
+        c.gpu.vaDriver = QStringLiteral("va-driver-value");
+        c.gpu.venus = false;
+        c.gpu.venusSocketDir = QStringLiteral("/srv/venus-socket-dir");
+        c.gpu.venusLibDir = QStringLiteral("/srv/venus-lib-dir");
+        c.gpu.venusServerPath = QStringLiteral("/srv/venus-server");
+
+        c.image.imageTag = QStringLiteral("image-tag-value");
+        c.image.features = QStringList{QStringLiteral("feature_a"), QStringLiteral("feature_b")};
+        c.image.androidVersion = 1009;
+        c.image.buildHost = QStringLiteral("build-host-value");
+        c.image.sourceHost = QStringLiteral("source-host-value");
+        c.image.buildDir = QStringLiteral("/srv/build-dir");
+        c.image.sourceTree = QStringLiteral("/srv/source-tree");
+        c.image.sourceKind = QStringLiteral("source-kind-value");
+        c.image.sourcePinned = true;
+        c.image.buildNice = 1010;
+        c.image.buildJobs = 1011;
+        c.image.buildMemGiB = 1012;
+        c.image.soongMemGiB = 1013;
+        c.image.sourceRepo = QStringLiteral("source-repo-value");
+        c.image.sourceRef = QStringLiteral("source-ref-value");
+        c.image.builtCommit = QStringLiteral("built-commit-value");
+        c.image.builtRecipe = QStringLiteral("built-recipe-value");
+        c.image.sourcePatches =
+            QStringList{QStringLiteral("minigbm_rendernode"), QStringLiteral("soong_gomemlimit")};
+        c.image.archVariant = QStringLiteral("arch-variant-value");
+        c.image.googlePlay = true;
+        c.image.playTerms = QStringLiteral("play-terms-value");
+        c.image.addons = QStringList{QStringLiteral("addon_a"), QStringLiteral("addon_b")};
+        c.image.outputDir = QStringLiteral("/srv/output-dir");
+
+        c.network.networkMode = QStringLiteral("network-mode-value");
+        c.network.dockerNetwork = QStringLiteral("docker-network-value");
+        c.network.macvlanIp = QStringLiteral("10.0.1.1");
+        c.network.macvlanParent = QStringLiteral("macvlan-parent-value");
+        c.network.macvlanSubnet = QStringLiteral("10.0.2.0/24");
+        c.network.macvlanGateway = QStringLiteral("10.0.3.1");
+        c.network.macvlanRange = QStringLiteral("10.0.4.0/28");
+        c.network.macvlanHostRoute = false;
+        c.network.macvlanShimIp = QStringLiteral("10.0.5.1");
+        c.network.dns = QStringList{QStringLiteral("10.0.6.1"), QStringLiteral("10.0.6.2")};
+        c.network.proxyType = QStringLiteral("proxy-type-value");
+        c.network.proxyHost = QStringLiteral("proxy-host-value");
+        c.network.proxyPort = 1014;
+
+        c.input.mouseBind = QStringLiteral("mouse-bind-value");
+        c.input.shortcutMod = QStringLiteral("lctrl,ralt");
+        c.input.keyBind = QStringLiteral("F7:b,F8:h");
+        c.input.kbdIdentity = QStringLiteral("kbd-identity-value");
+        c.input.cameraDevices =
+            QStringList{QStringLiteral("/dev/video7"), QStringLiteral("/dev/video8")};
+        c.input.sharedInputs = QStringList{QStringLiteral("Example Desk Keyboard"),
+                                           QStringLiteral("Example Wireless Mouse")};
+        c.input.cpufreqTopology = false;
+
+        c.mirror.videoBitRate = QStringLiteral("video-bit-rate-value");
+        c.mirror.videoCodec = QStringLiteral("video-codec-value");
+        c.mirror.hostEncode = true;
+        c.mirror.hostDecode = true;
+        c.mirror.hostEncodeMaxSize = 1015;
+        c.mirror.hwDecode = false;
+        c.mirror.audio = true;
+        c.mirror.maxSize = 1016;
+        c.mirror.windowWidth = 1017;
+        c.mirror.windowHeight = 1018;
+        c.mirror.windowX = 1019;
+        c.mirror.windowY = 1020;
+        c.mirror.pipWidth = 1021;
+        c.mirror.pipHeight = 1022;
+        c.mirror.windowFullscreen = true;
+        c.mirror.fullscreenSeparateDisplay = true;
+        c.mirror.fullscreenDisplay = QStringLiteral("fullscreen-display-value");
+        c.mirror.fullscreenApp = QStringLiteral("fullscreen-app-value");
+        c.mirror.freeformDisplay = QStringLiteral("freeform-display-value");
+        c.mirror.desktopNewWindow = true;
+        c.mirror.extra = QStringList{QStringLiteral("--extra-a"), QStringLiteral("--extra-b")};
+
+        c.integration.desktopMenu = false;
+        c.integration.appModes =
+            QStringList{QStringLiteral("app.a=desktop"), QStringLiteral("app.b=freeform")};
+        c.integration.autoUpdateApps = true;
+        c.integration.autoUpdateHours = 1023;
+        c.integration.armApps = QStringList{QStringLiteral("arm.a"), QStringLiteral("arm.b")};
+        c.integration.armGuard = false;
+        c.integration.sharedFolders =
+            QStringList{QStringLiteral("/srv/share-a:a"), QStringLiteral("/srv/share-b:b")};
+        c.integration.companionApps =
+            QStringList{QStringLiteral("/srv/companion-a"), QStringLiteral("/srv/companion-b")};
+
+        c.advanced.useOverlayfs = false;
+        c.advanced.useCodec2 = false;
+        c.advanced.autoSleepMinutes = 1024;
+        c.advanced.roOverrides =
+            QStringList{QStringLiteral("ro.a=1"), QStringLiteral("ro.b=2")};
+        c.advanced.rootHiding = QStringLiteral("root-hiding-value");
+        c.advanced.playSpoof = true;
+        c.advanced.denylistPackages =
+            QStringList{QStringLiteral("deny.a"), QStringLiteral("deny.b")};
+
+        saveInstance(path, QStringLiteral("x"), c);
+        const RemoraConfig l = loadInstance(path, QStringLiteral("x"));
+
+        QCOMPARE(l.backend.backend, c.backend.backend);
+        QCOMPARE(l.backend.sshHost, c.backend.sshHost);
+        QCOMPARE(l.backend.dataDir, c.backend.dataDir);
+        QCOMPARE(l.backend.dataBaseDir, c.backend.dataBaseDir);
+        QCOMPARE(l.backend.hostAdbPort, c.backend.hostAdbPort);
+        QCOMPARE(l.backend.adbBindAddress, c.backend.adbBindAddress);
+        QCOMPARE(l.backend.guestAccel, c.backend.guestAccel);
+        QCOMPARE(l.backend.guestMemoryMb, c.backend.guestMemoryMb);
+        QCOMPARE(l.backend.guestCpus, c.backend.guestCpus);
+
+        QCOMPARE(l.display.width, c.display.width);
+        QCOMPARE(l.display.height, c.display.height);
+        QCOMPARE(l.display.dpi, c.display.dpi);
+        QCOMPARE(l.display.fps, c.display.fps);
+        QCOMPARE(l.display.maxFps, c.display.maxFps);
+        QCOMPARE(l.display.useMemfd, c.display.useMemfd);
+        QCOMPARE(l.display.timezone, c.display.timezone);
+
+        QCOMPARE(l.gpu.mode, c.gpu.mode);
+        QCOMPARE(l.gpu.gpuNode, c.gpu.gpuNode);
+        QCOMPARE(l.gpu.gpuDriver, c.gpu.gpuDriver);
+        QCOMPARE(l.gpu.gralloc, c.gpu.gralloc);
+        QCOMPARE(l.gpu.hwcomposer, c.gpu.hwcomposer);
+        QCOMPARE(l.gpu.vulkan, c.gpu.vulkan);
+        QCOMPARE(l.gpu.vaDriver, c.gpu.vaDriver);
+        QCOMPARE(l.gpu.venus, c.gpu.venus);
+        QCOMPARE(l.gpu.venusSocketDir, c.gpu.venusSocketDir);
+        QCOMPARE(l.gpu.venusLibDir, c.gpu.venusLibDir);
+        QCOMPARE(l.gpu.venusServerPath, c.gpu.venusServerPath);
+
+        QCOMPARE(l.image.imageTag, c.image.imageTag);
+        QCOMPARE(l.image.features, c.image.features);
+        QCOMPARE(l.image.androidVersion, c.image.androidVersion);
+        QCOMPARE(l.image.buildHost, c.image.buildHost);
+        QCOMPARE(l.image.sourceHost, c.image.sourceHost);
+        QCOMPARE(l.image.buildDir, c.image.buildDir);
+        QCOMPARE(l.image.sourceTree, c.image.sourceTree);
+        QCOMPARE(l.image.sourceKind, c.image.sourceKind);
+        QCOMPARE(l.image.sourcePinned, c.image.sourcePinned);
+        QCOMPARE(l.image.buildNice, c.image.buildNice);
+        QCOMPARE(l.image.buildJobs, c.image.buildJobs);
+        QCOMPARE(l.image.buildMemGiB, c.image.buildMemGiB);
+        QCOMPARE(l.image.soongMemGiB, c.image.soongMemGiB);
+        QCOMPARE(l.image.sourceRepo, c.image.sourceRepo);
+        QCOMPARE(l.image.sourceRef, c.image.sourceRef);
+        QCOMPARE(l.image.builtCommit, c.image.builtCommit);
+        QCOMPARE(l.image.builtRecipe, c.image.builtRecipe);
+        QCOMPARE(l.image.sourcePatches, c.image.sourcePatches);
+        QCOMPARE(l.image.archVariant, c.image.archVariant);
+        QCOMPARE(l.image.googlePlay, c.image.googlePlay);
+        QCOMPARE(l.image.playTerms, c.image.playTerms);
+        QCOMPARE(l.image.addons, c.image.addons);
+        QCOMPARE(l.image.outputDir, c.image.outputDir);
+
+        QCOMPARE(l.network.networkMode, c.network.networkMode);
+        QCOMPARE(l.network.dockerNetwork, c.network.dockerNetwork);
+        QCOMPARE(l.network.macvlanIp, c.network.macvlanIp);
+        QCOMPARE(l.network.macvlanParent, c.network.macvlanParent);
+        QCOMPARE(l.network.macvlanSubnet, c.network.macvlanSubnet);
+        QCOMPARE(l.network.macvlanGateway, c.network.macvlanGateway);
+        QCOMPARE(l.network.macvlanRange, c.network.macvlanRange);
+        QCOMPARE(l.network.macvlanHostRoute, c.network.macvlanHostRoute);
+        QCOMPARE(l.network.macvlanShimIp, c.network.macvlanShimIp);
+        QCOMPARE(l.network.dns, c.network.dns);
+        QCOMPARE(l.network.proxyType, c.network.proxyType);
+        QCOMPARE(l.network.proxyHost, c.network.proxyHost);
+        QCOMPARE(l.network.proxyPort, c.network.proxyPort);
+
+        QCOMPARE(l.input.mouseBind, c.input.mouseBind);
+        QCOMPARE(l.input.shortcutMod, c.input.shortcutMod);
+        QCOMPARE(l.input.keyBind, c.input.keyBind);
+        QCOMPARE(l.input.kbdIdentity, c.input.kbdIdentity);
+        QCOMPARE(l.input.cameraDevices, c.input.cameraDevices);
+        QCOMPARE(l.input.sharedInputs, c.input.sharedInputs);
+        QCOMPARE(l.input.cpufreqTopology, c.input.cpufreqTopology);
+
+        QCOMPARE(l.mirror.videoBitRate, c.mirror.videoBitRate);
+        QCOMPARE(l.mirror.videoCodec, c.mirror.videoCodec);
+        QCOMPARE(l.mirror.hostEncode, c.mirror.hostEncode);
+        QCOMPARE(l.mirror.hostDecode, c.mirror.hostDecode);
+        QCOMPARE(l.mirror.hostEncodeMaxSize, c.mirror.hostEncodeMaxSize);
+        QCOMPARE(l.mirror.hwDecode, c.mirror.hwDecode);
+        QCOMPARE(l.mirror.audio, c.mirror.audio);
+        QCOMPARE(l.mirror.maxSize, c.mirror.maxSize);
+        QCOMPARE(l.mirror.windowWidth, c.mirror.windowWidth);
+        QCOMPARE(l.mirror.windowHeight, c.mirror.windowHeight);
+        QCOMPARE(l.mirror.windowX, c.mirror.windowX);
+        QCOMPARE(l.mirror.windowY, c.mirror.windowY);
+        QCOMPARE(l.mirror.pipWidth, c.mirror.pipWidth);
+        QCOMPARE(l.mirror.pipHeight, c.mirror.pipHeight);
+        QCOMPARE(l.mirror.windowFullscreen, c.mirror.windowFullscreen);
+        QCOMPARE(l.mirror.fullscreenSeparateDisplay, c.mirror.fullscreenSeparateDisplay);
+        QCOMPARE(l.mirror.fullscreenDisplay, c.mirror.fullscreenDisplay);
+        QCOMPARE(l.mirror.fullscreenApp, c.mirror.fullscreenApp);
+        QCOMPARE(l.mirror.freeformDisplay, c.mirror.freeformDisplay);
+        QCOMPARE(l.mirror.desktopNewWindow, c.mirror.desktopNewWindow);
+        QCOMPARE(l.mirror.extra, c.mirror.extra);
+
+        QCOMPARE(l.integration.desktopMenu, c.integration.desktopMenu);
+        QCOMPARE(l.integration.appModes, c.integration.appModes);
+        QCOMPARE(l.integration.autoUpdateApps, c.integration.autoUpdateApps);
+        QCOMPARE(l.integration.autoUpdateHours, c.integration.autoUpdateHours);
+        QCOMPARE(l.integration.armApps, c.integration.armApps);
+        QCOMPARE(l.integration.armGuard, c.integration.armGuard);
+        QCOMPARE(l.integration.sharedFolders, c.integration.sharedFolders);
+        QCOMPARE(l.integration.companionApps, c.integration.companionApps);
+
+        QCOMPARE(l.advanced.useOverlayfs, c.advanced.useOverlayfs);
+        QCOMPARE(l.advanced.useCodec2, c.advanced.useCodec2);
+        QCOMPARE(l.advanced.autoSleepMinutes, c.advanced.autoSleepMinutes);
+        QCOMPARE(l.advanced.roOverrides, c.advanced.roOverrides);
+        QCOMPARE(l.advanced.rootHiding, c.advanced.rootHiding);
+        QCOMPARE(l.advanced.playSpoof, c.advanced.playSpoof);
+        QCOMPARE(l.advanced.denylistPackages, c.advanced.denylistPackages);
+    }
+
     void saveInstanceTouchesOnlyItsOwnGroup() {
         QTemporaryDir dir;
         const QString path = rc(dir);

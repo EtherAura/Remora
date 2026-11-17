@@ -168,7 +168,8 @@ jobs:
         run: |
           rc=0
           for f in $(git ls-files); do
-            case "$f" in docs/*.png|packaging/*.jpg|packaging/*.png|packaging/*.svg) continue ;; esac
+            # Our own images, as in tools/make-public-tree.sh's sweep: the two lists must agree.
+            case "$f" in docs/*.png|packaging/*.jpg|packaging/*.png|packaging/*.svg|packaging/*.ico) continue ;; esac
             if file -b --mime "$f" | grep -q 'charset=binary'; then
               echo "::error file=$f::third-party binary committed — see vendor/PAYLOADS.md"
               rc=1
