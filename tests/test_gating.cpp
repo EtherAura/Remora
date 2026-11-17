@@ -552,6 +552,10 @@ private slots:
         const ImageSelection s = selectImage({"gapps"}, 13);
         QVERIFY2(isPlaceholderImageTag(s.tag), qPrintable(s.tag));
         QVERIFY(s.needsBuild);
+        // needsBuild is fixed for the placeholder, so the gap itself is what proves nothing was
+        // swallowed: every requested feature, implied ones included, stays missing.
+        QVERIFY(s.missing.contains("gapps"));
+        QCOMPARE(selectImage({"shamiko"}, 13).missing, normalize({"shamiko"}));
         // A13 cannot be source-built either (no release config), so the build path refuses too —
         // that refusal lives in sourceBuildSteps and is covered by
         // aospSourceKindIsVersionGuardedAndDocumented in test_engine.
