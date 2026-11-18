@@ -2,8 +2,8 @@
 
 This guide explains how to install Remora, get an Android image (the ready-made one, or one you
 build), run that image on your own machine or on another docker host, and use Android apps from
-your Linux desktop. This page says
-what Remora is and lists every other page.
+your Linux desktop, or, as a preview, from Windows. This page says what Remora is and lists every
+other page.
 
 ## What Remora is
 
@@ -26,7 +26,9 @@ command line.
 
 - **It is not an emulator.** Android runs natively in a container on your own kernel. There is no
   virtual machine and no CPU emulation. Apps that exist only for arm64 run through ARM translation,
-  which the ready-made image leaves out.
+  which the ready-made image leaves out. Windows has no Linux kernel, so there the container runs
+  in a small Linux guest Remora manages itself, on the Windows Hypervisor Platform
+  ([Windows](Windows.md)).
 - **The ready-made image is not every feature.** It is x86_64 only and carries no Google apps, ARM
   translation, Widevine or root. Google Play, root, ARM translation and Widevine are added locally,
   on your own machine, or come with an image you build yourself. Building one takes about 450 GB of
@@ -34,7 +36,8 @@ command line.
   [Requirements](Requirements.md).
 - **There is no phone companion app.** That is future work.
 
-Remora runs on Linux x86_64 and is licensed under the GPL v3. An image you build is not
+Remora runs on Linux x86_64, and as a preview on 64-bit Windows 10 and 11. It is licensed under
+the GPL v3. An image you build is not
 automatically yours to share: [NOTICE](../../NOTICE) explains which features make an image
 non-redistributable.
 
@@ -45,6 +48,7 @@ non-redistributable.
 | [Requirements](Requirements.md) | What you need to run Android, to build the image, and to build Remora itself |
 | [Installation](Installation.md) | The `.deb`, the Arch `PKGBUILD`, building from source, verifying a download |
 | [Getting Started](Getting-Started.md) | The first run from `remora check` to apps in your menu |
+| [Windows](Windows.md) | Remora on Windows 10 and 11: the guest Android runs in, what the PC needs, what differs |
 
 ## The Android image
 

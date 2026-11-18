@@ -3,9 +3,9 @@
 This page explains how Remora runs on Windows: where Android actually runs, what the PC needs,
 the guest Remora manages for you, and what differs from Linux.
 
-> **Status:** Remora for Windows is in development. It builds and runs, but there is no Windows
-> release package yet, and it has not been tested on a range of PCs. Everything below describes
-> the design as built.
+> **Status: preview.** Every release carries a Windows installer. It has been tested in virtual
+> machines, not yet on a range of PCs, so expect rough edges, and please
+> [report](https://github.com/EtherAura/Remora/issues/new/choose) what you find.
 
 ## Where Android runs
 
@@ -44,7 +44,14 @@ If it is missing, the first connect stops with a message saying so, before anyth
 
 ## Installing
 
-Run `remora-setup.exe`. It installs Remora under Program Files, adds **Remora** to the Start menu,
+Download `Remora-<version>-windows-x64-setup.exe` from the
+[latest release](https://github.com/EtherAura/Remora/releases/latest) and run it. The installer is
+not code-signed, so Windows SmartScreen stops it the first time with "Windows protected your PC":
+choose **More info**, then **Run anyway**. To check the download first, compare its SHA-256 with
+the `.sha256` file beside it in the release (`certutil -hashfile <file> SHA256`), or verify where
+it was built with `gh attestation verify <file> --repo EtherAura/Remora`.
+
+The installer puts Remora under Program Files, adds **Remora** to the Start menu,
 and turns on the Windows Hypervisor Platform if it is off, in which case it asks you to restart
 Windows. Uninstalling, from **Settings → Apps**, stops the guest, removes the program and the
 profiles' Start-menu folders, and keeps `%LOCALAPPDATA%\remora`: the guest's data disk there holds

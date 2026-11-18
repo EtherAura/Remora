@@ -2,13 +2,14 @@
 
 # Remora
 
-**Android apps, at home on your Linux desktop.**
+**Android apps, at home on your Linux desktop, and on Windows as a preview.**
 
 [![CI](https://github.com/EtherAura/Remora/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/EtherAura/Remora/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml/badge.svg)](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/EtherAura/Remora)](https://github.com/EtherAura/Remora/releases/latest)
 [![GPLv3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 ![Linux x86_64](https://img.shields.io/badge/platform-Linux%20x86__64-5a8868)
+![Windows 10/11 x64, preview](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64%2C%20preview-5a8868)
 
 Fetch the ready-made Android 17 image or build Android 16 or 17 from source, deploy it in Docker, and open each app in its own window.
 
@@ -53,6 +54,13 @@ software rendering; the apps you install add to both
    [Getting Started](docs/user/Getting-Started.md). It covers fetching onto a remote Docker host
    over ssh, naming the fetched image in your profile (the default feature selection does not
    resolve to it), `remora check` and `remora up`.
+
+**On Windows 10 or 11 (64-bit), a preview:** run `Remora-<version>-windows-x64-setup.exe` from the
+[latest release](https://github.com/EtherAura/Remora/releases/latest). Windows has no Linux kernel,
+so Remora runs Android in a small Linux guest it manages itself, on the Windows Hypervisor
+Platform, which the installer turns on. No WSL or virtual machine software of your own is needed,
+and rendering is software. [Windows](docs/user/Windows.md) covers what the PC needs and what
+differs from Linux.
 
 Fetching the image does not install Remora, satisfy what `remora check` asks for, or start Android
 ([Requirements](docs/user/Requirements.md#to-run-android) lists what the host needs). The signed

@@ -13,6 +13,8 @@ Every [release](https://github.com/EtherAura/Remora/releases/latest) carries:
 - a `.deb` for Ubuntu 24.04 and later, and Debian (amd64),
 - a `PKGBUILD` for Arch Linux,
 - an ebuild for Gentoo, `remora-<version>.ebuild`,
+- an installer for 64-bit Windows 10 and 11, `Remora-<version>-windows-x64-setup.exe`, a preview
+  ([Windows](Windows.md#installing)),
 - SHA-256 checksums, an SBOM, and a Sigstore build-provenance attestation.
 
 Remora uses calendar versions, `YYYY.MM.PATCH`. `remora --version` prints the version you have.

@@ -1,18 +1,22 @@
 # Remora in detail
 
-**Run Android apps on your Linux desktop.** Android 16 and 17 (LineageOS 23 / 24) in a Docker
-container, GPU-accelerated on NVIDIA, Intel and AMD, with every app in a window of its own.
+**Run Android apps on your Linux desktop, and on Windows as a preview.** Android 16 and 17
+(LineageOS 23 / 24) in a Docker container, GPU-accelerated on NVIDIA, Intel and AMD on Linux, with
+every app in a window of its own.
 
 [![CI](https://github.com/EtherAura/Remora/actions/workflows/ci.yml/badge.svg)](https://github.com/EtherAura/Remora/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml/badge.svg)](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml)
 [![Latest release](https://img.shields.io/github/v/release/EtherAura/Remora)](https://github.com/EtherAura/Remora/releases/latest)
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue)](../LICENSE)
 ![Platform: Linux x86_64](https://img.shields.io/badge/platform-Linux%20x86__64-informational)
+![Platform: Windows 10/11 x64, preview](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64%2C%20preview-informational)
 
 Remora is a desktop control plane for Android in Docker: one place to compose the image, deploy it
 and mirror it — *with every knob actually exposed.* It is **not an emulator**: Android runs
 natively in a container on your own kernel, with no virtual machine and no CPU emulation, and
-arm64-only apps run through ARM translation, which the ready-made image leaves out.
+arm64-only apps run through ARM translation, which the ready-made image leaves out. Windows has no
+Linux kernel, so there Remora runs Android in a small Linux guest it manages itself
+([Windows](user/Windows.md)).
 
 Remora is **configure-first**: compose your Android image à-la-carte, pick **where** to run it
 (this machine, or any docker host over ssh), check the target is ready, then **deploy + connect**
