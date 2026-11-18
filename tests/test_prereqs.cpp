@@ -318,6 +318,43 @@ private slots:
         QVERIFY(isReady(noNode));
     }
 
+    // The Venus trio, like host encode, is reported so it can be discovered and never blocks: a
+    // host without the NVIDIA node, the render server or the guest libraries is still ready, and
+    // each row turns ok on its own probed piece.
+    void venusRowsAreReportedButNeverBlock() {
+        HostCapabilities c = linuxClient();
+        c.inDockerGroup = true;
+        c.dockerDaemonOk = true;
+        c.modAshmem = true;
+        const auto find = [](const QVector<PrereqResult> &v, const QString &key) {
+            for (const PrereqResult &r : v)
+                if (r.key == key) return r;
+            return PrereqResult{};
+        };
+        const QStringList trio{QStringLiteral("venus_nvidia_node"), QStringLiteral("venus_server"),
+                               QStringLiteral("venus_guest_libs")};
+        // Nothing probed: every row shown, failing, at "gpu" severity, and the host still ready.
+        const QVector<PrereqResult> none = checkReadiness(Backend::Bare, c, /*gpuHost=*/true);
+        for (const QString &key : trio) {
+            const PrereqResult row = find(none, key);
+            QCOMPARE(row.key, key);
+            QVERIFY(!row.ok);
+            QCOMPARE(row.severity, QStringLiteral("gpu"));
+        }
+        QVERIFY(isReady(none));
+        // All three probed: every row ok, and still ready.
+        c.hostNvidiaRenderNode = QStringLiteral("/dev/dri/renderD129");
+        c.venusServerPath = QStringLiteral("/opt/remora/venus/bin/virgl_test_server");
+        c.venusLibDir = QStringLiteral("/opt/remora/venus/guest-libs");
+        const QVector<PrereqResult> all = checkReadiness(Backend::Bare, c, /*gpuHost=*/true);
+        for (const QString &key : trio) {
+            const PrereqResult row = find(all, key);
+            QCOMPARE(row.key, key);
+            QVERIFY(row.ok);
+        }
+        QVERIFY(isReady(all));
+    }
+
     void remoteReady() {
         HostCapabilities c = withTools();
         c.sshReachable = true;
