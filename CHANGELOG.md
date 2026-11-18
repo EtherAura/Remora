@@ -7,6 +7,8 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+## [2026.11.5] - 2026-11-18
+
 ### Added
 
 - **Remora for Windows, as a preview: every release now carries a Windows installer**,
@@ -618,7 +620,8 @@ First public release.
   then mirror with Remora's own Qt/FFmpeg client and an agent baked into the image — video, audio,
   input, clipboard, desktop-mode displays and app listing.
 
-[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.4...HEAD
+[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.5...HEAD
+[2026.11.5]: https://github.com/EtherAura/Remora/compare/v2026.11.4...v2026.11.5
 [2026.11.4]: https://github.com/EtherAura/Remora/compare/v2026.11.3...v2026.11.4
 [2026.11.3]: https://github.com/EtherAura/Remora/compare/v2026.11.2...v2026.11.3
 [2026.11.2]: https://github.com/EtherAura/Remora/compare/v2026.11.1...v2026.11.2
