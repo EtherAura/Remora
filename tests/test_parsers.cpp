@@ -515,6 +515,14 @@ private slots:
         QVERIFY(parsePmPackages(QString()).isEmpty());
     }
 
+    // Over a pty every line ends in \r\n: a name keeping its \r would reach pm path and the local
+    // directory name. A package listed twice comes back once, first position kept.
+    void pmPackagesToleratesCrlfAndDuplicates() {
+        QCOMPARE(parsePmPackages(QStringLiteral(
+                     "package:com.foo\r\npackage:org.bar\r\npackage:com.foo\r\n")),
+                 QStringList({"com.foo", "org.bar"}));
+    }
+
     // The one that actually breaks apps if it is wrong. A Play-installed app is usually SPLIT, and
     // installing only base.apk yields an app that launches and then dies on a missing resource —
     // so every path must come back, not just the first.
