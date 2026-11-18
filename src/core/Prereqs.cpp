@@ -162,9 +162,6 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
             "run `remora venus-build` — it clones and patches virglrenderer, compiles it, and "
             "installs under $REMORA_VENUS_DIR (default ~/.local/share/remora/venus)",
             "gpu");
-        // Reported as one line because a PARTIAL guest-libs dir is treated as absent: a missing
-        // library boots to a black screen rather than to an error, so half-enabling is worse than
-        // not enabling.
         // Host-side encode (bd remora-e5x.10). Reported at "gpu" severity like the Venus trio:
         // informational, never a blocker, because a machine that does not want host encode is not
         // broken for lacking it. Before these existed a missing piece surfaced only at connect,
@@ -189,6 +186,9 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
             "remember the render server is STATICALLY linked, so installing libvirglrenderer.so "
             "alone leaves the old code running",
             "gpu");
+        // Reported as one line because a PARTIAL guest-libs dir is treated as absent: a missing
+        // library boots to a black screen rather than to an error, so half-enabling is worse than
+        // not enabling.
         add("venus_guest_libs", "Venus guest libraries complete (all five)",
             caps.venusLibDir.has_value(),
             "run `remora venus-build` — it fetches the five guest libraries from their pinned "
