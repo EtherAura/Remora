@@ -592,6 +592,61 @@ private slots:
         QVERIFY(c.backend.retiredVmBackend);
     }
 
+    // The resolver turns an unset audio into false, so an explicit false is only distinguishable
+    // when [Defaults] turns audio on. Saving false must persist it in the instance group, where it
+    // overrides the default; clearing it must remove the key so the default shows through again.
+    // Presence is checked apart from the value, so a dropped key cannot pass for a stored false.
+    void explicitAudioFalseOverridesDefaultsAndClearingInherits() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Defaults/audio", true);
+            s.setValue("Instance-x/width", 1024);
+            s.sync();
+            QCOMPARE(s.status(), QSettings::NoError);
+        }
+        RemoraConfig c = loadInstance(path, QStringLiteral("x"));
+        QCOMPARE(c.display.width, std::optional<int>(1024));
+        QCOMPARE(c.mirror.audio, std::optional<bool>(true));
+
+        c.mirror.audio = false;
+        saveInstance(path, QStringLiteral("x"), c);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.beginGroup(QStringLiteral("Instance-x"));
+            QVERIFY(s.contains(QStringLiteral("audio")));
+            QCOMPARE(s.value("audio").toBool(), false);
+        }
+        QCOMPARE(loadInstance(path, QStringLiteral("x")).mirror.audio, std::optional<bool>(false));
+
+        c.mirror.audio.reset();
+        saveInstance(path, QStringLiteral("x"), c);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            QVERIFY(!s.contains(QStringLiteral("Instance-x/audio")));
+            QVERIFY(s.contains(QStringLiteral("Defaults/audio")));
+            QCOMPARE(s.value("Defaults/audio").toBool(), true);
+        }
+        QCOMPARE(loadInstance(path, QStringLiteral("x")).mirror.audio, std::optional<bool>(true));
+
+        // With no [Defaults] audio at all, an instance that never set it stays unset for the
+        // resolver to default.
+        QTemporaryDir bare;
+        QVERIFY(bare.isValid());
+        const QString barePath = rc(bare);
+        {
+            QSettings s(barePath, QSettings::IniFormat);
+            s.setValue("Instance-y/width", 800);
+            s.sync();
+            QCOMPARE(s.status(), QSettings::NoError);
+        }
+        const RemoraConfig y = loadInstance(barePath, QStringLiteral("y"));
+        QCOMPARE(y.display.width, std::optional<int>(800));
+        QCOMPARE(y.mirror.audio, std::optional<bool>());
+    }
+
     // The loader trims adb_bind and gpu_mode, so a padded value reads cleanly. QSettings quotes a
     // padded value on write and keeps the padding on read, which the first block checks: without
     // it the store's trim would have nothing to do. gpuModeFromString trims too, so a padded valid
