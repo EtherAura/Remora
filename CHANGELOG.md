@@ -7,6 +7,13 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Changed
+
+- **The Windows installer no longer carries a second copy of FFmpeg.** Qt's FFmpeg media backend
+  brought FFmpeg 7 along beside the FFmpeg 8 Remora decodes with, though Remora uses Qt
+  Multimedia only to play sound, which Qt's native Windows backend does as well. That backend
+  alone now ships: the download is 7 MB smaller, and the installed program 21 MB.
+
 ## [2026.11.5] - 2026-11-18
 
 ### Added

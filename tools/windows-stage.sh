@@ -57,6 +57,10 @@ OUT=$(cd "$OUT" && pwd)
 for p in "${PLUGINS[@]}"; do
     [[ -d "$SDK/qt/plugins/$p" ]] && mkdir -p "$OUT/$p" && cp "$SDK/qt/plugins/$p"/*.dll "$OUT/$p/"
 done
+# Qt's FFmpeg media backend links Qt's own FFmpeg 7, a second FFmpeg beside the 8.1 Remora decodes
+# with (21 MB). Remora's only multimedia is QAudioSink, which Qt serves without either backend, so
+# only the native Windows one ships.
+rm -f "$OUT/multimedia/ffmpegmediaplugin.dll"
 if ((TESTS)); then
     cp "$BUILD"/test_*.exe "$OUT/"
     # CRLF: cmd misreads a batch file with LF line ends, and the checkout keeps this one LF.
