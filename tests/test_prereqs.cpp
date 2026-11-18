@@ -278,6 +278,46 @@ private slots:
             if (r.key == QLatin1String("va_driver")) QVERIFY(r.ok);
     }
 
+    // bd remora-4ei.79 — host mode names the GPU it will render on, so a SwiftShader fallback
+    // cannot pass as success. A node with no readable driver still names the node; no node at all
+    // is a failing "gpu" line, never a blocker, since the image's own scan may still find one.
+    void hostRenderNodeRowNamesTheProbedGpu() {
+        HostCapabilities c = linuxClient();
+        c.inDockerGroup = true;
+        c.dockerDaemonOk = true;
+        c.modAshmem = true;
+        const auto find = [](const QVector<PrereqResult> &v, const QString &key) {
+            for (const PrereqResult &r : v)
+                if (r.key == key) return r;
+            return PrereqResult{};
+        };
+        // Node and driver probed: ok, and the label carries both.
+        c.hostRenderNode = QStringLiteral("/dev/dri/renderD129");
+        c.hostRenderDriver = QStringLiteral("i915");
+        const PrereqResult named = find(checkReadiness(Backend::Bare, c, /*gpuHost=*/true),
+                                        QStringLiteral("host_render_node"));
+        QCOMPARE(named.key, QStringLiteral("host_render_node"));
+        QVERIFY(named.ok);
+        QCOMPARE(named.label, QStringLiteral("Host GPU: /dev/dri/renderD129 (i915)"));
+        // Node probed, driver not: still ok, the label says so, and there is no VA judgement to
+        // make without a driver.
+        c.hostRenderDriver.reset();
+        const QVector<PrereqResult> noDriver = checkReadiness(Backend::Bare, c, /*gpuHost=*/true);
+        const PrereqResult unknown = find(noDriver, QStringLiteral("host_render_node"));
+        QCOMPARE(unknown.key, QStringLiteral("host_render_node"));
+        QVERIFY(unknown.ok);
+        QCOMPARE(unknown.label, QStringLiteral("Host GPU: /dev/dri/renderD129 (unknown driver)"));
+        QVERIFY(find(noDriver, QStringLiteral("va_driver")).key.isEmpty());
+        // No node: a failing "gpu" line, and the host is still ready.
+        c.hostRenderNode.reset();
+        const QVector<PrereqResult> noNode = checkReadiness(Backend::Bare, c, /*gpuHost=*/true);
+        const PrereqResult missing = find(noNode, QStringLiteral("host_render_node"));
+        QCOMPARE(missing.key, QStringLiteral("host_render_node"));
+        QVERIFY(!missing.ok);
+        QCOMPARE(missing.severity, QStringLiteral("gpu"));
+        QVERIFY(isReady(noNode));
+    }
+
     void remoteReady() {
         HostCapabilities c = withTools();
         c.sshReachable = true;
