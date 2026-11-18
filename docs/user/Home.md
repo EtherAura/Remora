@@ -46,7 +46,7 @@ non-redistributable.
 | page | what it covers |
 |---|---|
 | [Requirements](Requirements.md) | What you need to run Android, to build the image, and to build Remora itself |
-| [Installation](Installation.md) | The `.deb`, the Arch `PKGBUILD`, building from source, verifying a download |
+| [Installation](Installation.md) | The `.deb`, the Arch `PKGBUILD`, the Gentoo ebuild, the Windows installer, building from source, verifying a download |
 | [Getting Started](Getting-Started.md) | The first run from `remora check` to apps in your menu |
 | [Windows](Windows.md) | Remora on Windows 10 and 11: the guest Android runs in, what the PC needs, what differs |
 

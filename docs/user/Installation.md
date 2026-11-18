@@ -119,8 +119,9 @@ ctest --test-dir build
 
 ## Verifying a download
 
-The source tarball and the `.deb` each carry a Sigstore-backed build-provenance attestation that
-records which workflow, at which commit, produced those exact bytes. Check it with the GitHub CLI:
+The source tarball, the `.deb`, the SBOM and the Windows installer each carry a Sigstore-backed
+build-provenance attestation that records which workflow, at which commit, produced those exact
+bytes. Check it with the GitHub CLI:
 
 ```sh
 gh attestation verify remora_<version>_amd64.deb --repo EtherAura/Remora
