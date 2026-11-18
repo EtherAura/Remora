@@ -34,6 +34,12 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- **An empty CPU flags line no longer refuses a tuned image.** When the probe read a `flags`
+  line with nothing after its colon, preflight reported every flag the image's arch variant needs
+  as missing, telling you the CPU lacked `avx2` when nothing about it had been read. Such a line
+  now counts as not knowing, which never refuses; a CPU that really lacks the flags is still
+  refused.
+
 - **On Windows a mirror's log holds its own warnings.** Without a console, Qt sends its messages
   to the debugger rather than to the log a detached mirror writes, so the reasons a mirror gave
   for falling back or failing, such as which hardware decoder it used, never reached its log.

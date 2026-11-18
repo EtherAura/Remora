@@ -339,6 +339,19 @@ private slots:
         QVERIFY(missingArchVariantFlags(QStringLiteral("alderlake"), QStringLiteral("  ")).isEmpty());
     }
 
+    void archVariantNeverRefusesAnEmptyFlagsBody() {
+        // A flags line whose label survived but whose body did not carries no flag tokens: it is
+        // the same not-knowing as an unreadable line, and must not read as "the CPU lacks avx2".
+        for (const QString &line : {QStringLiteral("flags\t:"), QStringLiteral("flags\t: ")}) {
+            QVERIFY2(missingArchVariantFlags(QStringLiteral("alderlake"), line).isEmpty(),
+                     qPrintable(line));
+            QVERIFY2(archVariantRefusal(QStringLiteral("alderlake"), line,
+                                        QStringLiteral("remora:test"), QStringLiteral("this host"))
+                         .isEmpty(),
+                     qPrintable(line));
+        }
+    }
+
     // THE REGRESSION THAT ALMOST SHIPPED, and the reason the fixtures above are measured rather
     // than derived from the ISA. -march=alderlake enables -mcldemote, so an ISA-manual reading of
     // the requirement list includes CLDEMOTE — but Intel fuses CLDEMOTE OFF on consumer Alder Lake,

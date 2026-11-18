@@ -274,15 +274,21 @@ QStringList missingArchVariantFlags(const QString &variant, const QString &flags
     if (flagsLine.trimmed().isEmpty()) return {};
     // Split on whitespace and match WHOLE tokens: "avx" is a prefix of "avx2" and of "avx512f", so
     // a contains() test would silently pass a CPU that has neither.
+    // A line with a label takes its tokens from after the colon only; a bare token list has none.
+    // Falling back to the whole line when the body is empty made "flags\t:" two tokens, neither a
+    // flag, and refused every requirement.
     const QSet<QString> have = [&] {
         QSet<QString> s;
-        const QString body = flagsLine.section(QLatin1Char(':'), 1);
+        const QString body = flagsLine.contains(QLatin1Char(':'))
+                                 ? flagsLine.section(QLatin1Char(':'), 1)
+                                 : flagsLine;
         for (const QString &t :
-             (body.isEmpty() ? flagsLine : body).split(QRegularExpression(QStringLiteral("\\s+")),
-                                                       Qt::SkipEmptyParts))
+             body.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts))
             s.insert(t);
         return s;
     }();
+    // A label with nothing after it is the same not-knowing as a blank line.
+    if (have.isEmpty()) return {};
     QStringList missing;
     for (const QString &f : want)
         if (!have.contains(f)) missing << f;
