@@ -1586,6 +1586,46 @@ private slots:
         QCOMPARE(*resolve(c, Backend::Remote).fps, 120);
     }
 
+    // bd remora-5byu — the size and density neighbours of the fps guard. The goldens start from
+    // the hand-built bareCfg(), so nothing else reads what resolve() picks for a blank or explicit
+    // display. Distinct override values catch a field picked from its neighbour.
+    void resolverBakesDisplayDefaultsAndOverrides() {
+        RemoraConfig c;
+        for (const Backend b : {Backend::Bare, Backend::Remote}) {
+            const ResolvedConfig r = resolve(c, b);
+            QCOMPARE(r.width, 3760);
+            QCOMPARE(r.height, 1992);
+            QCOMPARE(r.dpi, 320);
+        }
+        QStringList argv = buildDockerRunArgv(resolve(c, Backend::Bare));
+        QVERIFY(argv.contains(QStringLiteral("androidboot.remora_width=3760")));
+        QVERIFY(argv.contains(QStringLiteral("androidboot.remora_height=1992")));
+        QVERIFY(argv.contains(QStringLiteral("androidboot.remora_dpi=320")));
+
+        c.display.width = 1001;
+        c.display.height = 1002;
+        c.display.dpi = 1003;
+        for (const Backend b : {Backend::Bare, Backend::Remote}) {
+            const ResolvedConfig r = resolve(c, b);
+            QCOMPARE(r.width, 1001);
+            QCOMPARE(r.height, 1002);
+            QCOMPARE(r.dpi, 1003);
+        }
+        argv = buildDockerRunArgv(resolve(c, Backend::Bare));
+        QVERIFY(argv.contains(QStringLiteral("androidboot.remora_width=1001")));
+        QVERIFY(argv.contains(QStringLiteral("androidboot.remora_height=1002")));
+        QVERIFY(argv.contains(QStringLiteral("androidboot.remora_dpi=1003")));
+
+        RemoraConfig dpiOnly;
+        dpiOnly.display.dpi = 240;
+        for (const Backend b : {Backend::Bare, Backend::Remote}) {
+            const ResolvedConfig r = resolve(dpiOnly, b);
+            QCOMPARE(r.width, 3760);
+            QCOMPARE(r.height, 1992);
+            QCOMPARE(r.dpi, 240);
+        }
+    }
+
     // bd remora-4ei.57 — the bare backend used to hardcode gpuNode = nullopt, so gpu_mode=host
     // half-applied: host mode was emitted with no node and no /dev/dri, which leaves the image's
     // gpu_config.sh unable to find a node (its auto-scan case list has no xe entry) and silently
