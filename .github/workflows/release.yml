@@ -1,10 +1,10 @@
 name: Release
 
 # Runs on a version tag (v*). Checks the tag against every place the version is written, builds the
-# source tarball with `git archive` and the .deb with CPack, stamps the tarball's sha256 into a copy
-# of the PKGBUILD, renders the Gentoo ebuild, generates an SBOM, attests provenance for what this
-# run built, and publishes the GitHub release with CHANGELOG.md's section for the version as its
-# notes.
+# source tarball with `git archive`, the .deb with CPack and the Windows installer with NSIS, stamps
+# the tarball's sha256 into a copy of the PKGBUILD, renders the Gentoo ebuild, generates an SBOM,
+# attests provenance for what this run built, and publishes the GitHub release with CHANGELOG.md's
+# section for the version as its notes.
 #
 # Nothing is committed back. The PKGBUILD in the tree keeps sha256sums=('SKIP') and the release
 # carries the stamped copy, so a tag never needs a follow-up bot commit on main.
@@ -27,8 +27,84 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The Windows installer, built exactly as windows.yml builds it on every push to main, and handed
+  # to the release job below, which attests and publishes it with everything else: one publishing
+  # path.
+  windows:
+    name: Windows installer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the version from the tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+$ ]]; then
+            echo "::error::tag '$TAG' is not v<YYYY.MM.PATCH>"
+            exit 1
+          fi
+          echo "installer=Remora-$VERSION-windows-x64-setup.exe" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build p7zip-full libarchive-tools curl nsis
+
+      - name: Cache the Windows SDK
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/remora-windows-sdk
+          key: windows-sdk-${{ hashFiles('tools/windows-sdk.sh') }}
+
+      - name: Fetch the Windows SDK
+        run: tools/windows-sdk.sh
+
+      - name: Cache the guest kernel
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/remora-guest-build/kernel-*
+          key: guest-kernel-${{ hashFiles('guest/kernel/config', 'guest/assemble.sh') }}
+
+      - name: Build the guest
+        run: guest/build.sh build-guest
+
+      - name: Configure
+        run: >
+          cmake -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=cmake/windows-llvm-mingw.cmake
+
+      - name: Build
+        run: cmake --build build-win
+
+      - name: Stage and package
+        env:
+          INSTALLER: ${{ steps.version.outputs.installer }}
+        run: |
+          set -euo pipefail
+          tools/windows-stage.sh build-win dist build-guest
+          tools/windows-installer.sh dist "$INSTALLER"
+          sha256sum "$INSTALLER" | tee "$INSTALLER.sha256"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-installer
+          path: |
+            ${{ steps.version.outputs.installer }}
+            ${{ steps.version.outputs.installer }}.sha256
+          retention-days: 1
+          if-no-files-found: error
+
   release:
-    name: release (tarball, .deb, PKGBUILD, ebuild)
+    name: release (tarball, .deb, PKGBUILD, ebuild, Windows installer)
+    needs: windows
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     # contents: write creates the release and uploads its assets. id-token: write mints the
@@ -62,6 +138,7 @@ jobs:
             echo "tarball=Remora-$VERSION.tar.gz"
             echo "sbom=Remora-$VERSION-linux-x64.cdx.json"
             echo "ebuild=remora-$VERSION.ebuild"
+            echo "installer=Remora-$VERSION-windows-x64-setup.exe"
           } >> "$GITHUB_OUTPUT"
 
       - name: Verify the tag matches every version in the tree
@@ -290,13 +367,24 @@ jobs:
       # from the files beside them, the PKGBUILD is a source file with one line stamped, and the
       # ebuild is a source file renamed. Runs before publishing on purpose — a release without its
       # attestation is a claim with no evidence.
-      - name: Attest build provenance (tarball, .deb, SBOM)
+      # The Windows job's installer, with the sum it took when it built it, checked again here.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-installer
+
+      - name: Check the Windows installer
+        env:
+          INSTALLER: ${{ steps.version.outputs.installer }}
+        run: sha256sum -c "$INSTALLER.sha256"
+
+      - name: Attest build provenance (tarball, .deb, SBOM, Windows installer)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             ${{ steps.version.outputs.tarball }}
             ${{ steps.deb.outputs.deb }}
             ${{ steps.version.outputs.sbom }}
+            ${{ steps.version.outputs.installer }}
 
       - name: Publish the release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
@@ -311,4 +399,6 @@ jobs:
             PKGBUILD
             ${{ steps.version.outputs.ebuild }}
             ${{ steps.version.outputs.sbom }}
+            ${{ steps.version.outputs.installer }}
+            ${{ steps.version.outputs.installer }}.sha256
           fail_on_unmatched_files: true

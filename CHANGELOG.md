@@ -9,6 +9,16 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Added
 
+- **Remora for Windows, as a preview: every release now carries a Windows installer**,
+  `Remora-<version>-windows-x64-setup.exe`, for 64-bit Windows 10 and 11. Android runs in a small
+  Linux guest Remora manages itself, on the Windows Hypervisor Platform, which the installer turns
+  on. No WSL and no virtual machine software of your own. Rendering is software (SwiftShader).
+  The installer is not code-signed, so Windows SmartScreen asks before the first run; its build
+  provenance is attested like the Linux packages
+  (`gh attestation verify <file> --repo EtherAura/Remora`). It has been tested in virtual machines,
+  not yet on a range of PCs. See the [Windows](https://github.com/EtherAura/Remora/wiki/Windows)
+  page.
+
 - **A Start-menu folder per profile on Windows.** Windows now gets in the Start menu the folder
   Linux gets in the application menu: one entry per Android app under the app's own icon, plus
   the mirror, desktop and PIP entries. It is refreshed after each connect and by `remora apps`.
