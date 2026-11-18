@@ -600,6 +600,15 @@ private slots:
                               "/data/app/~~x/com.foo-1/split_config.en.apk"}));
     }
 
+    // Each trim guards its own boundary: indentation before the prefix hides the line from the
+    // prefix check, and a space after it would ride into the path handed to adb pull.
+    void pmPathsTrimsAroundThePrefix() {
+        QCOMPARE(parsePmPaths(QStringLiteral("  package:/data/app/com.foo-1/base.apk\n")),
+                 QStringList({"/data/app/com.foo-1/base.apk"}));
+        QCOMPARE(parsePmPaths(QStringLiteral("package:  /data/app/com.foo-1/base.apk\n")),
+                 QStringList({"/data/app/com.foo-1/base.apk"}));
+    }
+
     // ─────────── host LAN → macvlan parameters (bd remora-400) ───────────
 
     // docker rejects a --subnet whose host bits are set, so the host's own address must be masked
