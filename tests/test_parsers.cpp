@@ -580,6 +580,18 @@ private slots:
         QVERIFY(parsePmPaths(QString()).isEmpty());
     }
 
+    // adb shell over a pty ends every line with \r\n: untrimmed, no path would pass the .apk
+    // filter and every app would read as not installed. A repeated path would be pulled twice into
+    // one local file and handed twice to install-multiple, which fails the whole transaction.
+    void pmPathsToleratesCrlfAndDuplicates() {
+        QCOMPARE(parsePmPaths(QStringLiteral(
+                     "package:/data/app/~~x/com.foo-1/base.apk\r\n"
+                     "package:/data/app/~~x/com.foo-1/split_config.en.apk\r\n"
+                     "package:/data/app/~~x/com.foo-1/base.apk\r\n")),
+                 QStringList({"/data/app/~~x/com.foo-1/base.apk",
+                              "/data/app/~~x/com.foo-1/split_config.en.apk"}));
+    }
+
     // ─────────── host LAN → macvlan parameters (bd remora-400) ───────────
 
     // docker rejects a --subnet whose host bits are set, so the host's own address must be masked
