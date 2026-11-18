@@ -22,12 +22,27 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Changed
 
+- **`guest_accel=tcg` is described as what it is: for testing only.** Under emulation Android
+  boots and the Start-menu folder is written, but the device cannot encode its screen fast enough
+  for the mirror to show it. The message shown when the Windows Hypervisor Platform is missing,
+  and the Windows page, say so instead of calling it slow.
+
 - **The Windows installer stops Remora's guest and adb's server before it installs or
   uninstalls.** A running guest held QEMU's files open, and the adb server Remora starts, which
   keeps running after Remora exits, held adb's. An update could not replace them and an uninstall
   left them behind.
 
 ### Fixed
+
+- **On Windows a mirror's log holds its own warnings.** Without a console, Qt sends its messages
+  to the debugger rather than to the log a detached mirror writes, so the reasons a mirror gave
+  for falling back or failing, such as which hardware decoder it used, never reached its log.
+  Remora now sends them to the log on Windows.
+
+- **D3D11VA decoding tries every graphics adapter, not only Windows' default.** The adapter that
+  can decode video is not always the default one: a display-only or remote-desktop adapter can be
+  the default with a working GPU beside it, and the mirror then decoded in software. It now tries
+  the default adapter and then the others in turn.
 
 - **A first menu waits for a device that has only just booted.** Right after a slow boot the
   device can list no apps for a few seconds, and a menu that did not exist yet was then reported

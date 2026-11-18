@@ -93,10 +93,10 @@ void Decoder::setupHw(const QString &hwdec) {
                 if (tryHwDevice(AV_HWDEVICE_TYPE_CUDA, {})) return;
                 break;
             case HwDecodeApi::D3d11va:
-                // The default adapter. Opening it says nothing about decode support yet: the
-                // decoder GUID for the codec and profile is checked at hwaccel init, which falls
-                // back through pickPixelFormat.
-                if (tryHwDevice(AV_HWDEVICE_TYPE_D3D11VA, {})) return;
+                // An adapter by index, or the default one. Opening it says nothing about decode
+                // support yet: the decoder GUID for the codec and profile is checked at hwaccel
+                // init, which falls back through pickPixelFormat.
+                if (tryHwDevice(AV_HWDEVICE_TYPE_D3D11VA, a.node.toLocal8Bit())) return;
                 break;
             case HwDecodeApi::Vaapi:
                 if (!a.node.isEmpty()) {

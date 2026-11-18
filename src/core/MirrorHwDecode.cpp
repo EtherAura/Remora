@@ -29,11 +29,19 @@ QList<HwDecodeAttempt> hwDecodeAttempts(const QString &hwdec, HwDecodePlatform p
     using Attempts = QList<HwDecodeAttempt>;
     const HwDecodeAttempt cuda{HwDecodeApi::Cuda, {}};
     const HwDecodeAttempt vaapiProbe{HwDecodeApi::Vaapi, {}};
-    const HwDecodeAttempt d3d11va{HwDecodeApi::D3d11va, {}};
+    // Windows' default adapter first, then the others by index. The adapter that can decode is not
+    // always the default one: on the Windows test VM the default was a display-only virtual
+    // adapter, the Intel GPU was adapter 1, and opening only the default meant software decode
+    // with a working GPU beside it. Remote Desktop's adapter and a second GPU are the same shape.
+    // An index past the last adapter fails to open at once.
+    const Attempts d3d11va{{HwDecodeApi::D3d11va, {}},
+                           {HwDecodeApi::D3d11va, QStringLiteral("1")},
+                           {HwDecodeApi::D3d11va, QStringLiteral("2")},
+                           {HwDecodeApi::D3d11va, QStringLiteral("3")}};
     if (mode == QLatin1String("auto") || mode == QLatin1String("1"))
-        return windows ? Attempts{cuda, d3d11va} : Attempts{cuda, vaapiProbe};
+        return windows ? Attempts{cuda} + d3d11va : Attempts{cuda, vaapiProbe};
     if (mode == QLatin1String("cuda") || mode == QLatin1String("nvdec")) return {cuda};
-    if (mode == QLatin1String("d3d11va")) return windows ? Attempts{d3d11va} : Attempts{};
+    if (mode == QLatin1String("d3d11va")) return windows ? d3d11va : Attempts{};
     if (mode == QLatin1String("vaapi")) return windows ? Attempts{} : Attempts{vaapiProbe};
     // Anything else names a VAAPI render node, which only Linux has. As given, not lowercased:
     // the nodes are renderD128 and up, and the lowercased path never exists.

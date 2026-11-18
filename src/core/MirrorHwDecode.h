@@ -22,8 +22,9 @@ inline constexpr HwDecodePlatform kHostHwDecodePlatform = HwDecodePlatform::Linu
 #endif
 
 // One device to try. node is VAAPI's render node, and empty there means "probe the render nodes"
-// (the probe reads /dev and /sys, so it is the decoder's, not this layer's). CUDA and D3D11VA take
-// none: FFmpeg opens the first CUDA device and the default D3D11 adapter.
+// (the probe reads /dev and /sys, so it is the decoder's, not this layer's). For D3D11VA it is the
+// DXGI adapter index, and empty means Windows' default adapter. CUDA takes none: FFmpeg opens the
+// first CUDA device.
 struct HwDecodeAttempt {
     HwDecodeApi api;
     QString node;

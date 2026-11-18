@@ -2665,6 +2665,14 @@ static void printUsage(QTextStream &out) {
 }
 
 int main(int argc, char **argv) {
+#ifdef Q_OS_WIN
+    // Qt's messages to stderr, where a log can catch them. Without a console Qt sends them to the
+    // debugger instead, so every detached mirror's log (stderr redirected to a file, no console)
+    // lacked its own qWarning and qInfo lines: the hardware-decode choice and its fallback among
+    // them, which is how a mirror that decoded in software beside a working GPU went unnoticed
+    // on the Windows test VM. First thing, before anything logs; children inherit it.
+    if (qEnvironmentVariableIsEmpty("QT_FORCE_STDERR_LOGGING")) qputenv("QT_FORCE_STDERR_LOGGING", "1");
+#endif
     // Before anything resolves a profile: on Windows "this machine" is Remora's own guest, and
     // its name resolves to forwarded ports only once it is registered (bd remora-7oih.5).
     GuestVm::registerFromState();

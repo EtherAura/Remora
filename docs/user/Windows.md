@@ -80,7 +80,7 @@ Set these in `[Defaults]`: there is one guest, shared by every profile.
 |---|---|---|
 | `guest_memory_mb` | `6144` | memory the guest holds while it runs |
 | `guest_cpus` | half this PC's threads, 2 to 8 | |
-| `guest_accel` | `auto` (the Windows Hypervisor Platform) | `tcg` runs without it, far too slowly for daily use |
+| `guest_accel` | `auto` (the Windows Hypervisor Platform) | `tcg` runs without it, for testing only: Android boots and the Start-menu folder is written, but the mirror cannot show the screen |
 
 ## What differs from Linux
 

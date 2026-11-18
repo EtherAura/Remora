@@ -42,14 +42,17 @@ static Drained drain(StreamDemuxer &d) {
     }
 }
 
-// A --hwdec mode's attempts, spelled for comparison: "cuda", "d3d11va", "vaapi-probe" (the
-// render-node probe) or "vaapi:<node>".
+// A --hwdec mode's attempts, spelled for comparison: "cuda", "d3d11va" (the default adapter),
+// "d3d11va:<index>", "vaapi-probe" (the render-node probe) or "vaapi:<node>".
 static QStringList hwPlan(const char *mode, HwDecodePlatform platform) {
     QStringList out;
     for (const HwDecodeAttempt &a : hwDecodeAttempts(QString::fromLatin1(mode), platform)) {
         switch (a.api) {
             case HwDecodeApi::Cuda: out << QStringLiteral("cuda"); break;
-            case HwDecodeApi::D3d11va: out << QStringLiteral("d3d11va"); break;
+            case HwDecodeApi::D3d11va:
+                out << (a.node.isEmpty() ? QStringLiteral("d3d11va")
+                                         : QStringLiteral("d3d11va:") + a.node);
+                break;
             case HwDecodeApi::Vaapi:
                 out << (a.node.isEmpty() ? QStringLiteral("vaapi-probe")
                                          : QStringLiteral("vaapi:") + a.node);
@@ -907,7 +910,9 @@ private slots:
             QCOMPARE(hwPlan(m, HwDecodePlatform::Linux),
                      (QStringList{QStringLiteral("cuda"), QStringLiteral("vaapi-probe")}));
             QCOMPARE(hwPlan(m, HwDecodePlatform::Windows),
-                     (QStringList{QStringLiteral("cuda"), QStringLiteral("d3d11va")}));
+                     (QStringList{QStringLiteral("cuda"), QStringLiteral("d3d11va"),
+                                  QStringLiteral("d3d11va:1"), QStringLiteral("d3d11va:2"),
+                                  QStringLiteral("d3d11va:3")}));
         }
     }
 
@@ -930,8 +935,11 @@ private slots:
             QCOMPARE(hwPlan(m, HwDecodePlatform::Linux), cuda);
             QCOMPARE(hwPlan(m, HwDecodePlatform::Windows), cuda);
         }
+        // The default adapter, then the others: the one that decodes is not always the default
+        // (a display-only adapter was, on the Windows test VM).
         QCOMPARE(hwPlan("d3d11va", HwDecodePlatform::Windows),
-                 QStringList{QStringLiteral("d3d11va")});
+                 (QStringList{QStringLiteral("d3d11va"), QStringLiteral("d3d11va:1"),
+                              QStringLiteral("d3d11va:2"), QStringLiteral("d3d11va:3")}));
         QCOMPARE(hwPlan("vaapi", HwDecodePlatform::Linux),
                  QStringList{QStringLiteral("vaapi-probe")});
         // The node keeps its case: lowercased, renderD129 is a path that does not exist.

@@ -161,7 +161,8 @@ const QString kWhpxMissing = QStringLiteral(
     "Windows Hypervisor Platform (or, as administrator: dism /online /enable-feature "
     "/featurename:HypervisorPlatform /all), then restart Windows. If it is already on, "
     "virtualization (Intel VT-x or AMD-V) is turned off in the PC's firmware settings. "
-    "guest_accel=tcg runs the guest without it, far too slowly for daily use.");
+    "guest_accel=tcg runs the guest without it, for testing only: Android boots and its apps can "
+    "be listed, but the mirror cannot show the screen.");
 
 }  // namespace
 
