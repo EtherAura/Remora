@@ -69,6 +69,14 @@ The guest keeps two disks in `%LOCALAPPDATA%\remora\guest`. The **system disk** 
 over the image that ships with Remora; an update replaces it. The **data disk** holds everything
 that is yours: Android images, containers and each profile's `/data`. An update never touches it.
 
+The guest keeps running when Remora exits, as docker does. When Windows shuts down, restarts or
+signs you out, a small hidden helper Remora leaves beside the guest powers it down first, Android
+included. If that takes more than a few seconds, Windows shows "Stopping Android, so that nothing
+it is saving is lost" while it waits. Choosing to restart anyway cuts the guest off as a power cut
+would: Android loses whatever it had not yet saved. So does a shutdown started from outside your
+session, such as `shutdown /r` over ssh, which Windows does not hold for anyone; run
+`remora guest stop` first.
+
 It is reachable only from this PC. Its ssh and adb ports are forwarded on `127.0.0.1` alone, with
 a key Remora generated and a host key Remora pinned before the first connection.
 

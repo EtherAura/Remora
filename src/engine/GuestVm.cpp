@@ -15,6 +15,12 @@
 #include "core/Guest.h"
 #include "core/ManagedHost.h"
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+
+#include <string>
+#endif
+
 namespace remora {
 
 namespace {
@@ -163,6 +169,53 @@ const QString kWhpxMissing = QStringLiteral(
     "virtualization (Intel VT-x or AMD-V) is turned off in the PC's firmware settings. "
     "guest_accel=tcg runs the guest without it, for testing only: Android boots and its apps can "
     "be listed, but the mirror cannot show the screen.");
+
+#ifdef Q_OS_WIN
+// A Windows restart ends the session with the guest running, and QEMU, which has no window, is
+// simply terminated: a power cut to the guest, whose last seconds of writes are lost and whose
+// disks need journal recovery at the next boot (seen: Windows was down 8 s after the
+// restart began). The watcher is what stops the guest properly first. One per guest, held by
+// name; a stop waits on the same name, so whoever stopped the guest (an installer about to
+// replace remora-gui.exe) finds the watcher gone too.
+std::wstring watchMutexName(int qmpPort) {
+    return L"Local\\RemoraGuestWatch-" + std::to_wstring(qmpPort);
+}
+
+void awaitWatcher(int qmpPort) {
+    HANDLE m = OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, watchMutexName(qmpPort).c_str());
+    if (!m) return;
+    const DWORD r = WaitForSingleObject(m, 5000);
+    if (r == WAIT_OBJECT_0 || r == WAIT_ABANDONED) ReleaseMutex(m);
+    CloseHandle(m);
+}
+
+// remora-gui.exe, beside this program: it has no console, and Windows ends a console program at
+// once, whatever it asked for. This program when there is none (a dev tree).
+QString watcherProgram() {
+    const QString gui = QCoreApplication::applicationDirPath() + QStringLiteral("/remora-gui.exe");
+    return QFileInfo::exists(gui) ? gui : QCoreApplication::applicationFilePath();
+}
+
+struct Watch {
+    GuestVm *vm;
+    const LineSink *log;
+};
+Watch *g_watch = nullptr;
+
+LRESULT CALLBACK watchProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_QUERYENDSESSION) return TRUE;
+    if (msg == WM_ENDSESSION) {
+        // Only once the end is certain: a restart the user cancels must not cost them the guest.
+        if (wp && g_watch) {
+            say(*g_watch->log, QStringLiteral("Windows is ending the session: powering the "
+                                              "guest down first"));
+            say(*g_watch->log, g_watch->vm->stop(*g_watch->log).detail);
+        }
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+#endif
 
 }  // namespace
 
@@ -372,6 +425,9 @@ StepResult GuestVm::ensureRunning(const ResolvedConfig &rc, const LineSink &log)
                                         why);
             return StepResult::fail(QStringLiteral("the guest's QEMU exited at once"), why);
         }
+#ifdef Q_OS_WIN
+        sp_.spawnDetached({watcherProgram(), QStringLiteral("guest"), QStringLiteral("watch")});
+#endif
     }
 
     // Boot to ssh is ~10 s on a hypervisor; TCG is an order of magnitude slower.
@@ -397,19 +453,79 @@ StepResult GuestVm::stop(const LineSink &log, int graceMs) {
     if (s.accel == QLatin1String("tcg")) graceMs = qMax(graceMs, 240000);
     say(log, QStringLiteral("powering the guest down"));
     qmp(s.qmpPort, "{\"execute\":\"system_powerdown\"}\n");
+    const auto stopped = [&s](const QString &detail) {
+#ifdef Q_OS_WIN
+        awaitWatcher(s.qmpPort);
+#endif
+        return StepResult::good(detail);
+    };
     for (int waited = 0; waited < graceMs; waited += 1000) {
         sp_.waitMs(1000);
-        if (!qmp(s.qmpPort, nullptr, 500)) return StepResult::good(QStringLiteral("guest stopped"));
+        if (!qmp(s.qmpPort, nullptr, 500)) return stopped(QStringLiteral("guest stopped"));
     }
     qmp(s.qmpPort, "{\"execute\":\"quit\"}\n");
     for (int waited = 0; waited < 10000; waited += 1000) {
         sp_.waitMs(1000);
         if (!qmp(s.qmpPort, nullptr, 500))
-            return StepResult::good(QStringLiteral("guest stopped (it did not power down within "
-                                                   "%1 s, so QEMU was told to quit)")
-                                        .arg(graceMs / 1000));
+            return stopped(QStringLiteral("guest stopped (it did not power down within %1 s, so "
+                                          "QEMU was told to quit)")
+                               .arg(graceMs / 1000));
     }
     return StepResult::fail(QStringLiteral("the guest's QEMU (pid %1) would not stop").arg(s.pid));
+}
+
+int GuestVm::watchSessionEnd(const LineSink &log) {
+#ifdef Q_OS_WIN
+    const State s = readState();
+    if (!qmp(s.qmpPort, nullptr, 1000)) return 0;
+    HANDLE mutex = CreateMutexW(nullptr, TRUE, watchMutexName(s.qmpPort).c_str());
+    if (!mutex) return 1;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(mutex);
+        return 0;
+    }
+    HANDLE qemu = OpenProcess(SYNCHRONIZE, FALSE, DWORD(s.pid));
+    if (!qemu) {
+        say(log, QStringLiteral("guest watch: cannot open the guest's QEMU (pid %1)").arg(s.pid));
+        return 1;
+    }
+    // Windows ends processes from the highest level down, and QEMU has the default 0x280: this
+    // one is asked first, while the guest still runs, and QEMU is not ended until it answers.
+    SetProcessShutdownParameters(0x3FF, 0);
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = watchProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"RemoraGuestWatch";
+    RegisterClassW(&wc);
+    // Hidden but top-level: a message-only window is never told the session is ending.
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Remora guest", WS_OVERLAPPEDWINDOW, 0, 0,
+                                0, 0, nullptr, nullptr, wc.hInstance, nullptr);
+    // Registered up front: Windows ends a process with no visible window five seconds into a
+    // shutdown unless it has said why it needs longer, and then shows this until it is done.
+    // Only for a shutdown begun in this session: one begun from another (`shutdown /r` over
+    // ssh) ended this process after five seconds all the same (seen).
+    ShutdownBlockReasonCreate(hwnd, L"Stopping Android, so that nothing it is saving is lost");
+    Watch w{this, &log};
+    g_watch = &w;
+    for (bool quit = false; !quit;) {
+        const DWORD r = MsgWaitForMultipleObjects(1, &qemu, FALSE, INFINITE, QS_ALLINPUT);
+        if (r != WAIT_OBJECT_0 + 1) break;  // QEMU is gone (or the wait failed)
+        MSG m;
+        while (!quit && PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
+            quit = m.message == WM_QUIT;
+            DispatchMessageW(&m);
+        }
+    }
+    g_watch = nullptr;
+    ShutdownBlockReasonDestroy(hwnd);
+    DestroyWindow(hwnd);
+    CloseHandle(qemu);
+    // The mutex is left to this process's exit, which is what a stop waiting on it waits for.
+    return 0;
+#else
+    Q_UNUSED(log);
+    return 0;
+#endif
 }
 
 StepResult GuestVm::resetSystem(const LineSink &log) {

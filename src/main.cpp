@@ -939,6 +939,8 @@ static int cmdGuest(const QStringList &a, QTextStream &out) {
         return report(guest.ensureRunning(resolve(cfg, Backend::Remote), log));
     }
     if (sub == QLatin1String("stop")) return report(guest.stop(log));
+    // Unlisted: what a guest start leaves running beside QEMU on Windows (GuestVm::watchSessionEnd).
+    if (sub == QLatin1String("watch")) return guest.watchSessionEnd(log);
     if (sub == QLatin1String("reset-system")) return report(guest.resetSystem(log));
     QTextStream(stderr) << "usage: remora guest [status|start|stop|reset-system]\n";
     return 2;

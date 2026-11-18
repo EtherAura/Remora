@@ -50,6 +50,10 @@ public:
     // Graceful power-down over QMP (the guest's acpid shuts down docker and its disks), QEMU's
     // own quit after graceMs, and nothing worse.
     StepResult stop(const LineSink &log, int graceMs = 60000);
+    // `remora guest watch`, Windows only: stay beside the running guest until its QEMU exits, and
+    // power the guest down when Windows ends the session. ensureRunning starts it; a second one
+    // for the same guest leaves at once.
+    int watchSessionEnd(const LineSink &log);
     // Throw away the system overlay so the next start boots the shipped image fresh. The data
     // disk — every image, container and Android /data — is untouched.
     StepResult resetSystem(const LineSink &log);

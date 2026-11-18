@@ -5,6 +5,7 @@
 #   - takes this install's ssh identity from QEMU's fw_cfg: the client's public key as the only
 #     authorised key, and the sshd host key the client already trusts. Handing the host key IN is
 #     what lets the client pin it from the first connection instead of trusting whatever answers.
+# And at shutdown it stops Android and docker before OpenRC kills what is left (stop() below).
 # The Windows app passes both with -fw_cfg name=opt/remora/<name>,file=<path> (bd remora-7oih.5).
 
 description="Remora guest: data disk and ssh identity"
@@ -43,4 +44,29 @@ start() {
     (umask 077; cat "$FWCFG/host_key/raw" >/etc/ssh/ssh_host_ed25519_key)
     ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key >/etc/ssh/ssh_host_ed25519_key.pub
     eend $?
+}
+
+# init runs dockerd (see /etc/inittab), so OpenRC's shutdown has no docker service to stop, and its
+# killprocs SIGKILLed Android mid-write: docker's store stayed busy, the data disk was never
+# unmounted, and the power-down hung until QEMU was told to quit (seen). Both are
+# stopped here, while they still can be; init respawns nothing while it runs the shutdown.
+#
+# Android is asked to power off by its own property, not by docker's SIGTERM: in a privileged
+# container its init may reboot, so it installs no SIGTERM handler, ignores the signal and is
+# killed at the timeout (exit 137 after 30 s). The property powers it off in about a second
+# (exit 130). A container without setprop is not Android and gets docker's stop alone.
+stop() {
+    local pid c i=0
+    pid=$(pidof dockerd) || return 0
+    ebegin "Stopping Android and docker"
+    for c in $(docker ps -q); do
+        docker exec "$c" setprop sys.powerctl shutdown >/dev/null 2>&1
+    done
+    docker ps -q | xargs -r docker stop -t 30 >/dev/null 2>&1
+    kill -TERM $pid
+    while kill -0 "$pid" 2>/dev/null && [ $i -lt 30 ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    eend 0
 }

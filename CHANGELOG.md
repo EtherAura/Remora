@@ -34,6 +34,22 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- **Remora's Windows guest shuts down properly, Android included.** Its docker is started by
+  init, so nothing in the guest's shutdown stopped Android or docker. Android was killed mid-write,
+  the data disk stayed in use, and the power-down hung until Remora told QEMU to quit after 60 s
+  (240 s under emulation): every `remora guest stop`, and every installer update, cut the power.
+  The guest now asks Android to power off (about a second), then stops docker and unmounts its
+  disks: a stop with Android running takes 6 s instead of a minute. Install the new version for
+  its guest image.
+
+- **Restarting or shutting down Windows no longer cuts the power to Remora's guest.** QEMU has no
+  window, so Windows ended it within seconds of a restart: the last seconds of what Android wrote
+  were lost, and both guest disks needed journal recovery at the next boot. Remora now keeps a
+  small hidden helper beside the guest that powers it down first. If that takes more than a few
+  seconds, Windows says "Stopping Android, so that nothing it is saving is lost" while it waits,
+  with the usual choice to restart anyway. Windows holds only a shutdown started in your own
+  session; one started from elsewhere (`shutdown /r` over ssh) still cuts the guest off.
+
 - **A mirror that fails while the boot animation is showing exits.** It used to hang on its way
   out, so it stayed running after the error, and a request to stop it was ignored as well.
 
@@ -113,6 +129,11 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   `shortcut_mod=lctrl,lalt`, written without quotes, used to be read as empty, so the mirror fell
   back to its default shortcut modifiers. It now reaches the mirror as written, the way `key_bind`
   already did.
+
+- **The Gentoo ebuild asks for glibc's static library at build time.** Two helpers that run
+  inside the container are linked statically, and Gentoo's glibc installs `libc.a` only with
+  `USE=static-libs`, so with that flag off the build stopped at configure. The ebuild now
+  depends on `sys-libs/glibc[static-libs]` for the build only.
 
 ## [2026.11.4] - 2026-11-17
 

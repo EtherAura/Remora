@@ -83,6 +83,12 @@ test_group() {
         t == 1 { if ($0 == "(") { t = 2; d = 1; next } t = 0 }
         t == 2 { if ($0 == "(") d++; else if ($0 == ")" && !--d) exit; print }'
 }
+# unconditional <deps>: the words outside every ( ... ) group, so no USE flag or || decides them.
+unconditional() {
+    words "$1" | awk '$0 == "(" { d++; next } $0 == ")" { d--; next } !d && !/\?$/ && $0 != "||"'
+}
+# static_glibc <deps>: its glibc atoms that say anything about the static-libs flag.
+static_glibc() { words "$1" | grep -E 'sys-libs/glibc[^[]*\[.*static-libs' || true; }
 
 # pkgbuild_eval <snippet> [<arg>]: the PKGBUILD's own arrays, read the way makepkg reads them.
 # <arg> reaches the snippet as $3.
@@ -184,6 +190,25 @@ check_ebuild() {  # check_ebuild <version>
     else
         fail "$version: BDEPEND lacks virtual/pkgconfig"
     fi
+
+    # vendor/native's fwd and uinput-kbd are linked -static, and Gentoo's glibc installs libc.a only
+    # under USE=static-libs. Only the build needs that: what is installed runs on the shared libc
+    # like any other program, so nothing that outlives the build may ask for the flag, and it is the
+    # target's libc.a that is linked, not the build host's.
+    local later
+    deps[PDEPEND]=$(ebuild_eval "$ebuild" "$version" 'printf "%s" "${PDEPEND-}"')
+    deps[IDEPEND]=$(ebuild_eval "$ebuild" "$version" 'printf "%s" "${IDEPEND-}"')
+    if unconditional "${deps[DEPEND]}" | grep -qxF -- 'sys-libs/glibc[static-libs]'; then
+        pass "$version: static helpers: DEPEND sys-libs/glibc[static-libs]"
+    else
+        fail "$version: static helpers: DEPEND lacks an unconditional sys-libs/glibc[static-libs]"
+    fi
+    expect "$version: static helpers: DEPEND names the flag once" \
+        "$(static_glibc "${deps[DEPEND]}")" 'sys-libs/glibc[static-libs]'
+    for later in RDEPEND PDEPEND IDEPEND BDEPEND; do
+        expect "$version: static helpers: $later leaves glibc's static-libs alone" \
+            "$(static_glibc "${deps[$later]}")" ""
+    done
 
     local kind name mapping vars atom var
     for kind in depends makedepends checkdepends optdepends; do

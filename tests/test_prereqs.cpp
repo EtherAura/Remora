@@ -126,6 +126,48 @@ private slots:
                     .ok);
     }
 
+    // bd remora-kcjd. macvlan's parent/subnet/gateway are read off the docker host, never typed,
+    // so the row is asked only of a macvlan profile, blocks when nothing was read, and when
+    // something was it names all three: a macvlan on the wrong parent is reachable from nowhere.
+    void hostLanRowIsRequiredAndNamesWhatWasRead() {
+        HostCapabilities c = linuxClient();
+        c.inDockerGroup = true;
+        c.dockerDaemonOk = true;
+        c.modAshmem = true;
+        const auto find = [](const QVector<PrereqResult> &v, const QString &key) {
+            for (const PrereqResult &r : v)
+                if (r.key == key) return r;
+            return PrereqResult{};
+        };
+        // No macvlan: no row, and the fixture is otherwise ready.
+        const QVector<PrereqResult> bridge =
+            checkReadiness(Backend::Bare, c, /*gpuHost=*/false, /*macvlan=*/false);
+        QVERIFY(find(bridge, QStringLiteral("host_lan")).key.isEmpty());
+        QVERIFY(isReady(bridge));
+        // macvlan, nothing read: a required row, and the only blocker.
+        const QVector<PrereqResult> unread =
+            checkReadiness(Backend::Bare, c, /*gpuHost=*/false, /*macvlan=*/true);
+        const PrereqResult missing = find(unread, QStringLiteral("host_lan"));
+        QCOMPARE(missing.key, QStringLiteral("host_lan"));
+        QVERIFY(!missing.ok);
+        QCOMPARE(missing.severity, QStringLiteral("required"));
+        QVERIFY(!isReady(unread));
+        QCOMPARE(blockers(unread).size(), 1);
+        QCOMPARE(blockers(unread).first().key, QStringLiteral("host_lan"));
+        // macvlan, read: ok, and the label carries every value that was read.
+        c.hostLan = LanInterface{QStringLiteral("eno1"), QStringLiteral("192.168.0.0/24"),
+                                 QStringLiteral("192.168.0.1")};
+        const QVector<PrereqResult> read =
+            checkReadiness(Backend::Bare, c, /*gpuHost=*/false, /*macvlan=*/true);
+        const PrereqResult ok = find(read, QStringLiteral("host_lan"));
+        QVERIFY(ok.ok);
+        QCOMPARE(ok.severity, QStringLiteral("required"));
+        QVERIFY(ok.label.contains(QLatin1String("eno1")));
+        QVERIFY(ok.label.contains(QLatin1String("192.168.0.0/24")));
+        QVERIFY(ok.label.contains(QLatin1String("192.168.0.1")));
+        QVERIFY(isReady(read));
+    }
+
     // bd remora-81cp. Every other GPU row stayed green through the real failure — a driver update
     // without a reboot breaks nothing that is INSTALLED, only what is LOADED — so this row is the
     // one that names it. Reported only when both sides are known: absence of either is the

@@ -37,10 +37,15 @@ COMMON_DEPEND="
 "
 # The mirror's CUDA interop includes FFmpeg's NVIDIA headers (the driver is loaded at runtime), and
 # libavutil's hwcontext_vulkan.h, which remora-frame-encoder includes, includes vulkan/vulkan.h.
+#
+# The two helpers that run inside the container (vendor/native's fwd and uinput-kbd) are linked
+# -static, and glibc installs libc.a only under USE=static-libs: without it configure stops. That is
+# a build need alone, so it is not in RDEPEND; what is installed runs on the shared libc as usual.
 DEPEND="
 	${COMMON_DEPEND}
 	dev-util/vulkan-headers
 	media-libs/nv-codec-headers
+	sys-libs/glibc[static-libs]
 "
 # adb is how Remora reaches every device it deploys, local or remote.
 RDEPEND="
