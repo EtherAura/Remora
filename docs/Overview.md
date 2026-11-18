@@ -20,6 +20,11 @@ Remora is **configure-first**: compose your Android image à-la-carte, pick **wh
 
 ![The Remora config workspace](workspace.png)
 
+| Image | Device | Settings |
+|---|---|---|
+| [<img src="workspace-image.png" alt="The Image page: the active image, Google Play and add-ons, the source build settings and the image library" width="320" />](workspace-image.png) | [<img src="workspace-device.png" alt="The Device page: data folder, display resolution, networking and system properties" width="320" />](workspace-device.png) | [<img src="workspace-settings.png" alt="The Settings page: image sources and profiles" width="320" />](workspace-settings.png) |
+| Pick the image, add Google Play or add-ons, or build from source | Storage, display and network of the device | Image sources and profiles |
+
 > **The quickest way to an image is the ready-made one.** `remora images fetch` downloads the
 > audited Android 17 image the project publishes: a 716 MB download, 2.4 GB in Docker, no source
 > build. Building your own image is optional: it compiles LineageOS from source with exactly the

@@ -34,6 +34,13 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- **A mirror that fails while the boot animation is showing exits.** It used to hang on its way
+  out, so it stayed running after the error, and a request to stop it was ignored as well.
+
+- **The boot animation stops for good once the mirror shows the device.** On a first connect the
+  animation can arrive after live video has started, and it then started playing again behind
+  the mirror with nothing to show, ticking 60 times a second for as long as the mirror ran.
+
 - **An empty CPU flags line no longer refuses a tuned image.** When the probe read a `flags`
   line with nothing after its colon, preflight reported every flag the image's arch variant needs
   as missing, telling you the CPU lacked `avx2` when nothing about it had been read. Such a line

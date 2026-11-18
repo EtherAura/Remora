@@ -25,6 +25,11 @@ The ready-made image is a 716 MB download and takes 2.4 GB in Docker; a freshly 
 
 NVIDIA, Intel and AMD [GPU acceleration](docs/user/GPU-Acceleration.md), with a shared Qt workspace and CLI.
 
+| Image | Device | Settings |
+|---|---|---|
+| [<img src="docs/workspace-image.png" alt="The Image page: the active image, Google Play and add-ons, the source build settings and the image library" width="320" />](docs/workspace-image.png) | [<img src="docs/workspace-device.png" alt="The Device page: data folder, display resolution, networking and system properties" width="320" />](docs/workspace-device.png) | [<img src="docs/workspace-settings.png" alt="The Settings page: image sources and profiles" width="320" />](docs/workspace-settings.png) |
+| Pick the image, add Google Play or add-ons, or build from source | Storage, display and network of the device | Image sources and profiles |
+
 Support Remora on Patreon: https://www.patreon.com/EtherAura
 
 ## Quick start

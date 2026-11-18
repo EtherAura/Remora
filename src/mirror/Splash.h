@@ -40,6 +40,13 @@ public:
     // cleared and the very next tick had nothing to show — which landed exactly on the switch
     // into the ending and was the last thing still marking it (bd remora-xrlh).
     void setNextFrames(const QStringList &paths);
+    // start(), clearing an earlier stop(): run() returns at once while stop_ is set, so a thread
+    // started again after a stop would decode nothing, and every tick would miss.
+    void resume();
+    // Joins the thread before the members go. Destroyed running, the thread was still parked in
+    // wake_.wait() when ~QWaitCondition ran, which blocks for good: a mirror that hit a fatal
+    // error with the splash up never exited, SIGTERM included, since its event loop was gone.
+    ~FramePrefetcher() override { stop(); }
     // Next decoded frame, or a null image if the decoder has not caught up. Never blocks the
     // caller: a missed tick is one repeated frame, a blocked GUI thread is a hung mirror.
     QImage take();
@@ -113,6 +120,9 @@ private:
     // bootanimation does exactly this when the system asks it to exit.
     bool finishing_ = false;
     bool animationDoneSent_ = false;
+    // Live video took the window (stopPlayback). Final: an animation that arrives later, a zip
+    // pulled once adb came back, must not start playing behind the mirror.
+    bool playbackStopped_ = false;
     QTimer endingCap_;  // upper bound on how long the ending may hold the window
     void finishAnimation();
     bool booted_ = false, ready_ = false;

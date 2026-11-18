@@ -4,7 +4,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QImageReader>
 
+#include <atomic>
 #include <memory>
 
 namespace remora::mirror {
@@ -39,6 +41,15 @@ void FramePrefetcher::setNextFrames(const QStringList &paths) {
     nextIdx_ = 0;
     ++nextGen_;
     wake_.wakeAll();
+}
+
+void FramePrefetcher::resume() {
+    if (isRunning()) return;
+    {
+        QMutexLocker lock(&m_);
+        stop_ = false;
+    }
+    start();
 }
 
 QImage FramePrefetcher::take() {
@@ -89,7 +100,18 @@ void FramePrefetcher::run() {
                 gen = gen_;
             }
         }
-        QImage img(path);  // the expensive part, and the whole point of being off the GUI thread
+        // The expensive part, and the whole point of being off the GUI thread.
+        QImageReader reader(path);
+        const QImage img = reader.read();
+        // A frame that does not decode is skipped, so a part where none does plays nothing at all
+        // and said nothing either. Name the first one, with the reader's reason, under the same
+        // switch as the playback stats.
+        if (img.isNull() && !qEnvironmentVariableIsEmpty("REMORA_MIRROR_FPS")) {
+            static std::atomic_bool told{false};
+            if (!told.exchange(true))
+                qWarning("splash: cannot decode %s: %s", qUtf8Printable(path),
+                         qUtf8Printable(reader.errorString()));
+        }
         QMutexLocker lock(&m_);
         if (ahead) --nextInFlight_;
         if (stop_) return;
@@ -177,7 +199,7 @@ void SplashController::pollStatus() {
     }
     if (s.booting && !bootingSeen_) {
         bootingSeen_ = true;
-        if (animReady_ && !frameTimer_.isActive()) frameTimer_.start();
+        if (animReady_ && !frameTimer_.isActive() && !playbackStopped_) frameTimer_.start();
     }
     if (s.attach && !attachSeen_) {
         attachSeen_ = true;
@@ -332,7 +354,7 @@ void SplashController::loadDesc() {
     animReady_ = true;
     const double fps = qBound(1.0, desc_.fps, 120.0);
     frameTimer_.setInterval(int(1000.0 / fps));
-    if (bootingSeen_ || o_.statusPath.isEmpty()) frameTimer_.start();
+    if ((bootingSeen_ || o_.statusPath.isEmpty()) && !playbackStopped_) frameTimer_.start();
 }
 
 // ---- playback ----
@@ -351,7 +373,7 @@ void SplashController::advanceFrame() {
     if (feedingPart_ != part_) {
         feedingPart_ = part_;
         prefetch_.setFrames(frames);
-        if (!prefetch_.isRunning()) prefetch_.start();
+        prefetch_.resume();
         // Start decoding the part AFTER this one straight away. The playing part keeps the
         // decoder's attention while its queue has room, so this costs nothing until the pipeline
         // is full — and by the time the switch comes (1.5 s of looping, for the A17 animation)
@@ -396,6 +418,12 @@ void SplashController::advanceFrame() {
 }
 
 void SplashController::stopPlayback() {
+    // Once and for all. The animation can still arrive after this: on a first run the zip is
+    // pulled only once adb is back, and when that lands after live video has started, loadDesc
+    // used to start the frame timer again, against a prefetcher stopped here. Every tick then
+    // missed, for as long as the mirror ran (seen on the Windows VM: 60 misses a second for
+    // four minutes, behind live video).
+    playbackStopped_ = true;
     frameTimer_.stop();
     endingCap_.stop();
     prefetch_.stop();  // nothing should decode frames nobody will see
