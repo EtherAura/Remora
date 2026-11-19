@@ -7418,6 +7418,52 @@ private slots:
         QVERIFY(!unknown.forwarder.adbdListening.has_value());
     }
 
+    // The same datum as the JSON consumers read it: the object is there, with real booleans, only
+    // when a running container was probed, and absent (not null, not empty, not false) otherwise.
+    void statusJsonShowsFrontDoorOnlyWhenProbed() {
+        const auto statusJson = [](FakeSpawner &sp) {
+            QJsonParseError err;
+            const QJsonDocument doc =
+                QJsonDocument::fromJson(statusToJson(probeStatus(Backend::Bare, sp)).toUtf8(), &err);
+            if (err.error != QJsonParseError::NoError || !doc.isObject())
+                return std::optional<QJsonObject>();
+            return std::optional<QJsonObject>(doc.object());
+        };
+
+        FakeSpawner sp;
+        sp.localPs = QStringLiteral("remora-bm");
+        const auto healthy = statusJson(sp);
+        QVERIFY(healthy.has_value());
+        QVERIFY(healthy->value("adb_front_door").isObject());
+        const QJsonObject open = healthy->value("adb_front_door").toObject();
+        QVERIFY(open.value("forwarder_listening").isBool());
+        QVERIFY(open.value("forwarder_listening").toBool());
+        QVERIFY(open.value("adbd_listening").isBool());
+        QVERIFY(open.value("adbd_listening").toBool());
+        QCOMPARE(open.value("service").toString(), QStringLiteral("running"));
+
+        FakeSpawner dead;
+        dead.localPs = QStringLiteral("remora-bm");
+        dead.forwarderProbe = QStringLiteral("fwd_l=0\nadbd_l=1\nsvc=stopped\n");
+        const auto door = statusJson(dead);
+        QVERIFY(door.has_value());
+        QVERIFY(door->value("adb_front_door").isObject());
+        const QJsonObject shut = door->value("adb_front_door").toObject();
+        // isBool first: a missing or null field reads false through toBool() and must not pass.
+        QVERIFY(shut.contains("forwarder_listening"));
+        QVERIFY(shut.value("forwarder_listening").isBool());
+        QCOMPARE(shut.value("forwarder_listening").toBool(true), false);
+        QVERIFY(shut.value("adbd_listening").isBool());
+        QVERIFY(shut.value("adbd_listening").toBool());
+        QCOMPARE(shut.value("service").toString(), QStringLiteral("stopped"));
+
+        FakeSpawner down;  // no container: nothing was probed, so nothing may be claimed
+        const auto unknown = statusJson(down);
+        QVERIFY(unknown.has_value());
+        QVERIFY(!unknown->contains("adb_front_door"));
+        QVERIFY(unknown->value("adb_front_door").isUndefined());
+    }
+
     // Docker being unreachable is not the container being stopped. The report carries
     // the daemon's own line, and the JSON omits `running` rather than emit a false one.
     void statusSaysDockerUnreachable() {
