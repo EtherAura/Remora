@@ -125,6 +125,36 @@ private slots:
                      QStringLiteral("python3"))
                     .ok);
     }
+    // The row is asked of the resolved config, not the backend: a remote profile that shares
+    // devices runs the bridge on the remote docker host, so it needs the same row there.
+    void python3RowIsOptionalOnRemoteToo() {
+        HostCapabilities c = linuxClient();
+        c.sshReachable = true;
+        c.remoteDockerOk = true;
+        c.python3Present = false;
+        const auto rows = [](const QVector<PrereqResult> &v) {
+            QVector<PrereqResult> out;
+            for (const PrereqResult &r : v)
+                if (r.key == QLatin1String("python3")) out << r;
+            return out;
+        };
+        const QVector<PrereqResult> missing = checkReadiness(
+            Backend::Remote, c, /*gpuHost=*/false, /*macvlan=*/false, /*sharedInputs=*/true);
+        const QVector<PrereqResult> bad = rows(missing);
+        QCOMPARE(bad.size(), 1);
+        QCOMPARE(bad.first().label,
+                 QStringLiteral("python3 on the docker host (runs the shared_inputs bridge)"));
+        QVERIFY(!bad.first().ok);
+        QCOMPARE(bad.first().severity, QStringLiteral("optional"));
+        QVERIFY(bad.first().remedy.contains(QStringLiteral("remora-input-share.py")));
+        QVERIFY(isReady(missing));
+        QVERIFY(blockers(missing).isEmpty());
+        c.python3Present = true;
+        const QVector<PrereqResult> good = rows(checkReadiness(Backend::Remote, c, false, false, true));
+        QCOMPARE(good.size(), 1);
+        QVERIFY(good.first().ok);
+        QVERIFY(rows(checkReadiness(Backend::Remote, c, false, false, false)).isEmpty());
+    }
 
     // bd remora-kcjd. macvlan's parent/subnet/gateway are read off the docker host, never typed,
     // so the row is asked only of a macvlan profile, blocks when nothing was read, and when
