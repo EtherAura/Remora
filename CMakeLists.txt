@@ -37,6 +37,15 @@ else()
     find_package(Qt6 6.4 REQUIRED COMPONENTS DBus WebEngineWidgets)
     set(REMORA_HAVE_WEBENGINE ON)
 endif()
+# The versions found, not the 6.4 asked for: a build log is then evidence of which Qt a runner built
+# against. WebEngine is versioned on its own, so it is read from its own package, never assumed to
+# match Core. tools/test-qt-version-report.sh checks these lines against a separate lookup.
+message(STATUS "Qt6Core: ${Qt6Core_VERSION}")
+if(Qt6WebEngineWidgets_FOUND)
+    message(STATUS "Qt6WebEngineWidgets: ${Qt6WebEngineWidgets_VERSION}")
+else()
+    message(STATUS "Qt6WebEngineWidgets: not found")
+endif()
 
 include(GNUInstallDirs)
 
