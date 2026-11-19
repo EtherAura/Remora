@@ -789,6 +789,47 @@ private slots:
         QCOMPARE(byName[QStringLiteral("d")].location, QStringLiteral("https://pad.example"));
     }
 
+    void imageSourcesEditOneKeepsNamesDistinct() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        ImageSource alpha;
+        alpha.name = QStringLiteral("alpha");
+        alpha.enabled = true;
+        alpha.tags = {QStringLiteral("x:1")};
+        ImageSource beta;
+        beta.name = QStringLiteral("beta");
+        beta.enabled = true;
+        beta.tags = {QStringLiteral("y:2")};
+        beta.location = QStringLiteral("https://beta.example");
+        saveImageSources(path, {alpha, beta});
+
+        // Edit one of two existing sources and save the loaded list back over them.
+        QList<ImageSource> loaded = loadImageSources(path);
+        auto it = std::find_if(loaded.begin(), loaded.end(), [](const ImageSource &src) {
+            return src.name == QLatin1String("alpha");
+        });
+        QVERIFY(it != loaded.end());
+        it->tags = {QStringLiteral("x:9")};
+        saveImageSources(path, loaded);
+
+        const QList<ImageSource> reloaded = loadImageSources(path);
+        QCOMPARE(reloaded.size(), 2);
+        QHash<QString, ImageSource> byName;
+        for (const ImageSource &src : reloaded) byName.insert(src.name, src);
+        QCOMPARE(byName.size(), 2);
+        QVERIFY(byName.contains(QStringLiteral("alpha")));
+        QVERIFY(byName.contains(QStringLiteral("beta")));
+        QCOMPARE(byName[QStringLiteral("alpha")].tags, QStringList{QStringLiteral("x:9")});
+        QCOMPARE(byName[QStringLiteral("beta")].tags, QStringList{QStringLiteral("y:2")});
+        QCOMPARE(byName[QStringLiteral("beta")].location, QStringLiteral("https://beta.example"));
+        QCOMPARE(byName[QStringLiteral("beta")].enabled, true);
+
+        QSettings s(path, QSettings::IniFormat);
+        QStringList groups = s.childGroups();
+        std::sort(groups.begin(), groups.end());
+        QCOMPARE(groups, (QStringList{QStringLiteral("Source-alpha"), QStringLiteral("Source-beta")}));
+    }
+
     void saveDeploymentsPreservesUnknownKeysAndDeletes() {
         QTemporaryDir dir;
         const QString path = rc(dir);
