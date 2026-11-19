@@ -273,6 +273,11 @@ QSet<QString> parseDockerPsNames(const QString &psOut) {
 
 QVector<ContainerFacts> parseDockerInspectFacts(const QString &out) {
     QVector<ContainerFacts> facts;
+    // A '|'-joined column into a set of its trimmed, non-empty entries.
+    const auto insertPipeList = [](QSet<QString> &into, const QString &column) {
+        for (const QString &v : column.split(QLatin1Char('|')))
+            if (!v.trimmed().isEmpty()) into.insert(v.trimmed());
+    };
     for (const QString &ln : out.split(QLatin1Char('\n'))) {
         if (ln.trimmed().isEmpty()) continue;
         const QStringList f = ln.split(QLatin1Char('\t'));
@@ -283,8 +288,7 @@ QVector<ContainerFacts> parseDockerInspectFacts(const QString &out) {
         c.name = f[0].trimmed();
         if (c.name.startsWith(QLatin1Char('/'))) c.name = c.name.mid(1);
         if (c.name.isEmpty()) continue;
-        for (const QString &p : f[1].split(QLatin1Char('|')))
-            if (!p.trimmed().isEmpty()) c.hostPorts.insert(p.trimmed());
+        insertPipeList(c.hostPorts, f[1]);
         for (const QString &b : f[2].split(QLatin1Char('|'))) {
             const QString bind = b.trimmed();
             if (bind.isEmpty()) continue;
@@ -294,9 +298,7 @@ QVector<ContainerFacts> parseDockerInspectFacts(const QString &out) {
         }
         // Devices are optional: a record from before this field existed still parses, it simply
         // reports no devices. Kept lenient so the size>=3 guard above stays the only shape rule.
-        if (f.size() > 3)
-            for (const QString &d : f[3].split(QLatin1Char('|')))
-                if (!d.trimmed().isEmpty()) c.devices.insert(d.trimmed());
+        if (f.size() > 3) insertPipeList(c.devices, f[3]);
         facts.push_back(c);
     }
     return facts;
