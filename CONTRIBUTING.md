@@ -27,7 +27,7 @@ Questions, setups that work and ideas that are not yet a bug or a feature reques
 
 ## Development setup
 
-The README's [What you need](README.md#what-you-need) lists the build dependencies per
+[Requirements](docs/user/Requirements.md#to-build-remora-itself) lists the build dependencies per
 distribution. Then:
 
 ```sh

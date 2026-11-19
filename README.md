@@ -1,83 +1,63 @@
 <div align="center">
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="packaging/io.github.EtherAura.Remora.svg">
+  <img src="packaging/io.github.EtherAura.Remora.light-scheme.svg" alt="" width="88">
+</picture>
+
 # Remora
 
-**Android apps, at home on your Linux desktop, and on Windows as a preview.**
+**Runs Android 16 or 17 (LineageOS) in Docker and opens each app in its own window.**
+
+Android 16 / 17 · Docker · Linux x86_64 · Windows (preview) · GPL-3.0
 
 [![CI](https://github.com/EtherAura/Remora/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/EtherAura/Remora/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml/badge.svg)](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/EtherAura/Remora)](https://github.com/EtherAura/Remora/releases/latest)
-[![GPLv3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
-![Linux x86_64](https://img.shields.io/badge/platform-Linux%20x86__64-5a8868)
-![Windows 10/11 x64, preview](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64%2C%20preview-5a8868)
 
-Fetch the ready-made Android 17 image or build Android 16 or 17 from source, deploy it in Docker, and open each app in its own window.
+[**Download**](https://github.com/EtherAura/Remora/releases/latest) · [**Getting started**](docs/user/Getting-Started.md) · [**User guide**](https://github.com/EtherAura/Remora/wiki)
 
-The ready-made image is a 716 MB download and takes 2.4 GB in Docker; a freshly started device uses about 1 GB of RAM. No source build is needed: see [Quick start](#quick-start).
+<img src="docs/workspace.png" alt="The Remora workspace: the Runners page, with the profile Phone running the ready-made image" width="880" />
 
-[**Get started**](docs/user/Getting-Started.md) · [**Requirements**](docs/user/Requirements.md) · [**User guide**](https://github.com/EtherAura/Remora/wiki) · [**Downloads**](https://github.com/EtherAura/Remora/releases)
+<sub>The Remora workspace: runners</sub>
 
-<img src="docs/workspace.png" alt="Remora workspace for composing an Android image, choosing a deployment target and connecting" width="1000" />
+| App windows: one per Android app | Mirror window: the whole device |
+|:---:|:---:|
+| <img src="docs/apps-in-windows.png" alt="Android's Settings, Calculator, Clock and Files, each in a desktop window of its own" width="410" /> | <img src="docs/device-in-a-window.png" alt="The mirror window: the Android home screen of the profile Phone" width="338" /> |
+
+| Image: pick, extend or build | Device: storage, display, network | Settings: image sources, profiles |
+|:---:|:---:|:---:|
+| <img src="docs/workspace-image.png" alt="The Image page: the active image, Google Play and add-ons, the source build and the image library" width="240" /> | <img src="docs/workspace-device.png" alt="The Device page: data folder, display resolution, networking and system properties" width="240" /> | <img src="docs/workspace-settings.png" alt="The Settings page: image sources and profiles" width="240" /> |
+
 </div>
-
-| Compose | Deploy | Connect |
-|---|---|---|
-| [Choose image features](docs/user/Image-Features.md) | [Local or remote Docker](docs/user/Deploy-Targets.md) | [Mirroring and desktop apps](docs/user/Android-Apps-on-the-Desktop.md) |
-
-NVIDIA, Intel and AMD [GPU acceleration](docs/user/GPU-Acceleration.md), with a shared Qt workspace and CLI.
-
-| Image | Device | Settings |
-|---|---|---|
-| [<img src="docs/workspace-image.png" alt="The Image page: the active image, Google Play and add-ons, the source build settings and the image library" width="320" />](docs/workspace-image.png) | [<img src="docs/workspace-device.png" alt="The Device page: data folder, display resolution, networking and system properties" width="320" />](docs/workspace-device.png) | [<img src="docs/workspace-settings.png" alt="The Settings page: image sources and profiles" width="320" />](docs/workspace-settings.png) |
-| Pick the image, add Google Play or add-ons, or build from source | Storage, display and network of the device | Image sources and profiles |
-
-Support Remora on Patreon: https://www.patreon.com/EtherAura
 
 ## Quick start
 
-The quickest way to Android is the ready-made image the project publishes. No source build needed.
-It is a 716 MB download and takes 2.4 GB in Docker (allow about 3.1 GB of free disk while it is
-fetched). A freshly started device used about 1 GB of RAM at its home screen, measured with
-software rendering; the apps you install add to both
-([Requirements](docs/user/Requirements.md#to-run-android)).
-
-1. **Install Remora** and join the `docker` group: follow [Installation](docs/user/Installation.md)
-   (the `.deb`, the Arch `PKGBUILD`, the Gentoo ebuild, or a build of the application from
-   source).
-2. **Fetch the ready-made Android 17 image** into Docker:
+1. [Install Remora](docs/user/Installation.md): the `.deb`, the Arch `PKGBUILD`, the Gentoo ebuild,
+   or from source. On Windows 10 or 11, run the installer from the
+   [latest release](https://github.com/EtherAura/Remora/releases/latest) ([Windows](docs/user/Windows.md)).
+2. Fetch the ready-made Android 17 image:
 
    ```sh
    remora images fetch --tag remora24:x86_64-public
    ```
 
-3. **Check the host, select the image and deploy**: continue with
-   [Getting Started](docs/user/Getting-Started.md). It covers fetching onto a remote Docker host
-   over ssh, naming the fetched image in your profile (the default feature selection does not
-   resolve to it), `remora check` and `remora up`.
+3. Run `remora check`, name the image in your profile and deploy:
+   [Getting Started](docs/user/Getting-Started.md).
 
-**On Windows 10 or 11 (64-bit), a preview:** run `Remora-<version>-windows-x64-setup.exe` from the
-[latest release](https://github.com/EtherAura/Remora/releases/latest). Windows has no Linux kernel,
-so Remora runs Android in a small Linux guest it manages itself, on the Windows Hypervisor
-Platform, which the installer turns on. No WSL or virtual machine software of your own is needed,
-and rendering is software. [Windows](docs/user/Windows.md) covers what the PC needs and what
-differs from Linux.
+## At a glance
 
-Fetching the image does not install Remora, satisfy what `remora check` asks for, or start Android
-([Requirements](docs/user/Requirements.md#to-run-android) lists what the host needs). The signed
-catalog, hashes and rollback are described in [Official images](docs/user/CLI-Reference.md#official-images).
+- **Image:** the ready-made Android 17 image is a 716 MB download and takes 2.4 GB in Docker. It
+  has no Google apps; [Google Play](docs/user/CLI-Reference.md#optional-google-play) and
+  [add-ons](docs/user/Image-Features.md#add-ons-root-arm-translation-and-widevine) are added
+  locally.
+- **GPU:** NVIDIA, Intel and AMD on Linux; SwiftShader without one, and on Windows
+  ([GPU acceleration](docs/user/GPU-Acceleration.md)).
+- **Hosts:** this machine, or any Docker host over ssh ([Deploy targets](docs/user/Deploy-Targets.md)).
+- **Custom builds:** build LineageOS from source with the features you pick, in about 450 GB of
+  disk and 32 GB of RAM ([Building the image](docs/user/Building-the-Image.md)).
 
-The published image is x86_64 only and carries no Google apps, ARM translation, Widevine or root,
-so apps that ship only ARM native code refuse to install on it. Google Play is optional: it is
-installed locally, on your own Docker host, as a separate image
-([Optional Google Play](docs/user/CLI-Reference.md#optional-google-play)). Root, ARM translation and
-Widevine can be added the same way, as a layer built on your own machine without a source build
-([Add-ons](docs/user/Image-Features.md#add-ons-root-arm-translation-and-widevine)); ARM
-translation and Widevine need payloads you supply yourself.
+[Requirements](docs/user/Requirements.md) · [Feature overview](docs/Overview.md) · [Troubleshooting](docs/user/Troubleshooting.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Discussions](https://github.com/EtherAura/Remora/discussions)
 
-[Full feature overview](docs/Overview.md) · [Configuration](docs/user/Configuration.md) · [Troubleshooting](docs/user/Troubleshooting.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Discussions](https://github.com/EtherAura/Remora/discussions)
-
-## Build your own image
-
-Optional: instead of fetching the ready-made image, you can build an Android image from source, for example with features it leaves out. This is not the same as building the Remora application.
-Building an Android image from source needs about **450 GB free disk** and **32 GB RAM** (64 GB recommended) for the first build.
-These figures are for [the image build](docs/user/Requirements.md#to-build-the-android-image), not for installing Remora. Follow [building the image](docs/user/Building-the-Image.md).
+Remora is free and open source. Support it on [Patreon](https://www.patreon.com/EtherAura);
+patrons vote on what gets built next at [requests.predecessor.digital](https://requests.predecessor.digital/).

@@ -59,5 +59,8 @@ published on the same page. Each release also publishes an SBOM of what went int
 **Provenance is not code signing**, and it covers what the workflow built: the `PKGBUILD` is a
 recipe your machine runs, so read it before running `makepkg`.
 
-**Android images are not release assets.** You build your own, from sources you can inspect; see
-the README's *What you need*.
+**The ready-made Android image is verified by Remora itself.** `remora images fetch` checks
+the signed catalog's signature and validity and the archive's SHA-256, Docker identity and tag
+before Docker loads it ([Official images](docs/user/CLI-Reference.md#official-images)). An image
+you build yourself comes from sources you can inspect
+([Requirements](docs/user/Requirements.md#to-build-the-android-image)).

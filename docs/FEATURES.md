@@ -90,7 +90,8 @@ The host kernel must also provide binder (binderfs), which `remora check` does n
 For NVIDIA acceleration see [vendor/host-prereqs/venus-nvidia/README.md](../vendor/host-prereqs/venus-nvidia/README.md);
 for reaching a macvlan container from its own host see
 [vendor/host-prereqs/macvlan-shim/README.md](../vendor/host-prereqs/macvlan-shim/README.md).
-Building images from source has its own host settings, listed in the README.
+Building images from source has its own host settings, listed in
+[Building the Image](user/Building-the-Image.md#set-the-two-host-settings).
 
 ---
 
