@@ -114,6 +114,16 @@ private slots:
         QVERIFY(s.missing.contains(QStringLiteral("shamiko")));
     }
 
+    // A request the selected tag only partly satisfies: `missing` is exactly what THAT tag lacks.
+    // widevine_l3 is provided by -gapps-wv and must not be reported, or the user is told the image
+    // lacks a feature it includes and buildRecipe lists overlay work nobody needs.
+    void selectedTagMissingExcludesProvidedFeatures() {
+        const ImageSelection s = selectImage({"widevine_l3", "mirror_agent"}, 16);
+        QCOMPARE(s.tag, QString("remora23:x86_64-gapps-wv"));
+        QCOMPARE(s.missing, QSet<QString>{QStringLiteral("mirror_agent")});
+        QVERIFY(s.needsBuild);
+    }
+
     void hwDecodeSelectsHwc2NoBuild() {
         // enabling HW decode resolves to the pre-built -hwc2 image (not "needs build")…
         const ImageSelection s = selectImage({"gapps", "widevine_l3",
