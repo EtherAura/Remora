@@ -7,6 +7,8 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+## [2026.11.6] - 2026-11-19
+
 ### Changed
 
 - **The Windows installer no longer carries a second copy of FFmpeg.** Qt's FFmpeg media backend
@@ -627,7 +629,8 @@ First public release.
   then mirror with Remora's own Qt/FFmpeg client and an agent baked into the image — video, audio,
   input, clipboard, desktop-mode displays and app listing.
 
-[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.5...HEAD
+[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.6...HEAD
+[2026.11.6]: https://github.com/EtherAura/Remora/compare/v2026.11.5...v2026.11.6
 [2026.11.5]: https://github.com/EtherAura/Remora/compare/v2026.11.4...v2026.11.5
 [2026.11.4]: https://github.com/EtherAura/Remora/compare/v2026.11.3...v2026.11.4
 [2026.11.3]: https://github.com/EtherAura/Remora/compare/v2026.11.2...v2026.11.3
