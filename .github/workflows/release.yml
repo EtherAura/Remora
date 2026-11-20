@@ -1,8 +1,9 @@
 name: Release
 
 # Runs on a version tag (v*). Checks the tag against every place the version is written, builds the
-# source tarball with `git archive`, the .deb with CPack and the Windows installer with NSIS, stamps
-# the tarball's sha256 into a copy of the PKGBUILD, renders the Gentoo ebuild, generates an SBOM,
+# source tarball with `git archive`, the .deb with CPack, the Windows installer with NSIS and a
+# native FreeBSD package. It stamps the tarball checksum into a copy of the PKGBUILD, renders the
+# Gentoo ebuild, generates an SBOM,
 # attests provenance for what this run built, and publishes the GitHub release with CHANGELOG.md's
 # section for the version as its notes.
 #
@@ -102,9 +103,59 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  freebsd:
+    name: FreeBSD 15 amd64 package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # These two static Linux binaries are copied to the Docker host by the remote deployer.
+      - name: Build the Android container helpers on Linux
+        run: make -C vendor/native -j2
+
+      - name: Build, install and smoke-test on FreeBSD
+        uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b # v1.6.0
+        with:
+          release: '15.1'
+          arch: x86_64
+          prepare: |
+            pkg install -y cmake-core ninja pkgconf qt6-base qt6-multimedia qt6-webengine \
+              qt6-base_sqldriver-sqlite qt6-svg ffmpeg ffnvcodec-headers gmake python3 \
+              android-tools git xorg-vfbserver xdotool
+          run: |
+            set -eu
+            export LC_ALL=C.UTF-8
+            version=$(cat VERSION)
+            asset="Remora-$version-freebsd15-amd64.pkg"
+            build=$(mktemp -d)
+            trap 'rm -rf "$build"' EXIT
+            cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DREMORA_INSTALLED_VENDOR=ON -DCMAKE_INSTALL_PREFIX=/usr/local \
+              -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON
+            cmake --build "$build" --parallel 2
+            python3 tools/freebsd-package.py "$build"
+            pkg install -y "./dist/$asset"
+            pkg check -ds remora
+            # Engine tests need the vendor tree at the compiled-in installation path.
+            ctest --test-dir "$build" --output-on-failure
+            install -m 0555 tools/freebsd-installed-smoke.sh "$build/installed-smoke.sh"
+            chmod 755 "$build"
+            su -m nobody -c "sh '$build/installed-smoke.sh' '$version'"
+            (cd dist && sha256 -r "$asset" > "$asset.sha256")
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: freebsd-package
+          path: dist/*-freebsd15-amd64.pkg*
+          retention-days: 1
+          if-no-files-found: error
+
   release:
-    name: release (tarball, .deb, PKGBUILD, ebuild, Windows installer)
-    needs: windows
+    name: Publish Linux, Windows and FreeBSD release assets
+    needs: [windows, freebsd]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     # contents: write creates the release and uploads its assets. id-token: write mints the
@@ -139,6 +190,7 @@ jobs:
             echo "sbom=Remora-$VERSION-linux-x64.cdx.json"
             echo "ebuild=remora-$VERSION.ebuild"
             echo "installer=Remora-$VERSION-windows-x64-setup.exe"
+            echo "freebsd=Remora-$VERSION-freebsd15-amd64.pkg"
           } >> "$GITHUB_OUTPUT"
 
       - name: Verify the tag matches every version in the tree
@@ -369,6 +421,15 @@ jobs:
           INSTALLER: ${{ steps.version.outputs.installer }}
         run: sha256sum -c "$INSTALLER.sha256"
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: freebsd-package
+
+      - name: Check the FreeBSD package checksum
+        env:
+          FREEBSD_PACKAGE: ${{ steps.version.outputs.freebsd }}
+        run: sha256sum -c "$FREEBSD_PACKAGE.sha256"
+
       # A Sigstore-backed record that these exact bytes came from this workflow at this commit:
       #
       #     gh attestation verify remora_<version>_amd64.deb --repo EtherAura/Remora
@@ -377,7 +438,7 @@ jobs:
       # from the files beside them, the PKGBUILD is a source file with one line stamped, and the
       # ebuild is a source file renamed. Runs before publishing on purpose — a release without its
       # attestation is a claim with no evidence.
-      - name: Attest build provenance (tarball, .deb, SBOM, Windows installer)
+      - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -385,6 +446,7 @@ jobs:
             ${{ steps.deb.outputs.deb }}
             ${{ steps.version.outputs.sbom }}
             ${{ steps.version.outputs.installer }}
+            ${{ steps.version.outputs.freebsd }}
 
       - name: Publish the release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
@@ -401,4 +463,6 @@ jobs:
             ${{ steps.version.outputs.sbom }}
             ${{ steps.version.outputs.installer }}
             ${{ steps.version.outputs.installer }}.sha256
+            ${{ steps.version.outputs.freebsd }}
+            ${{ steps.version.outputs.freebsd }}.sha256
           fail_on_unmatched_files: true

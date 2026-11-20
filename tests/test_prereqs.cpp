@@ -33,12 +33,16 @@ static HostCapabilities linuxClient() {
 class TestPrereqs : public QObject {
     Q_OBJECT
 private slots:
-    // bd remora-7oih.2 — a Windows client cannot run bare, so its readiness says that ONCE instead
-    // of listing the docker group, a local daemon and ashmem as missing with usermod / systemctl /
-    // modprobe remedies it could never act on. Remote readiness is the same rows as on Linux.
-    void windowsBareIsOneLinuxRefusal() {
+    void nonLinuxBareIsOneLinuxRefusal_data() {
+        QTest::addColumn<bool>("windows");
+        QTest::newRow("Windows") << true;
+        QTest::newRow("FreeBSD") << false;
+    }
+
+    void nonLinuxBareIsOneLinuxRefusal() {
+        QFETCH(bool, windows);
         HostCapabilities c = withTools();
-        c.localOs = LocalOs::Windows;
+        c.localOs = windows ? LocalOs::Windows : LocalOs::FreeBSD;
         const auto r = checkReadiness(Backend::Bare, c, false, false, false, true);
         QVERIFY(!isReady(r));
         QStringList keys;
@@ -48,10 +52,10 @@ private slots:
         c.sshReachable = true;
         c.remoteDockerOk = true;
         QVERIFY(isReady(checkReadiness(Backend::Remote, c)));
-        // adb's remedy names what a Windows user installs
         c.adbPresent = false;
-        QVERIFY(checkReadiness(Backend::Remote, c).at(0).remedy.contains(
-            QLatin1String("Platform-Tools")));
+        const QString adbPackage = windows ? QStringLiteral("Platform-Tools")
+                                           : QStringLiteral("android-tools");
+        QVERIFY(checkReadiness(Backend::Remote, c).at(0).remedy.contains(adbPackage));
         const HostCapabilities onLinux = linuxClient();
         QStringList linuxKeys;
         for (const auto &row : checkReadiness(Backend::Bare, onLinux, false, false, false, true))

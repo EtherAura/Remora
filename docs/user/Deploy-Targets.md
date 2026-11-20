@@ -25,6 +25,9 @@ machine running Remora. A `remote` profile that turns one on is refused before a
 On Windows, which has no Linux kernel to run docker on, `bare` means the Linux guest Remora runs
 for you, reached the way `remote` reaches any docker host: see [Windows](Windows.md).
 
+On FreeBSD, set `backend=remote` and `ssh_host=user@linux-host` in the profile. The
+FreeBSD client uses native ADB and OpenSSH. The Android container runs on the Linux host.
+
 ## What each target needs
 
 | target | required |

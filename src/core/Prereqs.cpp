@@ -30,10 +30,8 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
     // the agent the image bakes — an image without it gets the client's own refusal at connect,
     // where the deployed image is known.
 
-    if (target == Backend::Bare && windows) {
-        // The three rows below are all questions about a local Linux docker host, and this client
-        // is not one. One refusal names the real problem; three MISSING rows with Linux remedies
-        // (usermod, systemctl, modprobe) would send a Windows user after the wrong fix.
+    if (target == Backend::Bare && caps.localOs != LocalOs::Unix) {
+        // The local Docker and ashmem remedies only apply on a Linux client.
         add("bare_linux", "Linux kernel for backend=bare", false, bareNeedsLinuxMessage());
     } else if (target == Backend::Bare) {
         add("docker_group", "user in the 'docker' group", caps.inDockerGroup,

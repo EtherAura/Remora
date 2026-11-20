@@ -883,17 +883,6 @@ static std::optional<StepResult> retiredVmBackend(const RunContext &ctx) {
     return StepResult::fail(retiredVmBackendMessage());
 }
 
-// bare is docker on THIS machine sharing THIS kernel, so it exists only where that kernel is Linux.
-// Refused first on Windows (bd remora-7oih): every later bare check is a Linux probe that would
-// only fail more confusingly.
-static std::optional<StepResult> bareNeedsLinux() {
-#ifdef Q_OS_WIN
-    return StepResult::fail(bareNeedsLinuxMessage());
-#else
-    return std::nullopt;
-#endif
-}
-
 // Same rule for gpu_mode: a value that is neither host nor guest is refused, not defaulted.
 // gpu_mode=auto used to parse into a mode nothing handled, and deployed as SwiftShader.
 static std::optional<StepResult> unrecognisedGpuMode(const RunContext &ctx) {
@@ -999,7 +988,7 @@ private:
     StepResult preflight(const RunContext &ctx, LogSink &sink) {
         auto log = mkLog(sink, "preflight");
         if (auto retired = retiredVmBackend(ctx)) return *retired;
-        if (auto linuxOnly = bareNeedsLinux()) return *linuxOnly;
+        if (sp_.localOs() != LocalOs::Unix) return StepResult::fail(bareNeedsLinuxMessage());
         if (auto bad = unrecognisedGpuMode(ctx)) return *bad;
         if (auto miss = missingHostTools(sp_, log)) return *miss;
         if (!groups(sp_, log).contains("docker"))

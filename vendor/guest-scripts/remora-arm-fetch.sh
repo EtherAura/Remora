@@ -296,7 +296,7 @@ docker exec "$C" sh -c "pm uninstall -k $PKG" >/dev/null 2>&1 || true
 n=0
 for apk in "$DIR"/*.apk; do
   n=$((n+1))
-  sz=$(stat -c%s "$apk")
+  sz=$(wc -c < "$apk" | tr -d "[:space:]")
   docker exec -i "$C" sh -c "pm install-write -S $sz $SID split$n -" < "$apk" >/dev/null
 done
 echo "committing $n splits…"

@@ -3181,8 +3181,13 @@ private slots:
     // that refusal, or the incremental per-driver path the feature exists to offer disappears.
     void mesaSourceRefusesAPartialGlCluster() {
         SKIP_ON_WINDOWS("runs mesa.mk through make, as the Linux image build does");
-        if (QStandardPaths::findExecutable(QStringLiteral("make")).isEmpty())
-            QSKIP("make not on PATH");
+#ifdef Q_OS_FREEBSD
+        const QString make = QStringLiteral("gmake");
+#else
+        const QString make = QStringLiteral("make");
+#endif
+        if (QStandardPaths::findExecutable(make).isEmpty())
+            QSKIP("GNU make not on PATH");
         QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
         const QString d = tmp.path();
@@ -3216,7 +3221,7 @@ private slots:
         }
         const auto run = [&] {
             QProcess p;
-            p.start(QStringLiteral("make"),
+            p.start(make,
                     {QStringLiteral("-s"), QStringLiteral("-f"), d + QStringLiteral("/harness.mk"),
                      QStringLiteral("HARNESS=") + d, QStringLiteral("MESA_SRC_ROOT=") + d,
                      QStringLiteral("all")});
