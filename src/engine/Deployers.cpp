@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include <QCryptographicHash>
+#include <QDeadlineTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -1350,7 +1351,8 @@ private:
 // ─────────────────────────────── REMOTE (generic ssh docker) ───────────────────────────────
 class RemoteDeployer : public Deployer {
 public:
-    RemoteDeployer(Spawner &sp, int ba, int bi) : sp_(sp), bootAttempts_(ba), bootIntervalMs_(bi) {}
+    RemoteDeployer(Spawner &sp, int attempts, int intervalMs, int timeoutMs)
+        : sp_(sp), bootAttempts_(attempts), bootIntervalMs_(intervalMs), bootTimeoutMs_(timeoutMs) {}
     QVector<Step> steps(const RunContext &ctx) override {
         return {
             {"preflight", "Preflight (remote ssh + docker)",
@@ -1598,26 +1600,41 @@ private:
     StepResult bootWait(const RunContext &ctx, LogSink &sink) {
         auto log = mkLog(sink, "boot-wait");
         const QString c = ctx.rc.containerName;
-        for (int i = 0; i < bootAttempts_; ++i) {
-            auto r = sp_.run(Spawner::sshArgv(ctx.guest,
-                                              "docker exec " + c + " getprop sys.boot_completed"),
-                             {}, log);
-            if (parseBootCompleted(r.out) == std::optional<bool>(true))
-                return StepResult::good(QStringLiteral("booted (after %1 polls)").arg(i + 1));
+        const bool timed = bootTimeoutMs_ > 0;
+        const QDeadlineTimer deadline(bootTimeoutMs_, Qt::PreciseTimer);
+        const auto probe = [&](const QString &command) {
+            const auto argv = Spawner::sshArgv(ctx.guest, command);
+            if (!timed) return sp_.run(argv, {}, log);
+            constexpr int kProbeTimeoutMs = 30 * 1000;
+            const int remainingMs = int(deadline.remainingTime());
+            if (remainingMs <= 0) return ProcResult{124, {}, {}};
+            return sp_.runTimed(argv, qMin(kProbeTimeoutMs, remainingMs), log);
+        };
+        for (int i = 0; timed ? !deadline.hasExpired() : i < bootAttempts_; ++i) {
+            const auto r = probe("docker exec " + c + " getprop sys.boot_completed");
+            if ((!timed || r.rc == 0) && parseBootCompleted(r.out) == std::optional<bool>(true)) {
+                const auto detail = timed
+                    ? QStringLiteral("booted (after %1 polls, %2 s WHPX budget)")
+                          .arg(i + 1).arg(bootTimeoutMs_ / 1000)
+                    : QStringLiteral("booted (after %1 polls)").arg(i + 1);
+                return StepResult::good(detail);
+            }
             // A container that stopped under the wait is not going to boot. Without this the wait
             // polled one for its whole budget: half an hour under an emulated guest, seen on the
             // Windows VM, when Android asked to reboot nine minutes in (bd remora-7oih). Asked only
             // when the exec failed, so a boot that is merely slow costs nothing extra.
             if (r.rc != 0) {
-                const auto st = sp_.run(Spawner::sshArgv(ctx.guest,
-                                                         QStringLiteral("docker inspect -f '%1' %2")
-                                                             .arg(QLatin1String(kStateAndExitCode), c)),
-                                        {}, log);
+                const auto st = probe(QStringLiteral("docker inspect -f '%1' %2")
+                                          .arg(QLatin1String(kStateAndExitCode), c));
                 if (const auto gone = parseContainerExit(st.out))
                     return StepResult::fail(containerExitMessage(*gone, c));
             }
-            sp_.waitMs(bootIntervalMs_);
+            sp_.waitMs(timed ? qMin(bootIntervalMs_, int(deadline.remainingTime()))
+                             : bootIntervalMs_);
         }
+        if (timed)
+            return StepResult::fail(QStringLiteral("Android boot did not complete within %1 s under WHPX")
+                                        .arg(bootTimeoutMs_ / 1000));
         return StepResult::fail(QStringLiteral("boot did not complete after %1 polls").arg(bootAttempts_));
     }
     StepResult netfix(const RunContext &ctx, LogSink &sink) {
@@ -1641,15 +1658,16 @@ private:
         return StepResult::good("rp_filter + routes set, adb forwarder up");
     }
     Spawner &sp_;
-    int bootAttempts_, bootIntervalMs_;
+    int bootAttempts_, bootIntervalMs_, bootTimeoutMs_;
 };
 
 std::unique_ptr<Deployer> makeDeployer(Backend backend, Spawner &sp, int bootAttempts,
-                                       int bootIntervalMs) {
+                                       int bootIntervalMs, int remoteBootTimeoutMs) {
     switch (backend) {
         case Backend::Bare: return std::make_unique<BareDeployer>(sp, bootAttempts, bootIntervalMs);
         case Backend::Remote:
-            return std::make_unique<RemoteDeployer>(sp, bootAttempts, bootIntervalMs);
+            return std::make_unique<RemoteDeployer>(sp, bootAttempts, bootIntervalMs,
+                                                    remoteBootTimeoutMs);
     }
     return std::make_unique<BareDeployer>(sp, bootAttempts, bootIntervalMs);
 }

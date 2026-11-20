@@ -523,7 +523,7 @@ public:
 // interval is pure overshoot on a healthy one — a 3 s interval spent up to 3 s of every cold deploy
 // waiting after Android was already up. Same 72 s budget, ~1.5 s saved on average.
 std::unique_ptr<Deployer> makeDeployer(Backend backend, Spawner &sp, int bootAttempts = 72,
-                                       int bootIntervalMs = 1000);
+                                       int bootIntervalMs = 1000, int remoteBootTimeoutMs = 0);
 
 // ─────────── custom-image pipeline ───────────
 // Steps that realize the feature recipe on rc.buildHost (unset = build locally): stage the build

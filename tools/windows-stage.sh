@@ -2,6 +2,7 @@
 # Stage a runnable Windows folder from a cross-build (bd remora-7oih):
 #
 #   tools/windows-stage.sh build-win dist-win [<guest-dir>]
+#   tools/windows-stage.sh --winq WINQ-EMU-Alpha10-Setup.exe build-win dist-win [<guest-dir>]
 #   tools/windows-vm.sh put dist-win C:/remora && tools/windows-vm.sh ssh C:\\remora\\remora.exe --version
 #
 # or the test suites, with what they import and run-tests.cmd to run them (bd remora-7oih.7):
@@ -24,12 +25,13 @@
 # whole and walked in turn. adb comes from the SDK's platform-tools. Windows' own DLLs are left out.
 set -euo pipefail
 
-USAGE="usage: windows-stage.sh [--tests] <build-dir> <out-dir> [<guest-dir>]"
+USAGE="usage: windows-stage.sh [--tests | --winq <Alpha10-Setup.exe>] <build-dir> <out-dir> [<guest-dir>]"
 TESTS=0
-if [[ "${1:-}" == --tests ]]; then
-    TESTS=1
-    shift
-fi
+WINQ_ARCHIVE=
+case "${1:-}" in
+    --tests) TESTS=1; shift ;;
+    --winq) WINQ_ARCHIVE="${2:?$USAGE}"; shift 2 ;;
+esac
 BUILD="${1:?$USAGE}"
 OUT="${2:?$USAGE}"
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -49,6 +51,18 @@ if ((TESTS)); then
 else
     [[ -f "$BUILD/remora.exe" ]] || { echo "windows-stage: $BUILD/remora.exe not built" >&2; exit 1; }
     [[ -f "$GUEST/system.qcow2" ]] || { echo "windows-stage: no guest image in $GUEST — run guest/build.sh" >&2; exit 1; }
+fi
+
+if [[ -n $WINQ_ARCHIVE ]]; then
+    winq_sha=7a50aa4fac7a53ef911de2c9db756fbc0b2685dd5522f2a4591910c520f15fbe
+    printf '%s  %s\n' "$winq_sha" "$WINQ_ARCHIVE" | sha256sum -c --status ||
+        { echo "windows-stage: WINQ Alpha 10 SHA-256 mismatch" >&2; exit 1; }
+    scratch=$(mktemp -d)
+    trap 'rm -rf -- "$scratch"' EXIT
+    7z x -bd -y "-o$scratch" "$WINQ_ARCHIVE" 'bin/*' >/dev/null
+    for file in qemu-system-x86_64.exe qemu-img.exe share/bios-256k.bin; do
+        [[ -s "$scratch/bin/$file" ]] || { echo "windows-stage: WINQ is missing bin/$file" >&2; exit 1; }
+    done
 fi
 
 rm -rf "$OUT"
@@ -72,7 +86,19 @@ else
     cp "$SDK/qt/bin/opengl32sw.dll" "$OUT/"
     # The guest's hypervisor front end, already trimmed by tools/windows-sdk.sh. Its own directory:
     # its DLLs (an older libstdc++, GLib, GTK) must not be the ones remora.exe finds first.
-    cp -r "$SDK/qemu" "$OUT/qemu"
+    if [[ -n $WINQ_ARCHIVE ]]; then
+        cp -r "$scratch/bin" "$OUT/qemu"
+        cp "$SDK/qemu"/{COPYING,COPYING.LIB} "$OUT/qemu/"
+        cat >"$OUT/qemu/remora-winq-alpha10.txt" <<EOF
+WINQ-EMU Alpha 10
+https://github.com/cmspam/winq-emu/releases/tag/alpha10
+WINQ-EMU-Alpha10-Setup.exe SHA-256: $winq_sha
+QEMU source: https://github.com/cmspam/winq-emu-qemu/tree/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73
+virglrenderer source: https://github.com/cmspam/winq-emu-virglrenderer/tree/e80354b8f5a0dedc62374b905a181874682659cc
+EOF
+    else
+        cp -r "$SDK/qemu" "$OUT/qemu"
+    fi
     mkdir -p "$OUT/guest"
     cp "$GUEST"/{vmlinuz,system.qcow2,cmdline,manifest.txt} "$OUT/guest/"
 

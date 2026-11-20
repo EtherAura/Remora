@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QProcess>
@@ -5633,6 +5634,38 @@ private slots:
         QVERIFY(!holds(folder, QStringLiteral("App 5.lnk")));
         QVERIFY(!QDir(folder).exists());
         QVERIFY(appMenuEntries(QStringLiteral("settle")).isEmpty());
+    }
+
+    void whpxBootWaitUsesTimedProbesAndStopsOnContainerExit() {
+        class TimedSpawner : public FakeSpawner {
+        public:
+            QVector<int> deadlines;
+            ProcResult runTimed(const QStringList &argv, int timeoutMs,
+                                const LineSink &onLine) override {
+                deadlines.append(timeoutMs);
+                return run(argv, {}, onLine);
+            }
+        } sp;
+        auto deployer = makeDeployer(Backend::Remote, sp, 1, 0, 60 * 1000);
+        const auto steps = deployer->steps(makeContext(withGuest(), Backend::Remote));
+        const auto boot = std::find_if(steps.begin(), steps.end(), [](const Step &step) {
+            return step.name == QLatin1String("boot-wait");
+        });
+        QVERIFY(boot != steps.end());
+        RecordingSink sink;
+        sp.bootStates = QStringList{"", "0", "1"};
+        const auto ready = boot->run(sink);
+        QVERIFY2(ready.ok, qPrintable(ready.detail));
+        QCOMPARE(sp.deadlines.size(), 3);
+        QVERIFY(ready.detail.contains(QStringLiteral("60 s WHPX budget")));
+        for (const int deadline : sp.deadlines) QVERIFY(deadline > 0 && deadline <= 30000);
+
+        sp.deadlines.clear();
+        sp.containerExit = QStringLiteral("exited 129");
+        const auto stopped = boot->run(sink);
+        QVERIFY(!stopped.ok);
+        QVERIFY(stopped.detail.contains(QStringLiteral("Android asked to reboot")));
+        QCOMPARE(sp.deadlines.size(), 2);
     }
 
     // A container that stops while Android boots ends the boot wait at once, saying why. It was

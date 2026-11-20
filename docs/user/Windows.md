@@ -57,6 +57,21 @@ Windows. Uninstalling, from **Settings → Apps**, stops the guest, removes the 
 profiles' Start-menu folders, and keeps `%LOCALAPPDATA%\remora`: the guest's data disk there holds
 your Android images and data, and is yours to delete.
 
+### Build the WINQ preview installer
+
+The optional WINQ preview bundles [WINQ-EMU Alpha 10](https://github.com/cmspam/winq-emu/releases/tag/alpha10)
+for the managed WHPX guest. On a machine with the Windows cross-build and SDK ready, stage the
+pinned setup executable and build the preview installer.
+
+```bash
+tools/windows-stage.sh --winq "$winq_setup" build-win dist-win build-guest
+tools/windows-installer.sh dist-win Remora-Windows-WINQ-Preview-Setup.exe
+```
+
+The installed launcher picks up the bundled WINQ runtime automatically. For WHPX it uses the
+host CPU and WINQ's default interrupt controller, with XSAVEC masked in the Linux guest.
+The standard staging command continues to package the pinned QEMU from the Windows SDK.
+
 ## The two programs
 
 `remora-gui.exe` opens the workspace; it is what a shortcut should start, and it never shows a
@@ -96,6 +111,10 @@ Set these in `[Defaults]`: there is one guest, shared by every profile.
 | `guest_memory_mb` | `6144` | memory the guest holds while it runs |
 | `guest_cpus` | half this PC's threads, 2 to 8 | |
 | `guest_accel` | `auto` (the Windows Hypervisor Platform) | `tcg` runs without it, for testing only: Android boots and the Start-menu folder is written, but the mirror cannot show the screen |
+
+On WHPX, Remora gives Android up to 20 minutes to report boot completion after container
+startup. A fresh Android 17 profile can spend several minutes verifying and compiling apps.
+The wait ends as soon as Android is ready or the container exits.
 
 ## What differs from Linux
 

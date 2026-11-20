@@ -87,6 +87,7 @@ void registerEndpoint(const State &s) {
     h.knownHostsFile = QDir::toNativeSeparators(path(QStringLiteral("known_hosts")));
     h.adbLocalFirst = s.adbLocalFirst;
     h.adbCount = s.adbCount;
+    h.accelerator = s.accel;
     registerManagedHost(h);
 }
 
@@ -152,9 +153,19 @@ QString qemuImg() {
     return QStringLiteral("qemu-img");
 }
 
+bool bundledWinq() {
+#ifdef Q_OS_WIN
+    return qEnvironmentVariableIsEmpty("REMORA_GUEST_QEMU") &&
+           QFileInfo(QCoreApplication::applicationDirPath() +
+                     QStringLiteral("/qemu/remora-winq-alpha10.txt")).isFile();
+#else
+    return false;
+#endif
+}
+
 QString firmwareDir() {
 #ifdef Q_OS_WIN
-    if (qEnvironmentVariableIsEmpty("REMORA_GUEST_QEMU"))
+    if (qEnvironmentVariableIsEmpty("REMORA_GUEST_QEMU") && !bundledWinq())
         return QCoreApplication::applicationDirPath() + QStringLiteral("/qemu/share");
 #endif
     return {};
@@ -381,6 +392,7 @@ StepResult GuestVm::ensureRunning(const ResolvedConfig &rc, const LineSink &log)
         g.qemu = qemuProgram();
         g.firmwareDir = firmwareDir();
         g.accel = accel;
+        g.winq = bundledWinq();
         g.memoryMb = rc.guestMemoryMb;
         // Half the machine, from 2 to 8: Android's first boot compiles every app, and it is
         // the machine's other half that the user is sitting at.
@@ -403,6 +415,7 @@ StepResult GuestVm::ensureRunning(const ResolvedConfig &rc, const LineSink &log)
                      .arg(accel)
                      .arg(g.memoryMb)
                      .arg(g.cpus));
+        if (g.winq) say(log, QStringLiteral("guest hypervisor: bundled WINQ Alpha 10"));
         const Detached d = sp_.spawnDetached(buildGuestQemuArgv(g));
         if (d.pid <= 0)
             return StepResult::fail(QStringLiteral("could not start %1").arg(g.qemu));

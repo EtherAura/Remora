@@ -23,6 +23,7 @@ struct ManagedHost {
     QString knownHostsFile;  // holds exactly the guest's host key
     int adbLocalFirst = 0;   // local port QEMU forwards to kManagedAdbFirst in the guest
     int adbCount = 0;        // …and the next adbCount-1 ports, one per profile
+    QString accelerator;     // the accelerator recorded by the running guest
 };
 
 // The guest ports profiles publish adb on: the lowest free from 5555 upward, as anywhere else.

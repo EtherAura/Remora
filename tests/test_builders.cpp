@@ -4478,6 +4478,15 @@ private slots:
             "-serial", "file:C:/state/console.log", "-monitor", "none",
             "-qmp", "tcp:127.0.0.1:47021,server=on,wait=off"};
         QCOMPARE(buildGuestQemuArgv(g), want);
+
+        g.winq = true;
+        const auto winq = buildGuestQemuArgv(g);
+        QCOMPARE(winq.value(winq.indexOf("-accel") + 1), QStringLiteral("whpx"));
+        QCOMPARE(winq.value(winq.indexOf("-cpu") + 1), QStringLiteral("host"));
+        QCOMPARE(winq.value(winq.indexOf("-append") + 1),
+                 QStringLiteral("root=/dev/vda rw clearcpuid=xsavec"));
+
+        g.winq = false;
         // KVM passes the CPU through; an initramfs, when an image ships one, is handed over.
         g.accel = QStringLiteral("kvm");
         g.initrd = QStringLiteral("/img/initramfs");

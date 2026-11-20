@@ -11,6 +11,7 @@ struct GuestLaunch {
     QString qemu;           // qemu-system-x86_64
     QString firmwareDir;    // -L: bios-256k.bin, linuxboot_dma.bin (empty: QEMU's own default)
     QString accel;          // whpx | kvm | tcg
+    bool winq = false;     // use WINQ's host CPU and WHPX interrupt controller
     int memoryMb = 0;
     int cpus = 0;
     QString kernel, initrd, cmdline;  // initrd may be empty: Remora's kernel needs none

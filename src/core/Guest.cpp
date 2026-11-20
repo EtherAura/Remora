@@ -14,19 +14,18 @@ static QString qemuPath(const QString &p) {
 
 QStringList buildGuestQemuArgv(const GuestLaunch &g) {
     QStringList a{g.qemu, QStringLiteral("-name"), QStringLiteral("remora-guest")};
-    // WHPX with QEMU's own interrupt controller: its in-kernel irqchip is what Linux guests hang
-    // on. TCG with one thread per vCPU, since it is only ever a slow fallback.
-    if (g.accel == QLatin1String("whpx"))
+    const bool winqWhpx = g.winq && g.accel == QLatin1String("whpx");
+    // Stock WHPX uses a userspace interrupt controller. WINQ uses the default.
+    if (g.accel == QLatin1String("whpx") && !winqWhpx)
         a << QStringLiteral("-accel") << QStringLiteral("whpx,kernel-irqchip=off");
     else if (g.accel == QLatin1String("tcg"))
         a << QStringLiteral("-accel") << QStringLiteral("tcg,thread=multi");
     else
         a << QStringLiteral("-accel") << g.accel;
-    // `host` only exists where the accelerator can pass the CPU through (KVM); `max` is the
-    // fullest model the others offer. The Android image needs x86-64-v2 (SSE4.2, POPCNT) at least.
+    // Android requires at least x86-64-v2 (SSE4.2 and POPCNT).
     a << QStringLiteral("-machine") << QStringLiteral("q35")
-      << QStringLiteral("-cpu") << (g.accel == QLatin1String("kvm") ? QStringLiteral("host")
-                                                                      : QStringLiteral("max"))
+      << QStringLiteral("-cpu") << (winqWhpx || g.accel == QLatin1String("kvm")
+                                         ? QStringLiteral("host") : QStringLiteral("max"))
       << QStringLiteral("-smp") << QString::number(g.cpus)
       << QStringLiteral("-m") << QString::number(g.memoryMb)
       // Nothing QEMU would add on its own: no VGA (its BIOS is not shipped), no default serial
@@ -37,7 +36,10 @@ QStringList buildGuestQemuArgv(const GuestLaunch &g) {
     a << QStringLiteral("-kernel") << g.kernel;
     // Remora's guest kernel boots without one; an image that ships an initramfs gets it passed.
     if (!g.initrd.isEmpty()) a << QStringLiteral("-initrd") << g.initrd;
-    a << QStringLiteral("-append") << g.cmdline;
+    QString cmdline = g.cmdline;
+    // On nested AMD WHPX, WINQ can advertise XSAVEC with an invalid compacted state size.
+    if (winqWhpx) cmdline += QStringLiteral(" clearcpuid=xsavec");
+    a << QStringLiteral("-append") << cmdline;
     a << QStringLiteral("-drive")
       << QStringLiteral("file=%1,if=virtio,format=qcow2").arg(qemuPath(g.systemDisk))
       << QStringLiteral("-drive")
