@@ -1921,13 +1921,16 @@ private slots:
         QVERIFY(!hasCall(sp, "pgrep -x magiskd"));
     }
 
-    // What every bare deploy here skips on Windows instead: bare is refused at preflight, first,
-    // in one line that says what to use, before anything is spawned (bd remora-7oih).
-    void bareIsRefusedFirstOnWindows() {
-#ifndef Q_OS_WIN
-        QSKIP("Windows only: a Linux client deploys bare");
-#endif
+    void bareIsRefusedFirstOutsideLinux_data() {
+        QTest::addColumn<bool>("windows");
+        QTest::newRow("Windows") << true;
+        QTest::newRow("FreeBSD") << false;
+    }
+
+    void bareIsRefusedFirstOutsideLinux() {
+        QFETCH(bool, windows);
         FakeSpawner sp;
+        sp.os = windows ? LocalOs::Windows : LocalOs::FreeBSD;
         RecordingSink sink;
         QVERIFY(!runChain(makeDeployer(Backend::Bare, sp, 24, 0)
                               ->steps(makeContext(RemoraConfig{}, Backend::Bare)),
