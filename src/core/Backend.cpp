@@ -43,8 +43,8 @@ QString retiredVmBackendMessage() {
 QString bareNeedsLinuxMessage() {
     return QStringLiteral(
         "backend=bare runs Android in docker on this machine, and that needs a Linux kernel: the "
-        "container shares it for binder and memfd. Windows does not have one. Deploy to a Linux "
-        "docker host instead: backend=remote with ssh_host=<user>@<host>.");
+        "container shares it for binder and memfd. Use backend=remote with "
+        "ssh_host=<user>@<host> to deploy to a Linux Docker host.");
 }
 
 QString linuxDesktopOnlyMessage(const QString &feature) {

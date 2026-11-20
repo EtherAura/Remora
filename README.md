@@ -9,7 +9,7 @@
 
 **Runs Android 16 or 17 (LineageOS) in Docker and opens each app in its own window.**
 
-Android 16 / 17 · Docker · Linux x86_64 · Windows (preview) · GPL-3.0
+Android 16 / 17 · Docker · Linux x86_64 · FreeBSD 15 amd64 · Windows (preview) · GPL-3.0
 
 [![CI](https://github.com/EtherAura/Remora/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/EtherAura/Remora/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml/badge.svg)](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml)
@@ -33,10 +33,9 @@ Android 16 / 17 · Docker · Linux x86_64 · Windows (preview) · GPL-3.0
 
 ## Quick start
 
-1. [Install Remora](docs/user/Installation.md): the `.deb`, the Arch `PKGBUILD`, the Gentoo ebuild,
-   or from source. On Windows 10 or 11, run the installer from the
-   [latest release](https://github.com/EtherAura/Remora/releases/latest) ([Windows](docs/user/Windows.md)).
-2. Fetch the ready-made Android 17 image:
+1. [Install Remora](docs/user/Installation.md) on Linux, FreeBSD 15 amd64, or Windows 10 or 11.
+   FreeBSD connects to a Linux Docker host over SSH. [FreeBSD installation](docs/user/Installation.md#freebsd-15-amd64)
+2. Fetch the ready-made Android 17 image. For a remote target, add `--host user@linux-host`.
 
    ```sh
    remora images fetch --tag remora24:x86_64-public

@@ -44,7 +44,8 @@ Details are in [GPU Acceleration](GPU-Acceleration.md).
 
 A `remote` target needs the same things on the docker host (Docker, binder, the GPU pieces), plus
 key-based ssh from your machine to it. Your machine still needs `adb`, because the client connects
-from there.
+from there. FreeBSD 15 amd64 uses this target and supplies the client and ADB through its
+[package](Installation.md#freebsd-15-amd64).
 
 ### Optional tools
 

@@ -450,7 +450,7 @@ static std::optional<QString> lineOrNull(const QString &out, int idx) {
 HostCapabilities probeCapabilities(Backend target, const QString &sshHost, Spawner &sp) {
     HostCapabilities c;
     c.localOs = sp.localOs();
-    const bool localBare = c.localOs != LocalOs::Windows;
+    const bool localBare = c.localOs == LocalOs::Unix;
     if (localBare) {
         c.modAshmem = parseLsmodHas(sp.run({"lsmod"}).out, "ashmem");
         c.inDockerGroup = parseIdGroups(sp.run({"id", "-nG"}).out, "docker");
@@ -531,10 +531,8 @@ StatusReport probeStatus(Backend backend, Spawner &sp, const QString &sshHost,
     // A failed `docker ps` is not an empty one. With the daemon down every consumer of this report
     // read running=false as "the container is stopped" — the Runners row, the library, this JSON —
     // while the container was up behind an unreachable socket. Carry the failure as its own fact.
-    // No local docker on a Windows client, and no bare container to look for in it: the row reads
-    // as not running, which is the truth, rather than as a docker the client was never meant to
-    // have failing to answer.
-    if (sp.localOs() != LocalOs::Windows) {
+    // Only Linux clients can have a local Android container.
+    if (sp.localOs() == LocalOs::Unix) {
         const ProcResult psLocal = sp.run({"docker", "ps", "--format", "{{.Names}}"});
         if (psLocal.rc != 0) r.bareDockerError = firstLine(psLocal.stderrTail, psLocal.out);
         const auto local = parseDockerPsNames(psLocal.rc == 0 ? psLocal.out : QString());
@@ -621,9 +619,7 @@ QString doctorReport(Spawner &sp, const RemoraConfig &cfg, Backend backend,
     QTextStream ts(&out);
     const auto first = [](const QString &s) { return s.section(QLatin1Char('\n'), 0, 0).trimmed(); };
     // One command on whichever host runs docker for this backend (local for bare, ssh else).
-    // A Windows client has no local docker host, so a bare profile there answers nothing rather
-    // than a shell error; readiness below already says why.
-    const bool localDocker = sp.localOs() != LocalOs::Windows;
+    const bool localDocker = sp.localOs() == LocalOs::Unix;
     const auto onDockerHost = [&](const QString &cmd) {
         if (backend == Backend::Bare && !localDocker) return ProcResult{127, {}, {}};
         return backend == Backend::Bare ? sp.run({"sh", "-c", cmd}, {}, {})

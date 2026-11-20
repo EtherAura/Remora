@@ -1,9 +1,6 @@
 # Installation
 
-This page covers the four ways to install Remora (the `.deb`, the Arch `PKGBUILD`, the Gentoo
-ebuild, and a build from source), how to verify what you downloaded, and the two steps that follow
-every install: the `docker` group and the first `remora check`. It ends with the Android image: the ready-made one,
-fetched once Remora is installed, or one you build yourself.
+Remora releases include packages for Linux, FreeBSD and Windows, plus a source tarball.
 
 ## What a release contains
 
@@ -13,6 +10,7 @@ Every [release](https://github.com/EtherAura/Remora/releases/latest) carries:
 - a `.deb` for Ubuntu 24.04 and later, and Debian (amd64),
 - a `PKGBUILD` for Arch Linux,
 - an ebuild for Gentoo, `remora-<version>.ebuild`,
+- a native package for FreeBSD 15 amd64, `Remora-<version>-freebsd15-amd64.pkg`,
 - an installer for 64-bit Windows 10 and 11, `Remora-<version>-windows-x64-setup.exe`, a preview
   ([Windows](Windows.md#installing)),
 - SHA-256 checksums, an SBOM, and a Sigstore build-provenance attestation.
@@ -81,9 +79,46 @@ and what each one enables.
 
 Like a `PKGBUILD`, an ebuild is a recipe your machine runs. Read it before you emerge it.
 
+## FreeBSD 15 amd64
+
+Download the `.pkg` and matching `.sha256` from the
+[release page](https://github.com/EtherAura/Remora/releases/latest). With root privileges, install
+the local package using `pkg install` so pkg can resolve dependencies from the configured
+FreeBSD repositories. The package includes the GUI and CLI and pulls in `android-tools` for ADB.
+OpenSSH is part of the FreeBSD base system.
+
+```sh
+pkg install ./Remora-<version>-freebsd15-amd64.pkg
+```
+
+Run the desktop application as your regular user. In the workspace, set the profile target to
+**Remote** and enter the SSH host. The host needs Linux, Docker and binderfs. A Linux guest
+running under bhyve can also serve as this host when it provides those features.
+
+```sh
+remora check --backend remote --ssh-host user@linux-host
+remora images fetch --tag remora24:x86_64-public --host user@linux-host
+remora gui
+```
+
+Image builds and local Android deployment run on Linux. The FreeBSD package carries the two
+static Linux helpers deployed with the Android container. See [Deploy Targets](Deploy-Targets.md)
+for host prerequisites and ADB networking.
+
 ## From source
 
-Install the build dependencies for your distribution first: see
+On FreeBSD, install the build dependencies below and configure with
+`-DCMAKE_INSTALL_PREFIX=/usr/local -DREMORA_INSTALLED_VENDOR=ON`. Build
+`vendor/native/fwd` and `vendor/native/uinput-kbd` on Linux amd64 with `make -C vendor/native`
+and place them in the FreeBSD checkout's `vendor/native` directory before installing or creating a
+package with `python3 tools/freebsd-package.py build`. Start from a clean public source checkout.
+
+```sh
+pkg install cmake-core ninja pkgconf qt6-base qt6-multimedia qt6-webengine \
+    qt6-base_sqldriver-sqlite qt6-svg ffmpeg ffnvcodec-headers gmake python3 android-tools
+```
+
+For Linux, install the build dependencies for your distribution first: see
 [Requirements](Requirements.md#to-build-remora-itself). Then:
 
 ```sh
@@ -119,8 +154,8 @@ ctest --test-dir build
 
 ## Verifying a download
 
-The source tarball, the `.deb`, the SBOM and the Windows installer each carry a Sigstore-backed
-build-provenance attestation that records which workflow, at which commit, produced those exact
+The source tarball, `.deb`, FreeBSD package, SBOM and Windows installer each carry a
+Sigstore-backed build-provenance attestation that records which workflow, at which commit, produced those exact
 bytes. Check it with the GitHub CLI:
 
 ```sh
@@ -142,7 +177,7 @@ catalog instead ([Official images](CLI-Reference.md#official-images)).
 
 ## After installing
 
-Whichever way you installed it:
+For a local Linux Docker target:
 
 ```sh
 sudo usermod -aG docker "$USER"   # then log out and back in

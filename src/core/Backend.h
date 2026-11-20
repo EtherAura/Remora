@@ -21,7 +21,7 @@ Backend backendFromString(const QString &s);  // defaults to Bare on unknown/uns
 bool isRetiredVmBackend(const QString &s);
 // The refusal itself — what to edit instead — worded once for preflight and the CLI's --backend.
 QString retiredVmBackendMessage();
-// backend=bare on a Windows desktop (bd remora-7oih): there is no Linux kernel there to run it on.
+// backend=bare requires a Linux kernel on the client.
 QString bareNeedsLinuxMessage();
 
 // The OS Remora ITSELF runs on — the client, never the docker host, which is Linux everywhere. A
@@ -29,9 +29,11 @@ QString bareNeedsLinuxMessage();
 // systemd, an XDG desktop), so the code that forks on it asks Spawner::localOs() rather than
 // testing Q_OS_WIN in place: a fake spawner can then say "Windows", and the Windows arm runs in
 // the Linux test suite instead of only on a machine nobody tests on (bd remora-7oih.2).
-enum class LocalOs { Unix, Windows };
+enum class LocalOs { Unix, Windows, FreeBSD };
 #ifdef Q_OS_WIN
 inline constexpr LocalOs kLocalOs = LocalOs::Windows;
+#elif defined(Q_OS_FREEBSD)
+inline constexpr LocalOs kLocalOs = LocalOs::FreeBSD;
 #else
 inline constexpr LocalOs kLocalOs = LocalOs::Unix;
 #endif

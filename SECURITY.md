@@ -44,7 +44,7 @@ made to run code by a malicious device — is exactly what to report.
 
 ## Verifying a release download
 
-Every release asset this project builds — the source tarball and the `.deb` — carries a
+The source tarball, Linux `.deb`, FreeBSD package, Windows installer and Linux SBOM carry a
 [Sigstore-backed build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds)
 recording which workflow, at which commit, produced those exact bytes:
 

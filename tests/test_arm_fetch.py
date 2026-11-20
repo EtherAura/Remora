@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -11,7 +12,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'vendor/guest-scripts/remora-arm-fetch.sh'
 PACKAGE = 'software.sonar.sonar_mobile'
-MOCK = r'''#!/usr/bin/env python3
+MOCK = r'''
 import json, os, pathlib, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
@@ -64,7 +65,7 @@ class ArmFetchTests(unittest.TestCase):
             commands.mkdir()
             for name in ['docker', 'sqlite3', 'apkeep']:
                 executable = commands / name
-                executable.write_text(textwrap.dedent(MOCK))
+                executable.write_text(f"#!{sys.executable}" + textwrap.dedent(MOCK))
                 executable.chmod(0o755)
             calls = tmp / 'calls.jsonl'
             env = {k: v for k, v in os.environ.items()
@@ -75,6 +76,7 @@ class ArmFetchTests(unittest.TestCase):
             env.update(settings)
             result = subprocess.run(['sh', str(SCRIPT), 'fixture-container', PACKAGE],
                                     env=env, text=True, capture_output=True, timeout=15)
+            self.assertTrue(calls.is_file(), result.stdout + result.stderr)
             history = [json.loads(line) for line in calls.read_text().splitlines()]
             return result, history
 

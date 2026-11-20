@@ -217,10 +217,9 @@ endif()
 # static and required: no static libc is a configure error here, not a link error halfway through.
 #
 # Every one of them is a LINUX binary — two run in the container, two beside docker on the host —
-# so a Windows build (bd remora-7oih) cannot make them with its own compiler. It skips them; the
-# Windows package has to carry the ones a Linux build made.
-if(WIN32)
-    message(STATUS "vendor/native: NOT built — these are Linux binaries, and this is a Windows build")
+# so Windows and FreeBSD packages carry the container helpers built on Linux.
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(STATUS "vendor/native: use Linux-built helpers for remote deployment")
 else()
 set(REMORA_NATIVE_DIR "${CMAKE_SOURCE_DIR}/vendor/native")
 include(CheckCSourceCompiles)
