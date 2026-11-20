@@ -909,6 +909,27 @@ private slots:
         QCOMPARE(listInstances(path), (QStringList{QStringLiteral("a"), QStringLiteral("b")}));
     }
 
+    // A first-run or profile-less file must give an empty Run list: the deployment dialog refuses
+    // an empty list and the first-profile fallback takes value(0), so a phantom entry (another
+    // section, or the dangling active_instance name) would be offered and could not be loaded.
+    void listInstancesIsEmptyWithoutProfiles() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = rc(dir);
+        QCOMPARE(listInstances(path), QStringList{});
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Remora/active_instance", QStringLiteral("b"));
+            s.setValue("Defaults/fps", 60);
+            s.setValue("Deployment-d/profile", QStringLiteral("a"));
+            s.setValue("Source-s/enabled", true);
+            s.sync();
+            QCOMPARE(s.status(), QSettings::NoError);
+        }
+        QVERIFY(QFileInfo::exists(path));
+        QCOMPARE(listInstances(path), QStringList{});
+    }
+
     void activeInstanceFallsBackWhenUnset() {
         QTemporaryDir dir;
         const QString path = rc(dir);

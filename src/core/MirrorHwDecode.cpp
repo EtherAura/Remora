@@ -1,5 +1,7 @@
 #include "MirrorHwDecode.h"
 
+#include "MirrorProto.h"
+
 namespace remora::mirror {
 
 bool hwDecodeRequested(const QString &hwdec) {
@@ -47,6 +49,15 @@ QList<HwDecodeAttempt> hwDecodeAttempts(const QString &hwdec, HwDecodePlatform p
     // the nodes are renderD128 and up, and the lowercased path never exists.
     if (windows) return {};
     return {HwDecodeAttempt{HwDecodeApi::Vaapi, hwdec}};
+}
+
+std::optional<VideoDecoder> videoDecoderFor(quint8 codecId) {
+    switch (codecId) {
+        case kCodecH264: return VideoDecoder::H264;
+        case kCodecH265: return VideoDecoder::H265;
+        case kCodecAv1: return VideoDecoder::Av1;
+        default: return std::nullopt;
+    }
 }
 
 }  // namespace remora::mirror

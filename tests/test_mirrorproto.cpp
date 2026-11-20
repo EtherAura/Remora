@@ -965,6 +965,30 @@ private slots:
 #endif
     }
 
+    // Video decoder selection: the START codec id, as the demuxer reports it, through the same
+    // allowlist Decoder::init consults before any decoder lookup. The wire has no MJPEG id, so the
+    // refusals are ids the protocol does not define for video.
+
+    void videoDecoderAllowlistRefusesUnknownCodecs() {
+        for (const quint8 id : {quint8(0x00), quint8(0x04), quint8(0x7f), quint8(0xff), kCodecOpus,
+                                kCodecAac, kCodecFlac, kCodecRawAudio}) {
+            StreamDemuxer d(StreamDemuxer::Kind::Video);
+            d.feed(record(quint8(StreamRecord::Start), QByteArray(1, char(id))));
+            QCOMPARE(d.next(), E::Started);
+            QCOMPARE(d.codec(), id);
+            QVERIFY2(!videoDecoderFor(d.codec()).has_value(), qPrintable(QString::number(id, 16)));
+        }
+        const auto supported = [](const char *startHex) {
+            StreamDemuxer d(StreamDemuxer::Kind::Video);
+            d.feed(hex(startHex));
+            if (d.next() != E::Started) return std::optional<VideoDecoder>();
+            return videoDecoderFor(d.codec());
+        };
+        QCOMPARE(supported("00000002" "01" "01"), std::optional(VideoDecoder::H264));
+        QCOMPARE(supported("00000002" "01" "02"), std::optional(VideoDecoder::H265));
+        QCOMPARE(supported("00000002" "01" "03"), std::optional(VideoDecoder::Av1));
+    }
+
     void deviceFramingErrorLatches() {
         DeviceMessageParser p;
         p.feed(hex("00000000"));  // size 0: no type, no way to find the next record

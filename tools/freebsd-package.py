@@ -103,7 +103,7 @@ def package(build_dir: Path, output_dir: Path) -> Path:
             "comment": "Deploy and mirror Android on a Linux Docker host",
             "desc": "A Qt desktop and command-line client for deploying and mirroring "
                     "Android on a Linux Docker host over SSH.",
-            "maintainer": "etheraura@protonmail.com",
+            "maintainer": "80259057+EtherAura@users.noreply.github.com",
             "www": "https://github.com/EtherAura/Remora",
             "prefix": str(PREFIX),
             "abi": abi,

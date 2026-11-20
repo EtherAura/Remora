@@ -2,6 +2,7 @@
 #include <QList>
 #include <QString>
 #include <QtGlobal>
+#include <optional>
 
 // Hardware-decode device selection for the mirror client: a --hwdec value → the devices the
 // decoder tries, in order. Pure, so which APIs `auto` reaches on which platform is pinned in
@@ -37,5 +38,12 @@ bool hwDecodeRequested(const QString &hwdec);
 // platform can serve it (vaapi on Windows, d3d11va on Linux, an unknown name on Windows), and the
 // decoder says so and decodes in software.
 QList<HwDecodeAttempt> hwDecodeAttempts(const QString &hwdec, HwDecodePlatform platform);
+
+// The video decoders the client opens, an allowlist: a START codec id (MirrorProto.h) → the one
+// decoder for it, nullopt for every other id (audio ids included). Decoder.cpp refuses a nullopt
+// before it looks up or opens any decoder, so a stream cannot steer the client onto a decoder it
+// never asked for.
+enum class VideoDecoder : quint8 { H264, H265, Av1 };
+std::optional<VideoDecoder> videoDecoderFor(quint8 codecId);
 
 }  // namespace remora::mirror

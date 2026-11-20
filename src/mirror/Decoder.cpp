@@ -125,14 +125,16 @@ void Decoder::setupHw(const QString &hwdec) {
 
 bool Decoder::init(quint8 codecId, const QString &hwdec, QString *error) {
     if (qEnvironmentVariableIsSet("REMORA_MIRROR_FFDEBUG")) av_log_set_level(AV_LOG_VERBOSE);
-    AVCodecID id;
-    switch (codecId) {
-        case kCodecH264: id = AV_CODEC_ID_H264; break;
-        case kCodecH265: id = AV_CODEC_ID_HEVC; break;
-        case kCodecAv1: id = AV_CODEC_ID_AV1; break;
-        default:
-            if (error) *error = QStringLiteral("unsupported video codec 0x%1").arg(codecId, 2, 16, QLatin1Char('0'));
-            return false;
+    const std::optional<VideoDecoder> allowed = videoDecoderFor(codecId);
+    if (!allowed) {
+        if (error) *error = QStringLiteral("unsupported video codec 0x%1").arg(codecId, 2, 16, QLatin1Char('0'));
+        return false;
+    }
+    AVCodecID id = AV_CODEC_ID_NONE;
+    switch (*allowed) {
+        case VideoDecoder::H264: id = AV_CODEC_ID_H264; break;
+        case VideoDecoder::H265: id = AV_CODEC_ID_HEVC; break;
+        case VideoDecoder::Av1: id = AV_CODEC_ID_AV1; break;
     }
     const AVCodec *codec = avcodec_find_decoder(id);
     if (!codec) {

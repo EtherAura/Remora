@@ -1543,6 +1543,36 @@ private slots:
         QVERIFY(a1.contains("--max-fps=60"));
     }
 
+    void mirrorMaxFpsValueVerbatim() {
+        // A cap other than the auto-cap's 60 reaches the client as given, and only once: every
+        // --max-fps token is collected undeduplicated, so a hardcoded 60 or a repeat both fail.
+        ResolvedConfig c = bareCfg();
+        c.maxFps = 90;
+        const QStringList argv = buildMirrorArgv(c, "localhost:5555").second;
+        QStringList caps;
+        for (const QString &t : argv)
+            if (t.startsWith("--max-fps")) caps << t;
+        QCOMPARE(caps, QStringList{"--max-fps=90"});
+        QVERIFY(!argv.contains("--max-fps=60"));
+    }
+
+    // The cap sits outside the device-codec chain on purpose: the client forwards it in compose
+    // mode too, so the host-encoded mirror keeps it, and the PIP's drop list must not take it.
+    void mirrorMaxFpsSurvivesHostEncodeAndPip() {
+        ResolvedConfig c = bareCfg();
+        c.maxFps = 90;
+        c.hostEncodeDrivesMirror = true;
+        c.hostEncodeVideoSocket = QStringLiteral("/tmp/remora-video-test.sock");
+        const QStringList argv = buildMirrorArgv(c, QStringLiteral("localhost:5555"), false).second;
+        QVERIFY(argv.contains(QStringLiteral("--external-video-socket=/tmp/remora-video-test.sock")));
+        QCOMPARE(argv.count(QStringLiteral("--max-fps=90")), 1);
+
+        const QStringList pip = buildPipMirrorArgv(c, QStringLiteral("localhost:5555"),
+                                                   QStringLiteral("Android 17"))
+                                    .second;
+        QCOMPARE(pip.count(QStringLiteral("--max-fps=90")), 1);
+    }
+
     // The Viewer's Navigation card is an ACTION-first view of two button/letter-indexed mirror
     // knobs, so the resolved default has to give every action a distinct trigger — the old bhbn
     // put Back on both right-click and the 4th button and left Recents unreachable, which the card

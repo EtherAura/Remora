@@ -21,6 +21,9 @@ private slots:
         QVERIFY(parseBootCompleted(fx("getprop_boot.txt")) == std::optional<bool>(true));
         QVERIFY(parseBootCompleted("0\r\n") == std::optional<bool>(false));
         QVERIFY(!parseBootCompleted("").has_value());
+        // A not-yet-set property prints a bare line ending: still unknown, not false.
+        QVERIFY(!parseBootCompleted(QStringLiteral("\r\n")).has_value());
+        QVERIFY(!parseBootCompleted(QStringLiteral(" \n")).has_value());
     }
 
     // bd remora-7oih — `docker inspect -f '{{.State.Status}} {{.State.ExitCode}}'`: only a stopped
