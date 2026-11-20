@@ -124,7 +124,7 @@ jobs:
           prepare: |
             pkg install -y cmake-core ninja pkgconf qt6-base qt6-multimedia qt6-webengine \
               qt6-base_sqldriver-sqlite qt6-svg ffmpeg ffnvcodec-headers gmake python3 \
-              android-tools xorg-vfbserver xdotool
+              android-tools git xorg-vfbserver xdotool
           run: |
             set -eu
             export LC_ALL=C.UTF-8
@@ -133,12 +133,14 @@ jobs:
             build=$(mktemp -d)
             trap 'rm -rf "$build"' EXIT
             cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-              -DREMORA_INSTALLED_VENDOR=ON -DCMAKE_INSTALL_PREFIX=/usr/local
+              -DREMORA_INSTALLED_VENDOR=ON -DCMAKE_INSTALL_PREFIX=/usr/local \
+              -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON
             cmake --build "$build" --parallel 2
-            ctest --test-dir "$build" --output-on-failure
             python3 tools/freebsd-package.py "$build"
             pkg install -y "./dist/$asset"
             pkg check -ds remora
+            # Engine tests need the vendor tree at the compiled-in installation path.
+            ctest --test-dir "$build" --output-on-failure
             install -m 0555 tools/freebsd-installed-smoke.sh "$build/installed-smoke.sh"
             chmod 755 "$build"
             su -m nobody -c "sh '$build/installed-smoke.sh' '$version'"
