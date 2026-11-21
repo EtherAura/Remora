@@ -612,6 +612,16 @@ private slots:
                  QStringList({"/data/app/com.foo-1/base.apk"}));
     }
 
+    // The listing is read line by line, not as a block: stopping at the first blank or status
+    // line would return base.apk alone, and a split app would be transferred without its splits.
+    void pmPathsKeepsSplitsAcrossBlankAndStatusLines() {
+        QCOMPARE(parsePmPaths(QStringLiteral("\npackage:/data/app/com.foo-1/base.apk\n\n"
+                                             "Failure [NOT_INSTALLED]\n"
+                                             "package:/data/app/com.foo-1/split_config.en.apk\n\n")),
+                 QStringList({"/data/app/com.foo-1/base.apk",
+                              "/data/app/com.foo-1/split_config.en.apk"}));
+    }
+
     // ─────────── host LAN → macvlan parameters (bd remora-400) ───────────
 
     // docker rejects a --subnet whose host bits are set, so the host's own address must be masked
