@@ -1,5 +1,8 @@
 #include <QtTest>
 
+#include <optional>
+#include <type_traits>
+
 #include "core/MirrorHwDecode.h"
 #include "core/MirrorInput.h"
 #include "core/MirrorProto.h"
@@ -968,6 +971,53 @@ private slots:
 #else
         QCOMPARE(kHostHwDecodePlatform, HwDecodePlatform::Linux);
 #endif
+    }
+
+    void hwDecodeNeverSelectsVulkan() {
+        // The device plan takes no codec, so H.265 reaches the same plan as every other stream:
+        // Decoder::init allows HEVC through videoDecoderFor, and setupHw (from init or
+        // warmHardware) opens only what hwDecodeAttempts lists. Neither automatic selection nor
+        // an explicit request may yield an API outside the platform's own set; a new API in a
+        // plan fails here, because each attempt is checked against an allowlist, not a spelling.
+        static_assert(std::is_same_v<decltype(&hwDecodeAttempts),
+                                     QList<HwDecodeAttempt> (*)(const QString &, HwDecodePlatform)>);
+        QCOMPARE(videoDecoderFor(kCodecH265), std::optional<VideoDecoder>(VideoDecoder::H265));
+        const auto allowed = [](HwDecodeApi api, HwDecodePlatform platform) {
+            if (api == HwDecodeApi::Cuda) return true;
+            return platform == HwDecodePlatform::Windows ? api == HwDecodeApi::D3d11va
+                                                         : api == HwDecodeApi::Vaapi;
+        };
+        for (const HwDecodePlatform platform : {HwDecodePlatform::Linux, HwDecodePlatform::Windows})
+            for (const char *m : {"auto", "AUTO", "1", "cuda", "nvdec", "d3d11va", "vaapi",
+                                  "vulkan", "Vulkan", "VULKAN", "vulkan:0", "vk", "hevc"})
+                for (const HwDecodeAttempt &a : hwDecodeAttempts(QString::fromLatin1(m), platform))
+                    QVERIFY2(allowed(a.api, platform), m);
+
+        // auto, in API values: CUDA, then the platform's own API.
+        const auto apis = [](const char *mode, HwDecodePlatform platform) {
+            QList<HwDecodeApi> out;
+            for (const HwDecodeAttempt &a : hwDecodeAttempts(QString::fromLatin1(mode), platform))
+                out << a.api;
+            return out;
+        };
+        QCOMPARE(apis("auto", HwDecodePlatform::Linux),
+                 (QList<HwDecodeApi>{HwDecodeApi::Cuda, HwDecodeApi::Vaapi}));
+        QCOMPARE(apis("auto", HwDecodePlatform::Windows),
+                 (QList<HwDecodeApi>{HwDecodeApi::Cuda, HwDecodeApi::D3d11va, HwDecodeApi::D3d11va,
+                                     HwDecodeApi::D3d11va, HwDecodeApi::D3d11va}));
+
+        // An explicit "vulkan" is requested, but no plan opens a Vulkan device: on Linux the name
+        // is taken, as given, for a VAAPI render node (which does not exist, so the decoder warns
+        // and decodes in software); on Windows nothing serves it.
+        for (const char *m : {"vulkan", "Vulkan", "VULKAN"}) {
+            QVERIFY(hwDecodeRequested(QString::fromLatin1(m)));
+            const QList<HwDecodeAttempt> onLinux = hwDecodeAttempts(QString::fromLatin1(m),
+                                                                    HwDecodePlatform::Linux);
+            QCOMPARE(onLinux.size(), qsizetype(1));
+            QCOMPARE(onLinux.front().api, HwDecodeApi::Vaapi);
+            QCOMPARE(onLinux.front().node, QString::fromLatin1(m));
+            QVERIFY2(hwDecodeAttempts(QString::fromLatin1(m), HwDecodePlatform::Windows).isEmpty(), m);
+        }
     }
 
     // Video decoder selection: the START codec id, as the demuxer reports it, through the same

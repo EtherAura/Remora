@@ -327,4 +327,5 @@ vulnerabilities privately, as [SECURITY.md](../SECURITY.md) describes. Release n
 - **Prebuilt images** — there are none to download: building from source works end to end, and a
   published image mirror does not exist yet. [docs/IMAGE_MIRROR.md](IMAGE_MIRROR.md) records
   what each tag would carry and what that means for redistribution.
-- The **Android companion app** (a phone client) — future.
+- The **phone app** — the computer's Linux apps and a Remora instance's apps on an Android
+  phone. Designed in [ADR-0002](adr/0002-phone-app.md); not built yet.
