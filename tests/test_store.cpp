@@ -911,6 +911,43 @@ private slots:
         QCOMPARE(groups, (QStringList{QStringLiteral("Source-alpha"), QStringLiteral("Source-beta")}));
     }
 
+    void imageSourcesClearedLocationIsRemovedOnResave() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = rc(dir);
+        ImageSource inert;
+        inert.name = QStringLiteral("inert");
+        inert.enabled = true;
+        inert.tags = {QStringLiteral("t:1")};
+        inert.location = QStringLiteral("https://inert.example");
+        saveImageSources(path, {inert});
+        {
+            QSettings s(path, QSettings::IniFormat);
+            QVERIFY(s.contains(QStringLiteral("Source-inert/location")));
+        }
+
+        // Clear the location in the loaded list and save it back over the same file: the old key
+        // must go, or the next load would bring the cleared location back.
+        QList<ImageSource> loaded = loadImageSources(path);
+        auto it = std::find_if(loaded.begin(), loaded.end(), [](const ImageSource &src) {
+            return src.name == QLatin1String("inert");
+        });
+        QVERIFY(it != loaded.end());
+        it->location.clear();
+        saveImageSources(path, loaded);
+
+        const QList<ImageSource> reloaded = loadImageSources(path);
+        QCOMPARE(reloaded.size(), 1);
+        QCOMPARE(reloaded.first().name, QStringLiteral("inert"));
+        QCOMPARE(reloaded.first().tags, QStringList{QStringLiteral("t:1")});
+        QCOMPARE(reloaded.first().enabled, true);
+        QVERIFY(reloaded.first().location.isEmpty());
+
+        QSettings s(path, QSettings::IniFormat);
+        QVERIFY(!s.contains(QStringLiteral("Source-inert/location")));
+        QCOMPARE(s.childGroups(), QStringList{QStringLiteral("Source-inert")});
+    }
+
     void saveDeploymentsPreservesUnknownKeysAndDeletes() {
         QTemporaryDir dir;
         const QString path = rc(dir);
