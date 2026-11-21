@@ -152,7 +152,61 @@ prune old images from the catalog before deleting their assets.
 unauthenticated, exactly as before. Only the official location is verified.
 
 **Publishing** is `package-release.py publish`. It uploads every asset, and the catalog last, so a
-client never sees an index naming assets that are not up yet. It is a separate, deliberate step.
+client never sees an index naming assets that are not up yet. By hand it is a separate, deliberate
+step; the weekly job below takes it once every check has passed.
+
+**One image per tag.** The client refuses a catalog that lists a tag twice, so a new release
+replaces the catalog's entry for its tag. `package-release.py prune` then deletes the release
+assets the live catalog no longer names (it refuses unless GitHub already serves the new
+`index.json`), except those of the releases `--keep` names.
+
+### Weekly releases (bd remora-47jx)
+
+`vendor/release/weekly-release.py run` makes one release, and a systemd user timer
+(`weekly-release.py install-timer`, Sunday 01:30 by default) runs it weekly. The owner chose
+both policies: move Android to the LineageOS branch heads every week, falling back to the pin
+of the published image when that fails, and publish without a manual step once every check
+passes. One run:
+
+1. **Builds from the public repository**, in a clone of its own at `main`. The image is then built
+   from exactly the tree its `-src-remora` asset publishes, and a public tree that cannot build
+   the public image fails here.
+2. **Reads the live catalog**, verified with the key the clone ships. The provenance of each
+   release records `inputs_sha256`: the manifest's revisions, the git trees of `agent/`,
+   `vendor/source-build`, `vendor/source-patches` and `vendor/host-prereqs/mesa-android`, and the
+   build profile. A run whose inputs match it builds nothing.
+3. **Refreshes the tree.** It syncs `default.xml` plus Remora's local manifests, checks every
+   project against its manifest revision, and snapshots the result with `repo manifest -r`
+   before any patch pass. It first deletes the tree's patch-state record, so the build that
+   follows does its full pinned sync. A snapshot that drops a project, or names a revision
+   that is not a commit id, is not built. Neither is one that moves `external/mesa3d` or
+   `external/libdrm`: the Mesa payload is built against both, so it has to be rebuilt by hand
+   and cached with `weekly-release.py seed-mesa`.
+4. **Builds candidates**, stopping at the first that passes: the refreshed pin if it moved, then
+   the base pin if Remora's inputs changed. The base is the pin the published image was built
+   from, read from the release's `-src-manifest.xml` asset. It is never the repository's older
+   pin, which would publish an older Android than users already run. The repository's pin
+   takes over only when it changes (a deliberate repin). Each candidate is a pinned
+   `remora build --source` of a sandboxed `public_release` profile. The gates are:
+   - the build's own verdict, which includes the release audit;
+   - no patch skipped that the last good build applied (the patch pass only warns on some skips);
+   - a headless boot on the default bridge with SwiftShader, which checks `sys.boot_completed`,
+     SDK 37, `x86_64` alone, the agent running, the package manager answering, `system_server`
+     steady for 30 seconds, and no fatal system crash.
+5. **Packages and publishes** through `package-release.py`, with the manifest the build used as a
+   source asset and the security patch level in the provenance and the catalog entry. It then
+   checks that GitHub serves the new catalog, and prunes all but the previous release's assets,
+   which stay for a client already part-way through downloading them.
+6. **Re-signs** the catalog when nothing was built and it expires within 21 days.
+
+A failure publishes nothing and goes to the tracker as one open bead per kind (`image-release`
+label), with later failures added as notes. The run's logs, the refresh snapshot and its diff
+against the base pin are kept under `<work>/runs/<stamp>/`, and `weekly-release.py status` shows
+the last run. The config is `~/.config/remora/image-release.conf`. Its `[release]` section names
+the tree, the signing key, the work and release directories, an optional `lock_command` (a
+one-build-at-a-time lock the heavy steps run under), and `defer_while`, a command whose output
+postpones the run, such as a list of running VFIO guests. Its `[profile]` section holds the
+remorarc keys of the build profile.
 
 ## Optional local add-ons
 

@@ -171,7 +171,8 @@ The screen offers two kinds of update:
 
 - **A new public release.** When the profile deploys the official image (`remora24:x86_64-public`
   from its features, not pinned to one version), the watcher checks Remora's signed release
-  catalog every six hours. A newer release appears with its size, and nothing is downloaded until
+  catalog every six hours. Remora publishes a release about once a week, when the Android source
+  or Remora's own image has changed. A newer release appears with its size, and nothing is downloaded until
   you press the button. The host then downloads it, checks it against Remora's signing key,
   imports it, and keeps the previous image for `remora images rollback`. If the profile has Google
   Play, the Play layer is built again over the new image. Your apps and data are kept, and the

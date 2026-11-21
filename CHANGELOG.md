@@ -7,6 +7,13 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Changed
+
+- The ready-made Android 17 image is rebuilt every week from the newest LineageOS sources and
+  published when anything in it has changed, so *System updates* offers the latest Android security
+  fixes. Each release records its security patch level and the exact source manifest it was built
+  from.
+
 ### Fixed
 
 - New Android images keep ADB replies moving when traffic backs up in the other direction,

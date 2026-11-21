@@ -59,4 +59,4 @@ Android 16 / 17 · Docker · Linux x86_64 · FreeBSD 15 amd64 · Windows (previe
 [Requirements](docs/user/Requirements.md) · [Feature overview](docs/Overview.md) · [Troubleshooting](docs/user/Troubleshooting.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Discussions](https://github.com/EtherAura/Remora/discussions)
 
 Remora is free and open source. Support it on [Patreon](https://www.patreon.com/EtherAura);
-patrons vote on what gets built next at [requests.predecessor.digital](https://requests.predecessor.digital/).
+patrons vote on what gets built next at [requests.agartha.digital](https://requests.agartha.digital/).

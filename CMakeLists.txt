@@ -327,8 +327,9 @@ elseif(Python3_Interpreter_FOUND)
     add_test(NAME arm_fetch COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_arm_fetch.py)
     add_test(NAME public_images COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_public_images.py)
     add_test(NAME public_audit COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_public_audit.py)
+    add_test(NAME image_release COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_image_release.py)
 else()
-    message(STATUS "tests: Python 3 not found — play_install, arm_fetch, public_images and public_audit are "
+    message(STATUS "tests: Python 3 not found — play_install, arm_fetch, public_images, public_audit and image_release are "
         "not registered, and prereqs skips its two image-helper cases")
 endif()
 # A cross-built suite is a Windows program, so ctest runs it through Wine (tools/windows-wine.sh):

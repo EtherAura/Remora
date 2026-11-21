@@ -85,7 +85,9 @@ remora images rollback --tag remora24:x86_64-public
 remora images cleanup-plan --tag remora24:x86_64-public
 ```
 
-`images list` prints the signed catalog of Remora's public, redistributable Android 17 images.
+`images list` prints the signed catalog of Remora's public, redistributable Android 17 images. A
+new release is published about once a week, when the Android source or Remora's own image has
+changed, and replaces the previous one in the catalog.
 `images check` says whether the catalog's release is newer than the image this host has under that
 tag, without downloading anything. A host that built a newer image itself is not offered an older
 release.

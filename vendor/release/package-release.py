@@ -3,8 +3,11 @@
 
     package-release.py build  --image <tag> --tree <aosp tree> --public-tree <dir> --out <dir>
                               --key <ed25519 private key> [--previous-index <index.json>]
+                              [--manifest <repo manifest>] [--inputs-digest <sha256>]
     package-release.py resign --out <dir> --key <key>
     package-release.py publish --out <dir> [--repo EtherAura/Remora] [--release android-images]
+                              [--catalog-only]
+    package-release.py prune  --out <dir> [--keep <release name>...] [--repo …] [--release …]
 
 `build` writes everything a release consists of into --out and touches nothing outside it except
 one `docker tag` (the immutable version tag the archive carries):
@@ -18,9 +21,17 @@ one `docker tag` (the immutable version tag the archive carries):
                             project the audit found under a copyleft licence, at the revision built
     index.json + .sig       the catalog `remora images` authenticates before it downloads anything
 
+    <name>-src-manifest.xml the `repo manifest -r` the tree was synced to, when --manifest names one
+
 Nothing is uploaded by `build`. `publish` runs `gh release upload` for the files in --out and is
 the only step that reaches the network; it is a separate command on purpose, because publishing is
-the one irreversible step and the owner decides when it happens.
+the one irreversible step and the owner decides when it happens. The owner decided that the weekly
+job (weekly-release.py) publishes on its own once every check has passed; by hand, it is still
+this command.
+
+The catalog lists ONE image per tag: a new release replaces the entry for its tag, and `prune`
+then deletes the assets the live catalog no longer names, except those of the releases --keep
+names (the weekly job keeps the one before, for a client already part-way through downloading it).
 
 THE SOURCE IS PUBLISHED ALONGSIDE THE BINARY, NOT OFFERED. GPLv2 §3(a) and GPLv3 §6(a)/(d) are
 satisfied by making the Corresponding Source available from the same place as the object code, for
@@ -106,9 +117,34 @@ def owning_project(package, projects):
     return None
 
 
-def pinned_revisions(remora_checkout):
-    m = ET.parse(remora_checkout / 'vendor/source-build/pinned-manifest-a17.xml').getroot()
+def pinned_revisions(manifest):
+    m = ET.parse(manifest).getroot()
     return {p.get('path', p.get('name')): p.get('revision') for p in m.iter('project')}
+
+
+def merged_images(entry, previous):
+    """The catalog's image list once `entry` is released: it replaces the previous entry for its
+    tag. The client refuses a catalog that lists one tag twice, so keeping the old entry beside the
+    new one made every release after the first fail its own signature check."""
+    return [entry] + [im for im in (previous or {}).get('images', [])
+                      if im['tag'] != entry['tag'] and im['version_tag'] != entry['version_tag']]
+
+
+def release_files(image):
+    """Every asset file one catalog entry names."""
+    refs = [image[k] for k in ('archive', 'sbom', 'notices', 'audit', 'provenance') if k in image]
+    return {r['file'] for r in refs + list(image.get('sources', []))}
+
+
+def prunable(assets, index, keep=()):
+    """The release assets that neither the catalog nor a kept release names. A kept release is
+    named by its archive stem (remora24-x86_64-public-<build number>), and owns every asset that
+    starts with it."""
+    named = {'index.json', 'index.json.sig'}
+    for image in index.get('images', []):
+        named |= release_files(image)
+    return sorted(a for a in assets if a not in named
+                  and not any(a.startswith(k + '.') or a.startswith(k + '-') for k in keep))
 
 
 def source_archive(tree, project, out, name):
@@ -163,6 +199,12 @@ def build(a):
     sdk = int(p['ro.build.version.sdk'])
     fingerprint = p['ro.build.fingerprint']
     build_number = p['ro.build.version.incremental']
+    # What a user asks first about an update: which Android source and which security bulletin.
+    security_patch = p.get('ro.build.version.security_patch')
+    build_id = p.get('ro.build.id')
+    manifest = Path(a.manifest) if a.manifest else (
+        remora / 'vendor/source-build/pinned-manifest-a17.xml')
+    require(manifest.is_file(), 'no repo manifest at %s' % manifest)
     require(re.fullmatch(r'[0-9]{8}\.[0-9]{6}', build_number),
             'build number %r is not a do-build.sh UTC stamp' % build_number)
     version_tag = 'remora24:x86_64-public-%s' % build_number
@@ -233,7 +275,13 @@ def build(a):
                                    capture_output=True, text=True).stdout.strip() or None
 
     projects = project_paths(tree)
-    pins = pinned_revisions(remora)
+    pins = pinned_revisions(manifest)
+    if a.manifest:
+        # The manifest is part of the source record: it names the revision of every project, not
+        # only the copyleft ones archived below, and the public tree's own pin can be older.
+        shutil.copyfile(manifest, out / ('%s-src-manifest.xml' % name))
+        sources.append(asset(out / ('%s-src-manifest.xml' % name))
+                       | {'project': 'manifest', 'role': 'repo manifest the tree was synced to'})
     wanted = {}
     for o in audit['copyleft_obligations']:
         proj = owning_project(o['package'], projects)
@@ -257,11 +305,12 @@ def build(a):
     prov = {
         'schema': 1, 'image_id': image_id, 'version_tag': version_tag,
         'fingerprint': fingerprint, 'build_number': build_number, 'android_sdk': sdk,
+        'security_patch': security_patch, 'build_id': build_id,
         'labels': labels,
         'audit_component_inventory_sha256': audit['component_inventory_sha256'],
         'remora_public_tree_commit': public_commit,
-        'pinned_manifest_sha256': hashlib.sha256(
-            (remora / 'vendor/source-build/pinned-manifest-a17.xml').read_bytes()).hexdigest(),
+        'pinned_manifest_sha256': hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        'inputs_sha256': a.inputs_digest,
         'patched_projects': {p: r for p, r in revisions.items() if r['head'] != r['pinned']},
         'source_projects': revisions,
         'abi': ['x86_64'],
@@ -273,11 +322,11 @@ def build(a):
     entry['provenance'] = asset(out / (name + '-provenance.json'))
     entry.update(android_sdk=sdk, abi=['x86_64'], arch_variant='x86_64', fingerprint=fingerprint,
                  public_audit_passed=True, google_payloads=False)
+    if security_patch:
+        entry['security_patch'] = security_patch
 
     previous = json.loads(Path(a.previous_index).read_text()) if a.previous_index else None
-    images = [im for im in (previous or {}).get('images', [])
-              if im['version_tag'] != version_tag]
-    sign_catalog(out, a.key, [entry] + images, (previous or {}).get('sequence', 0) + 1)
+    sign_catalog(out, a.key, merged_images(entry, previous), (previous or {}).get('sequence', 0) + 1)
     total = sum(f.stat().st_size for f in out.iterdir())
     print('release %s: %d files, %.2f GiB in %s' % (version_tag, len(list(out.iterdir())),
                                                      total / 1024**3, out))
@@ -318,12 +367,42 @@ def publish(a):
            '`remora images fetch`, with their SBOMs, notices and corresponding source. '
            'See docs/IMAGE_MIRROR.md.', '--latest=false')
     # Image and sources first, the catalog LAST: a client never sees an index naming assets
-    # that are not up yet.
+    # that are not up yet. --catalog-only is the re-sign: the assets are already up, and sending
+    # 1 GiB again to change two small files is what this flag avoids.
     body = [f for f in files if not os.path.basename(f).startswith('index.json')]
-    sh('gh', 'release', 'upload', a.release, '--repo', a.repo, '--clobber', *body)
+    if not a.catalog_only:
+        sh('gh', 'release', 'upload', a.release, '--repo', a.repo, '--clobber', *body)
+    else:
+        live = release_assets(a.repo, a.release)
+        index = json.loads((out / 'index.json').read_text())
+        missing = sorted(set().union(*(release_files(im) for im in index['images'])) - live)
+        require(not missing, 'the catalog names assets the release does not have: %s'
+                % ', '.join(missing[:5]))
     sh('gh', 'release', 'upload', a.release, '--repo', a.repo, '--clobber',
        str(out / 'index.json'), str(out / 'index.json.sig'))
-    print('published %d files to %s release %s' % (len(files), a.repo, a.release))
+    print('published %d files to %s release %s'
+          % (2 if a.catalog_only else len(files), a.repo, a.release))
+
+
+def release_assets(repo, release):
+    view = json.loads(sh('gh', 'release', 'view', release, '--repo', repo, '--json', 'assets'))
+    return {asset_['name'] for asset_ in view['assets']}
+
+
+def prune(a):
+    """Delete the assets the LIVE catalog no longer names. Only against the live catalog: the
+    signed index in --out must be byte-for-byte the one the release serves, or nothing is touched,
+    because pruning against a catalog clients cannot see yet would delete what they are using."""
+    out = Path(a.out)
+    local = (out / 'index.json').read_bytes()
+    url = 'https://github.com/%s/releases/download/%s/index.json' % (a.repo, a.release)
+    require(catalog.get(url, 1024 * 1024) == local,
+            'the release does not serve %s/index.json yet — refusing to prune' % out)
+    doomed = prunable(release_assets(a.repo, a.release), json.loads(local), a.keep)
+    for name in doomed:
+        sh('gh', 'release', 'delete-asset', a.release, name, '--repo', a.repo, '--yes')
+    print('pruned %d asset(s) from %s release %s%s' % (
+        len(doomed), a.repo, a.release, (': ' + ', '.join(doomed)) if doomed else ''))
 
 
 def main(argv=None):
@@ -337,6 +416,10 @@ def main(argv=None):
     b.add_argument('--key', required=True)
     b.add_argument('--audit-dir', default=str(Path.home() / '.local/share/remora/release-audits'))
     b.add_argument('--previous-index')
+    b.add_argument('--manifest', help='the `repo manifest -r` the tree was synced to '
+                                      '(default: the pinned manifest beside this script)')
+    b.add_argument('--inputs-digest', help='recorded in the provenance; the weekly job compares it '
+                                           'to decide whether anything changed')
     r = sub.add_parser('resign')
     r.add_argument('--out', required=True)
     r.add_argument('--key', required=True)
@@ -344,15 +427,23 @@ def main(argv=None):
     u.add_argument('--out', required=True)
     u.add_argument('--repo', default='EtherAura/Remora')
     u.add_argument('--release', default='android-images')
+    u.add_argument('--catalog-only', action='store_true',
+                   help='upload only index.json and its signature (after resign)')
+    n = sub.add_parser('prune')
+    n.add_argument('--out', required=True)
+    n.add_argument('--repo', default='EtherAura/Remora')
+    n.add_argument('--release', default='android-images')
+    n.add_argument('--keep', action='append', default=[],
+                   help='a release name (remora24-x86_64-public-<build number>) whose assets stay')
     a = p.parse_args(argv)
-    {'build': build, 'resign': resign, 'publish': publish}[a.cmd](a)
+    {'build': build, 'resign': resign, 'publish': publish, 'prune': prune}[a.cmd](a)
     return 0
 
 
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (PackagingError, catalog.VerificationError, subprocess.CalledProcessError) as e:
+    except (PackagingError, catalog.VerificationError, subprocess.CalledProcessError, OSError) as e:
         detail = getattr(e, 'stderr', '') or ''
         print('package-release: %s %s' % (e, detail.strip()[:400]), file=sys.stderr)
         sys.exit(1)
