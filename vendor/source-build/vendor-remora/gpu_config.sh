@@ -204,3 +204,10 @@ gpu_setup() {
 }
 
 gpu_setup
+
+# Present fences from the headless composer track GPU completion.
+# Learn refresh timing from its periodic vsync samples.
+if [ "$(getprop ro.hardware.hwcomposer)" = remora ] &&
+   [ -z "$(getprop debug.sf.vsync_reactor_ignore_present_fences)" ]; then
+    setprop debug.sf.vsync_reactor_ignore_present_fences true
+fi

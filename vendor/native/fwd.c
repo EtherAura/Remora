@@ -1,4 +1,4 @@
-/* Static TCP forwarder: IPv4 0.0.0.0:LPORT -> IPv6 ::1:RPORT, select()-based relay.
+/* Static TCP forwarder: IPv4 0.0.0.0:LPORT -> IPv6 ::1:RPORT, poll()-based relay.
  * Bridges docker's IPv4 proxy to the container's IPv6-only adbd. fwd [LPORT=5556] [RPORT=5555] */
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,10 +6,74 @@
 #include <unistd.h>
 #include <signal.h>
 #include <errno.h>
-#include <sys/select.h>
+#include <poll.h>
+#include <stdbool.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
+
+struct flow {
+    char data[65536];
+    size_t offset, length;
+    bool eof;
+};
+
+static bool retryable(void) {
+    return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK;
+}
+
+static void relay(int client, int backend) {
+    const int sockets[2] = {client, backend};
+    struct flow flows[2] = {0};
+
+    // ADB data and acknowledgements travel in both directions. Full output queues
+    // apply backpressure only to their own incoming data.
+    while (!flows[0].eof || !flows[1].eof) {
+        struct pollfd poll_fds[2];
+        for (int i = 0; i < 2; ++i) {
+            struct flow *from = &flows[i];
+            struct flow *to = &flows[1 - i];
+            short events = 0;
+            if (!from->eof && from->offset == from->length) events |= POLLIN;
+            if (to->offset < to->length) events |= POLLOUT;
+            poll_fds[i] = (struct pollfd){.fd = events ? sockets[i] : -1, .events = events};
+        }
+        if (poll(poll_fds, 2, -1) < 0) {
+            if (errno == EINTR) continue;
+            return;
+        }
+        if ((poll_fds[0].revents | poll_fds[1].revents) & (POLLERR | POLLNVAL)) return;
+
+        for (int i = 0; i < 2; ++i) {
+            struct flow *flow = &flows[i];
+            const int peer = 1 - i;
+            if (!flow->eof && flow->offset == flow->length &&
+                (poll_fds[i].revents & (POLLIN | POLLHUP))) {
+                ssize_t n = recv(sockets[i], flow->data, sizeof flow->data, MSG_DONTWAIT);
+                if (n > 0) {
+                    flow->offset = 0;
+                    flow->length = (size_t)n;
+                } else if (n == 0) {
+                    flow->eof = true;
+                    shutdown(sockets[peer], SHUT_WR);
+                } else if (!retryable()) {
+                    return;
+                }
+            }
+            if (flow->offset < flow->length &&
+                (poll_fds[peer].revents & (POLLOUT | POLLHUP))) {
+                ssize_t n = send(sockets[peer], flow->data + flow->offset,
+                                 flow->length - flow->offset, MSG_DONTWAIT);
+                if (n > 0) {
+                    flow->offset += (size_t)n;
+                } else if (n == 0 || !retryable()) {
+                    return;
+                }
+            }
+        }
+    }
+}
 
 int main(int argc, char **argv) {
     int lport = argc > 1 ? atoi(argv[1]) : 5556;
@@ -52,22 +116,14 @@ int main(int argc, char **argv) {
                 dprintf(2, "[fwd] connect ::1:%d FAILED: %s\n", rport, strerror(errno));
                 _exit(1);
             }
+            // Short ADB packets carry interactive input, audio, and flow-control
+            // acknowledgements. Flush them promptly on both TCP connections.
+            if (setsockopt(cs, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) < 0)
+                dprintf(2, "[fwd] TCP_NODELAY on client: %s\n", strerror(errno));
+            if (setsockopt(rs, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) < 0)
+                dprintf(2, "[fwd] TCP_NODELAY on adbd: %s\n", strerror(errno));
             dprintf(2, "[fwd] relaying\n");
-            char buf[65536];
-            int mx = (cs > rs ? cs : rs) + 1;
-            for (;;) {
-                fd_set fds; FD_ZERO(&fds); FD_SET(cs, &fds); FD_SET(rs, &fds);
-                if (select(mx, &fds, 0, 0, 0) < 0) { if (errno == EINTR) continue; break; }
-                /* write_all: a blocking write can still return short (or EINTR) under load —
-                 * treating that as fatal drops the whole adb session mid-stream. */
-                if (FD_ISSET(cs, &fds)) { int n = read(cs, buf, sizeof buf); if (n <= 0) break;
-                    int off = 0; while (off < n) { int w = write(rs, buf + off, n - off);
-                        if (w < 0 && errno == EINTR) continue; if (w <= 0) goto done; off += w; } }
-                if (FD_ISSET(rs, &fds)) { int n = read(rs, buf, sizeof buf); if (n <= 0) break;
-                    int off = 0; while (off < n) { int w = write(cs, buf + off, n - off);
-                        if (w < 0 && errno == EINTR) continue; if (w <= 0) goto done; off += w; } }
-            }
-        done:
+            relay(cs, rs);
             _exit(0);
         }
         close(cs);

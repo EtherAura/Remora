@@ -209,6 +209,11 @@ from *unhappy*: no connection or no `RMRA` magic means the image has no agent, a
 refuses with the rebuild message above; an agent that answers and then declines a session is
 reported with the agent's own reason (`the agent declined the session: …`).
 
+For an IPv4 ADB connection, the container's `fwd` helper bridges to the daemon
+on IPv6 loopback. Both TCP connections use `TCP_NODELAY` for short interactive
+writes. Each direction keeps its own bounded queue, so a full send queue can
+pause that direction while replies continue the other way.
+
 Host-side supervision is unchanged in shape: the same tunnel port range, the same detached and
 scoped client process. Stale device-side sessions are not a category — the agent reaps a session
 when its control connection closes. Forwards left behind by a killed client are swept: each session
