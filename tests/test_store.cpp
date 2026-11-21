@@ -568,6 +568,59 @@ private slots:
         QCOMPARE(s.value("Defaults/fps").toInt(), 60);
     }
 
+    // The profile-copy paths (app, transfer-apps, the GUI's transfer worker) load a destination
+    // profile, change only its app modes and save it back, so a pinned container_name that is
+    // neither the [Defaults] value nor the derived remora-<slug> must be written back exactly.
+    // The second fixture holds no raw pin at all, so only saveInstance itself can put it there.
+    void pinnedContainerNameSurvivesLoadModifySave() {
+        const QString name = QStringLiteral("Android 17");
+        const QString group = QStringLiteral("Instance-Android 17/");
+        const QString pinned = QStringLiteral("remora-legacy");
+        const QStringList modes{QStringLiteral("app.a=desktop")};
+
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Defaults/container_name", QStringLiteral("remora-shared"));
+            s.setValue(group + QStringLiteral("container_name"), pinned);
+            s.sync();
+        }
+        RemoraConfig c = loadInstance(path, name);
+        QCOMPARE(c.backend.containerName, std::optional<QString>(pinned));
+        c.integration.appModes = modes;
+        saveInstance(path, name, c);
+        const RemoraConfig reloaded = loadInstance(path, name);
+        QCOMPARE(reloaded.backend.containerName, std::optional<QString>(pinned));
+        QCOMPARE(reloaded.integration.appModes, modes);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            QCOMPARE(s.value(group + QStringLiteral("container_name")).toString(), pinned);
+            QCOMPARE(s.value("Defaults/container_name").toString(), QStringLiteral("remora-shared"));
+        }
+
+        QTemporaryDir fresh;
+        const QString freshPath = rc(fresh);
+        {
+            QSettings s(freshPath, QSettings::IniFormat);
+            s.setValue("Defaults/container_name", QStringLiteral("remora-shared"));
+            s.setValue(group + QStringLiteral("width"), 1280);
+            s.sync();
+        }
+        {
+            QSettings s(freshPath, QSettings::IniFormat);
+            QVERIFY(!s.contains(group + QStringLiteral("container_name")));
+        }
+        saveInstance(freshPath, name, c);
+        {
+            QSettings s(freshPath, QSettings::IniFormat);
+            QCOMPARE(s.value(group + QStringLiteral("container_name")).toString(), pinned);
+        }
+        const RemoraConfig freshReloaded = loadInstance(freshPath, name);
+        QCOMPARE(freshReloaded.backend.containerName, std::optional<QString>(pinned));
+        QCOMPARE(freshReloaded.integration.appModes, modes);
+    }
+
     // loadInstance reads [Defaults] then [Instance-<name>]: an instance scalar overrides the
     // default, a key only [Defaults] sets fills in, and the retired-vm marker is sticky — a
     // profile that says vm in either place stays a vm profile, so preflight still refuses it when
