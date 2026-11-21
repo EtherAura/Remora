@@ -1,0 +1,40 @@
+From: Remora <remora@localhost>
+Date: Fri, 20 Nov 2026 13:42:20 -0500
+Subject: [PATCH] SurfaceFlinger: bound the Remora mirror encoder queue
+
+Give the named GPU-backed mirror a finite dequeue timeout in synchronous
+mode. Keep backpressure when the sink fills and leave the acquire fence on
+every buffer. Fall back to the normal async queue on setup failure.
+
+diff --git a/services/surfaceflinger/DisplayHardware/VirtualDisplay/LegacyVirtualDisplaySurface.cpp b/services/surfaceflinger/DisplayHardware/VirtualDisplay/LegacyVirtualDisplaySurface.cpp
+index ce0a4d4fcd04945cbd9f45f3ab4e5e866c615d51..29b67af1188c8b60af7f5c0a2a2bbde350fe4bd5 100644
+--- a/services/surfaceflinger/DisplayHardware/VirtualDisplay/LegacyVirtualDisplaySurface.cpp
++++ b/services/surfaceflinger/DisplayHardware/VirtualDisplay/LegacyVirtualDisplaySurface.cpp
+@@ -20,6 +20,7 @@
+ 
+ // #define LOG_NDEBUG 0
+ 
++#include <android-base/properties.h>
+ #include <cinttypes>
+ 
+ #include <com_android_graphics_libgui_flags.h>
+@@ -320,7 +321,18 @@
+ }
+ 
+ status_t LegacyVirtualDisplaySurface::setAsyncMode(bool async) {
+-    return mSource[SOURCE_SINK]->setAsyncMode(async);
++    const auto& sink = mSource[SOURCE_SINK];
++    // Display setup requests swap interval zero after constructing this surface.
++    // Pace the encoder at dequeue, keeping each buffer's acquire fence intact.
++    // Allow two 60 Hz periods for a late consumer before dropping that output.
++    if (async && isBackedByGpu() && mDisplayName == "remora-mirror" &&
++        base::GetBoolProperty("ro.boot.remora_mirror_only", false) &&
++        sink->setAsyncMode(false) == NO_ERROR &&
++        sink->setDequeueTimeout(milliseconds_to_nanoseconds(34)) == NO_ERROR) {
++        ALOGI("Remora mirror using bounded synchronous encoder queue at swap interval setup");
++        return NO_ERROR;
++    }
++    return sink->setAsyncMode(async);
+ }
+ 
+ status_t LegacyVirtualDisplaySurface::dequeueBuffer(Source source, PixelFormat format,

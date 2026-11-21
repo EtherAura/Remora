@@ -69,6 +69,19 @@ With `host_encode`, frames go from Remora's own hwcomposer to a hardware encoder
 and the client reads the stream from that encoder. It is the route to hardware H.265 on NVIDIA,
 whose VA-API driver cannot encode. See [GPU Acceleration](GPU-Acceleration.md#what-the-gpu-means-for-the-mirror).
 
+On Linux Wayland, the mirror can render supported VA-API NV12 frames directly from
+DMA-BUFs. This avoids downloading each full-resolution frame and uploading it again.
+The client returns to the download path when the EGL driver cannot import a frame.
+Set `REMORA_MIRROR_NO_INTEROP=1` to use the download path for troubleshooting.
+
+The client pauses between short batches when video packets arrive in a burst.
+This lets the audio and control connections keep running while video catches up.
+
+Remora's headless Android display uses its periodic vsync callbacks for refresh
+prediction. GPU completion fences continue to signal when composed frames are
+ready. This keeps the display scheduler on the rate selected by the Android
+profile, including 60 Hz at full size.
+
 ## The mirror window
 
 | key | default | meaning |

@@ -1,0 +1,71 @@
+From: Remora <remora@localhost>
+Date: Fri, 20 Nov 2026 13:42:20 -0500
+Subject: [PATCH] Codec2: prepare the Remora RGB mirror input surface
+
+Limit the hardware-only RGB input to the mirror agent request, the VirGL
+boot profile and the two Remora hardware encoders. Configure producer
+throttling on the Codec2 endpoint that owns the input queue.
+Allocate its render targets before publishing the surface.
+
+diff --git a/media/codec2/sfplugin/CCodec.cpp b/media/codec2/sfplugin/CCodec.cpp
+index 292e9abd42847e21af7f328a535ce8535c865fe2..78f40f78e6588990a568e65a2ce2e84d3d97780c 100644
+--- a/media/codec2/sfplugin/CCodec.cpp
++++ b/media/codec2/sfplugin/CCodec.cpp
+@@ -2080,6 +2080,15 @@
+         }
+         ALOGD("encoding statistics level = %d", encodingStatisticsLevel);
+ 
++        int32_t mirror = 0;
++        if (msg->findInt32("remora-rgb-mirror", &mirror) && mirror == 1 &&
++            base::GetBoolProperty("ro.boot.remora_mirror_only", false) &&
++            (comp->getName() == "c2.remora.vaapi.avc.encoder" ||
++             comp->getName() == "c2.remora.vaapi.hevc.encoder")) {
++            config->mInputFormat->setInt32("remora-rgb-mirror", 1);
++        } else {
++            config->mInputFormat->removeEntryByName("remora-rgb-mirror");
++        }
+         ALOGD("setup formats input: %s",
+                 config->mInputFormat->debugString().c_str());
+         ALOGD("setup formats output: %s",
+@@ -2178,13 +2187,20 @@
+ 
+     sp<AMessage> outputFormat;
+     uint64_t usage = 0;
++    int32_t remoraMirror = 0;
+     {
+         Mutexed<std::unique_ptr<Config>>::Locked configLocked(mConfig);
+         const std::unique_ptr<Config> &config = *configLocked;
+         outputFormat = config->mOutputFormat;
+         usage = config->mISConfig ? config->mISConfig->mUsage : 0;
+-    }
+-
++        (void)config->mInputFormat->findInt32("remora-rgb-mirror", &remoraMirror);
++    }
++    if (remoraMirror == 1) {
++        // The DMA-BUF encoder imports linear RGBA directly. The gralloc backend
++        // requests a linear buffer for VIDEO_ENCODER independently of CPU usage.
++        usage &= ~static_cast<uint64_t>(GRALLOC_USAGE_SW_READ_MASK);
++        ALOGI("Remora GPU encoder input usage %#" PRIx64, usage);
++    }
+     sp<PersistentSurface> persistentSurface = createCompatibleInputSurface();
+     PersistentSurface::SurfaceType surfaceType = persistentSurface->getType();
+     if (surfaceType == PersistentSurface::TYPE_AIDLSOURCE) {
+@@ -2247,6 +2263,18 @@
+         ALOGE("Failed to set up input surface: %d", err);
+         mCallback->onInputSurfaceCreationFailed(err);
+         return;
++    }
++
++    if (remoraMirror == 1 && surface) {
++        const auto producer = mediaflagtools::surfaceTypeToIGBP(surface);
++        if (producer) {
++            const status_t control = producer->setProducerThrottlingEnabled(false);
++            ALOGI("Remora local encoder queue throttling control returned %d", control);
++            // The screen mirror requests RGBA render targets at the configured default size.
++            // Allocate on the encoder's local queue before exposing it to SurfaceFlinger.
++            producer->allocateBuffers(0, 0, HAL_PIXEL_FORMAT_RGBA_8888,
++                                      GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_TEXTURE);
++        }
+     }
+ 
+     // Formats can change after setupInputSurface

@@ -1,0 +1,1447 @@
+diff --git a/src/vrend/virgl_video.h b/src/vrend/virgl_video.h
+--- a/src/vrend/virgl_video.h
++++ b/src/vrend/virgl_video.h
+@@ -186,6 +186,15 @@
+                                  unsigned num_buffers,
+                                  const void * const *buffers,
+                                  const unsigned *sizes);
++#ifdef _WIN32
++#define VIRGL_AMF_QUEUE_DEPTH 8
++bool virgl_video_amf_deferred(struct virgl_video_codec *codec);
++int virgl_video_amf_submit(struct virgl_video_codec *codec, struct virgl_video_buffer *source,
++                           const union virgl_picture_desc *desc, uint64_t *ticket);
++int virgl_video_amf_collect(struct virgl_video_codec *codec, uint64_t ticket,
++                            const void **bytes, unsigned *length);
++#endif
++
+ int virgl_video_encode_bitstream(struct virgl_video_codec *codec,
+                                  struct virgl_video_buffer *source,
+                                  const union virgl_picture_desc *desc);
+diff --git a/src/vrend/virgl_video_win32.c b/src/vrend/virgl_video_win32.c
+--- a/src/vrend/virgl_video_win32.c
++++ b/src/vrend/virgl_video_win32.c
+@@ -87,6 +87,12 @@
+ #include <mftransform.h>
+ #include <codecapi.h>
+ #include <wmcodecdsp.h>
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wpedantic"
++#include "../../../amf/amf/public/include/core/Factory.h"
++#include "../../../amf/amf/public/include/components/VideoEncoderVCE.h"
++#include "../../../amf/amf/public/include/components/VideoEncoderHEVC.h"
++#pragma GCC diagnostic pop
+ 
+ /* Some MinGW toolchains ship an older Media Foundation header set that
+  * doesn't declare a handful of GUIDs / constants we need. Re-declare them
+@@ -243,6 +249,30 @@
+     uint8_t *encode_src_nv12;
+     size_t   encode_src_size;
+     size_t   encode_src_capacity;
++};
++
++struct virgl_amf_entry {
++    AMFData *output;
++    uint64_t ticket;
++    int64_t accepted_at;
++    bool active;
++};
++
++struct amf_profile {
++    int64_t readback;
++    int64_t surface;
++    int64_t submit;
++    int64_t collect;
++    int64_t poll;
++    int64_t wait;
++    int64_t residence;
++    int64_t first_submission;
++    int64_t last_completion;
++    int64_t max_wait;
++    unsigned frames;
++    unsigned polls;
++    unsigned waits;
++    unsigned input_full;
+ };
+ 
+ struct virgl_video_codec {
+@@ -310,8 +340,23 @@
+     /* --------------------------------------------------------------
+      * Encode-only state (populated lazily for ENCODE entrypoint codecs).
+      * -------------------------------------------------------------- */
++    IMFDXGIDeviceManager *encoder_dxgi_manager;
++    HMODULE encoder_amf_dll;
++    AMFContext *encoder_amf_context;
++    ID3D11Texture2D *amf_upload_texture;
++    bool amf_dx11_upload;
++    AMFComponent *encoder_amf;
++    amf_pts amf_frame_duration;
++    unsigned amf_in_flight;
++    unsigned amf_high_water;
++    HANDLE amf_wait_timer;
++    const char *amf_wait_mode;
++    struct amf_profile amf_profile;
++    struct virgl_amf_entry amf_pending[VIRGL_AMF_QUEUE_DEPTH];
+     IMFTransform *encoder_mft;         /* hardware MFT for H.264 / HEVC encode */
+     IMFMediaEventGenerator *encoder_events;
++    struct encoder_event_wait *encoder_wait;
++    DWORD         encoder_input_alignment;
+     unsigned      encoder_input_requests;
+     DWORD         encoder_input_id;
+     DWORD         encoder_output_id;
+@@ -520,6 +565,31 @@
+  * ---------------------------------------------------------------------------
+  */
+ 
++static IDXGIAdapter1 *find_amd_video_adapter(void)
++{
++    IDXGIFactory1 *factory;
++    if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&factory))) {
++        virgl_error("WINQ: DXGI adapter discovery failed\n");
++        return NULL;
++    }
++    IDXGIAdapter1 *selected = NULL;
++    IDXGIAdapter1 *adapter;
++    for (unsigned i = 0; SUCCEEDED(IDXGIFactory1_EnumAdapters1(factory, i, &adapter)); ++i) {
++        DXGI_ADAPTER_DESC1 desc;
++        if (SUCCEEDED(IDXGIAdapter1_GetDesc1(adapter, &desc))) {
++            virgl_info("WINQ DXGI adapter %u PCI %04x:%04x %ls\n",
++                       i, desc.VendorId, desc.DeviceId, desc.Description);
++            if (desc.VendorId == 0x1002 && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
++                selected = adapter;
++                break;
++            }
++        }
++        IDXGIAdapter1_Release(adapter);
++    }
++    IDXGIFactory1_Release(factory);
++    return selected;
++}
++
+ int virgl_video_init(int drm_fd,
+                      struct virgl_video_callbacks *cbs,
+                      unsigned int flags)
+@@ -569,8 +639,15 @@
+ 
+     memset(&g_vid, 0, sizeof(g_vid));
+ 
+-    hr = D3D11CreateDevice(NULL,
+-                           D3D_DRIVER_TYPE_HARDWARE,
++    const bool require_amd = getenv("WINQ_TEST_AMF_REQUIRE_AMD") != NULL;
++    IDXGIAdapter1 *adapter = require_amd ? find_amd_video_adapter() : NULL;
++    if (require_amd && !adapter) {
++        virgl_error("WINQ: no AMD hardware DXGI adapter is available\n");
++        return -1;
++    }
++    const D3D_DRIVER_TYPE driver_type = adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
++    hr = D3D11CreateDevice((IDXGIAdapter *)adapter,
++                           driver_type,
+                            NULL,
+                            device_flags | debug_flag,
+                            levels, ARRAY_SIZE(levels),
+@@ -585,8 +662,8 @@
+                    "the 'Graphics Tools' optional feature to use the debug "
+                    "layer.\n", (unsigned long)hr);
+         debug_flag = 0;
+-        hr = D3D11CreateDevice(NULL,
+-                               D3D_DRIVER_TYPE_HARDWARE,
++        hr = D3D11CreateDevice((IDXGIAdapter *)adapter,
++                               driver_type,
+                                NULL,
+                                device_flags,
+                                levels, ARRAY_SIZE(levels),
+@@ -594,6 +671,13 @@
+                                &g_vid.device,
+                                &g_vid.feature_level,
+                                &g_vid.context);
++    }
++    if (adapter) {
++        IDXGIAdapter1_Release(adapter);
++        if (FAILED(hr)) {
++            virgl_error("WINQ: creating an AMD D3D11 video device failed: 0x%lx\n", (unsigned long)hr);
++            return -1;
++        }
+     }
+     if (FAILED(hr)) {
+         /* Fallback for CI machines without a GPU video driver: try WARP. */
+@@ -763,6 +847,7 @@
+     } else if (hr == RPC_E_CHANGED_MODE) {
+         /* Another component picked a different threading model. We can
+          * still use MF, but must not call CoUninitialize from this thread. */
++        virgl_info("virgl_video_win32: encoder is running in the caller's COM apartment\n");
+         g_vid.mf_com_initialized = false;
+     } else if (FAILED(hr)) {
+         virgl_error("virgl_video_win32: CoInitializeEx failed 0x%lx\n",
+@@ -4077,6 +4162,38 @@
+     return S_OK;
+ }
+ 
++/* These options are C++-only macros on some MinGW releases. */
++static const GUID encoder_scenario = { STATIC_CODECAPI_AVScenarioInfo };
++static const GUID encoder_bitrate = { STATIC_CODECAPI_AVEncCommonMeanBitRate };
++static const GUID encoder_b_frames = { STATIC_CODECAPI_AVEncMPVDefaultBPictureCount };
++static const GUID encoder_force_keyframe = { STATIC_CODECAPI_AVEncVideoForceKeyFrame };
++static const GUID encoder_low_latency = { STATIC_CODECAPI_AVLowLatencyMode };
++
++static HRESULT encoder_connect_dxgi(struct virgl_video_codec *codec)
++{
++    IMFAttributes *attributes;
++    UINT32 aware = FALSE;
++    UINT token;
++    HRESULT hr;
++
++    hr = IMFTransform_GetAttributes(codec->encoder_mft, &attributes);
++    if (FAILED(hr))
++        return hr;
++    hr = IMFAttributes_GetUINT32(attributes, &MF_SA_D3D11_AWARE, &aware);
++    IMFAttributes_Release(attributes);
++    if (FAILED(hr) || !aware)
++        return MF_E_UNSUPPORTED_D3D_TYPE;
++
++    hr = MFCreateDXGIDeviceManager(&token, &codec->encoder_dxgi_manager);
++    if (SUCCEEDED(hr))
++        hr = IMFDXGIDeviceManager_ResetDevice(codec->encoder_dxgi_manager,
++                                             (IUnknown *)g_vid.device, token);
++    if (SUCCEEDED(hr))
++        hr = IMFTransform_ProcessMessage(codec->encoder_mft, MFT_MESSAGE_SET_D3D_MANAGER,
++                                          (ULONG_PTR)codec->encoder_dxgi_manager);
++    return hr;
++}
++
+ static HRESULT encoder_set_types(struct virgl_video_codec *codec)
+ {
+     HRESULT hr;
+@@ -4132,6 +4249,36 @@
+     if (IsEqualGUID(&codec->encoder_output_guid, &MFVideoFormat_H264))
+         IMFMediaType_SetUINT32(out_type, &MF_MT_MPEG2_PROFILE,
+                                eAVEncH264VProfile_Main);
++    ICodecAPI *api;
++    if (SUCCEEDED(IMFTransform_QueryInterface(codec->encoder_mft, &IID_ICodecAPI,
++                                              (void **)&api))) {
++        VARIANT value = {0};
++        V_VT(&value) = VT_UI4;
++        /* VirGL supplies one feedback buffer per submitted frame. Ask the
++         * transform to keep every input frame and disable reordering. */
++        V_UI4(&value) = eAVScenarioInfo_CameraRecord;
++        if (!getenv("WINQ_TEST_NO_SCENARIO"))
++            ICodecAPI_SetValue(api, &encoder_scenario, &value);
++        V_UI4(&value) = codec->encoder_bitrate;
++        ICodecAPI_SetValue(api, &encoder_bitrate, &value);
++        V_UI4(&value) = 0;
++        ICodecAPI_SetValue(api, &encoder_b_frames, &value);
++        V_VT(&value) = VT_BOOL;
++        V_BOOL(&value) = VARIANT_TRUE;
++        HRESULT latency = ICodecAPI_SetValue(api, getenv("WINQ_TEST_LOW_LATENCY") ?
++                                         &encoder_low_latency : &VIRGL_MF_LOW_LATENCY, &value);
++        HRESULT latency_u32 = E_NOTIMPL;
++        if (getenv("WINQ_TEST_LOW_LATENCY")) {
++            V_VT(&value) = VT_UI4;
++            V_UI4(&value) = 1;
++            latency_u32 = ICodecAPI_SetValue(api, &encoder_low_latency, &value);
++        }
++        virgl_info("encode config: variant fallback HRESULT=%08lx\n", (unsigned long)latency_u32);
++        virgl_info("encode config: bitrate=%u low-latency HRESULT=%08lx\n",
++                   codec->encoder_bitrate, (unsigned long)latency);
++        ICodecAPI_Release(api);
++    }
++
+     hr = IMFTransform_SetOutputType(codec->encoder_mft, codec->encoder_output_id,
+                                     out_type, 0);
+     if (FAILED(hr)) {
+@@ -4209,10 +4356,6 @@
+         return S_OK;
+ 
+     hr = IMFTransform_ProcessMessage(codec->encoder_mft,
+-                                     MFT_MESSAGE_COMMAND_FLUSH, 0);
+-    if (FAILED(hr))
+-        return hr;
+-    hr = IMFTransform_ProcessMessage(codec->encoder_mft,
+                                      MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+     if (FAILED(hr))
+         return hr;
+@@ -4269,7 +4412,10 @@
+ 
+     /* NV12 has 1.5 bytes per pixel (Y plane full res + UV half-height). */
+     DWORD total = luma_size + luma_size / 2;
+-    hr = MFCreateMemoryBuffer(total, &mbuf);
++    if (codec->encoder_input_alignment)
++        hr = MFCreateAlignedMemoryBuffer(total, codec->encoder_input_alignment - 1, &mbuf);
++    else
++        hr = MFCreateMemoryBuffer(total, &mbuf);
+     if (FAILED(hr)) goto fail;
+     hr = IMFMediaBuffer_Lock(mbuf, &mdata, &mcap, NULL);
+     if (FAILED(hr)) goto fail;
+@@ -4301,6 +4447,16 @@
+         pitch = mapped.RowPitch;
+     }
+ 
++    if (height >= 4 && codec->encoder_frame_count == 0 && virgl_winq_diag_enabled()) {
++        const BYTE *y = pixels + top * pitch + left + width / 2;
++        virgl_info("virgl_video_win32: first input luma %ux%u from %ux%u: "
++                   "last rows %u %u %u %u; row 16 %u\n",
++                   width, height, source->width, source->height,
++                   y[(height - 4) * pitch], y[(height - 3) * pitch],
++                   y[(height - 2) * pitch], y[(height - 1) * pitch],
++                   y[(height > 16 ? 16 : 0) * pitch]);
++    }
++
+     if (!left && !top && width == pitch && height == source->height) {
+         memcpy(mdata, pixels, total);
+     } else {
+@@ -4312,8 +4468,31 @@
+             memcpy(mdata + luma_size + (size_t)row * width, uv + row * pitch, width);
+     }
+ 
+-    IMFMediaBuffer_Unlock(mbuf);
+-    IMFMediaBuffer_SetCurrentLength(mbuf, total);
++    if (codec->encoder_dxgi_manager) {
++        D3D11_TEXTURE2D_DESC desc = {
++            .Width = width, .Height = height, .MipLevels = 1, .ArraySize = 1,
++            .Format = DXGI_FORMAT_NV12, .SampleDesc = { .Count = 1 },
++            .Usage = D3D11_USAGE_DEFAULT,
++        };
++        D3D11_SUBRESOURCE_DATA data = { .pSysMem = mdata, .SysMemPitch = width };
++        ID3D11Texture2D *texture = NULL;
++        hr = ID3D11Device_CreateTexture2D(g_vid.device, &desc, &data, &texture);
++        IMFMediaBuffer_Unlock(mbuf);
++        IMFMediaBuffer_Release(mbuf);
++        mbuf = NULL;
++        if (FAILED(hr)) goto fail;
++        hr = MFCreateDXGISurfaceBuffer(&IID_ID3D11Texture2D, (IUnknown *)texture,
++                                        0, FALSE, &mbuf);
++        ID3D11Texture2D_Release(texture);
++        if (SUCCEEDED(hr))
++            hr = IMFMediaBuffer_GetMaxLength(mbuf, &mcap);
++        if (SUCCEEDED(hr))
++            hr = IMFMediaBuffer_SetCurrentLength(mbuf, mcap);
++        if (FAILED(hr)) goto fail;
++    } else {
++        IMFMediaBuffer_Unlock(mbuf);
++        IMFMediaBuffer_SetCurrentLength(mbuf, total);
++    }
+ 
+     if (mapped_staging) {
+         ID3D11DeviceContext_Unmap(g_vid.context,
+@@ -4334,13 +4513,19 @@
+     IMFSample_SetSampleTime(sample, (LONGLONG)sample_time_100ns);
+     IMFSample_SetSampleDuration(sample, (LONGLONG)sample_dur_100ns);
+ 
+-    /* Keyframe hint. MFSampleExtension_CleanPoint marks a sample as a
+-     * random-access point; most hardware MFTs interpret that as "emit an
+-     * IDR here". MFSampleExtension_ForceKeyFrame would be more forceful
+-     * but isn't declared in MSYS2 MinGW headers, so we rely on CleanPoint
+-     * plus implicit IDR-at-frame-0 behaviour. */
+-    if (force_keyframe || codec->encoder_frame_count == 0) {
+-        IMFSample_SetUINT32(sample, &MFSampleExtension_CleanPoint, 1);
++    if (!codec->encoder_frame_count)
++        IMFSample_SetUINT32(sample, &MFSampleExtension_Discontinuity, TRUE);
++
++    if ((force_keyframe || !codec->encoder_frame_count) && !getenv("WINQ_TEST_NO_FORCE")) {
++        ICodecAPI *api;
++        if (SUCCEEDED(IMFTransform_QueryInterface(codec->encoder_mft, &IID_ICodecAPI,
++                                                  (void **)&api))) {
++            VARIANT value = {0};
++            V_VT(&value) = VT_UI4;
++            V_UI4(&value) = 1;
++            ICodecAPI_SetValue(api, &encoder_force_keyframe, &value);
++            ICodecAPI_Release(api);
++        }
+     }
+ 
+     IMFMediaBuffer_Release(mbuf);
+@@ -4465,6 +4650,118 @@
+     }
+ }
+ 
++/* One outstanding event subscription. The callback owns its event and keeps
++ * the generator alive even when a timed-out codec is being shut down. */
++struct encoder_event_wait {
++    IMFAsyncCallback callback;
++    LONG refs;
++    IMFMediaEventGenerator *generator;
++    HANDLE ready;
++    HRESULT result;
++    IMFMediaEvent *event;
++    bool pending;
++};
++
++static ULONG STDMETHODCALLTYPE encoder_event_add_ref(IMFAsyncCallback *callback)
++{
++    struct encoder_event_wait *wait = (struct encoder_event_wait *)callback;
++    return InterlockedIncrement(&wait->refs);
++}
++
++static ULONG STDMETHODCALLTYPE encoder_event_release(IMFAsyncCallback *callback)
++{
++    struct encoder_event_wait *wait = (struct encoder_event_wait *)callback;
++    LONG refs = InterlockedDecrement(&wait->refs);
++    if (!refs) {
++        if (wait->event)
++            IMFMediaEvent_Release(wait->event);
++        IMFMediaEventGenerator_Release(wait->generator);
++        CloseHandle(wait->ready);
++        free(wait);
++    }
++    return refs;
++}
++
++static HRESULT STDMETHODCALLTYPE encoder_event_query(IMFAsyncCallback *callback,
++                                                     REFIID iid, void **object)
++{
++    *object = NULL;
++    if (!IsEqualGUID(iid, &IID_IUnknown) && !IsEqualGUID(iid, &IID_IMFAsyncCallback))
++        return E_NOINTERFACE;
++    encoder_event_add_ref(callback);
++    *object = callback;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE encoder_event_parameters(IMFAsyncCallback *callback,
++                                                          DWORD *flags, DWORD *queue)
++{
++    (void)callback;
++    (void)flags;
++    (void)queue;
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE encoder_event_invoke(IMFAsyncCallback *callback,
++                                                       IMFAsyncResult *result)
++{
++    struct encoder_event_wait *wait = (struct encoder_event_wait *)callback;
++    wait->result = IMFMediaEventGenerator_EndGetEvent(wait->generator, result,
++                                                      &wait->event);
++    SetEvent(wait->ready);
++    return S_OK;
++}
++
++static IMFAsyncCallbackVtbl encoder_event_vtable = {
++    encoder_event_query, encoder_event_add_ref, encoder_event_release,
++    encoder_event_parameters, encoder_event_invoke,
++};
++
++static HRESULT encoder_event_create(struct virgl_video_codec *codec)
++{
++    struct encoder_event_wait *wait = calloc(1, sizeof(*wait));
++    if (!wait)
++        return E_OUTOFMEMORY;
++    wait->ready = CreateEventW(NULL, FALSE, FALSE, NULL);
++    if (!wait->ready) {
++        HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
++        free(wait);
++        return hr;
++    }
++    wait->callback.lpVtbl = &encoder_event_vtable;
++    wait->refs = 1;
++    wait->generator = codec->encoder_events;
++    IMFMediaEventGenerator_AddRef(wait->generator);
++    codec->encoder_wait = wait;
++    return S_OK;
++}
++
++static HRESULT encoder_next_event(struct encoder_event_wait *wait,
++                                  DWORD timeout, IMFMediaEvent **event)
++{
++    if (!wait->pending) {
++        HRESULT hr = IMFMediaEventGenerator_BeginGetEvent(wait->generator,
++                                                          &wait->callback, NULL);
++        if (FAILED(hr))
++            return hr;
++        wait->pending = true;
++    }
++
++    /* SDL can own this render thread's single-threaded COM apartment.
++     * Dispatch COM calls while waiting so MFT worker threads can call it. */
++    DWORD index;
++    HRESULT ready = CoWaitForMultipleHandles(0, timeout, 1, &wait->ready, &index);
++    if (ready == RPC_S_CALLPENDING)
++        return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
++    if (FAILED(ready))
++        return ready;
++
++    wait->pending = false;
++    *event = wait->event;
++    wait->event = NULL;
++    return wait->result;
++}
++
+ static HRESULT encoder_configure_async(struct virgl_video_codec *codec)
+ {
+     IMFAttributes *attributes;
+@@ -4489,37 +4786,16 @@
+     if (FAILED(hr))
+         return hr;
+ 
+-    /* VirGL supplies one destination and feedback resource for each input.
+-     * Ask the MFT for low latency without reordering so each frame can
+-     * complete before returning those resources to the guest. */
+-    ICodecAPI *api;
+-    if (SUCCEEDED(IMFTransform_QueryInterface(codec->encoder_mft, &IID_ICodecAPI,
+-                                              (void **)&api))) {
+-        /* MinGW exposes the B-picture property through a C++-only macro. */
+-        static const GUID b_picture_count = {
+-            0x8d390aac, 0xdc5c, 0x4200, {0xb5, 0x7f, 0x81, 0x4d, 0x04, 0xba, 0xba, 0xb2}
+-        };
+-        VARIANT value = {0};
+-        V_VT(&value) = VT_BOOL;
+-        V_BOOL(&value) = VARIANT_TRUE;
+-        /* CODECAPI_AVLowLatencyMode and MF_LOW_LATENCY share this GUID. */
+-        ICodecAPI_SetValue(api, &VIRGL_MF_LOW_LATENCY, &value);
+-        V_VT(&value) = VT_UI4;
+-        V_UI4(&value) = 0;
+-        ICodecAPI_SetValue(api, &b_picture_count, &value);
+-        ICodecAPI_Release(api);
+-    }
+-    virgl_info("virgl_video_win32: unlocked asynchronous encoder MFT\n");
+-    return S_OK;
+-}
+-
+-/* Keep COM and renderer resource access on the render thread. Polling is
+- * bounded so a stalled driver cannot strand the renderer indefinitely. */
++    return encoder_event_create(codec);
++}
++
++/* Process input and output on the render thread. The callback publishes only
++ * the notification, so waiting is bounded without polling a worker thread. */
+ static HRESULT encoder_wait_async(struct virgl_video_codec *codec, bool input,
+                                    ULONGLONG deadline)
+ {
+-    while (GetTickCount64() < deadline) {
+-        IMFMediaEvent *event;
++    for (;;) {
++        IMFMediaEvent *event = NULL;
+         MediaEventType type;
+         HRESULT status;
+         HRESULT hr;
+@@ -4528,14 +4804,23 @@
+             codec->encoder_input_requests--;
+             return S_OK;
+         }
+-        hr = IMFMediaEventGenerator_GetEvent(codec->encoder_events,
+-                                             MF_EVENT_FLAG_NO_WAIT, &event);
+-        if (hr == MF_E_NO_EVENTS_AVAILABLE) {
+-            Sleep(1);
+-            continue;
+-        }
+-        if (FAILED(hr))
++        ULONGLONG now = GetTickCount64();
++        if (now >= deadline)
++            return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
++        if (getenv("WINQ_TEST_POLL_EVENTS")) {
++            hr = IMFMediaEventGenerator_GetEvent(codec->encoder_events, MF_EVENT_FLAG_NO_WAIT, &event);
++            if (hr == MF_E_NO_EVENTS_AVAILABLE) {
++                Sleep(1);
++                continue;
++            }
++        } else {
++            hr = encoder_next_event(codec->encoder_wait, (DWORD)(deadline - now), &event);
++        }
++        if (FAILED(hr)) {
++            if (event)
++                IMFMediaEvent_Release(event);
+             return hr;
++        }
+         hr = IMFMediaEvent_GetType(event, &type);
+         if (SUCCEEDED(hr))
+             hr = IMFMediaEvent_GetStatus(event, &status);
+@@ -4572,7 +4857,441 @@
+             break;
+         }
+     }
+-    return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
++}
++
++static int64_t amf_now(void)
++{
++    LARGE_INTEGER now;
++    QueryPerformanceCounter(&now);
++    return now.QuadPart;
++}
++
++static void encoder_log_amf_profile(const struct virgl_video_codec *codec, const char *reason)
++{
++    const struct amf_profile *p = &codec->amf_profile;
++    if (!p->frames)
++        return;
++    LARGE_INTEGER frequency;
++    QueryPerformanceFrequency(&frequency);
++    const double ms = 1000.0 / frequency.QuadPart;
++    const bool hevc = IsEqualGUID(&codec->encoder_output_guid, &VIRGL_MFVIDEOFORMAT_HEVC);
++    virgl_info("AMF profile %s mode=%s reason=%s frames=%u depth=%u "
++               "readback_ms=%.3f surface_ms=%.3f submit_ms=%.3f collect_ms=%.3f "
++               "poll_ms=%.3f wait_ms=%.3f residence_ms=%.3f worst_wait_ms=%.3f "
++               "span_ms=%.3f polls=%u waits=%u full=%u\n",
++               hevc ? "HEVC" : "H264", codec->amf_wait_mode, reason,
++               p->frames, codec->amf_high_water, p->readback * ms, p->surface * ms,
++               p->submit * ms, p->collect * ms, p->poll * ms, p->wait * ms,
++               p->residence * ms, p->max_wait * ms,
++               (p->last_completion - p->first_submission) * ms, p->polls, p->waits, p->input_full);
++}
++
++static void encoder_wait_amf(struct virgl_video_codec *codec)
++{
++    const int64_t started = amf_now();
++    LARGE_INTEGER due = { .QuadPart = -10000 };
++    if (!codec->amf_wait_timer ||
++        !SetWaitableTimer(codec->amf_wait_timer, &due, 0, NULL, NULL, FALSE) ||
++        WaitForSingleObject(codec->amf_wait_timer, 50) != WAIT_OBJECT_0)
++        Sleep(1);
++    const int64_t waited = amf_now() - started;
++    codec->amf_profile.wait += waited;
++    if (waited > codec->amf_profile.max_wait)
++        codec->amf_profile.max_wait = waited;
++    codec->amf_profile.waits++;
++}
++
++static void encoder_close_amf(struct virgl_video_codec *codec)
++{
++    encoder_log_amf_profile(codec, "close");
++    memset(&codec->amf_profile, 0, sizeof(codec->amf_profile));
++    if (codec->amf_wait_timer) {
++        CloseHandle(codec->amf_wait_timer);
++        codec->amf_wait_timer = NULL;
++    }
++    for (unsigned i = 0; i < VIRGL_AMF_QUEUE_DEPTH; i++) {
++        if (codec->amf_pending[i].output)
++            codec->amf_pending[i].output->pVtbl->Release(codec->amf_pending[i].output);
++        codec->amf_pending[i].output = NULL;
++        codec->amf_pending[i].active = false;
++    }
++    codec->amf_in_flight = 0;
++    if (codec->encoder_amf) {
++        codec->encoder_amf->pVtbl->Terminate(codec->encoder_amf);
++        codec->encoder_amf->pVtbl->Release(codec->encoder_amf);
++        codec->encoder_amf = NULL;
++    }
++    if (codec->amf_upload_texture) {
++        ID3D11Texture2D_Release(codec->amf_upload_texture);
++        codec->amf_upload_texture = NULL;
++    }
++    if (codec->encoder_amf_context) {
++        codec->encoder_amf_context->pVtbl->Terminate(codec->encoder_amf_context);
++        codec->encoder_amf_context->pVtbl->Release(codec->encoder_amf_context);
++        codec->encoder_amf_context = NULL;
++    }
++    if (codec->encoder_amf_dll) {
++        FreeLibrary(codec->encoder_amf_dll);
++        codec->encoder_amf_dll = NULL;
++    }
++}
++
++static HRESULT encoder_open_amf(struct virgl_video_codec *codec)
++{
++    AMFFactory *factory = NULL;
++    amf_uint64 version = 0;
++    const wchar_t *component = IsEqualGUID(&codec->encoder_output_guid, &VIRGL_MFVIDEOFORMAT_HEVC) ?
++                              AMFVideoEncoder_HEVC : AMFVideoEncoderVCE_AVC;
++    codec->encoder_amf_dll = LoadLibraryExW(AMF_DLL_NAME, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
++    if (!codec->encoder_amf_dll)
++        return HRESULT_FROM_WIN32(GetLastError());
++
++    codec->amf_dx11_upload = getenv("WINQ_TEST_AMF_DX11_UPLOAD") &&
++                            getenv("WINQ_TEST_AMF_REQUIRE_AMD");
++    if (codec->amf_dx11_upload)
++        virgl_info("AMF input uses D3D11 NV12 upload on the selected device\n");
++    AMFInit_Fn init = (AMFInit_Fn)GetProcAddress(codec->encoder_amf_dll, AMF_INIT_FUNCTION_NAME);
++    AMFQueryVersion_Fn query = (AMFQueryVersion_Fn)GetProcAddress(codec->encoder_amf_dll, AMF_QUERY_VERSION_FUNCTION_NAME);
++    AMF_RESULT result = !init || !query ? AMF_FAIL : query(&version);
++    if (result == AMF_OK)
++        result = init(version < AMF_FULL_VERSION ? version : AMF_FULL_VERSION, &factory);
++    if (result == AMF_OK)
++        result = factory->pVtbl->CreateContext(factory, &codec->encoder_amf_context);
++    if (result == AMF_OK)
++        result = codec->encoder_amf_context->pVtbl->InitDX11(
++            codec->encoder_amf_context,
++            getenv("WINQ_TEST_AMF_REQUIRE_AMD") ? g_vid.device : NULL, AMF_DX11_0);
++    if (result == AMF_OK)
++        result = factory->pVtbl->CreateComponent(factory, codec->encoder_amf_context, component, &codec->encoder_amf);
++    virgl_info("AMF create component %ls: result=%d version=%llx\n", component, (int)result,
++               (unsigned long long)version);
++    if (result != AMF_OK)
++        encoder_close_amf(codec);
++    return result == AMF_OK ? S_OK : E_FAIL;
++}
++
++static HRESULT encoder_start_amf(struct virgl_video_codec *codec)
++{
++    AMFComponent *encoder = codec->encoder_amf;
++    const bool hevc = IsEqualGUID(&codec->encoder_output_guid, &VIRGL_MFVIDEOFORMAT_HEVC);
++    AMF_RESULT result;
++    AMFSize size = { codec->encoder_width, codec->encoder_height };
++    AMFRate rate = { codec->encoder_fps_num, codec->encoder_fps_den };
++
++    AMF_ASSIGN_PROPERTY_INT64(result, encoder,
++          hevc ? AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE : AMF_VIDEO_ENCODER_TARGET_BITRATE, codec->encoder_bitrate);
++    AMF_ASSIGN_PROPERTY_SIZE(result, encoder,
++          hevc ? AMF_VIDEO_ENCODER_HEVC_FRAMESIZE : AMF_VIDEO_ENCODER_FRAMESIZE, size);
++    AMF_ASSIGN_PROPERTY_RATE(result, encoder,
++          hevc ? AMF_VIDEO_ENCODER_HEVC_FRAMERATE : AMF_VIDEO_ENCODER_FRAMERATE, rate);
++    if (!hevc) {
++        AMF_ASSIGN_PROPERTY_INT64(result, encoder, AMF_VIDEO_ENCODER_B_PIC_PATTERN, 0);
++        AMF_ASSIGN_PROPERTY_INT64(result, encoder, AMF_VIDEO_ENCODER_PROFILE, AMF_VIDEO_ENCODER_PROFILE_MAIN);
++    }
++    if (getenv("WINQ_TEST_AMF_SPEED")) {
++        AMF_ASSIGN_PROPERTY_INT64(result, encoder,
++              hevc ? AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET : AMF_VIDEO_ENCODER_QUALITY_PRESET,
++              hevc ? AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED : AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED);
++        virgl_info("AMF speed preset result=%d\n", (int)result);
++    }
++    const char *wait_mode = getenv("WINQ_TEST_AMF_WAIT");
++    const bool use_timer = wait_mode && strcmp(wait_mode, "sleep") != 0;
++    const bool use_native_wait = wait_mode && strcmp(wait_mode, "driver") == 0;
++    const wchar_t *query_timeout = hevc ? AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT :
++                                         AMF_VIDEO_ENCODER_QUERY_TIMEOUT;
++    AMF_ASSIGN_PROPERTY_INT64(result, encoder, query_timeout, use_native_wait ? 1 : 0);
++    AMFVariantStruct query_value = {0};
++    result = encoder->pVtbl->GetProperty(encoder, query_timeout, &query_value);
++    const int64_t query_wait = result == AMF_OK && query_value.type == AMF_VARIANT_INT64 ?
++                               query_value.int64Value : 0;
++    result = encoder->pVtbl->Init(encoder, AMF_SURFACE_NV12, size.width, size.height);
++    virgl_info("AMF init %s %dx%d %u/%u fps, result=%d\n", hevc ? "HEVC" : "H264",
++               size.width, size.height, rate.num, rate.den, (int)result);
++    if (result != AMF_OK)
++        return E_FAIL;
++
++    if (use_timer) {
++#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
++#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
++#endif
++        codec->amf_wait_timer = CreateWaitableTimerExW(NULL, NULL,
++              CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
++    }
++    codec->amf_wait_mode = query_wait ? "driver" : codec->amf_wait_timer ? "timer" : "sleep";
++    virgl_info("AMF polling mode=%s query_timeout_ms=%lld high_resolution_timer=%d\n",
++               codec->amf_wait_mode, (long long)query_wait, !!codec->amf_wait_timer);
++    codec->amf_frame_duration = UINT64_C(10000000) * rate.den / rate.num;
++    if (!codec->amf_frame_duration)
++        return E_INVALIDARG;
++    codec->encoder_stream_started = true;
++    return S_OK;
++}
++
++/* Queue the cropped NV12 copy on the same D3D11 context as AMF. UpdateSubresource
++ * consumes the CPU bytes before returning. D3D11 orders scratch texture reuse
++ * after the preceding copy, while AMF owns a separate destination per frame. */
++static HRESULT encoder_upload_amf_dx11(struct virgl_video_codec *codec,
++                                      struct virgl_video_buffer *source,
++                                      AMFSurface *surface)
++{
++    AMFContext *context = codec->encoder_amf_context;
++    AMFPlane *plane = surface->pVtbl->GetPlaneAt(surface, 0);
++    ID3D11Texture2D *dest = plane ? plane->pVtbl->GetNative(plane) : NULL;
++    D3D11_TEXTURE2D_DESC layout, scratch = {0};
++    const UINT left = codec->encoder_crop_left, top = codec->encoder_crop_top;
++    const UINT width = codec->encoder_width, height = codec->encoder_height;
++    const D3D11_BOX visible = { left, top, 0, left + width, top + height, 1 };
++    if (!dest || ((left | top | width | height | source->width | source->height) & 1))
++        return E_INVALIDARG;
++    ID3D11Texture2D_GetDesc(dest, &layout);
++    if (layout.Format != DXGI_FORMAT_NV12 || layout.Width < width || layout.Height < height ||
++        layout.ArraySize != 1 || layout.MipLevels != 1)
++        return E_INVALIDARG;
++    const bool direct = !left && !top &&
++        layout.Width == source->width && layout.Height == source->height;
++    if (!direct && codec->amf_upload_texture) {
++        ID3D11Texture2D_GetDesc(codec->amf_upload_texture, &scratch);
++        if (scratch.Width != source->width || scratch.Height != source->height) {
++            ID3D11Texture2D_Release(codec->amf_upload_texture);
++            codec->amf_upload_texture = NULL;
++        }
++    }
++    if (!direct && !codec->amf_upload_texture) {
++        const D3D11_TEXTURE2D_DESC desc = {
++            .Width = source->width, .Height = source->height, .MipLevels = 1,
++            .ArraySize = 1, .Format = DXGI_FORMAT_NV12, .SampleDesc = {1, 0},
++            .Usage = D3D11_USAGE_DEFAULT
++        };
++        HRESULT hr = ID3D11Device_CreateTexture2D(g_vid.device, &desc, NULL,
++                                                  &codec->amf_upload_texture);
++        if (FAILED(hr))
++            return hr;
++    }
++    if (context->pVtbl->LockDX11(context) != AMF_OK)
++        return E_FAIL;
++    ID3D11Texture2D *upload = direct ? dest : codec->amf_upload_texture;
++    ID3D11DeviceContext_UpdateSubresource(g_vid.context, (ID3D11Resource *)upload,
++                                         0, NULL, source->encode_src_nv12, source->width, 0);
++    if (!direct)
++        ID3D11DeviceContext_CopySubresourceRegion(g_vid.context, (ID3D11Resource *)dest,
++              0, 0, 0, 0, (ID3D11Resource *)upload, 0, &visible);
++    ID3D11DeviceContext_Flush(g_vid.context);
++    context->pVtbl->UnlockDX11(context);
++    return S_OK;
++}
++
++static HRESULT encoder_build_amf_surface(struct virgl_video_codec *codec,
++                                   struct virgl_video_buffer *source, bool keyframe,
++                                         AMFSurface **sample)
++{
++    AMFContext *context = codec->encoder_amf_context;
++    const bool hevc = IsEqualGUID(&codec->encoder_output_guid, &VIRGL_MFVIDEOFORMAT_HEVC);
++    const unsigned width = codec->encoder_width, height = codec->encoder_height;
++    const unsigned left = codec->encoder_crop_left, top = codec->encoder_crop_top;
++    const size_t pitch = source->width, luma = pitch * source->height;
++    AMFSurface *surface = NULL;
++    AMF_RESULT result;
++
++    *sample = NULL;
++    if (!source->encode_src_nv12 || source->encode_src_size < luma + luma / 2 ||
++        left + width > source->width || top + height > source->height)
++        return E_INVALIDARG;
++    result = context->pVtbl->AllocSurface(context, codec->amf_dx11_upload ? AMF_MEMORY_DX11 : AMF_MEMORY_HOST, AMF_SURFACE_NV12, width, height, &surface);
++    if (result != AMF_OK)
++        goto out;
++    if (codec->amf_dx11_upload) {
++        if (FAILED(encoder_upload_amf_dx11(codec, source, surface)))
++            goto out;
++    } else {
++        for (unsigned plane = 0; plane < 2; plane++) {
++            AMFPlane *layout = surface->pVtbl->GetPlaneAt(surface, plane);
++            if (!layout)
++                goto out;
++            const size_t dst_pitch = layout->pVtbl->GetHPitch(layout);
++            uint8_t *dst = layout->pVtbl->GetNative(layout);
++            const uint8_t *src = source->encode_src_nv12 + left + (plane ? luma + top / 2 * pitch : top * pitch);
++            if (!dst || dst_pitch < width)
++                goto out;
++            for (unsigned row = 0; row < (height >> plane); row++)
++                memcpy(dst + dst_pitch * row, src + pitch * row, width);
++        }
++    }
++    const amf_pts duration = codec->amf_frame_duration;
++    surface->pVtbl->SetPts(surface, codec->encoder_frame_count * duration);
++    surface->pVtbl->SetDuration(surface, duration);
++    if (keyframe || !codec->encoder_frame_count) {
++        if (hevc) {
++            AMF_ASSIGN_PROPERTY_INT64(result, surface, AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_IDR);
++            AMF_ASSIGN_PROPERTY_BOOL(result, surface, AMF_VIDEO_ENCODER_HEVC_INSERT_HEADER, true);
++        } else {
++            AMF_ASSIGN_PROPERTY_INT64(result, surface, AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_PICTURE_TYPE_IDR);
++            AMF_ASSIGN_PROPERTY_BOOL(result, surface, AMF_VIDEO_ENCODER_INSERT_SPS, true);
++            AMF_ASSIGN_PROPERTY_BOOL(result, surface, AMF_VIDEO_ENCODER_INSERT_PPS, true);
++        }
++    }
++    *sample = surface;
++    return S_OK;
++
++out:
++    if (surface)
++        surface->pVtbl->Release(surface);
++    return E_FAIL;
++}
++
++static struct virgl_amf_entry *encoder_find_amf_entry(struct virgl_video_codec *codec,
++                                                       uint64_t ticket)
++{
++    for (unsigned i = 0; i < VIRGL_AMF_QUEUE_DEPTH; i++) {
++        struct virgl_amf_entry *entry = &codec->amf_pending[i];
++        if (entry->active && entry->ticket == ticket)
++            return entry;
++    }
++    return NULL;
++}
++
++/* AMF may return a different outstanding packet before the requested one.
++ * Preserve its identity and retain it until the guest fetches its own buffer. */
++static HRESULT encoder_poll_amf(struct virgl_video_codec *codec)
++{
++    AMFComponent *encoder = codec->encoder_amf;
++    AMFData *output = NULL;
++    const int64_t started = amf_now();
++    AMF_RESULT result = encoder->pVtbl->QueryOutput(encoder, &output);
++    codec->amf_profile.poll += amf_now() - started;
++    codec->amf_profile.polls++;
++    if (!output)
++        return result == AMF_REPEAT || result == AMF_OK ? S_FALSE : E_FAIL;
++
++    amf_pts pts = output->pVtbl->GetPts(output);
++    if (pts >= 0 && pts % codec->amf_frame_duration == 0) {
++        uint64_t ticket = pts / codec->amf_frame_duration;
++        struct virgl_amf_entry *entry = encoder_find_amf_entry(codec, ticket);
++        if (entry && !entry->output) {
++            entry->output = output;
++            codec->amf_profile.residence += amf_now() - entry->accepted_at;
++            return S_OK;
++        }
++    }
++    virgl_error("AMF returned an unexpected packet timestamp %lld\n", (long long)pts);
++    output->pVtbl->Release(output);
++    return E_FAIL;
++}
++
++static HRESULT encoder_submit_amf(struct virgl_video_codec *codec,
++                                  struct virgl_video_buffer *source, bool keyframe,
++                                  uint64_t *ticket)
++{
++    const uint64_t sequence = codec->encoder_frame_count;
++    AMFComponent *encoder = codec->encoder_amf;
++    struct virgl_amf_entry *entry = NULL;
++    AMFSurface *surface;
++    for (unsigned i = 0; i < VIRGL_AMF_QUEUE_DEPTH; i++) {
++        if (!codec->amf_pending[i].active) {
++            entry = &codec->amf_pending[i];
++            break;
++        }
++    }
++    if (!entry)
++        return E_FAIL;
++    const int64_t before_surface = amf_now();
++    HRESULT hr = encoder_build_amf_surface(codec, source, keyframe, &surface);
++    const int64_t before_submit = amf_now();
++    codec->amf_profile.surface += before_submit - before_surface;
++    if (FAILED(hr))
++        return hr;
++
++    const ULONGLONG deadline = GetTickCount64() + 3000;
++    AMF_RESULT result;
++    for (;;) {
++        result = encoder->pVtbl->SubmitInput(encoder, (AMFData *)surface);
++        if (result != AMF_INPUT_FULL)
++            break;
++        codec->amf_profile.input_full++;
++        hr = encoder_poll_amf(codec);
++        if (FAILED(hr) || GetTickCount64() >= deadline)
++            break;
++        if (hr == S_FALSE)
++            encoder_wait_amf(codec);
++    }
++    surface->pVtbl->Release(surface);
++    codec->amf_profile.submit += amf_now() - before_submit;
++    if (result != AMF_OK && result != AMF_NEED_MORE_INPUT) {
++        virgl_error("AMF could not submit frame %llu, result=%d\n",
++                    (unsigned long long)sequence, (int)result);
++        return E_FAIL;
++    }
++    entry->active = true;
++    entry->ticket = sequence;
++    entry->accepted_at = amf_now();
++    codec->encoder_frame_count++;
++    codec->amf_in_flight++;
++    if (codec->amf_in_flight > codec->amf_high_water) {
++        codec->amf_high_water = codec->amf_in_flight;
++        virgl_info("AMF pipeline outstanding=%u frame=%llu\n",
++                   codec->amf_high_water, (unsigned long long)sequence);
++    }
++    *ticket = sequence;
++    return S_OK;
++}
++
++int virgl_video_amf_collect(struct virgl_video_codec *codec, uint64_t ticket,
++                            const void **bytes, unsigned *length)
++{
++    struct virgl_amf_entry *entry = encoder_find_amf_entry(codec, ticket);
++    *bytes = NULL;
++    *length = 0;
++    if (!entry || codec->encoder_failed)
++        return -EIO;
++
++    const int64_t before_collect = amf_now();
++    const ULONGLONG deadline = GetTickCount64() + 3000;
++    while (!entry->output) {
++        HRESULT hr = encoder_poll_amf(codec);
++        if (FAILED(hr) || GetTickCount64() >= deadline) {
++            virgl_error("AMF could not complete frame %llu with %u outstanding\n",
++                        (unsigned long long)ticket, codec->amf_in_flight);
++            codec->encoder_failed = true;
++            return -EIO;
++        }
++        if (hr == S_FALSE)
++            encoder_wait_amf(codec);
++    }
++
++    AMFData *output = entry->output;
++    AMFBuffer *buffer = NULL;
++    const AMFGuid iid = IID_AMFBuffer();
++    if (output->pVtbl->QueryInterface(output, &iid, (void **)&buffer) == AMF_OK && buffer) {
++        size_t size = buffer->pVtbl->GetSize(buffer);
++        const void *data = buffer->pVtbl->GetNative(buffer);
++        if (data && size && size <= UINT_MAX) {
++            if (size > codec->encoder_coded_capacity) {
++                uint8_t *grown = realloc(codec->encoder_coded_buf, size);
++                if (grown) {
++                    codec->encoder_coded_buf = grown;
++                    codec->encoder_coded_capacity = size;
++                }
++            }
++            if (size <= codec->encoder_coded_capacity) {
++                memcpy(codec->encoder_coded_buf, data, size);
++                *bytes = codec->encoder_coded_buf;
++                *length = size;
++            }
++        }
++        buffer->pVtbl->Release(buffer);
++    }
++    output->pVtbl->Release(output);
++    entry->output = NULL;
++    entry->active = false;
++    codec->amf_in_flight--;
++    codec->amf_profile.last_completion = amf_now();
++    codec->amf_profile.collect += codec->amf_profile.last_completion - before_collect;
++    if (!*length) {
++        codec->encoder_failed = true;
++        return -EIO;
++    }
++    if (++codec->amf_profile.frames % 120 == 0)
++        encoder_log_amf_profile(codec, "sample");
++    return 0;
+ }
+ 
+ static int encoder_create_mft(struct virgl_video_codec *codec,
+@@ -4585,6 +5304,17 @@
+                     (int)args->profile);
+         return -1;
+     }
++
++    codec->encoder_input_requests = 0;
++    codec->encoder_frame_count = 0;
++    codec->encoder_width  = args->width;
++    codec->encoder_height = args->height;
++    codec->encoder_fps_num = 30;
++    codec->encoder_fps_den = 1;
++    codec->encoder_bitrate = 8 * 1000 * 1000;   /* 8 Mbps placeholder */
++
++    if (getenv("WINQ_TEST_AMF"))
++        return SUCCEEDED(encoder_open_amf(codec)) ? 0 : -1;
+ 
+     hr = virgl_video_mf_acquire();
+     if (FAILED(hr))
+@@ -4598,13 +5328,14 @@
+         return -1;
+     }
+ 
+-    codec->encoder_width  = args->width;
+-    codec->encoder_height = args->height;
+-    codec->encoder_fps_num = 30;
+-    codec->encoder_fps_den = 1;
+-    codec->encoder_bitrate = 8 * 1000 * 1000;   /* 8 Mbps placeholder */
+-
+     hr = encoder_configure_async(codec);
++    const char *dxgi_file = getenv("WINQ_TEST_DXGI_FILE");
++    const bool use_dxgi = dxgi_file ? GetFileAttributesA(dxgi_file) != INVALID_FILE_ATTRIBUTES
++                                   : getenv("WINQ_TEST_DXGI") != NULL;
++    if (SUCCEEDED(hr) && use_dxgi) {
++        hr = encoder_connect_dxgi(codec);
++        virgl_info("encode config: DXGI manager HRESULT=%08lx\n", (unsigned long)hr);
++    }
+     if (SUCCEEDED(hr)) {
+         hr = IMFTransform_GetStreamIDs(codec->encoder_mft, 1,
+                                         &codec->encoder_input_id, 1,
+@@ -4615,8 +5346,6 @@
+             hr = S_OK;
+         }
+     }
+-    if (SUCCEEDED(hr))
+-        hr = encoder_set_types(codec);
+     if (FAILED(hr)) {
+         virgl_error("virgl_video_win32: encoder MFT setup failed 0x%lx\n",
+                     (unsigned long)hr);
+@@ -4631,6 +5360,7 @@
+ 
+ static void encoder_destroy_mft(struct virgl_video_codec *codec)
+ {
++    encoder_close_amf(codec);
+     if (codec->encoder_mft) {
+         if (codec->encoder_stream_started) {
+             IMFTransform_ProcessMessage(codec->encoder_mft,
+@@ -4656,11 +5386,19 @@
+                 IMFShutdown_Shutdown(shutdown);
+                 IMFShutdown_Release(shutdown);
+             }
++            if (codec->encoder_wait) {
++                encoder_event_release(&codec->encoder_wait->callback);
++                codec->encoder_wait = NULL;
++            }
+             IMFMediaEventGenerator_Release(codec->encoder_events);
+             codec->encoder_events = NULL;
+         }
+         IMFTransform_Release(codec->encoder_mft);
+         codec->encoder_mft = NULL;
++        if (codec->encoder_dxgi_manager) {
++            IMFDXGIDeviceManager_Release(codec->encoder_dxgi_manager);
++            codec->encoder_dxgi_manager = NULL;
++        }
+         virgl_video_mf_release();
+     }
+     if (codec->encoder_coded_buf) {
+@@ -4791,42 +5529,59 @@
+ 
+ static int encode_one_frame(struct virgl_video_codec *codec,
+                             struct virgl_video_buffer *source,
+-                            const union virgl_picture_desc *desc)
++                            const union virgl_picture_desc *desc,
++                            bool retry, uint64_t *deferred_ticket)
+ {
+     HRESULT hr;
+     IMFSample *in_sample = NULL;
+     uint32_t bitrate, fps_num, fps_den;
+     bool kf = false;
+ 
+-    if (!codec->encoder_mft)
++    if (!codec->encoder_mft && !codec->encoder_amf)
+         return -ENOSYS;
+     if (codec->encoder_failed)
+         return -EIO;
+ 
+     encoder_extract_hints(codec, desc, &bitrate, &fps_num, &fps_den, &kf);
+-
+-    /* Re-negotiate output type if the rate/fps changed appreciably. The MFT
+-     * will reject SetOutputType once streaming has begun on most drivers; we
+-     * only update if still pre-stream, and cache for future runs otherwise. */
++    const char *nominal_fps = codec->encoder_amf && !codec->encoder_stream_started ?
++                              getenv("WINQ_TEST_AMF_NOMINAL_FPS") : NULL;
++    if (nominal_fps) {
++        char *end;
++        unsigned long requested = strtoul(nominal_fps, &end, 10);
++        if (*nominal_fps && !*end && requested >= 1 && requested <= 240) {
++            virgl_info("AMF test nominal rate %lu from guest hint %u/%u fps\n",
++                       requested, fps_num, fps_den);
++            fps_num = requested;
++            fps_den = 1;
++        }
++    }
++
++    /* Negotiate once, after the first picture provides the real geometry,
++     * bitrate and frame rate. The codec creation dimensions may be padded. */
+     if (!codec->encoder_stream_started) {
+-        bool changed = false;
++        MFT_INPUT_STREAM_INFO input_info;
+         if (IsEqualGUID(&codec->encoder_output_guid, &VIRGL_MFVIDEOFORMAT_HEVC))
+-            changed = encoder_set_hevc_geometry(codec, source, &desc->h265_enc.seq);
++            encoder_set_hevc_geometry(codec, source, &desc->h265_enc.seq);
+         else if (IsEqualGUID(&codec->encoder_output_guid, &MFVideoFormat_H264))
+-            changed = encoder_set_avc_geometry(codec, source, &desc->h264_enc.seq);
+-        if (bitrate != codec->encoder_bitrate) {
+-            codec->encoder_bitrate = bitrate;
+-            changed = true;
+-        }
+-        if (fps_num != codec->encoder_fps_num ||
+-            fps_den != codec->encoder_fps_den) {
+-            codec->encoder_fps_num = fps_num;
+-            codec->encoder_fps_den = fps_den;
+-            changed = true;
+-        }
+-        hr = changed ? encoder_set_types(codec) : S_OK;
+-        if (SUCCEEDED(hr))
+-            hr = encoder_start_streaming(codec);
++            encoder_set_avc_geometry(codec, source, &desc->h264_enc.seq);
++        codec->encoder_bitrate = bitrate;
++        codec->encoder_fps_num = fps_num;
++        codec->encoder_fps_den = fps_den;
++        if (codec->encoder_amf) {
++            hr = encoder_start_amf(codec);
++        } else {
++            hr = encoder_set_types(codec);
++            if (SUCCEEDED(hr))
++                hr = IMFTransform_GetInputStreamInfo(codec->encoder_mft,
++                                                     codec->encoder_input_id, &input_info);
++            if (SUCCEEDED(hr)) {
++                codec->encoder_input_alignment = input_info.cbAlignment;
++                virgl_info("virgl_video_win32: MFT input %ux%u %u/%u fps, sample size=%lu alignment=%lu\n",
++                           codec->encoder_width, codec->encoder_height, fps_num, fps_den,
++                           (unsigned long)input_info.cbSize, (unsigned long)input_info.cbAlignment);
++                hr = encoder_start_streaming(codec);
++            }
++        }
+         if (FAILED(hr)) {
+             codec->encoder_failed = true;
+             virgl_error("virgl_video_win32: encoder_start_streaming failed "
+@@ -4846,6 +5601,8 @@
+      * on Windows the fd fields are unused — vrend_video.c just needs the
+      * buffer pointer to find its GL-side planes.
+      */
++    LARGE_INTEGER begun, uploaded, built, accepted, finished, frequency;
++    QueryPerformanceCounter(&begun);
+     if (g_vid.callbacks && g_vid.callbacks->encode_upload_picture) {
+         struct virgl_video_dma_buf upload_dmabuf;
+         memset(&upload_dmabuf, 0, sizeof(upload_dmabuf));
+@@ -4858,7 +5615,28 @@
+         g_vid.callbacks->encode_upload_picture(codec, &upload_dmabuf);
+     }
+ 
++    if (codec->encoder_amf) {
++        if (!codec->amf_profile.first_submission)
++            codec->amf_profile.first_submission = begun.QuadPart;
++        QueryPerformanceCounter(&uploaded);
++        codec->amf_profile.readback += uploaded.QuadPart - begun.QuadPart;
++        uint64_t ticket;
++        if (FAILED(encoder_submit_amf(codec, source, kf, &ticket))) {
++            codec->encoder_failed = true;
++            return -EIO;
++        }
++        if (deferred_ticket) {
++            *deferred_ticket = ticket;
++            return 0;
++        }
++        const void *packet;
++        if (virgl_video_amf_collect(codec, ticket, &packet, &codec->encoder_coded_size))
++            return -EIO;
++        goto deliver_coded_frame;
++    }
++    QueryPerformanceCounter(&uploaded);
+     hr = encoder_build_sample(codec, source, kf, &in_sample);
++    QueryPerformanceCounter(&built);
+     if (FAILED(hr) || !in_sample) {
+         virgl_error("virgl_video_win32: encoder_build_sample failed 0x%lx\n",
+                     (unsigned long)hr);
+@@ -4881,16 +5659,46 @@
+         return -1;
+     }
+     codec->encoder_frame_count++;
+-
+-    hr = codec->encoder_events ? encoder_wait_async(codec, false, deadline) :
++    QueryPerformanceCounter(&accepted);
++
++    hr = codec->encoder_events ? encoder_wait_async(codec, false, GetTickCount64() + 1000) :
+                                 encoder_drain_output(codec);
++    QueryPerformanceCounter(&finished);
++    if (FAILED(hr) || codec->encoder_frame_count <= 3 || !(codec->encoder_frame_count % 120)) {
++        QueryPerformanceFrequency(&frequency);
++        virgl_info("encode timing: pid=%lu tid=%lu %ux%u frame=%llu key=%d bytes=%u credits=%u "
++                   "readback=%.2f sample=%.2f input=%.2f output=%.2f ms hr=%08lx\n",
++                   (unsigned long)GetCurrentProcessId(), (unsigned long)GetCurrentThreadId(),
++                   codec->encoder_width, codec->encoder_height,
++                   (unsigned long long)codec->encoder_frame_count, kf, codec->encoder_coded_size,
++                   codec->encoder_input_requests,
++                   1000.0 * (uploaded.QuadPart - begun.QuadPart) / frequency.QuadPart,
++                   1000.0 * (built.QuadPart - uploaded.QuadPart) / frequency.QuadPart,
++                   1000.0 * (accepted.QuadPart - built.QuadPart) / frequency.QuadPart,
++                   1000.0 * (finished.QuadPart - accepted.QuadPart) / frequency.QuadPart,
++                   (unsigned long)hr);
++    }
+     if (FAILED(hr)) {
++        if (retry && getenv("WINQ_TEST_RETRY") && hr == HRESULT_FROM_WIN32(ERROR_TIMEOUT)) {
++            const struct virgl_video_create_codec_args args = {
++                .profile = codec->profile, .width = codec->width, .height = codec->height,
++            };
++            /* Discard the outstanding output and restart on this frame with
++             * a clean transform. A late result cannot then reach the next
++             * VirGL feedback buffer. */
++            virgl_warn("virgl_video_win32: encoder output timed out at frame %llu, recreating MFT\n",
++                       (unsigned long long)codec->encoder_frame_count);
++            encoder_destroy_mft(codec);
++            if (encoder_create_mft(codec, &args) == 0)
++                return encode_one_frame(codec, source, desc, false, NULL);
++        }
+         codec->encoder_failed = true;
+         virgl_error("virgl_video_win32: encoder_drain_output failed 0x%lx\n",
+                     (unsigned long)hr);
+         return -1;
+     }
+ 
++deliver_coded_frame:
+     /* Hand the coded bytes back to vrend_video.c. The callback signature
+      * wants num_coded_bufs + coded_bufs + coded_sizes arrays; we publish a
+      * single buffer (the concatenated AU/NALU stream from this frame). */
+@@ -4915,6 +5723,17 @@
+     return 0;
+ }
+ 
++bool virgl_video_amf_deferred(struct virgl_video_codec *codec)
++{
++    return codec->encoder_amf && getenv("WINQ_TEST_AMF_PIPELINE");
++}
++
++int virgl_video_amf_submit(struct virgl_video_codec *codec, struct virgl_video_buffer *source,
++                           const union virgl_picture_desc *desc, uint64_t *ticket)
++{
++    return encode_one_frame(codec, source, desc, false, ticket);
++}
++
+ int virgl_video_encode_bitstream(struct virgl_video_codec *codec,
+                                  struct virgl_video_buffer *source,
+                                  const union virgl_picture_desc *desc)
+@@ -4924,7 +5743,7 @@
+     if (codec->entrypoint != PIPE_VIDEO_ENTRYPOINT_ENCODE)
+         return -ENOSYS;
+ 
+-    return encode_one_frame(codec, source, desc);
++    return encode_one_frame(codec, source, desc, true, NULL);
+ }
+ 
+ /*
+diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -10061,6 +10061,9 @@
+    case VIRGL_TRANSFER_TO_HOST:
+       return vrend_renderer_transfer_write_iov(ctx, res, iov, num_iovs, info);
+    case VIRGL_TRANSFER_FROM_HOST:
++#if defined(ENABLE_VIDEO) && defined(_WIN32)
++      vrend_video_wait_encode(res);
++#endif
+       return vrend_renderer_transfer_send_iov(ctx, res, iov, num_iovs, info);
+ 
+    default:
+diff --git a/src/vrend/vrend_renderer.h b/src/vrend/vrend_renderer.h
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -81,6 +81,9 @@
+ 
+ struct vrend_resource {
+    struct pipe_resource base;
++#ifdef _WIN32
++   struct vrend_video_encode_job *video_encode_job;
++#endif
+    uint32_t storage_bits;
+    uint32_t map_info;
+ 
+diff --git a/src/vrend/vrend_video.c b/src/vrend/vrend_video.c
+--- a/src/vrend/vrend_video.c
++++ b/src/vrend/vrend_video.c
+@@ -100,11 +100,23 @@
+     struct list_head buffers;
+ };
+ 
++#ifdef _WIN32
++struct vrend_video_encode_job {
++    struct vrend_video_codec *codec;
++    struct vrend_resource *feed;
++    struct vrend_resource *dest;
++    uint64_t ticket;
++};
++#endif
++
+ struct vrend_video_codec {
+     struct virgl_video_codec *codec;
+     uint32_t handle;
+     struct vrend_resource *feed_res;    /* encoding feedback */
+     struct vrend_resource *dest_res;    /* encoding coded buffer */
++#ifdef _WIN32
++    struct vrend_video_encode_job pending[VIRGL_AMF_QUEUE_DEPTH];
++#endif
+     struct vrend_video_context *ctx;
+     struct list_head head;
+ };
+@@ -777,11 +789,12 @@
+     memset(&feedback, 0, sizeof(feedback));
+ 
+     /* sync coded data to guest */
++    feedback.stat = VIRGL_VIDEO_ENCODE_STAT_FAILURE;
+     if (has_bit(cdc->dest_res->storage_bits, VREND_STORAGE_GL_BUFFER)) {
+         glBindBufferARB(cdc->dest_res->target, cdc->dest_res->gl_id);
+         buf = glMapBufferRange(cdc->dest_res->target, 0,
+                                cdc->dest_res->base.width0, GL_MAP_WRITE_BIT);
+-        for (i = 0, data_size = 0; i < num_coded_bufs &&
++        for (i = 0, data_size = 0; buf && i < num_coded_bufs &&
+                     data_size < cdc->dest_res->base.width0; i++) {
+             size = MIN2(cdc->dest_res->base.width0 - data_size, coded_sizes[i]);
+             memcpy((uint8_t *)buf + data_size, coded_bufs[i], size);
+@@ -789,10 +802,11 @@
+                                  data_size, coded_bufs[i], size);
+             data_size += size;
+         }
+-        glUnmapBuffer(cdc->dest_res->target);
++        if (buf && glUnmapBuffer(cdc->dest_res->target)) {
++            feedback.stat = VIRGL_VIDEO_ENCODE_STAT_SUCCESS;
++            feedback.coded_size = data_size;
++        }
+         glBindBufferARB(cdc->dest_res->target, 0);
+-        feedback.stat = VIRGL_VIDEO_ENCODE_STAT_SUCCESS;
+-        feedback.coded_size = data_size;
+     } else {
+         virgl_warn("unexcepted coded res type\n");
+         feedback.stat = VIRGL_VIDEO_ENCODE_STAT_FAILURE;
+@@ -804,6 +818,39 @@
+     cdc->dest_res = NULL;
+     cdc->feed_res = NULL;
+ }
++
++#ifdef _WIN32
++static void release_encode_job(struct vrend_video_encode_job *job)
++{
++    job->feed->video_encode_job = NULL;
++    job->dest->video_encode_job = NULL;
++    vrend_resource_reference(&job->feed, NULL);
++    vrend_resource_reference(&job->dest, NULL);
++}
++
++void vrend_video_wait_encode(struct vrend_resource *resource)
++{
++    struct vrend_video_encode_job *job = resource->video_encode_job;
++    if (!job)
++        return;
++
++    struct vrend_video_codec *codec = job->codec;
++    const void *packet;
++    unsigned length;
++    if (virgl_video_amf_collect(codec->codec, job->ticket, &packet, &length) ||
++        length > job->dest->base.width0) {
++        const struct virgl_video_encode_feedback failure = {
++            .stat = VIRGL_VIDEO_ENCODE_STAT_FAILURE,
++        };
++        vrend_video_write_encode_feedback(job->feed, &failure);
++    } else {
++        codec->feed_res = job->feed;
++        codec->dest_res = job->dest;
++        vrend_video_encode_completed(codec->codec, NULL, NULL, 1, &packet, &length);
++    }
++    release_encode_job(job);
++}
++#endif
+ 
+ static struct virgl_video_callbacks video_callbacks = {
+     .decode_completed           = vrend_video_decode_completed,
+@@ -896,6 +943,12 @@
+ {
+     if (cdc) {
+         list_del(&cdc->head);
++#ifdef _WIN32
++        for (unsigned i = 0; i < VIRGL_AMF_QUEUE_DEPTH; i++) {
++            if (cdc->pending[i].feed)
++                release_encode_job(&cdc->pending[i]);
++        }
++#endif
+         virgl_video_destroy_codec(cdc->codec);
+         free(cdc);
+     }
+@@ -1315,6 +1368,37 @@
+         goto fail;
+     }
+ 
++#ifdef _WIN32
++    if (virgl_video_amf_deferred(cdc->codec)) {
++        if (feed_res == dest_res)
++            goto fail;
++        vrend_video_wait_encode(feed_res);
++        vrend_video_wait_encode(dest_res);
++        struct vrend_video_encode_job *next = NULL;
++        struct vrend_video_encode_job *oldest = &cdc->pending[0];
++        for (unsigned i = 0; i < VIRGL_AMF_QUEUE_DEPTH; i++) {
++            struct vrend_video_encode_job *job = &cdc->pending[i];
++            if (!job->feed) {
++                next = job;
++                break;
++            }
++            if (job->ticket < oldest->ticket)
++                oldest = job;
++        }
++        if (!next) {
++            vrend_video_wait_encode(oldest->feed);
++            next = oldest;
++        }
++        if (virgl_video_amf_submit(cdc->codec, src->buffer, &desc, &next->ticket))
++            goto fail;
++        next->codec = cdc;
++        vrend_resource_reference(&next->feed, feed_res);
++        vrend_resource_reference(&next->dest, dest_res);
++        feed_res->video_encode_job = next;
++        dest_res->video_encode_job = next;
++        return 0;
++    }
++#endif
+     cdc->feed_res = feed_res;
+     cdc->dest_res = dest_res;
+ 
+diff --git a/src/vrend/vrend_video.h b/src/vrend/vrend_video.h
+--- a/src/vrend/vrend_video.h
++++ b/src/vrend/vrend_video.h
+@@ -40,6 +40,10 @@
+ #define VREND_VIDEO_BUFFER_PLANE_NUM  3
+ 
+ struct vrend_video_context;
++#ifdef _WIN32
++struct vrend_resource;
++void vrend_video_wait_encode(struct vrend_resource *resource);
++#endif
+ 
+ int vrend_video_init(int drm_fd);
+ void vrend_video_fini(void);

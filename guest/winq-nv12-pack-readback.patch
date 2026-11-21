@@ -1,0 +1,110 @@
+diff --git a/src/vrend/vrend_video.c b/src/vrend/vrend_video.c
+index 34596eeb7c083388fdca63e7e5b716b8ae2f2bdf..c450f539334903394dd0c917758cc2bbf112062b 100644
+--- a/src/vrend/vrend_video.c
++++ b/src/vrend/vrend_video.c
+@@ -140,6 +140,11 @@
+     uint32_t num_planes;
+     struct vrend_video_plane planes[3];
+ 
++#if VREND_VIDEO_WIN32_CPU_UPLOAD
++    bool encode_pack_reported;
++    GLuint encode_pack_buffer;
++    size_t encode_pack_size;
++#endif
+ #ifdef VREND_VIDEO_WIN32_CPU_UPLOAD
+     /* Cached I420 UV-deinterleave scratch. Reused across frames instead of
+      * calloc/free per decode (AUDIT F23). Sized for the current capacity
+@@ -581,6 +586,67 @@
+ 
+ 
+ #if VREND_VIDEO_WIN32_CPU_UPLOAD
++/* Submit both plane transfers before waiting for their data. The reusable
++ * pack buffer belongs to this video buffer and its renderer GL context. */
++static bool read_nv12_pack_buffer(struct vrend_video_buffer *buf,
++                                  struct vrend_resource *y, size_t y_size)
++{
++    struct vrend_resource *uv = vrend_renderer_ctx_res_lookup(
++            buf->ctx->ctx, buf->planes[1].res_handle);
++    if (!uv || y->target != GL_TEXTURE_2D || uv->target != GL_TEXTURE_2D ||
++        (y->base.width0 & 1) || (y->base.height0 & 1) ||
++        uv->base.width0 != y->base.width0 / 2 ||
++        uv->base.height0 != y->base.height0 / 2 || y_size > INT32_MAX / 2)
++        return false;
++
++    const size_t size = y_size + y_size / 2;
++    GLint prev_pack, prev_texture, alignment, row_length, skip_rows, skip_pixels;
++    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prev_pack);
++    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_texture);
++    glGetIntegerv(GL_PACK_ALIGNMENT, &alignment);
++    glGetIntegerv(GL_PACK_ROW_LENGTH, &row_length);
++    glGetIntegerv(GL_PACK_SKIP_ROWS, &skip_rows);
++    glGetIntegerv(GL_PACK_SKIP_PIXELS, &skip_pixels);
++
++    bool ok = false;
++    if (!buf->encode_pack_buffer)
++        glGenBuffers(1, &buf->encode_pack_buffer);
++    if (!buf->encode_pack_buffer)
++        return false;
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, buf->encode_pack_buffer);
++    if (buf->encode_pack_size != size) {
++        glBufferData(GL_PIXEL_PACK_BUFFER, size, NULL, GL_STREAM_READ);
++        if (glGetError() != GL_NO_ERROR)
++            goto restore;
++        buf->encode_pack_size = size;
++    }
++    glPixelStorei(GL_PACK_ALIGNMENT, 1);
++    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
++    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
++    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
++    glBindTexture(GL_TEXTURE_2D, y->gl_id);
++    glGetTexImage(GL_TEXTURE_2D, 0, GL_RED, GL_UNSIGNED_BYTE, NULL);
++    glBindTexture(GL_TEXTURE_2D, uv->gl_id);
++    glGetTexImage(GL_TEXTURE_2D, 0, GL_RG, GL_UNSIGNED_BYTE, (void *)(uintptr_t)y_size);
++    if (glGetError() != GL_NO_ERROR)
++        goto restore;
++    const void *mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, size, GL_MAP_READ_BIT);
++    if (mapped) {
++        ok = virgl_video_buffer_cpu_writeback(buf->buffer, mapped, size) == 0;
++        if (!glUnmapBuffer(GL_PIXEL_PACK_BUFFER))
++            ok = false;
++    }
++
++restore:
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, prev_pack);
++    glBindTexture(GL_TEXTURE_2D, prev_texture);
++    glPixelStorei(GL_PACK_ALIGNMENT, alignment);
++    glPixelStorei(GL_PACK_ROW_LENGTH, row_length);
++    glPixelStorei(GL_PACK_SKIP_ROWS, skip_rows);
++    glPixelStorei(GL_PACK_SKIP_PIXELS, skip_pixels);
++    return ok;
++}
++
+ /*
+  * Mirror of sync_cpu_planes_to_video_buffer() for the encode direction. The
+  * Windows backend cannot reach the guest's GL textures directly (no DMA-BUF,
+@@ -632,6 +698,14 @@
+     uv_size  = y_size / 2;            /* 4:2:0 NV12: UV is half-height, 2BPP */
+     nv12_size = y_size + uv_size;
+ 
++    if (buf->num_planes == 2 && read_nv12_pack_buffer(buf, y_res, y_size)) {
++        if (!buf->encode_pack_reported) {
++            virgl_info("WINQ NV12 pack readback active for %ux%u\n", y_w, y_h);
++            buf->encode_pack_reported = true;
++        }
++        return 0;
++    }
++
+     nv12 = malloc(nv12_size);
+     if (!nv12)
+         return -1;
+@@ -1057,6 +1131,10 @@
+ #endif
+     }
+ 
++#if VREND_VIDEO_WIN32_CPU_UPLOAD
++    if (buf->encode_pack_buffer)
++        glDeleteBuffers(1, &buf->encode_pack_buffer);
++#endif
+     virgl_video_destroy_buffer(buf->buffer);
+ 
+ #ifdef VREND_VIDEO_WIN32_CPU_UPLOAD

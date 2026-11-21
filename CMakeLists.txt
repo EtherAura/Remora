@@ -147,6 +147,7 @@ add_library(remora_mirror STATIC
     src/mirror/Recorder.cpp
     src/mirror/Splash.cpp
     src/mirror/VideoReader.cpp
+    src/mirror/VaapiInterop.cpp
 )
 target_include_directories(remora_mirror PUBLIC src)
 # remora_engine for the mirror registry alone (engine/MirrorRegistry.h): a mirror registers
@@ -297,9 +298,15 @@ set(REMORA_TEST_ENV
     "XDG_CONFIG_HOME=${REMORA_TEST_HOME}/.config"
     "XDG_DATA_HOME=${REMORA_TEST_HOME}/.local/share"
     "XDG_CACHE_HOME=${REMORA_TEST_HOME}/.cache"
-    "XDG_STATE_HOME=${REMORA_TEST_HOME}/.local/state")
+    "XDG_STATE_HOME=${REMORA_TEST_HOME}/.local/state"
+    "TMPDIR=${REMORA_TEST_HOME}/tmp")
 file(MAKE_DIRECTORY "${REMORA_TEST_HOME}/.config" "${REMORA_TEST_HOME}/.local/share"
-     "${REMORA_TEST_HOME}/.cache" "${REMORA_TEST_HOME}/.local/state")
+     "${REMORA_TEST_HOME}/.cache" "${REMORA_TEST_HOME}/.local/state" "${REMORA_TEST_HOME}/tmp")
+# The Gentoo harness runs on Linux even when Python is unavailable. The Windows and FreeBSD
+# suites do not require Bash (the FreeBSD release job runs CTest there too).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME gentoo_ebuild COMMAND bash "${CMAKE_SOURCE_DIR}/tools/test-gentoo-ebuild.sh")
+endif()
 # Python runs four suites and two prereqs cases, and nothing that is built or installed, so a
 # machine without it still configures and builds Remora; those tests then do not run, and this
 # says so. -DCMAKE_REQUIRE_FIND_PACKAGE_Python3=ON turns a missing interpreter into a configure
@@ -367,7 +374,8 @@ target_link_libraries(test_parsers PRIVATE remora_core Qt6::Test)
 remora_suite_test(parsers)
 
 add_executable(test_mirrorproto tests/test_mirrorproto.cpp)
-target_link_libraries(test_mirrorproto PRIVATE remora_core Qt6::Test)
+# remora_mirror for Decoder::init alone, exercised offline through its codec-lookup seam.
+target_link_libraries(test_mirrorproto PRIVATE remora_core remora_mirror Qt6::Test)
 remora_suite_test(mirrorproto)
 
 add_executable(test_prereqs tests/test_prereqs.cpp)

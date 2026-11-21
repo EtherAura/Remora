@@ -43,6 +43,10 @@ if [ "${WITH_PUBLIC_RELEASE:-false}" = true ]; then
   *-public|*-public-*) ;;
   *) echo "assemble: a public release must carry a -public tag, not $TAG" >&2; exit 1 ;;
   esac
+  case "$TAG" in
+  *-wv|*-wv-*)
+    echo "assemble: public release refuses a Widevine (-wv) tag: $TAG" >&2; exit 1 ;;
+  esac
   for _v in "WITH_NDK=${WITH_NDK:-}" "WITH_PLAY_SPOOF=${WITH_PLAY_SPOOF:-}" \
             "WITH_SHAMIKO=${WITH_SHAMIKO:-}"; do
     [ "${_v#*=}" = true ] && {

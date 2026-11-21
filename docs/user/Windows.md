@@ -97,6 +97,117 @@ Set these in `[Defaults]`: there is one guest, shared by every profile.
 | `guest_cpus` | half this PC's threads, 2 to 8 | |
 | `guest_accel` | `auto` (the Windows Hypervisor Platform) | `tcg` runs without it, for testing only: Android boots and the Start-menu folder is written, but the mirror cannot show the screen |
 
+### Cold boot in a nested Windows VM
+
+On WHPX, Remora gives Android up to 20 minutes to report boot completion after container
+startup. The wait ends as soon as Android is ready or the container exits.
+
+For the Amd-host-a WINQ smoke test, expose nested AMD-V to Windows and enable WHPX. Give the
+Windows VM eight vCPUs and 12 GiB of RAM. Set `guest_cpus=4` in Remora's `[Defaults]` and use its
+6 GiB guest memory setting. The disposable Docker runner allows up to 10 CPUs for the VM and
+QEMU's other threads, with a 28 GiB memory limit for the VM, RAM-backed disk and image staging.
+
+Launch the smoke test from the Windows desktop session. For a scheduled test, use
+`New-ScheduledTaskSettingsSet -Priority 4 -ExecutionTimeLimit (New-TimeSpan -Minutes 28)`.
+Priority 4 starts Remora and QEMU at Normal priority. The time limit covers guest startup,
+Android's first boot, mirror setup, verification and shutdown.
+[Windows Task Scheduler priority settings](https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-priority)
+
+Time image transfer and import separately from Android startup. With fresh Android data, ART
+does first-boot verification and compilation before Android becomes ready. Confirm boot with
+two `getprop sys.boot_completed` reads through the packaged ADB endpoint, 15 seconds apart.
+[Android ART Service configuration](https://source.android.com/docs/core/runtime/configure/art-service)
+
+### Warm restart with RX 580 passthrough on Amd-host-a
+
+The host's generic PCI bus reset let Windows restart, but the Radeon driver reported
+Code 43 on the new desktop. Amd-host-a's passthrough profile loads a signed `vendor-reset`
+module and selects `device_specific` for the RX 580 before VFIO opens it. The host journal
+records the Polaris 10 reset at the Windows guest's reset event. [Upstream supported devices](https://github.com/gnif/vendor-reset/tree/cbb4dd50926337e0f9fe1dd1e8a74aa5cb3448a7#supported-devices)
+
+The nested Windows profile uses `HV=N` with `+svm` to keep WHPX available. The November 20
+smoke test used the published Remora 2026.11.6 preview. Windows kept a healthy RX 580
+through an in-session restart, and Android 17 booted again under WHPX and read back
+data written before the restart. After Windows shut down, both devices reattached to their
+Linux drivers. The kernel rejected the old `bus` setting, so recovery restarted the login
+screen and refreshed the kernel's available reset methods after unloading the module.
+The installed profile uses that same reset-method cleanup. [Linux PCI reset-method documentation](https://www.kernel.org/doc/html/latest/admin-guide/abi-testing.html)
+
+A repeat using the installed launchers kept the RX 580 and HDMI audio healthy across
+the Windows restart. After shutdown, the profile returned both devices to Linux and
+unloaded the module automatically. The test started the packaged shutdown watcher in
+the Windows session. After restart, Remora reported `the guest stopped while booting`
+and the test ended before checking Android data recovery.
+
+A diagnostic repeat with the same 10 GiB Windows configuration completed Android boot
+and recovered the data marker after restart. The earlier error only showed that the
+QEMU monitor missed a startup probe, which could also happen with QEMU still running.
+
+Amd-host-a's reset module is installed under `/usr/local/lib/remora/rx580-reset/`, keyed by
+kernel release. When changing the kernel, build and sign a matching module before using
+the RX 580 passthrough profile.
+
+During guest startup, Remora waits for SSH and Docker while the QEMU process is alive,
+even if its monitor is temporarily unavailable. If startup fails, the error includes
+the available QEMU output and Linux console log.
+
+A WINQ preview installer rebuilt from the published preview source with this startup
+fix completed the Amd-host-a warm-restart smoke test. The installed launcher used the
+host CPU with XSAVEC masked before and after the restart. Android 17 booted under WHPX
+and read back the marker saved before Windows restarted.
+
+### Installer smoke test on Amd-host-b
+
+The same WINQ preview installer completed a fresh installation in a disposable
+12 GiB Windows VM on Amd-host-b. The installed shutdown watcher started automatically
+and shut down the Linux guest during a normal Windows restart. Android 17 booted
+under WHPX before and after the restart and read back its saved data marker.
+
+This test ran without PCI passthrough. The RX 550 and HDMI audio stayed attached
+to Linux throughout the run. An earlier attempt lost host connectivity during GPU
+handoff, before the installer ran. That handoff is tracked in `remora-1978.6.1`.
+
+### Reserving Amd-host-b's RX 550 for passthrough at boot
+
+The November 20 outage began during the second native-to-VFIO transition, eight
+seconds after the prior VM's handback. The last kernel message was the entry to
+amdgpu hardware teardown. VFIO had yet to finish binding the GPU and no new VM
+was running. The logs establish the trigger and leave the subsequent host or
+network lockup unresolved.
+
+The handoff supervisor now holds its shared lock through seven minutes of
+healthy peer observations after returning the RX 550 to Linux. If the health
+check fails or the supervisor is interrupted, the next requested handoff is
+inhibited pending investigation.
+
+`tools/amd-host-b-vfio/build-reserved-boot.sh` builds a separate, Secure
+Boot-signed systemd-boot entry for this host. The installed entry,
+**Gentoo Linux (Amd-host-b RX 550 reserved for VFIO)**, reserves `1002:699f` and
+`1002:aae0` in the initramfs and loads `radeon` early for the HD 8490.
+Connect the host monitor to the HD 8490's DisplayPort or DVI before selecting
+it. Its early driver must bring up the encrypted disk unlock screen.
+The regular Gentoo entry remains the default and also provides the rollback
+path. The alternate entry must be rebuilt against the current kernel when
+updating it.
+
+Use the reserved profile for the physical test so Windows can start and stop
+while both RX 550 functions stay with `vfio-pci`. Before opening the VFIO group,
+run `tools/amd-host-b-vfio/check-reserved-boot.sh` and configure the RX 550's signed
+`vendor-reset` module for `device_specific` reset. A successful alternate boot tests
+early binding. A Windows restart and shutdown still need a physical check.
+
+For a test with the monitor still on the RX 550's HDMI, use the separate
+**Amd-host-b RX 550 test after disk unlock** entry. It was built with
+`--after-unlock` and installed as a non-default option.
+It keeps the firmware framebuffer for the existing LUKS passphrase prompt
+and starts Linux in `multi-user.target`. After SSH is available, run
+`check-reserved-boot.sh --bind-after-unlock` as root. The command checks that
+both RX 550 functions are unbound and then loads VFIO, which takes over the
+card and clears the Linux console on HDMI. Linux can be managed over SSH
+through the test. Select the regular Gentoo entry to return to the desktop.
+The signed image displayed the prompt and unlocked a disposable LUKS disk in
+an isolated UEFI VM. The physical test waits for host maintenance to finish.
+
 ## What differs from Linux
 
 - **Rendering and video are software.** The guest has no GPU, so Android renders with

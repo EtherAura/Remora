@@ -1,0 +1,607 @@
+--- a/src/vrend/virgl_video.h
++++ b/src/vrend/virgl_video.h
+@@ -188,6 +188,11 @@
+                                  const unsigned *sizes);
+ #ifdef _WIN32
+ #define VIRGL_AMF_QUEUE_DEPTH 8
++bool virgl_video_buffer_matches_size(struct virgl_video_buffer *buffer, unsigned width, unsigned height);
++int virgl_video_amf_submit_pixels(struct virgl_video_codec *codec, void *pixels,
++                                  unsigned width, unsigned height,
++                                  const union virgl_picture_desc *desc, uint64_t *ticket);
++bool virgl_video_amf_worker_supported(struct virgl_video_codec *codec);
+ bool virgl_video_amf_deferred(struct virgl_video_codec *codec);
+ int virgl_video_amf_submit(struct virgl_video_codec *codec, struct virgl_video_buffer *source,
+                            const union virgl_picture_desc *desc, uint64_t *ticket);
+--- a/src/vrend/virgl_video_win32.c
++++ b/src/vrend/virgl_video_win32.c
+@@ -350,6 +350,8 @@
+     unsigned amf_in_flight;
+     unsigned amf_high_water;
+     HANDLE amf_wait_timer;
++    SRWLOCK amf_lock; /* zero-initialized with the codec */
++    bool amf_worker;
+     const char *amf_wait_mode;
+     struct amf_profile amf_profile;
+     struct virgl_amf_entry amf_pending[VIRGL_AMF_QUEUE_DEPTH];
+@@ -4886,14 +4888,21 @@
+                (p->last_completion - p->first_submission) * ms, p->polls, p->waits, p->input_full);
+ }
+ 
+-static void encoder_wait_amf(struct virgl_video_codec *codec)
++static void encoder_wait_amf(struct virgl_video_codec *codec, bool collecting)
+ {
+     const int64_t started = amf_now();
+     LARGE_INTEGER due = { .QuadPart = -10000 };
+-    if (!codec->amf_wait_timer ||
+-        !SetWaitableTimer(codec->amf_wait_timer, &due, 0, NULL, NULL, FALSE) ||
+-        WaitForSingleObject(codec->amf_wait_timer, 50) != WAIT_OBJECT_0)
++    /* The render thread can request output while the worker has another
++     * input ready. Release the codec lock while waiting for the next poll.
++     * Only the collector uses the shared timer in threaded operation. */
++    HANDLE timer = collecting || !codec->amf_worker ? codec->amf_wait_timer : NULL;
++    if (collecting)
++        ReleaseSRWLockExclusive(&codec->amf_lock);
++    if (!timer || !SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE) ||
++        WaitForSingleObject(timer, 50) != WAIT_OBJECT_0)
+         Sleep(1);
++    if (collecting)
++        AcquireSRWLockExclusive(&codec->amf_lock);
+     const int64_t waited = amf_now() - started;
+     codec->amf_profile.wait += waited;
+     if (waited > codec->amf_profile.max_wait)
+@@ -5211,7 +5220,7 @@
+         if (FAILED(hr) || GetTickCount64() >= deadline)
+             break;
+         if (hr == S_FALSE)
+-            encoder_wait_amf(codec);
++            encoder_wait_amf(codec, false);
+     }
+     surface->pVtbl->Release(surface);
+     codec->amf_profile.submit += amf_now() - before_submit;
+@@ -5234,7 +5243,7 @@
+     return S_OK;
+ }
+ 
+-int virgl_video_amf_collect(struct virgl_video_codec *codec, uint64_t ticket,
++static int encoder_collect_packet(struct virgl_video_codec *codec, uint64_t ticket,
+                             const void **bytes, unsigned *length)
+ {
+     struct virgl_amf_entry *entry = encoder_find_amf_entry(codec, ticket);
+@@ -5254,7 +5263,7 @@
+             return -EIO;
+         }
+         if (hr == S_FALSE)
+-            encoder_wait_amf(codec);
++            encoder_wait_amf(codec, true);
+     }
+ 
+     AMFData *output = entry->output;
+@@ -5530,7 +5539,7 @@
+ static int encode_one_frame(struct virgl_video_codec *codec,
+                             struct virgl_video_buffer *source,
+                             const union virgl_picture_desc *desc,
+-                            bool retry, uint64_t *deferred_ticket)
++                            bool retry, uint64_t *deferred_ticket, bool pixels_ready)
+ {
+     HRESULT hr;
+     IMFSample *in_sample = NULL;
+@@ -5603,7 +5612,7 @@
+      */
+     LARGE_INTEGER begun, uploaded, built, accepted, finished, frequency;
+     QueryPerformanceCounter(&begun);
+-    if (g_vid.callbacks && g_vid.callbacks->encode_upload_picture) {
++    if (!pixels_ready && g_vid.callbacks && g_vid.callbacks->encode_upload_picture) {
+         struct virgl_video_dma_buf upload_dmabuf;
+         memset(&upload_dmabuf, 0, sizeof(upload_dmabuf));
+         upload_dmabuf.buf = source;
+@@ -5690,7 +5699,7 @@
+                        (unsigned long long)codec->encoder_frame_count);
+             encoder_destroy_mft(codec);
+             if (encoder_create_mft(codec, &args) == 0)
+-                return encode_one_frame(codec, source, desc, false, NULL);
++                return encode_one_frame(codec, source, desc, false, NULL, false);
+         }
+         codec->encoder_failed = true;
+         virgl_error("virgl_video_win32: encoder_drain_output failed 0x%lx\n",
+@@ -5723,6 +5732,48 @@
+     return 0;
+ }
+ 
++int virgl_video_amf_collect(struct virgl_video_codec *codec, uint64_t ticket,
++                            const void **bytes, unsigned *length)
++{
++    AcquireSRWLockExclusive(&codec->amf_lock);
++    int ret = encoder_collect_packet(codec, ticket, bytes, length);
++    ReleaseSRWLockExclusive(&codec->amf_lock);
++    return ret;
++}
++
++bool virgl_video_amf_worker_supported(struct virgl_video_codec *codec)
++{
++    if (!codec->amf_dx11_upload || !virgl_video_amf_deferred(codec))
++        return false;
++    ID3D11Multithread *mt = NULL;
++    if (FAILED(ID3D11DeviceContext_QueryInterface(g_vid.context, &IID_ID3D11Multithread, (void **)&mt)))
++        return false;
++    bool protected = ID3D11Multithread_GetMultithreadProtected(mt);
++    ID3D11Multithread_Release(mt);
++    return protected;
++}
++
++bool virgl_video_buffer_matches_size(struct virgl_video_buffer *buffer, unsigned width, unsigned height)
++{
++    return width && height && width == buffer->width && height == buffer->height;
++}
++
++int virgl_video_amf_submit_pixels(struct virgl_video_codec *codec, void *pixels,
++                                  unsigned width, unsigned height,
++                                  const union virgl_picture_desc *desc, uint64_t *ticket)
++{
++    /* The DX11 upload consumes the mapped bytes before returning. */
++    struct virgl_video_buffer source = {
++        .width = width, .height = height, .encode_src_nv12 = pixels,
++        .encode_src_size = (size_t)width * height / 2 * 3,
++    };
++    AcquireSRWLockExclusive(&codec->amf_lock);
++    codec->amf_worker = true;
++    int ret = encode_one_frame(codec, &source, desc, false, ticket, true);
++    ReleaseSRWLockExclusive(&codec->amf_lock);
++    return ret;
++}
++
+ bool virgl_video_amf_deferred(struct virgl_video_codec *codec)
+ {
+     return codec->encoder_amf && getenv("WINQ_TEST_AMF_PIPELINE");
+@@ -5731,7 +5782,7 @@
+ int virgl_video_amf_submit(struct virgl_video_codec *codec, struct virgl_video_buffer *source,
+                            const union virgl_picture_desc *desc, uint64_t *ticket)
+ {
+-    return encode_one_frame(codec, source, desc, false, ticket);
++    return encode_one_frame(codec, source, desc, false, ticket, false);
+ }
+ 
+ int virgl_video_encode_bitstream(struct virgl_video_codec *codec,
+@@ -5743,7 +5794,7 @@
+     if (codec->entrypoint != PIPE_VIDEO_ENTRYPOINT_ENCODE)
+         return -ENOSYS;
+ 
+-    return encode_one_frame(codec, source, desc, true, NULL);
++    return encode_one_frame(codec, source, desc, true, NULL, false);
+ }
+ 
+ /*
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -11476,6 +11476,9 @@
+       mtx_unlock(&vrend_state.fence_mutex);
+    } else {
+       vrend_renderer_force_ctx_0();
++#if defined(ENABLE_VIDEO) && defined(_WIN32)
++      vrend_video_poll_uploads();
++#endif
+ 
+       list_for_each_entry_safe(struct vrend_fence, fence, &vrend_state.fence_list, fences) {
+          if (do_wait(fence, /* can_block */ false)) {
+--- a/src/vrend/vrend_video.c
++++ b/src/vrend/vrend_video.c
+@@ -67,6 +67,10 @@
+ 
+ 
+ #include "config.h"
++#ifdef _WIN32
++#include <windows.h>
++#include <objbase.h>
++#endif
+ 
+ #include "virgl_video.h"
+ #include "virgl_video_hw.h"
+@@ -100,8 +104,34 @@
+     struct list_head buffers;
+ };
+ 
++#if VREND_VIDEO_WIN32_CPU_UPLOAD
++struct nv12_pack {
++    GLuint name;
++    size_t size;
++    void *mapped;
++};
++#endif
++
+ #ifdef _WIN32
++struct encode_worker {
++    HANDLE thread, ready;
++    struct vrend_video_encode_job *gpu_head, *gpu_tail;
++    struct vrend_video_codec *next_codec;
++    CRITICAL_SECTION queue_lock;
++    union virgl_picture_desc descriptors[VIRGL_AMF_QUEUE_DEPTH];
++    CONDITION_VARIABLE work;
++    struct vrend_video_encode_job *head, *tail;
++    bool stopping, initialized;
++};
++
+ struct vrend_video_encode_job {
++    struct vrend_video_encode_job *next;
++    struct nv12_pack pack;
++    GLsync fence;
++    HANDLE done;
++    unsigned width, height;
++    uint64_t order;
++    bool queued, submitted_ok;
+     struct vrend_video_codec *codec;
+     struct vrend_resource *feed;
+     struct vrend_resource *dest;
+@@ -115,6 +145,8 @@
+     struct vrend_resource *feed_res;    /* encoding feedback */
+     struct vrend_resource *dest_res;    /* encoding coded buffer */
+ #ifdef _WIN32
++    struct encode_worker *worker;
++    uint64_t next_order;
+     struct vrend_video_encode_job pending[VIRGL_AMF_QUEUE_DEPTH];
+ #endif
+     struct vrend_video_context *ctx;
+@@ -142,8 +174,7 @@
+ 
+ #if VREND_VIDEO_WIN32_CPU_UPLOAD
+     bool encode_pack_reported;
+-    GLuint encode_pack_buffer;
+-    size_t encode_pack_size;
++    struct nv12_pack pack;
+ #endif
+ #ifdef VREND_VIDEO_WIN32_CPU_UPLOAD
+     /* Cached I420 UV-deinterleave scratch. Reused across frames instead of
+@@ -589,7 +620,8 @@
+ /* Submit both plane transfers before waiting for their data. The reusable
+  * pack buffer belongs to this video buffer and its renderer GL context. */
+ static bool read_nv12_pack_buffer(struct vrend_video_buffer *buf,
+-                                  struct vrend_resource *y, size_t y_size)
++                                  struct vrend_resource *y, size_t y_size,
++                                  struct nv12_pack *pack, GLsync *fence)
+ {
+     struct vrend_resource *uv = vrend_renderer_ctx_res_lookup(
+             buf->ctx->ctx, buf->planes[1].res_handle);
+@@ -609,16 +641,32 @@
+     glGetIntegerv(GL_PACK_SKIP_PIXELS, &skip_pixels);
+ 
+     bool ok = false;
+-    if (!buf->encode_pack_buffer)
+-        glGenBuffers(1, &buf->encode_pack_buffer);
+-    if (!buf->encode_pack_buffer)
++    if (fence && pack->name && pack->size != size) {
++        /* Immutable storage is replaced only after the slot was collected.
++         * Deleting the object also unmaps its persistent address. */
++        glDeleteBuffers(1, &pack->name);
++        *pack = (struct nv12_pack){0};
++    }
++    if (!pack->name)
++        glGenBuffers(1, &pack->name);
++    if (!pack->name)
+         return false;
+-    glBindBuffer(GL_PIXEL_PACK_BUFFER, buf->encode_pack_buffer);
+-    if (buf->encode_pack_size != size) {
+-        glBufferData(GL_PIXEL_PACK_BUFFER, size, NULL, GL_STREAM_READ);
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, pack->name);
++    if (pack->size != size) {
++        if (fence) {
++            GLbitfield access = GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
++            glBufferStorage(GL_PIXEL_PACK_BUFFER, size, NULL, access | GL_CLIENT_STORAGE_BIT);
++            pack->mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, size, access);
++            if (!pack->mapped) {
++                glGetError();
++                goto restore;
++            }
++        } else {
++            glBufferData(GL_PIXEL_PACK_BUFFER, size, NULL, GL_STREAM_READ);
++        }
+         if (glGetError() != GL_NO_ERROR)
+             goto restore;
+-        buf->encode_pack_size = size;
++        pack->size = size;
+     }
+     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+     glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+@@ -630,6 +678,15 @@
+     glGetTexImage(GL_TEXTURE_2D, 0, GL_RG, GL_UNSIGNED_BYTE, (void *)(uintptr_t)y_size);
+     if (glGetError() != GL_NO_ERROR)
+         goto restore;
++    if (fence) {
++        *fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
++        if (*fence) {
++            glFlush();
++            ok = true;
++            goto restore;
++        }
++        goto restore;
++    }
+     const void *mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, size, GL_MAP_READ_BIT);
+     if (mapped) {
+         ok = virgl_video_buffer_cpu_writeback(buf->buffer, mapped, size) == 0;
+@@ -698,7 +755,7 @@
+     uv_size  = y_size / 2;            /* 4:2:0 NV12: UV is half-height, 2BPP */
+     nv12_size = y_size + uv_size;
+ 
+-    if (buf->num_planes == 2 && read_nv12_pack_buffer(buf, y_res, y_size)) {
++    if (buf->num_planes == 2 && read_nv12_pack_buffer(buf, y_res, y_size, &buf->pack, NULL)) {
+         if (!buf->encode_pack_reported) {
+             virgl_info("WINQ NV12 pack readback active for %ux%u\n", y_w, y_h);
+             buf->encode_pack_reported = true;
+@@ -894,6 +951,184 @@
+ }
+ 
+ #ifdef _WIN32
++/* The render thread owns the guest resources. The worker sees only a snapshot
++ * in a slot-owned GL buffer and a private copy of the picture descriptor. */
++static DWORD WINAPI encode_worker_main(void *arg)
++{
++    struct vrend_video_codec *cdc = arg;
++    struct encode_worker *w = cdc->worker;
++    HRESULT com = CoInitializeEx(NULL, COINIT_MULTITHREADED);
++    w->initialized = SUCCEEDED(com);
++    SetEvent(w->ready);
++
++    if (w->initialized) {
++        for (;;) {
++            EnterCriticalSection(&w->queue_lock);
++            while (!w->head && !w->stopping)
++                SleepConditionVariableCS(&w->work, &w->queue_lock, INFINITE);
++            struct vrend_video_encode_job *job = w->head;
++            if (job) {
++                w->head = job->next;
++                if (!w->head)
++                    w->tail = NULL;
++            }
++            LeaveCriticalSection(&w->queue_lock);
++            if (!job)
++                break;
++
++            job->submitted_ok = !virgl_video_amf_submit_pixels(cdc->codec,
++                job->pack.mapped, job->width, job->height,
++                &w->descriptors[job - cdc->pending], &job->ticket);
++            SetEvent(job->done);
++        }
++    }
++    if (SUCCEEDED(com))
++        CoUninitialize();
++    return 0;
++}
++
++/* Accessed only by the renderer thread, like the GL fence list. */
++static struct vrend_video_codec *encode_workers;
++
++static void stop_encode_worker(struct vrend_video_codec *cdc)
++{
++    struct encode_worker *w = cdc->worker;
++    if (!w)
++        return;
++    struct vrend_video_codec **link = &encode_workers;
++    while (*link && *link != cdc)
++        link = &(*link)->worker->next_codec;
++    if (*link)
++        *link = w->next_codec;
++    if (w->thread) {
++        EnterCriticalSection(&w->queue_lock);
++        w->stopping = true;
++        WakeConditionVariable(&w->work);
++        LeaveCriticalSection(&w->queue_lock);
++        WaitForSingleObject(w->thread, INFINITE);
++        CloseHandle(w->thread);
++    }
++    if (w->ready)
++        CloseHandle(w->ready);
++    for (unsigned i = 0; i < VIRGL_AMF_QUEUE_DEPTH; i++) {
++        struct vrend_video_encode_job *job = &cdc->pending[i];
++        if (job->done) {
++            CloseHandle(job->done);
++            job->done = NULL;
++        }
++        if (job->fence)
++            glDeleteSync(job->fence);
++        if (job->pack.name)
++            glDeleteBuffers(1, &job->pack.name);
++    }
++    DeleteCriticalSection(&w->queue_lock);
++    free(w);
++    cdc->worker = NULL;
++}
++
++static void start_encode_worker(struct vrend_video_codec *cdc)
++{
++    if (epoxy_gl_version() < 44 && !epoxy_has_gl_extension("GL_ARB_buffer_storage"))
++        return;
++    struct encode_worker *w = calloc(1, sizeof(*w));
++    if (!w)
++        return;
++    cdc->worker = w;
++    InitializeCriticalSection(&w->queue_lock);
++    InitializeConditionVariable(&w->work);
++    w->ready = CreateEventW(NULL, TRUE, FALSE, NULL);
++    if (!w->ready)
++        goto fail;
++    for (unsigned i = 0; i < VIRGL_AMF_QUEUE_DEPTH; i++) {
++        cdc->pending[i].done = CreateEventW(NULL, TRUE, TRUE, NULL);
++        if (!cdc->pending[i].done)
++            goto fail;
++    }
++    w->thread = CreateThread(NULL, 0, encode_worker_main, cdc, 0, NULL);
++    if (!w->thread)
++        goto fail;
++    WaitForSingleObject(w->ready, INFINITE);
++    if (!w->initialized)
++        goto fail;
++    w->next_codec = encode_workers;
++    encode_workers = cdc;
++    virgl_info("WINQ asynchronous NV12 readback worker ready (renderer-polled persistent staging)\n");
++    return;
++fail:
++    stop_encode_worker(cdc);
++    virgl_warn("WINQ encode worker unavailable; using inline readback\n");
++}
++
++static bool enqueue_encode(struct vrend_video_codec *cdc,
++                           struct vrend_video_encode_job *job,
++                           struct vrend_video_buffer *src,
++                           const union virgl_picture_desc *desc)
++{
++    if (src->num_planes != 2)
++        return false;
++    struct vrend_resource *y = vrend_renderer_ctx_res_lookup(src->ctx->ctx,
++                                                             src->planes[0].res_handle);
++    if (!y || !virgl_video_buffer_matches_size(src->buffer, y->base.width0, y->base.height0))
++        return false;
++    if (!read_nv12_pack_buffer(src, y, (size_t)y->base.width0 * y->base.height0,
++                               &job->pack, &job->fence))
++        return false;
++    job->width = y->base.width0;
++    job->height = y->base.height0;
++    cdc->worker->descriptors[job - cdc->pending] = *desc;
++    job->next = NULL;
++    job->queued = true;
++    ResetEvent(job->done);
++
++    struct encode_worker *w = cdc->worker;
++    if (w->gpu_tail)
++        w->gpu_tail->next = job;
++    else
++        w->gpu_head = job;
++    w->gpu_tail = job;
++    return true;
++}
++
++/* Coherent persistent mappings become readable after the producer fence
++ * signals. All GL calls stay on the renderer thread. Poll without blocking
++ * unless the guest explicitly needs a particular packet or queue slot. */
++static void dispatch_uploads(struct encode_worker *w, struct vrend_video_encode_job *required)
++{
++    while (w->gpu_head) {
++        struct vrend_video_encode_job *job = w->gpu_head;
++        GLenum status = glClientWaitSync(job->fence, 0, required ? UINT64_C(3000000000) : 0);
++        if (status == GL_TIMEOUT_EXPIRED && !required)
++            break;
++        w->gpu_head = job->next;
++        if (!w->gpu_head)
++            w->gpu_tail = NULL;
++        if (job == required)
++            required = NULL;
++        glDeleteSync(job->fence);
++        job->fence = NULL;
++        if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
++            job->submitted_ok = false;
++            SetEvent(job->done);
++            continue;
++        }
++        job->next = NULL;
++        EnterCriticalSection(&w->queue_lock);
++        if (w->tail)
++            w->tail->next = job;
++        else
++            w->head = job;
++        w->tail = job;
++        WakeConditionVariable(&w->work);
++        LeaveCriticalSection(&w->queue_lock);
++    }
++}
++
++void vrend_video_poll_uploads(void)
++{
++    for (struct vrend_video_codec *cdc = encode_workers; cdc; cdc = cdc->worker->next_codec)
++        dispatch_uploads(cdc->worker, NULL);
++}
++
+ static void release_encode_job(struct vrend_video_encode_job *job)
+ {
+     job->feed->video_encode_job = NULL;
+@@ -911,7 +1146,14 @@
+     struct vrend_video_codec *codec = job->codec;
+     const void *packet;
+     unsigned length;
+-    if (virgl_video_amf_collect(codec->codec, job->ticket, &packet, &length) ||
++    if (job->queued) {
++        if (job->fence)
++            dispatch_uploads(codec->worker, job);
++        WaitForSingleObject(job->done, INFINITE);
++    }
++    bool failed = (job->queued && !job->submitted_ok) ||
++                  virgl_video_amf_collect(codec->codec, job->ticket, &packet, &length);
++    if (failed ||
+         length > job->dest->base.width0) {
+         const struct virgl_video_encode_feedback failure = {
+             .stat = VIRGL_VIDEO_ENCODE_STAT_FAILURE,
+@@ -922,6 +1164,7 @@
+         codec->dest_res = job->dest;
+         vrend_video_encode_completed(codec->codec, NULL, NULL, 1, &packet, &length);
+     }
++    job->queued = false;
+     release_encode_job(job);
+ }
+ #endif
+@@ -1006,6 +1249,11 @@
+         return -1;
+     }
+ 
++#ifdef _WIN32
++    const char *worker = getenv("WINQ_ASYNC_NV12_READBACK");
++    if ((!worker || !strcmp(worker, "1")) && virgl_video_amf_worker_supported(cdc->codec))
++        start_encode_worker(cdc);
++#endif
+     cdc->handle = handle;
+     cdc->ctx = ctx;
+     list_add(&cdc->head, &ctx->codecs);
+@@ -1018,6 +1266,7 @@
+     if (cdc) {
+         list_del(&cdc->head);
+ #ifdef _WIN32
++        stop_encode_worker(cdc);
+         for (unsigned i = 0; i < VIRGL_AMF_QUEUE_DEPTH; i++) {
+             if (cdc->pending[i].feed)
+                 release_encode_job(&cdc->pending[i]);
+@@ -1132,8 +1381,8 @@
+     }
+ 
+ #if VREND_VIDEO_WIN32_CPU_UPLOAD
+-    if (buf->encode_pack_buffer)
+-        glDeleteBuffers(1, &buf->encode_pack_buffer);
++    if (buf->pack.name)
++        glDeleteBuffers(1, &buf->pack.name);
+ #endif
+     virgl_video_destroy_buffer(buf->buffer);
+ 
+@@ -1460,15 +1709,27 @@
+                 next = job;
+                 break;
+             }
+-            if (job->ticket < oldest->ticket)
++            if (job->order < oldest->order)
+                 oldest = job;
+         }
+         if (!next) {
+             vrend_video_wait_encode(oldest->feed);
+             next = oldest;
+         }
+-        if (virgl_video_amf_submit(cdc->codec, src->buffer, &desc, &next->ticket))
+-            goto fail;
++        if (!cdc->worker || !enqueue_encode(cdc, next, src, &desc)) {
++            /* Planar inputs and failed staging still use the normal path.
++             * Finish earlier submissions first to preserve AMF input order. */
++            if (cdc->worker) {
++                dispatch_uploads(cdc->worker, cdc->worker->gpu_tail);
++                for (unsigned i = 0; i < VIRGL_AMF_QUEUE_DEPTH; i++) {
++                    if (cdc->pending[i].queued)
++                        WaitForSingleObject(cdc->pending[i].done, INFINITE);
++                }
++            }
++            if (virgl_video_amf_submit(cdc->codec, src->buffer, &desc, &next->ticket))
++                goto fail;
++        }
++        next->order = cdc->next_order++;
+         next->codec = cdc;
+         vrend_resource_reference(&next->feed, feed_res);
+         vrend_resource_reference(&next->dest, dest_res);
+--- a/src/vrend/vrend_video.h
++++ b/src/vrend/vrend_video.h
+@@ -42,6 +42,7 @@
+ struct vrend_video_context;
+ #ifdef _WIN32
+ struct vrend_resource;
++void vrend_video_poll_uploads(void);
+ void vrend_video_wait_encode(struct vrend_resource *resource);
+ #endif
+ 

@@ -32,6 +32,9 @@ makedepends=(
   'ffnvcodec-headers'
   # libavutil's hwcontext_vulkan.h, which remora-frame-encoder includes, includes vulkan/vulkan.h.
   'vulkan-headers'
+  # VA-API mirror rendering uses EGL and DRM headers to import DMA-BUF planes.
+  'libglvnd'
+  'libdrm'
 )
 optdepends=(
   'docker: run Android on this machine (the bare target)'

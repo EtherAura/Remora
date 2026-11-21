@@ -974,6 +974,8 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
     if (mesaStageIdx >= 0) {
         const QString product = lunchConfigFor(androidVer).section(QLatin1Char('-'), 0, 0);
         const QString payload = sbuild + QStringLiteral("/features/mesa_source/lib64");
+        // A failed helper can leave the directory behind. Match the device product guard.
+        const QString gallium = payload + QStringLiteral("/dri/libgallium_dri.so");
         const QString drm = tree + QStringLiteral("/out/target/product/") + product
                             + QStringLiteral("/vendor/lib64/libdrm.so");
         const QString vaHeader = tree + QStringLiteral(
@@ -1013,12 +1015,12 @@ QStringList sourceBuildSteps(const SourceBuildPlan &plan, const VendorReader &re
                                        "helper needs — stopping\" >&2; exit 1; }; done")
                             .arg(drm, vaHeader);
         steps[mesaStageIdx] =
-            QStringLiteral("( if [ -d %1 ]; then exit 0; fi; "
+            QStringLiteral("( if [ -f %4 ]; then exit 0; fi; "
                            "echo \"=== mesa_source: no payload at %1 — preparing what the Mesa "
                            "helper reads from the tree (bd remora-lqnv) ===\"; "
                            "if [ -f %2 ] && [ -f %3 ]; then echo \"mesa_source: libdrm and the libva "
                            "headers are already built — reusing them\"; else ")
-                .arg(payload, drm, vaHeader)
+                .arg(payload, drm, vaHeader, gallium)
             + prepare
             + QStringLiteral("; fi; "
                              "echo \"mesa_source: the tree is ready for build-mesa.sh. The image was "

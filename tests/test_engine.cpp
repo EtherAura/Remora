@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QProcess>
@@ -941,7 +942,8 @@ struct MesaTailRun {
     QString out, log;
 };
 struct MesaTailSetup {
-    bool payload = false;        // features/mesa_source/lib64 exists
+    bool payload = false;        // lib64/dri/libgallium_dri.so exists
+    bool emptyPayloadDir = false;
     bool prereqsBuilt = false;   // libdrm.so + libva's generated header already in out/
     bool doBuildScript = true;   // source-build/do-build.sh exists (absent = the cp fails)
     bool publicRelease = false;
@@ -963,7 +965,12 @@ static MesaTailRun runMesaTail(const QString &dir, const MesaTailSetup &s) {
     const QString drm = tree + QStringLiteral("/out/target/product/remora_x86_64/vendor/lib64");
     const QString vag =
         tree + QStringLiteral("/out/soong/.intermediates/external/libva/libva_gen_headers/gen/va");
-    if (s.payload) QDir().mkpath(sb + QStringLiteral("/features/mesa_source/lib64"));
+    const QString mesa = sb + QStringLiteral("/features/mesa_source/lib64");
+    if (s.emptyPayloadDir) QDir().mkpath(mesa);
+    if (s.payload) {
+        QDir().mkpath(mesa + QStringLiteral("/dri"));
+        QFile(mesa + QStringLiteral("/dri/libgallium_dri.so")).open(QIODevice::WriteOnly);
+    }
     if (s.prereqsBuilt) {
         QDir().mkpath(drm);
         QDir().mkpath(vag);
@@ -1034,11 +1041,19 @@ private slots:
     // bd remora-lqnv. A fresh tree with mesa_source on and no payload: the chain prepares exactly
     // what build-mesa.sh reads from the tree, then STOPS — nonzero, with the helper's invocation,
     // and without staging Mesa, building the image, assembling it or recording patch state.
+    void missingMesaPayloadPreparesLibdrmThenStops_data() {
+        QTest::addColumn<bool>("emptyPayloadDir");
+        QTest::newRow("no-payload-directory") << false;
+        QTest::newRow("empty-payload-directory") << true;
+    }
     void missingMesaPayloadPreparesLibdrmThenStops() {
         SKIP_ON_WINDOWS(kRunsSh);
+        QFETCH(bool, emptyPayloadDir);
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
-        const MesaTailRun r = runMesaTail(dir.path(), {});
+        MesaTailSetup s;
+        s.emptyPayloadDir = emptyPayloadDir;
+        const MesaTailRun r = runMesaTail(dir.path(), s);
         QVERIFY2(r.rc != 0, qPrintable(r.out));
         // staged WITHOUT Mesa (the only staging the module build's guard accepts), then the builder,
         // then the module build — in that order
@@ -5636,6 +5651,38 @@ private slots:
         QVERIFY(!holds(folder, QStringLiteral("App 5.lnk")));
         QVERIFY(!QDir(folder).exists());
         QVERIFY(appMenuEntries(QStringLiteral("settle")).isEmpty());
+    }
+
+    void whpxBootWaitUsesTimedProbesAndStopsOnContainerExit() {
+        class TimedSpawner : public FakeSpawner {
+        public:
+            QVector<int> deadlines;
+            ProcResult runTimed(const QStringList &argv, int timeoutMs,
+                                const LineSink &onLine) override {
+                deadlines.append(timeoutMs);
+                return run(argv, {}, onLine);
+            }
+        } sp;
+        auto deployer = makeDeployer(Backend::Remote, sp, 1, 0, 60 * 1000);
+        const auto steps = deployer->steps(makeContext(withGuest(), Backend::Remote));
+        const auto boot = std::find_if(steps.begin(), steps.end(), [](const Step &step) {
+            return step.name == QLatin1String("boot-wait");
+        });
+        QVERIFY(boot != steps.end());
+        RecordingSink sink;
+        sp.bootStates = QStringList{"", "0", "1"};
+        const auto ready = boot->run(sink);
+        QVERIFY2(ready.ok, qPrintable(ready.detail));
+        QCOMPARE(sp.deadlines.size(), 3);
+        QVERIFY(ready.detail.contains(QStringLiteral("60 s WHPX budget")));
+        for (const int deadline : sp.deadlines) QVERIFY(deadline > 0 && deadline <= 30000);
+
+        sp.deadlines.clear();
+        sp.containerExit = QStringLiteral("exited 129");
+        const auto stopped = boot->run(sink);
+        QVERIFY(!stopped.ok);
+        QVERIFY(stopped.detail.contains(QStringLiteral("Android asked to reboot")));
+        QCOMPARE(sp.deadlines.size(), 2);
     }
 
     // A container that stops while Android boots ends the boot wait at once, saying why. It was

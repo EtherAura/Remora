@@ -199,11 +199,15 @@ bool connectRun(Backend backend, const RemoraConfig &cfg, LogSink &sink, Spawner
         if (conflict->sameName) ctx.replaceOwn = true;
         else excl.stop(backend, conflict->holder);
     }
-    // Remora's own guest boots Android on a share of this machine's cores: 300 s, against the 72 s
-    // a bare host gets. Under TCG (guest_accel=tcg, no hypervisor) every instruction is emulated,
-    // and a boot takes the better part of half an hour.
+    // A fresh Android 17 profile took over 12 minutes to report boot completion under nested
+    // WHPX on Amd-host-a. Include SSH time in that guest's budget and leave time for the
+    // boot to finish on a busy Windows VM.
+    const auto guest = managedHost(ctx.guest);
+    constexpr int kWhpxBootTimeoutMs = 20 * 60 * 1000;
     const int guestBoot = ctx.rc.guestAccel == QLatin1String("tcg") ? 1800 : 300;
-    auto dep = managedHost(ctx.guest) ? makeDeployer(backend, sp, guestBoot) : makeDeployer(backend, sp);
+    auto dep = guest ? makeDeployer(backend, sp, guestBoot, 1000,
+                                   guest->accelerator == QLatin1String("whpx") ? kWhpxBootTimeoutMs : 0)
+                     : makeDeployer(backend, sp);
     startSplash(sp, ctx);  // after conflict consent — a declined takeover must not flash a window
     const QVector<Step> steps = dep->steps(ctx);
     StatusSink ssink(sink, ctx.splash ? ctx.statusPath : QString(), stepTitles(steps));

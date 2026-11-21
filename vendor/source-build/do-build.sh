@@ -11,6 +11,13 @@ while [ $# -gt 0 ]; do
            exit 2 ;;
     esac
 done
+# A fresh tree can configure just the modules the Mesa host build needs. A full build or
+# unrelated module request must not inherit a way around the product's Mesa guard.
+unset REMORA_BUILD_MESA_INPUTS
+if [ "$MODULE" = "libdrm libdrm_amdgpu libdrm_intel libdrm_nouveau libdrm_radeon libva_gen_headers" ] \
+    && [ "${WITH_PUBLIC_RELEASE:-false}" != true ]; then
+    export REMORA_BUILD_MESA_INPUTS=true
+fi
 cd /src || exit 1
 source build/envsetup.sh >/dev/null 2>&1
 # BUILD_LUNCH: full lunch config override; unset = derived from ANDROID_VER (16→bp2a, 17→cp2a).

@@ -20,6 +20,8 @@ namespace remora::mirror {
 
 MirrorSession::MirrorSession(SessionOptions opts, QObject *parent)
     : QObject(parent), opts_(std::move(opts)) {
+    videoDrain_.setSingleShot(true);
+    connect(&videoDrain_, &QTimer::timeout, this, &MirrorSession::drainVideoStream);
     firstFrameTimer_.setSingleShot(true);
     connect(&firstFrameTimer_, &QTimer::timeout, this, [this] {
         if (!frameSeen_) fail(QStringLiteral("no video frame within the first-frame timeout"));
@@ -375,7 +377,10 @@ void MirrorSession::agentVideoReady(QTcpSocket *vid) {
     video_ = vid;
     connect(video_, &QTcpSocket::readyRead, this, &MirrorSession::onVideoData);
     connect(video_, &QTcpSocket::disconnected, this, [this] {
-        if (!stopping_) emit finished();
+        if (stopping_) return;
+        // Finish decoding the buffered tail, including any recording packets, first.
+        videoEof_ = true;
+        onVideoData();
     });
     onVideoData();
     agentAudioThenDone();
@@ -537,7 +542,7 @@ void MirrorSession::onVideoData() {
     // No preamble: v1's 64-byte device-name header went with the v1 path — the agent's hello
     // already identified both ends before this socket carried a byte.
     demux_.feed(video_->readAll());
-    drainVideoStream();
+    if (!videoDrain_.isActive()) drainVideoStream();
 }
 
 void MirrorSession::onExtVideoData() {
@@ -676,17 +681,23 @@ void MirrorSession::decodePacket(MediaPacket pkt) {
 }
 
 void MirrorSession::drainVideoStream() {
+    if (stopping_) return;
+    // The agent's video, audio, and controls share this event loop. Let sockets and
+    // timers run before processing the next slice of a queued video burst.
+    constexpr qint64 kVideoSliceNs = 4'000'000;
+    QElapsedTimer slice;
+    if (video_) slice.start();
     for (;;) {
-        // Take whatever else has landed BEFORE decoding the next packet (bd remora-10bt). This
-        // loop decodes a whole batch without returning to the event loop, so readyRead cannot
-        // fire meanwhile and the bytes pile up unread in the socket — which is precisely when the
-        // encoder's send blocks and its 500 ms eviction timer starts against a mirror that is
-        // working perfectly, just busy. Reading here costs one syscall per packet and keeps the
-        // queue drained across the batch. It cannot desynchronise the stream: the demuxer consumes
-        // a byte stream and holds partial frames itself.
+        // The external encoder can still be writing as this fallback drains its socket.
         if (extVideo_ && extVideo_->bytesAvailable() > 0) demux_.feed(extVideo_->readAll());
         const auto e = demux_.next();
-        if (e == StreamDemuxer::Event::NeedMoreData) return;
+        if (e == StreamDemuxer::Event::NeedMoreData) {
+            if (videoEof_) {
+                videoEof_ = false;
+                emit finished();
+            }
+            return;
+        }
         switch (e) {
             case StreamDemuxer::Event::Started: {
                 mergeConfig_ = demux_.codec() != kCodecAv1;
@@ -713,6 +724,12 @@ void MirrorSession::drainVideoStream() {
             }
             case StreamDemuxer::Event::Packet:
                 decodePacket(demux_.takePacket());
+                if (stopping_) return;
+                // Keep compressed packets in order across slices.
+                if (video_ && slice.nsecsElapsed() >= kVideoSliceNs) {
+                    videoDrain_.start(1);
+                    return;
+                }
                 break;
             case StreamDemuxer::Event::Unavailable:
             case StreamDemuxer::Event::Failed:
@@ -815,6 +832,7 @@ void MirrorSession::fail(const QString &why) {
 void MirrorSession::stop() {
     if (stopping_) return;
     stopping_ = true;
+    videoDrain_.stop();
     recorder_.finalize();  // the container's moov lands here — every exit path runs stop()
     if (audioPlayer_.playedBytes() || audioPlayer_.droppedBytes())
         qInfo("mirror: audio played %lld bytes, dropped %lld",

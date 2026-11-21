@@ -321,6 +321,8 @@ PRODUCT_PACKAGES += vulkan.lvp
 # present but empty, i.e. a path bug. This one refuses a payload that is absent, i.e. the feature is
 # off. Neither catches the other's case.
 ifeq ($(TARGET_PRODUCT),remora_x86_64)
+# do-build.sh sets this only for the non-public libdrm and libva header bootstrap.
+ifneq ($(REMORA_BUILD_MESA_INPUTS),true)
 ifeq (,$(wildcard $(TOPDIR)vendor/mesa_source/lib64/dri/libgallium_dri.so))
 $(error remora_x86_64 requires the mesa_source build feature. The prebuilt GPU project is gone from \
 both manifests (bd remora-28ix.4), so there is no prebuilt GL or Vulkan stack to fall back on and this build \
@@ -329,6 +331,7 @@ for a manual do-build.sh run, stage the payload first: vendor/source-build/stage
 WITH_MESA_SOURCE=true, which is what puts vendor/mesa_source/lib64 in the tree. If the feature IS \
 enabled and you are seeing this, the host-side Mesa build has not been run: see \
 vendor/host-prereqs/mesa-android/build-mesa.sh)
+endif
 endif
 endif
 

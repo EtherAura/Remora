@@ -41,10 +41,13 @@ COMMON_DEPEND="
 # The two helpers that run inside the container (vendor/native's fwd and uinput-kbd) are linked
 # -static, and glibc installs libc.a only under USE=static-libs: without it configure stops. That is
 # a build need alone, so it is not in RDEPEND; what is installed runs on the shared libc as usual.
+# VA-API mirror rendering uses EGL and DRM headers to import DMA-BUF planes.
 DEPEND="
 	${COMMON_DEPEND}
 	dev-util/vulkan-headers
 	media-libs/nv-codec-headers
+	media-libs/libglvnd
+	x11-libs/libdrm
 	sys-libs/glibc[static-libs]
 "
 # adb is how Remora reaches every device it deploys, local or remote.

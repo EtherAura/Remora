@@ -345,6 +345,15 @@ BUILD="$WORK/build-android"
 if want 4; then
     head_ "4. meson cross build (gallium=${GALLIUM:-<none>} vulkan=${VULKAN:-<none>})"
     [ -n "$GALLIUM$VULKAN" ] || die "both driver sets are empty — nothing to build"
+    case ",$GALLIUM," in
+        *,virgl,*)
+            have_src
+            vpp_patch="$HERE/virgl-vpp-color.patch"
+            if ! git -C "$SRC" apply --reverse --check "$vpp_patch" 2>/dev/null; then
+                git -C "$SRC" apply "$vpp_patch" || die "VirGL video-processing patch failed"
+            fi
+            ;;
+    esac
     # llvm-config, and it is REQUIRED for radeonsi: Mesa pins method:'config-tool' for its LLVM
     # dependency, so it EXECUTES llvm-config rather than reading a .pc. The cross-built one is an
     # Android binary that cannot run here, and the host's own describes the host's Linux LLVM — so
@@ -650,6 +659,7 @@ if want 5; then
             case "$d" in
                 iris)     for n in iris i965; do ln -sfn libgallium_dri.so "$OUT/dri/${n}_dri.so"; done;;
                 radeonsi) for n in radeonsi r600 kms_swrast swrast; do ln -sfn libgallium_dri.so "$OUT/dri/${n}_dri.so"; done;;
+                virgl)    ln -sfn libgallium_dri.so "$OUT/dri/virtio_gpu_dri.so";;
                 *)        ln -sfn libgallium_dri.so "$OUT/dri/${d}_dri.so";;
             esac
         done

@@ -434,6 +434,11 @@ QStringList buildBootArgs(const ResolvedConfig &cfg) {
     // (bd remora-4ei.80) — same anti-stale-bake shape as gpu_node above.
     if (cfg.vaDriver.has_value())
         a << QStringLiteral("androidboot.va_driver=%1").arg(*cfg.vaDriver);
+    // The VirGL Codec2 mirror consumes a virtual display. Its headless primary
+    // has no scanout or frame publisher when host encoding and Venus are off.
+    if (cfg.gpuMode == GpuMode::Host && cfg.useCodec2 && !cfg.venus && !cfg.hostEncode &&
+        cfg.vaDriver == QStringLiteral("virtio_gpu"))
+        a << QStringLiteral("androidboot.remora_mirror_only=1");
     // Where the composer should publish composed frames (bd remora-emoe phase 2). The CONTAINER's
     // view of the path bound above — the HAL reads ro.boot.remora_frame_socket and stays entirely
     // inert when it is absent, which is what keeps this off for every profile that is not running

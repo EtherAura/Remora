@@ -2,6 +2,7 @@
 # Build the Linux guest that Remora for Windows runs Android in (bd remora-7oih.5):
 #
 #   guest/build.sh [<out-dir>]          # default build-guest/; needs docker, nothing else
+#   guest/build.sh --video-prototype [<out-dir>]  # DRM, virtio-gpu and VA-API test tools
 #
 # Windows has no Linux kernel, and Android needs one (binder, memfd, cgroups). So Remora for
 # Windows starts this small Alpine guest under QEMU on the Windows hypervisor, out of sight, and
@@ -25,15 +26,26 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-OUT="${1:-$ROOT/build-guest}"
+DEFAULT_OUT="$ROOT/build-guest"
+VIDEO_PROTOTYPE=0
+if [[ ${1:-} == --video-prototype ]]; then
+    VIDEO_PROTOTYPE=1
+    DEFAULT_OUT="$ROOT/build-guest-video"
+    shift
+fi
+OUT="${1:-$DEFAULT_OUT}"
 IMAGE=docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 command -v docker >/dev/null || { echo "guest/build.sh: needs docker" >&2; exit 1; }
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 # The kernel source and each kernel built from it are cached here, keyed by version and config.
+# A kernel's build tree (about 12 GB) is removed once the kernel is built; REMORA_GUEST_KEEP_TREE=1
+# keeps it, for faster rebuilds while the kernel configuration is being changed.
 CACHE="${REMORA_GUEST_CACHE:-$HOME/.cache/remora-guest-build}"
 mkdir -p "$CACHE"
-docker run --rm -e OWNER="$(id -u):$(id -g)" -v "$ROOT/guest:/guest:ro" -v "$OUT:/out" \
+docker run --rm -e OWNER="$(id -u):$(id -g)" -e VIDEO_PROTOTYPE="$VIDEO_PROTOTYPE" \
+    -e KEEP_TREE="${REMORA_GUEST_KEEP_TREE:-0}" \
+    -v "$ROOT/guest:/guest:ro" -v "$OUT:/out" \
     -v "$CACHE:/cache" "$IMAGE" sh /guest/assemble.sh
 echo "guest: $(cat "$OUT/manifest.txt" | sed -n 1p) -> $OUT"

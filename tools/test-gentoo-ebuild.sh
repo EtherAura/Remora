@@ -120,6 +120,8 @@ gentoo_for() {
         cmake|ninja)         echo "eclass cmake" ;;
         ffnvcodec-headers)   echo "DEPEND media-libs/nv-codec-headers" ;;
         vulkan-headers)      echo "DEPEND dev-util/vulkan-headers" ;;
+        libglvnd)            echo "DEPEND media-libs/libglvnd" ;;
+        libdrm)              echo "DEPEND x11-libs/libdrm" ;;
         docker)              echo "optfeature app-containers/docker" ;;
         openssh)             echo "optfeature virtual/openssh" ;;
         nvidia-utils)        echo "optfeature x11-drivers/nvidia-drivers" ;;

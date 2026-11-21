@@ -1,0 +1,94 @@
+diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -118,6 +118,14 @@
+    };
+    struct list_head fences;
+ };
++
++#ifdef _WIN32
++static HGLRC (WINAPI *winq_get_rc)(void);
++static HDC (WINAPI *winq_get_dc)(void);
++static HGLRC winq_ctx0_rc;
++static HDC winq_ctx0_dc;
++static virgl_gl_context winq_ctx0_binding;
++#endif
+ 
+ struct vrend_query {
+    struct list_head waiting_queries;
+@@ -7763,6 +7771,17 @@
+    }
+ 
+    vrend_state.eventfd = -1;
++#ifdef _WIN32
++   const char *reuse = getenv("WINQ_REUSE_WGL_BINDING");
++   HMODULE gl = reuse && !strcmp(reuse, "1") ? GetModuleHandleA("opengl32.dll") : NULL;
++   FARPROC rc = gl ? GetProcAddress(gl, "wglGetCurrentContext") : NULL;
++   FARPROC dc = gl ? GetProcAddress(gl, "wglGetCurrentDC") : NULL;
++   memcpy(&winq_get_rc, &rc, sizeof(winq_get_rc));
++   memcpy(&winq_get_dc, &dc, sizeof(winq_get_dc));
++   winq_ctx0_rc = NULL;
++   if (rc && dc)
++      virgl_info("WINQ native WGL binding reuse enabled\n");
++#endif
+    if (flags & VREND_USE_THREAD_SYNC) {
+       if (flags & VREND_USE_ASYNC_FENCE_CB)
+          vrend_state.use_async_fence_cb = true;
+@@ -11668,7 +11687,16 @@
+ 
+    vrend_state.current_hw_ctx = ctx;
+ 
++#ifdef _WIN32
++   int bind_status = vrend_clicbs->make_current(ctx->sub->gl_context);
++   if (ctx == vrend_state.ctx0 && winq_get_rc && winq_get_dc) {
++      winq_ctx0_rc = bind_status ? NULL : winq_get_rc();
++      winq_ctx0_dc = bind_status ? NULL : winq_get_dc();
++      winq_ctx0_binding = ctx->sub->gl_context;
++   }
++#else
+    vrend_clicbs->make_current(ctx->sub->gl_context);
++#endif
+ }
+ 
+ void
+@@ -13041,6 +13069,15 @@
+ void vrend_renderer_force_ctx_0(void)
+ {
+    TRACE_FUNC();
++#ifdef _WIN32
++   struct vrend_context *ctx = vrend_state.ctx0;
++   bool check_binding = winq_get_rc && winq_get_dc && ctx && ctx->sub;
++   if (check_binding && winq_ctx0_rc && winq_ctx0_dc &&
++       vrend_state.current_ctx == ctx && vrend_state.current_hw_ctx == ctx &&
++       !ctx->ctx_switch_pending && ctx->sub->gl_context == winq_ctx0_binding &&
++       winq_get_rc() == winq_ctx0_rc && winq_get_dc() == winq_ctx0_dc)
++      return;
++#endif
+    vrend_state.current_ctx = NULL;
+    vrend_state.current_hw_ctx = NULL;
+    vrend_hw_switch_context(vrend_state.ctx0, true);
+@@ -13320,6 +13357,9 @@
+ 
+ void vrend_renderer_prepare_reset(void)
+ {
++#ifdef _WIN32
++   winq_ctx0_rc = NULL;
++#endif
+    /* make sure user contexts are no longer accessed */
+    vrend_free_sync_thread();
+    vrend_hw_switch_context(vrend_state.ctx0, true);
+diff --git a/src/virglrenderer.c b/src/virglrenderer.c
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -648,7 +648,11 @@
+       return -1;
+    }
+ 
++#ifdef _WIN32
++   return ret;
++#else
+    return 0;
++#endif
+ }
+ 
+ static virgl_renderer_gl_context create_gl_context_surfaceless(int scanout_idx, struct virgl_gl_ctx_param *param)

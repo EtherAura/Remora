@@ -198,11 +198,11 @@ private:
 
     void onError();
 
-    // Immutable config.
+    // Encoder configuration.
     const C2Config::profile_t mProfile;
     const std::optional<uint8_t> mLevel;
     const ui::Size mVisibleSize;
-    const ui::Size mCodedSize;  // CTB-aligned; the VA context/surface size.
+    ui::Size mCodedSize;  // Aligned extent of the VA encode surfaces.
     // Engine CTB/LCU size: 32 for EncSlice (VME), 64 for VDENC (which rejects CTB-32 streams).
     uint32_t mCtbSize = 32;
     const uint32_t mStride;

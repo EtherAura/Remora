@@ -2549,8 +2549,10 @@ static QString windowsDefaultDockerHost() {
 
 static int cmdImages(const QStringList &args) {
     const QString action = args.value(2);
-    if (action != "list" && action != "check" && action != "fetch" && action != "rollback") {
-        QTextStream(stderr) << "Usage: remora images list|check|fetch|rollback [--tag tag] [--source URL] [--host user@host]\n";
+    if (action != "list" && action != "check" && action != "fetch" && action != "rollback"
+        && action != "cleanup-plan") {
+        QTextStream(stderr) << "Usage: remora images list|check|fetch|rollback|cleanup-plan "
+                               "[--tag tag] [--source URL] [--host user@host]\n";
         return 2;
     }
     QStringList helper{action};
@@ -2650,9 +2652,9 @@ static void printUsage(QTextStream &out) {
            "                            registry tag — how GApps goes onto a clean mirrored image\n"
         << "  build     [--tag t] [--base tag]  build the recipe (docker/source hosts + dirs in remorarc)\n"
         "  build --source [<p>]    FULL AOSP source rebuild — the same chain the GUI runs\n"
-        << "  images list|check|fetch|rollback [--tag tag] [--source HTTPS_URL] [--host user@host]\n"
+        << "  images list|check|fetch|rollback|cleanup-plan [--tag tag] [--source HTTPS_URL] [--host user@host]\n"
            "                            authenticated public images; verify before import/promotion;\n"
-           "                            check says whether the catalog has a newer release\n"
+           "                            check for a newer release; preview obsolete tags with cleanup-plan\n"
         << "  play-install --show-terms  view the optional Google Play provider and terms\n"
            "  play-install --base tag --accept-terms VERSION [--host user@host] [--tag remora-local:tag]\n"
            "                            verified direct download, COPY-only local overlay; --rollback tag removes it\n"

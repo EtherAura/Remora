@@ -7,6 +7,18 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Fixed
+
+- New Android images keep ADB replies moving when traffic backs up in the other direction,
+  reducing stalls during mirroring and interactive input.
+- Android source builds use the headless composer's periodic display signals to estimate
+  refresh timing.
+
+### Security
+
+- Android 16 and 17 source image builds apply the upstream fix for CVE-2026-58868 in
+  `FrameDecoder`. Existing images need to be rebuilt to pick up the fix.
+
 ## [2026.11.8] - 2026-11-20
 
 ### Added

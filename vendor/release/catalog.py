@@ -121,8 +121,15 @@ def image_id(ref):
 
 def check_local_docker():
     require(not os.environ.get('DOCKER_HOST') or os.environ['DOCKER_HOST'].startswith('unix://'), 'Use Remora --host for a remote Docker daemon')
-    c = json.loads(run('docker','context','inspect'))[0]
-    require(c['Endpoints']['docker']['Host'].startswith('unix://'), 'Use Remora --host for a remote Docker context')
+    contexts = json.loads(run('docker','context','inspect'))
+    require(type(contexts) is list and len(contexts) == 1, 'Invalid Docker context inspection')
+    try:
+        endpoint = contexts[0]['Endpoints']['docker']['Host']
+    except (KeyError, TypeError):
+        raise VerificationError('Invalid Docker context inspection') from None
+    require(type(endpoint) is str and endpoint.startswith('unix://'),
+            'Use Remora --host for a remote Docker context')
+    return endpoint
 
 
 # `fetch --progress` events, one stdout line each, flushed as it is written:
@@ -490,9 +497,73 @@ def obsolete_release_tags(tag, receipts, images, containers):
             'retain': tuple(sorted(retain))}
 
 
+def read_release_receipts(cache):
+    if not cache.exists():
+        return []
+    receipts = []
+    for path in sorted(cache.iterdir()):
+        require(not path.name.endswith('.receipt.pending.json'),
+                'An image import receipt is pending: ' + path.name)
+        if not path.name.endswith('.receipt.json'):
+            continue
+        r = json.loads(path.read_text())
+        require(type(r) is dict and type(r.get('tag')) is str
+                and path.name == r['tag'].replace(':', '_') + '.receipt.json',
+                'Invalid release receipt: ' + path.name)
+        receipts.append(r)
+    return receipts
+
+
+def cleanup_inventory(kind):
+    """Collect only the identity fields the retention policy needs."""
+    listed = run('docker', kind, 'ls', '--all', '--quiet', '--no-trunc').splitlines()
+    image = kind == 'image'
+    id_pattern = r'sha256:[0-9a-f]{64}' if image else r'[0-9a-f]{64}'
+    require(all(re.fullmatch(id_pattern, iid) for iid in listed),
+            'Invalid Docker ' + kind + ' inventory ID')
+    # Image listings may repeat the ID for each tag of the same image.
+    ids = sorted(set(listed))
+    require(image or len(ids) == len(listed), 'Duplicate Docker container inventory ID')
+    field = 'RepoTags' if image else 'Image'
+    template = '{"Id":{{json .Id}},"' + field + '":{{json .' + field + '}}}'
+    records = []
+    for start in range(0, len(ids), 100):
+        batch = ids[start:start + 100]
+        out = run('docker', kind, 'inspect', '--format', template, *batch)
+        rows = [json.loads(line) for line in out.splitlines()]
+        require(len(rows) == len(batch) and all(type(row) is dict and type(row.get('Id')) is str
+                                               and field in row for row in rows)
+                and sorted(row['Id'] for row in rows) == batch,
+                'Incomplete Docker ' + kind + ' inspection')
+        if image:
+            for row in rows:
+                if row['RepoTags'] is None:  # The classic Docker store reports untagged images as null.
+                    row['RepoTags'] = []
+        records.extend(sorted(rows, key=lambda row: row['Id']))
+    return records
+
+
+def release_cleanup_plan(tag, cache):
+    receipts = read_release_receipts(cache)
+    preflight = release_retention_receipts(tag, receipts)
+    require(preflight['complete'], preflight['reason'])
+    endpoint = check_local_docker()
+    images = cleanup_inventory('image')
+    containers = cleanup_inventory('container')
+    decision = obsolete_release_tags(tag, receipts, images, containers)
+    require(decision['complete'], decision['reason'])
+    image_ids = {record['Id'] for record in images}
+    require(all(record['Image'] in image_ids for record in containers),
+            'A container image is absent from the Docker image inventory')
+    require(cleanup_inventory('image') == images and cleanup_inventory('container') == containers
+            and read_release_receipts(cache) == receipts and check_local_docker() == endpoint,
+            'Docker inventory, context or release receipts changed during the cleanup plan')
+    return decision | {'tag': tag, 'dry_run': True}
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=['list','check','fetch','rollback'])
+    p.add_argument('action',choices=['list','check','fetch','rollback','cleanup-plan'])
     p.add_argument('--source',default='https://github.com/EtherAura/Remora/releases/download/android-images')
     p.add_argument('--tag')
     p.add_argument('--key',default=str(Path(__file__).with_name('image-signing-key.pem')))
@@ -502,11 +573,15 @@ def main(argv=None):
     # and blamed the catalog for lacking a tag nobody asked for.
     require(a.action == 'list' or a.tag, a.action.capitalize() + ' needs --tag')
     require(not a.progress or a.action == 'fetch', '--progress is only for fetch')
+    cache = Path(os.environ.get('XDG_CACHE_HOME',str(Path.home()/'.cache')))/'remora'/'images'
+    if a.action == 'cleanup-plan':
+        result = release_cleanup_plan(a.tag, cache)
+        print('REMORA_IMAGES_RESULT='+json.dumps(result,separators=(',',':')),flush=True)
+        return 0
     u = urllib.parse.urlsplit(a.source)
     require(u.scheme == 'https' and u.netloc and not u.username and not u.password and not u.query and not u.fragment,
             'Source must be an HTTPS directory URL')
     base = a.source.rstrip('/')
-    cache = Path(os.environ.get('XDG_CACHE_HOME',str(Path.home()/'.cache')))/'remora'/'images'
     cache.mkdir(parents=True,exist_ok=True,mode=0o700)
     cache.chmod(0o700)
     with open(cache/'import.lock','a') as lock:

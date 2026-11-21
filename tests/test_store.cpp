@@ -592,6 +592,34 @@ private slots:
         QVERIFY(c.backend.retiredVmBackend);
     }
 
+    // Each display size key layers on its own: a profile that overrides one of width, height and
+    // dpi keeps the other two from [Defaults]. A loader that reset the display per group, or read
+    // the trio as one unit, would drop the sizes the user already set.
+    void loadInstanceOneDisplaySizeOverridesAndSiblingsInherit() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Defaults/width", 1280);
+            s.setValue("Defaults/height", 720);
+            s.setValue("Defaults/dpi", 240);
+            s.setValue("Instance-x/width", 1920);
+            s.setValue("Instance-y/dpi", 320);
+            s.sync();
+            QCOMPARE(s.status(), QSettings::NoError);
+        }
+        const RemoraConfig x = loadInstance(path, QStringLiteral("x"));
+        QCOMPARE(x.display.width, std::optional<int>(1920));
+        QCOMPARE(x.display.height, std::optional<int>(720));
+        QCOMPARE(x.display.dpi, std::optional<int>(240));
+
+        const RemoraConfig y = loadInstance(path, QStringLiteral("y"));
+        QCOMPARE(y.display.width, std::optional<int>(1280));
+        QCOMPARE(y.display.height, std::optional<int>(720));
+        QCOMPARE(y.display.dpi, std::optional<int>(320));
+    }
+
     // The resolver turns an unset audio into false, so an explicit false is only distinguishable
     // when [Defaults] turns audio on. Saving false must persist it in the instance group, where it
     // overrides the default; clearing it must remove the key so the default shows through again.
@@ -957,6 +985,36 @@ private slots:
         QCOMPARE(s.value("Remora/active_instance").toString(), QStringLiteral("b"));
         QVERIFY(!s.contains(QStringLiteral("active_instance")));
         QCOMPARE(s.childGroups(), QStringList{QStringLiteral("Remora")});
+    }
+
+    // Switching profiles rewrites the one selection key and leaves the saved profiles alone.
+    void setActiveInstanceSwitchesBetweenSavedProfiles() {
+        QTemporaryDir dir;
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Instance-a/width", 1024);
+            s.setValue("Instance-a/fps", 30);
+            s.setValue("Instance-b/width", 800);
+            s.setValue("Instance-b/fps", 60);
+            s.sync();
+        }
+        setActiveInstance(path, QStringLiteral("a"));
+        QCOMPARE(activeInstance(path), QStringLiteral("a"));
+        setActiveInstance(path, QStringLiteral("b"));
+
+        QSettings s(path, QSettings::IniFormat);
+        QCOMPARE(activeInstance(path), QStringLiteral("b"));
+        QCOMPARE(s.value("Remora/active_instance").toString(), QStringLiteral("b"));
+        QCOMPARE(s.value("Instance-a/width").toInt(), 1024);
+        QCOMPARE(s.value("Instance-a/fps").toInt(), 30);
+        QCOMPARE(s.value("Instance-b/width").toInt(), 800);
+        QCOMPARE(s.value("Instance-b/fps").toInt(), 60);
+        QStringList groups = s.childGroups();
+        groups.sort();
+        QCOMPARE(groups, (QStringList{QStringLiteral("Instance-a"), QStringLiteral("Instance-b"),
+                                      QStringLiteral("Remora")}));
+        QVERIFY(!s.contains(QStringLiteral("active_instance")));
     }
 
     void deleteInstanceRemovesOnlyItsOwnGroup() {

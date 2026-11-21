@@ -47,9 +47,11 @@
 #include <errno.h>
 #include <log/log.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 #include <sys/system_properties.h>
 
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -83,6 +85,10 @@ static const struct {
 };
 
 static std::unordered_map<uint32_t, std::vector<uint64_t>> gbm_format_modifiers_map;
+
+// Mesa's DRI backend shares a single mapping context between GBM BOs on a device.
+// A second Binder thread must not enter it while the first is mapping or flushing.
+static std::mutex gbm_context_mutex;
 
 static int property_get_compat(const char *name, char *value)
 {
@@ -148,6 +154,7 @@ static void gbm_mesa_dev_destroy(struct gbm_device *gbm)
 // ALLOCATOR_ONLY!
 static int gbm_mesa_alloc(struct alloc_args *args)
 {
+	std::lock_guard<std::mutex> lock(gbm_context_mutex);
 	struct gbm_bo *bo = NULL;
 
 	uint32_t gbm_format = get_gbm_mesa_format(args->drm_format);
@@ -189,6 +196,10 @@ static int gbm_mesa_alloc(struct alloc_args *args)
 	/* gbm_mesa will create new fd, therefore it's our responsibility to close it once we don't
 	 * need the buffer */
 	args->out_fd = gbm_bo_get_fd(bo);
+	if (args->out_fd < 0) {
+		gbm_bo_destroy(bo);
+		return -EIO;
+	}
 
 	args->out_stride = gbm_bo_get_stride(bo);
 	args->out_modifier = gbm_bo_get_modifier(bo);
@@ -212,17 +223,29 @@ static int gbm_mesa_alloc(struct alloc_args *args)
 		void *map_data = NULL;
 
 		bo = gbm_bo_import(args->gbm, GBM_BO_IMPORT_FD_MODIFIER, &data, 0);
-
-		int flags = GBM_BO_TRANSFER_READ | GBM_BO_TRANSFER_WRITE;
-
-		addr = gbm_bo_map(bo, 0, 0, args->width, args->height, flags, &args->out_map_stride,
-				  &map_data);
-		if (addr == NULL) {
-			ALOGE("Failed to map the buffer at %s:%d", __FILE__, __LINE__);
-		} else {
-			gbm_bo_unmap(bo, map_data);
+		if (!bo) {
+			close(args->out_fd);
+			args->out_fd = -1;
+			return -EIO;
 		}
 
+		int flags = GBM_BO_TRANSFER_READ | GBM_BO_TRANSFER_WRITE;
+		// VirGL computes the transfer pitch from the row width. Probing one full
+		// row avoids a readback and upload of every pixel in a new mirror buffer.
+		char mirror[PROP_VALUE_MAX]{};
+		property_get_compat("ro.boot.remora_mirror_only", mirror);
+		const uint32_t rows = args->linear_required && mirror[0] == '1' && mirror[1] == '\0'
+				? 1 : args->height;
+		addr = gbm_bo_map(bo, 0, 0, args->width, rows, flags, &args->out_map_stride,
+				  &map_data);
+		if (addr == NULL || addr == MAP_FAILED) {
+			ALOGE("Failed to map the buffer at %s:%d", __FILE__, __LINE__);
+			gbm_bo_destroy(bo);
+			close(args->out_fd);
+			args->out_fd = -1;
+			return -EIO;
+		}
+		gbm_bo_unmap(bo, map_data);
 		gbm_bo_destroy(bo);
 	}
 
@@ -257,6 +280,7 @@ static void gbm_free(struct gbm_bo *bo)
 
 static void gbm_map(struct gbm_bo *bo, int w, int h, void **addr, void **map_data)
 {
+	std::lock_guard<std::mutex> lock(gbm_context_mutex);
 	int flags = GBM_BO_TRANSFER_READ | GBM_BO_TRANSFER_WRITE;
 
 	uint32_t stride = 0;
@@ -269,6 +293,7 @@ static void gbm_map(struct gbm_bo *bo, int w, int h, void **addr, void **map_dat
 
 static void gbm_unmap(struct gbm_bo *bo, void *map_data)
 {
+	std::lock_guard<std::mutex> lock(gbm_context_mutex);
 	gbm_bo_unmap(bo, map_data);
 }
 

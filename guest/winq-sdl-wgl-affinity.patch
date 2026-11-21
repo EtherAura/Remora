@@ -1,0 +1,84 @@
+diff --git a/src/video/windows/SDL_windowsopengl.c b/src/video/windows/SDL_windowsopengl.c
+index 58d0dd7..2ed6833 100644
+--- a/src/video/windows/SDL_windowsopengl.c
++++ b/src/video/windows/SDL_windowsopengl.c
+@@ -107,7 +107,28 @@ typedef HGLRC(APIENTRYP PFNWGLCREATECONTEXTATTRIBSARBPROC)(HDC hDC,
+ #define SetPixelFormat       _this->gl_data->wglSetPixelFormat
+ #endif
+ 
+-int WIN_GL_LoadLibrary(_THIS, const char *path)
++/* The RX 550 WGL driver changes the calling thread's CPU affinity during
++ * context setup. In WINQ this thread also dispatches virtio requests. */
++static GROUP_AFFINITY WIN_GL_SaveAffinity(void)
++{
++    GROUP_AFFINITY saved = { 0 };
++    const char *enabled = SDL_getenv("WINQ_PRESERVE_WGL_AFFINITY");
++    if (enabled && SDL_strcmp(enabled, "1") == 0 && GetActiveProcessorGroupCount() == 1) {
++        GetThreadGroupAffinity(GetCurrentThread(), &saved);
++    }
++    return saved;
++}
++
++static void WIN_GL_RestoreAffinity(const GROUP_AFFINITY *saved)
++{
++    GROUP_AFFINITY current;
++    if (saved->Mask && GetThreadGroupAffinity(GetCurrentThread(), &current) &&
++        current.Group == saved->Group && current.Mask != saved->Mask) {
++        SetThreadGroupAffinity(GetCurrentThread(), saved, NULL);
++    }
++}
++
++static int WIN_GL_LoadLibraryInternal(_THIS, const char *path)
+ {
+     void *handle;
+ 
+@@ -214,6 +235,14 @@ int WIN_GL_LoadLibrary(_THIS, const char *path)
+     return 0;
+ }
+ 
++int WIN_GL_LoadLibrary(_THIS, const char *path)
++{
++    GROUP_AFFINITY saved = WIN_GL_SaveAffinity();
++    int result = WIN_GL_LoadLibraryInternal(_this, path);
++    WIN_GL_RestoreAffinity(&saved);
++    return result;
++}
++
+ void *WIN_GL_GetProcAddress(_THIS, const char *proc)
+ {
+     void *func;
+@@ -691,8 +720,10 @@ int WIN_GL_SetupWindow(_THIS, SDL_Window *window)
+     /* The current context is lost in here; save it and reset it. */
+     SDL_Window *current_win = SDL_GL_GetCurrentWindow();
+     SDL_GLContext current_ctx = SDL_GL_GetCurrentContext();
++    GROUP_AFFINITY saved = WIN_GL_SaveAffinity();
+     const int retval = WIN_GL_SetupWindowInternal(_this, window);
+     WIN_GL_MakeCurrent(_this, current_win, current_ctx);
++    WIN_GL_RestoreAffinity(&saved);
+     return retval;
+ }
+ 
+@@ -704,7 +735,7 @@ SDL_bool WIN_GL_UseEGL(_THIS)
+     return SDL_GetHintBoolean(SDL_HINT_OPENGL_ES_DRIVER, SDL_FALSE) || _this->gl_config.major_version == 1 || _this->gl_config.major_version > _this->gl_data->es_profile_max_supported_version.major || (_this->gl_config.major_version == _this->gl_data->es_profile_max_supported_version.major && _this->gl_config.minor_version > _this->gl_data->es_profile_max_supported_version.minor); /* No WGL extension for OpenGL ES 1.x profiles. */
+ }
+ 
+-SDL_GLContext WIN_GL_CreateContext(_THIS, SDL_Window *window)
++static SDL_GLContext WIN_GL_CreateContextInternal(_THIS, SDL_Window *window)
+ {
+     HDC hdc = ((SDL_WindowData *)window->driverdata)->hdc;
+     HGLRC context, share_context;
+@@ -828,6 +859,14 @@ SDL_GLContext WIN_GL_CreateContext(_THIS, SDL_Window *window)
+     return context;
+ }
+ 
++SDL_GLContext WIN_GL_CreateContext(_THIS, SDL_Window *window)
++{
++    GROUP_AFFINITY saved = WIN_GL_SaveAffinity();
++    SDL_GLContext result = WIN_GL_CreateContextInternal(_this, window);
++    WIN_GL_RestoreAffinity(&saved);
++    return result;
++}
++
+ int WIN_GL_MakeCurrent(_THIS, SDL_Window *window, SDL_GLContext context)
+ {
+     HDC hdc;

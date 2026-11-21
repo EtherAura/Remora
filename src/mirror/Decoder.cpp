@@ -136,7 +136,7 @@ bool Decoder::init(quint8 codecId, const QString &hwdec, QString *error) {
         case VideoDecoder::H265: id = AV_CODEC_ID_HEVC; break;
         case VideoDecoder::Av1: id = AV_CODEC_ID_AV1; break;
     }
-    const AVCodec *codec = avcodec_find_decoder(id);
+    const AVCodec *codec = codecLookup_ ? codecLookup_(id) : avcodec_find_decoder(id);
     if (!codec) {
         if (error) *error = QStringLiteral("no decoder for codec 0x%1").arg(codecId, 2, 16, QLatin1Char('0'));
         return false;
@@ -200,7 +200,12 @@ QList<VideoFrame> Decoder::decode(const QByteArray &payload, QString *error) {
             break;
         }
         AVFrame *src = frame_;
-        if (hwDevice_ && frame_->format == hwPixFmt_ &&
+        const auto *frames = frame_->hw_frames_ctx
+                                 ? reinterpret_cast<const AVHWFramesContext *>(frame_->hw_frames_ctx->data)
+                                 : nullptr;
+        const bool keepVaapi = keepVaapiFrames_ && frame_->format == AV_PIX_FMT_VAAPI
+                               && frames && frames->sw_format == AV_PIX_FMT_NV12;
+        if (hwDevice_ && frame_->format == hwPixFmt_ && !keepVaapi &&
             !(keepHwFrames_ && hwPixFmt_ == AV_PIX_FMT_CUDA)) {
             // Download the hw surface. On a cross-GPU split this is where VAAPI dies (ENOSYS
             // after one frame, bd client-gpu-hwdec-crossgpu) — fail LOUDLY, never freeze.

@@ -1,0 +1,32 @@
+--- a/src/vrend/vrend_video.c
++++ b/src/vrend/vrend_video.c
+@@ -1266,6 +1266,16 @@
+     if (cdc) {
+         list_del(&cdc->head);
+ #ifdef _WIN32
++        /* The RX 550 driver can pin the dispatcher during codec teardown.
++         * Keep the caller's own mask across worker and driver cleanup. */
++        GROUP_AFFINITY saved = { 0 };
++        const char *preserve = getenv("WINQ_PRESERVE_WGL_AFFINITY");
++        if (preserve && !strcmp(preserve, "1") &&
++            GetActiveProcessorGroupCount() == 1) {
++            if (!GetThreadGroupAffinity(GetCurrentThread(), &saved))
++                saved.Mask = 0;
++        }
++
+         stop_encode_worker(cdc);
+         for (unsigned i = 0; i < VIRGL_AMF_QUEUE_DEPTH; i++) {
+             if (cdc->pending[i].feed)
+@@ -1274,6 +1284,12 @@
+ #endif
+         virgl_video_destroy_codec(cdc->codec);
+         free(cdc);
++#ifdef _WIN32
++        GROUP_AFFINITY current;
++        if (saved.Mask && GetThreadGroupAffinity(GetCurrentThread(), &current) &&
++            current.Group == saved.Group && current.Mask != saved.Mask)
++            SetThreadGroupAffinity(GetCurrentThread(), &saved, NULL);
++#endif
+     }
+ }
+ 

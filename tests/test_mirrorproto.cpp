@@ -4,6 +4,11 @@
 #include "core/MirrorInput.h"
 #include "core/MirrorProto.h"
 #include "core/SplashFormats.h"
+#include "mirror/Decoder.h"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+}
 
 // Byte-exact goldens for the mirror wire protocol (docs/MIRROR_PROTOCOL.md) — a failing golden
 // means the wire contract changed, not the test.
@@ -987,6 +992,39 @@ private slots:
         QCOMPARE(supported("00000002" "01" "01"), std::optional(VideoDecoder::H264));
         QCOMPARE(supported("00000002" "01" "02"), std::optional(VideoDecoder::H265));
         QCOMPARE(supported("00000002" "01" "03"), std::optional(VideoDecoder::Av1));
+    }
+
+    // Decoder::init itself, with its decoder lookup replaced by a spy that records each call and
+    // finds nothing, so no real decoder is ever allocated or opened. An id outside the allowlist
+    // is refused before any lookup, with hw decode requested; an allowed id does reach the
+    // lookup, which shows the spy is the one init() calls.
+    void decoderInitRefusesUnknownCodecBeforeLookup() {
+        static QList<int> lookups;
+        const auto spy = [](int codecId) -> const AVCodec * {
+            lookups.append(codecId);
+            return nullptr;
+        };
+        for (const quint8 id : {quint8(0x00), quint8(0x04), quint8(0x7f), quint8(0xff), kCodecOpus,
+                                kCodecAac, kCodecFlac, kCodecRawAudio}) {
+            lookups.clear();
+            Decoder dec;
+            dec.setCodecLookup(spy);
+            QString error;
+            QVERIFY2(!dec.init(id, QStringLiteral("auto"), &error), qPrintable(QString::number(id, 16)));
+            QVERIFY2(lookups.isEmpty(), qPrintable(QString::number(id, 16)));
+            QCOMPARE(error, QStringLiteral("unsupported video codec 0x%1").arg(id, 2, 16, QLatin1Char('0')));
+        }
+        const std::pair<quint8, AVCodecID> allowed[] = {
+            {quint8(0x01), AV_CODEC_ID_H264}, {quint8(0x02), AV_CODEC_ID_HEVC}, {quint8(0x03), AV_CODEC_ID_AV1}};
+        for (const auto &[id, avId] : allowed) {
+            lookups.clear();
+            Decoder dec;
+            dec.setCodecLookup(spy);
+            QString error;
+            QVERIFY(!dec.init(id, QStringLiteral("auto"), &error));
+            QCOMPARE(lookups, QList<int>{int(avId)});
+            QCOMPARE(error, QStringLiteral("no decoder for codec 0x%1").arg(id, 2, 16, QLatin1Char('0')));
+        }
     }
 
     void deviceFramingErrorLatches() {

@@ -1,0 +1,130 @@
+Use a buffer-backed TGSI constant slot for the graphics compositor.
+
+Convert RGB to NV12 with the RGB-to-YUV matrix. Sample the visible rectangle in pixel coordinates before normalizing against the backing texture so VirGL dma-buf padding stays outside the visible picture.
+
+--- a/src/gallium/auxiliary/vl/vl_compositor.c
++++ b/src/gallium/auxiliary/vl/vl_compositor.c
+@@ -440,6 +440,9 @@
+    calc_src_and_dst(&s->layers[layer], v->texture->width0, v->texture->height0,
+                     src_rect ? *src_rect : default_rect(&s->layers[layer]),
+                     dst_rect ? *dst_rect : default_rect(&s->layers[layer]));
++   /* The graphics shader needs source pixel coordinates when the imported
++    * dma-buf texture includes padding absent from the guest resource size. */
++   s->layers[layer].zw.x = v->texture->width0;
+ }
+ 
+ void
+@@ -776,6 +779,7 @@
+ {
+    struct pipe_sampler_view *sv, sv_templ;
+    struct pipe_surface *dst_surfaces;
++   vl_csc_matrix saved_csc;
+ 
+    dst_surfaces = dst->get_surfaces(dst);
+ 
+@@ -783,6 +787,9 @@
+    u_sampler_view_default_template(&sv_templ, src_res, src_res->format);
+    sv = s->pipe->create_sampler_view(s->pipe, src_res, &sv_templ);
+ 
++   memcpy(saved_csc, s->csc_matrix, sizeof(saved_csc));
++   memcpy(s->csc_matrix, s->rgb2yuv, sizeof(s->csc_matrix));
++
+    set_rgb_to_yuv_layer(s, c, 0, sv, src_rect, NULL, VL_COMPOSITOR_PLANE_Y);
+    vl_compositor_set_layer_dst_area(s, 0, dst_rect);
+    vl_compositor_render(s, c, &dst_surfaces[0], NULL, false);
+@@ -804,6 +811,7 @@
+       }
+    }
+ 
++   memcpy(s->csc_matrix, saved_csc, sizeof(s->csc_matrix));
+    s->pipe->sampler_view_release(s->pipe, sv);
+ }
+ 
+--- a/src/gallium/auxiliary/vl/vl_compositor_gfx.c
++++ b/src/gallium/auxiliary/vl/vl_compositor_gfx.c
+@@ -209,10 +209,11 @@
+    struct ureg_dst temp[2];
+    unsigned i;
+ 
++   ureg_DECL_constant2D(shader, 0, 3, 1);
+    for (i = 0; i < 3; ++i)
+-      csc[i] = ureg_DECL_constant(shader, i);
++      csc[i] = ureg_src_dimension(ureg_src_register(TGSI_FILE_CONSTANT, i), 1);
+ 
+-   lumakey = ureg_DECL_constant(shader, 3);
++   lumakey = ureg_src_dimension(ureg_src_register(TGSI_FILE_CONSTANT, 3), 1);
+ 
+    for (i = 0; i < 2; ++i)
+       temp[i] = ureg_DECL_temporary(shader);
+@@ -355,8 +356,10 @@
+    if (!shader)
+       return NULL;
+ 
++   if (include_cc)
++      ureg_DECL_constant2D(shader, 0, 2, 1);
+    for (i = 0; include_cc && i < 3; ++i)
+-      csc[i] = ureg_DECL_constant(shader, i);
++      csc[i] = ureg_src_dimension(ureg_src_register(TGSI_FILE_CONSTANT, i), 1);
+ 
+    tc = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX, TGSI_INTERPOLATE_LINEAR);
+    sampler = ureg_DECL_sampler(shader, 0);
+@@ -435,7 +438,7 @@
+ {
+    struct ureg_program *shader;
+    struct ureg_src tc, sampler;
+-   struct ureg_dst texel, fragment;
++   struct ureg_dst texel, fragment, coord, size;
+ 
+    struct ureg_src csc[3];
+    unsigned i;
+@@ -444,15 +447,39 @@
+    if (!shader)
+       return NULL;
+ 
++   ureg_DECL_constant2D(shader, 0, 2, 1);
+    for (i = 0; i < 3; ++i)
+-      csc[i] = ureg_DECL_constant(shader, i);
++      csc[i] = ureg_src_dimension(ureg_src_register(TGSI_FILE_CONSTANT, i), 1);
+ 
+    sampler = ureg_DECL_sampler(shader, 0);
++   ureg_DECL_sampler_view(shader, 0, TGSI_TEXTURE_2D,
++                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
++                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+    tc = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX, TGSI_INTERPOLATE_LINEAR);
+    texel = ureg_DECL_temporary(shader);
+    fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
+ 
+-   ureg_TEX(shader, texel, TGSI_TEXTURE_2D, tc, sampler);
++   /* Normalize against the actual texture, not the logical size of an
++    * imported plane. Keep filtering in the source's visible pixel region. */
++   coord = ureg_DECL_temporary(shader);
++   size = ureg_DECL_temporary(shader);
++   ureg_TXQ(shader, ureg_writemask(size, TGSI_WRITEMASK_XY), TGSI_TEXTURE_2D,
++            ureg_imm1u(shader, 0), sampler);
++   ureg_U2F(shader, ureg_writemask(size, TGSI_WRITEMASK_XY), ureg_src(size));
++   ureg_RCP(shader, ureg_writemask(size, TGSI_WRITEMASK_X),
++            ureg_scalar(ureg_src(size), TGSI_SWIZZLE_X));
++   ureg_RCP(shader, ureg_writemask(size, TGSI_WRITEMASK_Y),
++            ureg_scalar(ureg_src(size), TGSI_SWIZZLE_Y));
++   ureg_MUL(shader, ureg_writemask(coord, TGSI_WRITEMASK_XY), tc,
++            ureg_swizzle(tc, TGSI_SWIZZLE_Z, TGSI_SWIZZLE_W,
++                          TGSI_SWIZZLE_Z, TGSI_SWIZZLE_W));
++   ureg_MUL(shader, ureg_writemask(coord, TGSI_WRITEMASK_XY),
++            ureg_src(coord), ureg_src(size));
++   ureg_TEX(shader, texel, TGSI_TEXTURE_2D, ureg_src(coord), sampler);
++   ureg_release_temporary(shader, coord);
++   ureg_release_temporary(shader, size);
++   ureg_MOV(shader, ureg_writemask(texel, TGSI_WRITEMASK_W),
++            ureg_imm1f(shader, 1.0f));
+ 
+    if (y) {
+       ureg_DP4(shader, ureg_writemask(fragment, TGSI_WRITEMASK_X), csc[0], ureg_src(texel));
+@@ -742,7 +769,7 @@
+    c->pipe->bind_vs_state(c->pipe, c->vs);
+    c->pipe->bind_vertex_elements_state(c->pipe, c->vertex_elems_state);
+    c->pipe->set_vertex_buffers(c->pipe, 1, &c->vertex_buf);
+-   pipe_set_constant_buffer(c->pipe, MESA_SHADER_FRAGMENT, 0, s->shader_params);
++   pipe_set_constant_buffer(c->pipe, MESA_SHADER_FRAGMENT, 1, s->shader_params);
+    c->pipe->bind_rasterizer_state(c->pipe, c->rast);
+ 
+    draw_layers(c, s, dirty_area);

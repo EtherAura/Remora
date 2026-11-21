@@ -7,6 +7,7 @@
 #include <optional>
 
 struct AVBufferRef;
+struct AVCodec;
 struct AVCodecContext;
 struct AVFrame;
 struct AVPacket;
@@ -41,15 +42,20 @@ public:
     // profile or size cannot use — falls back to software with a warning; a mid-stream download
     // failure is reported per frame.
     bool init(quint8 codecId, const QString &hwdec, QString *error);
+    // How init() looks a decoder up by AVCodecID (widened); unset means avcodec_find_decoder.
+    // A seam for the offline tests, which observe whether a lookup was attempted at all.
+    using CodecLookup = const AVCodec *(*)(int codecId);
+    void setCodecLookup(CodecLookup lookup) { codecLookup_ = lookup; }
     // Build the hw device context now rather than at the first packet. Optional and idempotent:
     // init() does it itself if this was never called.
     void warmHardware(const QString &hwdec);
     // Zero-copy hand-off (bd remora-28ix.2.3): keep decoded CUDA frames on the GPU instead of
     // downloading them — the render window copies them device-to-device into its textures. The
     // window arms this once its GL context proves willing, and disarms it if interop fails
-    // mid-stream. Honored only for CUDA; VAAPI keeps the download path (Option B, unproven on
-    // the cross-GPU host this runs on), and so does D3D11VA (no D3D11/GL interop yet).
+    // mid-stream. Honored only for CUDA.
     void setKeepHwFrames(bool keep) { keepHwFrames_ = keep; }
+    // Enabled by a Wayland renderer that can import VA-API NV12 DMA-BUFs.
+    void setKeepVaapiFrames(bool keep) { keepVaapiFrames_ = keep; }
     // The decoder device's CUcontext for GL interop registration; null unless hw decode is CUDA.
     void *cudaContext() const;
     // One demuxed payload (config already merged for h264/h265) → zero or more frames.
@@ -71,7 +77,9 @@ private:
     AVPacket *pkt_ = nullptr;
     AVBufferRef *hwDevice_ = nullptr;
     int hwPixFmt_ = -1;  // AVPixelFormat the get_format callback selects
+    bool keepVaapiFrames_ = false;
     bool keepHwFrames_ = false;  // zero-copy: skip the download, hand out the CUDA frame
+    CodecLookup codecLookup_ = nullptr;
 };
 
 }  // namespace remora::mirror

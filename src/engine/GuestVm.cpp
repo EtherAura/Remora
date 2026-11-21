@@ -34,11 +34,17 @@ constexpr int kDefaultAdbFirst = 47555;
 constexpr int kAdbCount = 20;
 const QString kUser = QStringLiteral("remora");
 
+bool videoPrototype() { return qEnvironmentVariableIntValue("REMORA_GUEST_VIDEO_PROTOTYPE") == 1; }
+
 struct State {
+    // Keep the prototype's forwarded ports beyond the normal guest's allocation range.
+    explicit State(int offset = videoPrototype() ? 3000 : 0)
+        : qmpPort(kDefaultQmpPort + offset), sshPort(kDefaultSshPort + offset),
+          adbLocalFirst(kDefaultAdbFirst + offset) {}
     qint64 pid = 0;
-    int qmpPort = kDefaultQmpPort;
-    int sshPort = kDefaultSshPort;
-    int adbLocalFirst = kDefaultAdbFirst;
+    int qmpPort;
+    int sshPort;
+    int adbLocalFirst;
     int adbCount = kAdbCount;
     QString accel;
     QString imageSha;  // system.qcow2's, from the manifest the overlay was made against
@@ -53,9 +59,9 @@ State readState() {
     if (!f.open(QIODevice::ReadOnly)) return s;
     const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
     s.pid = o.value(QStringLiteral("pid")).toInteger();
-    s.qmpPort = o.value(QStringLiteral("qmpPort")).toInt(kDefaultQmpPort);
-    s.sshPort = o.value(QStringLiteral("sshPort")).toInt(kDefaultSshPort);
-    s.adbLocalFirst = o.value(QStringLiteral("adbLocalFirst")).toInt(kDefaultAdbFirst);
+    s.qmpPort = o.value(QStringLiteral("qmpPort")).toInt(s.qmpPort);
+    s.sshPort = o.value(QStringLiteral("sshPort")).toInt(s.sshPort);
+    s.adbLocalFirst = o.value(QStringLiteral("adbLocalFirst")).toInt(s.adbLocalFirst);
     s.adbCount = o.value(QStringLiteral("adbCount")).toInt(kAdbCount);
     s.accel = o.value(QStringLiteral("accel")).toString();
     s.imageSha = o.value(QStringLiteral("imageSha")).toString();
@@ -87,12 +93,12 @@ void registerEndpoint(const State &s) {
     h.knownHostsFile = QDir::toNativeSeparators(path(QStringLiteral("known_hosts")));
     h.adbLocalFirst = s.adbLocalFirst;
     h.adbCount = s.adbCount;
+    h.accelerator = s.accel;
     registerManagedHost(h);
 }
 
-// One QMP exchange: greeting, capabilities, then `cmd` (or nothing — a liveness probe). QEMU
-// answers on this port for exactly as long as it runs, which makes it a better liveness test
-// than a pid that Windows may have handed to something else since.
+// One QMP exchange: greeting, capabilities, then `cmd` if requested. A reply establishes
+// that the guest's monitor is responding without relying on a saved PID.
 bool qmp(int port, const char *cmd, int timeoutMs = 2000) {
     QTcpSocket s;
     s.connectToHost(QHostAddress::LocalHost, quint16(port));
@@ -101,6 +107,14 @@ bool qmp(int port, const char *cmd, int timeoutMs = 2000) {
     s.write("{\"execute\":\"qmp_capabilities\"}\n");
     if (!s.waitForReadyRead(timeoutMs)) return false;
     s.readAll();
+    if (videoPrototype()) {
+        // A listener on a prototype port can belong to a different VM.
+        s.write("{\"execute\":\"query-name\"}\n");
+        if (!s.canReadLine() && !s.waitForReadyRead(timeoutMs)) return false;
+        const QJsonObject reply = QJsonDocument::fromJson(s.readLine()).object();
+        if (reply.value(QStringLiteral("return")).toObject().value(QStringLiteral("name")).toString()
+            != QLatin1String("remora-guest-video")) return false;
+    }
     if (cmd) {
         s.write(cmd);
         s.waitForBytesWritten(timeoutMs);
@@ -221,7 +235,8 @@ LRESULT CALLBACK watchProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 QString GuestVm::stateDir() {
     return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
-           QStringLiteral("/remora/guest");
+           (videoPrototype() ? QStringLiteral("/remora/guest-video-prototype")
+                             : QStringLiteral("/remora/guest"));
 }
 
 QString GuestVm::imageDir() {
@@ -262,6 +277,7 @@ GuestVm::Status GuestVm::status() const {
 
 StepResult GuestVm::ensureRunning(const ResolvedConfig &rc, const LineSink &log) {
     State s = readState();
+    Detached qemuProcess{s.pid};
     // Unlogged: while the guest boots, every probe fails with ssh's own "connection refused" or
     // "timed out during banner exchange", which says nothing a user can act on.
     const auto ready = [&] {
@@ -275,6 +291,12 @@ StepResult GuestVm::ensureRunning(const ResolvedConfig &rc, const LineSink &log)
         // Up but not answering yet: a start another process began moments ago. Wait below.
     } else {
         const QString img = imageDir();
+        if (videoPrototype() &&
+            (!manifestLine(img, {}).endsWith(QLatin1String("-remora-video")) ||
+             qEnvironmentVariableIsEmpty("REMORA_GUEST_QEMU"))) {
+            return StepResult::fail(QStringLiteral("The video prototype needs REMORA_GUEST_QEMU "
+                "and REMORA_GUEST_IMAGE_DIR set to an image from guest/build.sh --video-prototype"));
+        }
         for (const char *f : {"vmlinuz", "system.qcow2", "cmdline", "manifest.txt"})
             if (!QFileInfo::exists(img + QLatin1Char('/') + QLatin1String(f)))
                 return StepResult::fail(
@@ -305,16 +327,18 @@ StepResult GuestVm::ensureRunning(const ResolvedConfig &rc, const LineSink &log)
         // Ports: kept from the last start when they are still free, else the next free block.
         if (!blockFree(s)) {
             State t = s;
+            const State defaults;
             bool found = false;
             for (int i = 1; i <= 20 && !found; ++i) {
-                t.qmpPort = kDefaultQmpPort + 100 * i;
-                t.sshPort = kDefaultSshPort + 100 * i;
-                t.adbLocalFirst = kDefaultAdbFirst + 100 * i;
+                t.qmpPort = defaults.qmpPort + 100 * i;
+                t.sshPort = defaults.sshPort + 100 * i;
+                t.adbLocalFirst = defaults.adbLocalFirst + 100 * i;
                 found = blockFree(t);
             }
             if (!found)
                 return StepResult::fail(QStringLiteral(
-                    "no free block of loopback ports for the guest (tried 47021 upward)"));
+                    "no free block of loopback ports for the guest (tried %1 upward)")
+                                            .arg(defaults.qmpPort));
             s = t;
         }
         {
@@ -381,6 +405,16 @@ StepResult GuestVm::ensureRunning(const ResolvedConfig &rc, const LineSink &log)
         g.qemu = qemuProgram();
         g.firmwareDir = firmwareDir();
         g.accel = accel;
+        QMap<QString, QString> qemuEnv;
+        if (videoPrototype()) {
+#ifdef Q_OS_WIN
+            g.videoDisplay = QStringLiteral("sdl,gl=on");
+            g.firmwareDir = QFileInfo(g.qemu).absoluteDir().filePath(QStringLiteral("share"));
+            qemuEnv.insert(QStringLiteral("WINQ_VAAPI"), QStringLiteral("1"));
+#else
+            g.videoDisplay = QStringLiteral("egl-headless");
+#endif
+        }
         g.memoryMb = rc.guestMemoryMb;
         // Half the machine, from 2 to 8: Android's first boot compiles every app, and it is
         // the machine's other half that the user is sitting at.
@@ -403,10 +437,10 @@ StepResult GuestVm::ensureRunning(const ResolvedConfig &rc, const LineSink &log)
                      .arg(accel)
                      .arg(g.memoryMb)
                      .arg(g.cpus));
-        const Detached d = sp_.spawnDetached(buildGuestQemuArgv(g));
-        if (d.pid <= 0)
+        qemuProcess = sp_.spawnDetached(buildGuestQemuArgv(g), qemuEnv);
+        if (qemuProcess.pid <= 0)
             return StepResult::fail(QStringLiteral("could not start %1").arg(g.qemu));
-        s.pid = d.pid;
+        s.pid = qemuProcess.pid;
         s.accel = accel;
         writeState(s);
         registerEndpoint(s);
@@ -414,8 +448,8 @@ StepResult GuestVm::ensureRunning(const ResolvedConfig &rc, const LineSink &log)
         // A missing accelerator fails within a second or two, before the guest exists at all;
         // catch it by name so the user reads what to turn on rather than QEMU's own words.
         sp_.waitMs(3000);
-        if (!sp_.detachedAlive(d)) {
-            const QString why = tail(d.log, 6);
+        if (!sp_.detachedAlive(qemuProcess)) {
+            const QString why = tail(qemuProcess.log, 6);
             if (why.contains(QLatin1String("No accelerator found")) ||
                 why.contains(QLatin1String("failed to initialize whpx")))
                 return StepResult::fail(kWhpxMissing, why);
@@ -430,19 +464,27 @@ StepResult GuestVm::ensureRunning(const ResolvedConfig &rc, const LineSink &log)
 #endif
     }
 
+    const auto bootLogs = [&] {
+        QStringList logs;
+        if (!qemuProcess.log.isEmpty()) logs.append(tail(qemuProcess.log, 8));
+        logs.append(tail(path(QStringLiteral("console.log")), 12));
+        logs.removeAll(QString());
+        return logs.join(QLatin1Char('\n'));
+    };
     // Boot to ssh is ~10 s on a hypervisor; TCG is an order of magnitude slower.
     const int budgetMs = (s.accel == QLatin1String("tcg") ? 900 : 180) * 1000;
     for (int waited = 0; waited < budgetMs; waited += 2000) {
         if (ready())
             return StepResult::good(QStringLiteral("guest running (%1)").arg(s.accel));
-        if (!qmp(s.qmpPort, nullptr, 1000))
+        // A live QEMU can take longer to open or answer its monitor during startup.
+        if (!sp_.detachedAlive(qemuProcess) && !qmp(s.qmpPort, nullptr, 1000))
             return StepResult::fail(QStringLiteral("the guest stopped while booting"),
-                                    tail(path(QStringLiteral("console.log")), 12));
+                                    bootLogs());
         sp_.waitMs(2000);
     }
     return StepResult::fail(QStringLiteral("the guest did not answer over ssh within %1 s")
                                 .arg(budgetMs / 1000),
-                            tail(path(QStringLiteral("console.log")), 12));
+                            bootLogs());
 }
 
 StepResult GuestVm::stop(const LineSink &log, int graceMs) {

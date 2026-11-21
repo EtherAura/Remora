@@ -3,6 +3,7 @@ package com.remora.agent;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
+import android.os.Build;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Range;
@@ -181,7 +182,6 @@ public final class ScreenEncoder {
 
     private void streamCapture() throws IOException, ConfigurationException {
         MediaCodec codec = createMediaCodec();
-        MediaFormat format = createFormat();
         streamer.writeStart(codecId);
 
         try {
@@ -191,6 +191,7 @@ public final class ScreenEncoder {
                         codec.getCodecInfo().getCapabilitiesForType(mimeType).getVideoCapabilities();
                 final int[] size = capture.prepare(alignment(caps), maxSize);
                 clampToCodec(size, caps);
+                MediaFormat format = createFormat(codec);
                 format.setInteger(MediaFormat.KEY_WIDTH, size[0]);
                 format.setInteger(MediaFormat.KEY_HEIGHT, size[1]);
 
@@ -448,7 +449,7 @@ public final class ScreenEncoder {
         return codec;
     }
 
-    private MediaFormat createFormat() {
+    private MediaFormat createFormat(MediaCodec codec) {
         MediaFormat format = new MediaFormat();
         format.setString(MediaFormat.KEY_MIME, mimeType);
         format.setInteger(MediaFormat.KEY_BIT_RATE, videoBitRate);
@@ -462,13 +463,22 @@ public final class ScreenEncoder {
         format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, REPEAT_FRAME_DELAY_US);
         format.setInteger(MediaFormat.KEY_PRIORITY, 0);   // real-time
         format.setInteger(MediaFormat.KEY_LATENCY, 1);    // emit a frame as soon as one is queued
+        if (capture instanceof MirrorCapture
+                && ("c2.remora.vaapi.avc.encoder".equals(codec.getName())
+                    || "c2.remora.vaapi.hevc.encoder".equals(codec.getName()))) {
+            format.setInteger("remora-rgb-mirror", 1);
+        }
         if (maxFps > 0) {
-            format.setFloat(KEY_MAX_FPS_TO_ENCODER, maxFps);
-            // c2-va needs the vendor key as well: CCodec routes the standard one to the
-            // InputSurface, which that stack does not service, while the vendor key reaches the
-            // component and drops frames at its input queue (bd remora-rjh). Unknown vendor keys
-            // are ignored elsewhere, so this is a no-op on any other encoder.
-            format.setInteger("vendor.remora-max-fps.value", Math.round(maxFps));
+            final String vendorCap = "vendor.remora-max-fps.value";
+            int rounded = Math.round(maxFps);
+            boolean componentOwnsCap = maxFps == rounded && Build.VERSION.SDK_INT >= 31
+                    && codec.getSupportedVendorParameters().contains(vendorCap);
+            if (!componentOwnsCap) {
+                format.setFloat(KEY_MAX_FPS_TO_ENCODER, maxFps);
+            }
+            format.setInteger(vendorCap, rounded);
+            Ln.i("video rate limit " + maxFps + " fps on " + codec.getName()
+                    + (componentOwnsCap ? " at component input" : " with framework input limit"));
         }
         return format;
     }

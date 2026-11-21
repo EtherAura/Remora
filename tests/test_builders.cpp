@@ -142,6 +142,26 @@ private slots:
                  QStringLiteral("/o/ghcr.io-x-remora-a17.tar"));
     }
 
+    // A folder with a space in it stays ONE argument, and only the tag is sanitised: an argv
+    // formatted then split on spaces would hand docker '/My' 'Builds', and sanitising the whole
+    // path would write the archive outside the chosen folder.
+    void imagePipelineKeepsSpacedFoldersWhole() {
+        const QString tag = QStringLiteral("remora:a17");
+        const QStringList build = buildImageBuildArgv(tag, QStringLiteral("/My Builds"));
+        const QStringList expectedBuild{"docker", "build", "-t", "remora:a17", "/My Builds"};
+        QCOMPARE(build.size(), 5);
+        QCOMPARE(build, expectedBuild);
+
+        const QString archive = imageArchivePath(QStringLiteral("/My Builds/out"), tag);
+        QCOMPARE(archive, QStringLiteral("/My Builds/out/remora-a17.tar"));
+
+        const QStringList save = buildImageSaveArgv(tag, archive);
+        const QStringList expectedSave{"docker", "save", "-o", "/My Builds/out/remora-a17.tar",
+                                       "remora:a17"};
+        QCOMPARE(save.size(), 5);
+        QCOMPARE(save, expectedSave);
+    }
+
     // With the host encoder driving the mirror, the mirror reads the stream from a socket and the
     // device-encoder options must NOT be emitted — they would configure a codec2 encoder this
     // session never starts.
@@ -1066,6 +1086,25 @@ private slots:
         // CPU COUNT IS NOT TOUCHED: nothing here may write to the cpu[0-9]* enumeration, which
         // stays honest so nproc and every scheduler decision keep seeing the real machine.
         QVERIFY2(!cmd.contains(QStringLiteral("/sys/devices/system/cpu/cpu0")), qPrintable(cmd));
+    }
+
+    void virglMirrorOnlyPrimaryRequiresGuestEncoding() {
+        ResolvedConfig c = bareCfg();
+        c.gpuMode = GpuMode::Host;
+        c.useCodec2 = true;
+        c.vaDriver = QStringLiteral("virtio_gpu");
+        c.venus = false;
+        c.hostEncode = false;
+        const auto mirrorOnly = QStringLiteral("androidboot.remora_mirror_only=1");
+        QVERIFY(buildBootArgs(c).contains(mirrorOnly));
+        c.hostEncode = true;
+        QVERIFY(!buildBootArgs(c).contains(mirrorOnly));
+        c.hostEncode = false;
+        c.venus = true;
+        QVERIFY(!buildBootArgs(c).contains(mirrorOnly));
+        c.venus = false;
+        c.vaDriver = QStringLiteral("radeonsi");
+        QVERIFY(!buildBootArgs(c).contains(mirrorOnly));
     }
 
     void bareVaDriverReachesBootArgs() {
@@ -4519,6 +4558,17 @@ private slots:
         const QStringList kvm = buildGuestQemuArgv(g);
         QVERIFY(kvm.join(' ').contains(QStringLiteral("-accel kvm -machine q35 -cpu host")));
         QVERIFY(kvm.join(' ').contains(QStringLiteral("-initrd /img/initramfs -append")));
+
+        g.accel = QStringLiteral("whpx");
+        g.videoDisplay = QStringLiteral("sdl,gl=on");
+        const QStringList video = buildGuestQemuArgv(g);
+        QCOMPARE(video.value(video.indexOf(QStringLiteral("-name")) + 1), "remora-guest-video");
+        QCOMPARE(video.value(video.indexOf(QStringLiteral("-display")) + 1), "sdl,gl=on");
+        QCOMPARE(video.value(video.indexOf(QStringLiteral("-accel")) + 1), "whpx");
+        QCOMPARE(video.value(video.indexOf(QStringLiteral("-cpu")) + 1), "host");
+        QCOMPARE(video.value(video.indexOf(QStringLiteral("-append")) + 1),
+                 "root=/dev/vda rw clearcpuid=xsavec");
+        QVERIFY(video.contains(QStringLiteral("virtio-gpu-gl-pci,blob=on,hostmem=4G,venus=on,romfile=")));
     }
 
     // Where this machine's docker is the guest (Windows), a profile with no ssh_host is the guest:

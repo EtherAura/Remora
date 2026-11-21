@@ -285,6 +285,10 @@ void frameExportInit() {
     ALOGI("frame export armed for %s", g_sock_path);
 }
 
+bool frameExportEnabled() {
+    return g_enabled;
+}
+
 void frameExportPublish(buffer_handle_t target, int width, int height) {
     if (!g_enabled || target == nullptr) return;
     std::lock_guard<std::mutex> hold(g_lock);

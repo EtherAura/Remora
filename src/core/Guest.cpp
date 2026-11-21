@@ -13,31 +13,41 @@ static QString qemuPath(const QString &p) {
 }
 
 QStringList buildGuestQemuArgv(const GuestLaunch &g) {
-    QStringList a{g.qemu, QStringLiteral("-name"), QStringLiteral("remora-guest")};
-    // WHPX with QEMU's own interrupt controller: its in-kernel irqchip is what Linux guests hang
-    // on. TCG with one thread per vCPU, since it is only ever a slow fallback.
-    if (g.accel == QLatin1String("whpx"))
+    const bool video = !g.videoDisplay.isEmpty();
+    const bool winqWhpx = video && g.accel == QLatin1String("whpx");
+    QStringList a{g.qemu, QStringLiteral("-name"),
+                  video ? QStringLiteral("remora-guest-video") : QStringLiteral("remora-guest")};
+    // WINQ uses WHPX's default interrupt controller. The stock Windows QEMU guest uses a
+    // userspace irqchip. TCG uses one thread per vCPU.
+    if (g.accel == QLatin1String("whpx") && !winqWhpx)
         a << QStringLiteral("-accel") << QStringLiteral("whpx,kernel-irqchip=off");
     else if (g.accel == QLatin1String("tcg"))
         a << QStringLiteral("-accel") << QStringLiteral("tcg,thread=multi");
     else
         a << QStringLiteral("-accel") << g.accel;
-    // `host` only exists where the accelerator can pass the CPU through (KVM); `max` is the
-    // fullest model the others offer. The Android image needs x86-64-v2 (SSE4.2, POPCNT) at least.
+    // KVM and WINQ provide CPU passthrough. Android needs at least x86-64-v2 (SSE4.2, POPCNT).
     a << QStringLiteral("-machine") << QStringLiteral("q35")
-      << QStringLiteral("-cpu") << (g.accel == QLatin1String("kvm") ? QStringLiteral("host")
-                                                                      : QStringLiteral("max"))
+      << QStringLiteral("-cpu") << (winqWhpx || g.accel == QLatin1String("kvm")
+                                         ? QStringLiteral("host") : QStringLiteral("max"))
       << QStringLiteral("-smp") << QString::number(g.cpus)
       << QStringLiteral("-m") << QString::number(g.memoryMb)
       // Nothing QEMU would add on its own: no VGA (its BIOS is not shipped), no default serial
       // or monitor, no floppy. Everything the guest has is listed below.
       << QStringLiteral("-nodefaults") << QStringLiteral("-no-user-config")
-      << QStringLiteral("-display") << QStringLiteral("none");
+      << QStringLiteral("-display") << (video ? g.videoDisplay : QStringLiteral("none"));
+    if (video) {
+        a << QStringLiteral("-device")
+          << QStringLiteral("virtio-gpu-gl-pci,blob=on,hostmem=4G,venus=on,romfile=");
+    }
     if (!g.firmwareDir.isEmpty()) a << QStringLiteral("-L") << g.firmwareDir;
     a << QStringLiteral("-kernel") << g.kernel;
     // Remora's guest kernel boots without one; an image that ships an initramfs gets it passed.
     if (!g.initrd.isEmpty()) a << QStringLiteral("-initrd") << g.initrd;
-    a << QStringLiteral("-append") << g.cmdline;
+    QString cmdline = g.cmdline;
+    // Under nested WHPX on AMD, WINQ advertises XSAVEC with a zero-sized compacted state area.
+    // Mask XSAVEC in Linux; WINQ's WHPX CPUID passthrough leaves -cpu feature masks ineffective.
+    if (winqWhpx) cmdline += QStringLiteral(" clearcpuid=xsavec");
+    a << QStringLiteral("-append") << cmdline;
     a << QStringLiteral("-drive")
       << QStringLiteral("file=%1,if=virtio,format=qcow2").arg(qemuPath(g.systemDisk))
       << QStringLiteral("-drive")

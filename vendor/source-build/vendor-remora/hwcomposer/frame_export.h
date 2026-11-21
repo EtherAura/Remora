@@ -27,6 +27,9 @@ namespace remora {
 // query buffer layout; both absent is the normal, silent, disabled case.
 REMORA_HAL_LOCAL void frameExportInit();
 
+// True when the HAL is configured to publish completed frames to a host encoder.
+REMORA_HAL_LOCAL bool frameExportEnabled();
+
 // Called from present(), AFTER the client target's acquire fence has been waited on — that wait is
 // what makes the buffer safe to read, so exporting before it would publish a half-drawn frame.
 // Does nothing if export is disabled or the encoder is not connected.

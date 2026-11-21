@@ -6,13 +6,12 @@
 // exports exactly one symbol (HMI), and links only libcutils/libsync/liblog/libc++/libdl/libc —
 // ZERO GPU libraries, no EGL, no GL, no DRM, no GBM, no gralloc, no Vulkan. It therefore performs
 // NO COMPOSITION AT ALL. SurfaceFlinger does 100% CLIENT composition on the GPU and hands the HAL
-// a finished client-target buffer. The HAL's entire job is to be a plausible display: advertise
-// one, pace it with vsync, and take delivery of the composed frame.
+// the client target and its acquire fence. The HAL advertises a display, paces it with vsync,
+// and reports when the composed frame is ready.
 //
-// So this file deliberately does not composite either. Every layer is forced to CLIENT, which is
-// what the prebuilt effectively achieves and what Remora's frame path already assumes — frames are
-// published from the Venus render server, not from here. Doing anything cleverer would change how
-// the image renders at the same moment as replacing the HAL, and those are two different changes.
+// The normal primary path requests a composed client target, including when a host encoder
+// publishes it. A mirror-only VirGL profile can skip drawing device layers on the headless
+// primary since its virtual display draws them.
 //
 // PHASE 1 IS BEHAVIOURAL PARITY. Frame export (owning the point where the composed client target
 // lands, so pick_display in remora-frame-encoder.c can stop guessing which publisher is the
@@ -124,16 +123,20 @@ public:
         if (it != layers_.end()) it->second.compositionType = type;
     }
 
-    // Everything becomes CLIENT. The changed set is only those layers that were not already
-    // CLIENT, because SurfaceFlinger validates the count it gets here against what
-    // getChangedCompositionTypes then returns, and disagreeing is a protocol error rather than a
-    // cosmetic one.
+    // Only report layers that need to become CLIENT. The mirror-only primary has no
+    // scanout and need not read buffers for device or solid-color layers.
     void validate(std::vector<hwc2_layer_t> *changedLayers) {
         std::lock_guard<std::mutex> lk(mutex_);
         pendingChanges_.clear();
-        for (const auto &kv : layers_)
-            if (kv.second.compositionType != HWC2_COMPOSITION_CLIENT)
-                pendingChanges_.push_back(kv.first);
+        const bool mirrorOnly = !remora::frameExportEnabled() &&
+                                property_get_bool("ro.boot.remora_mirror_only", false);
+        for (const auto &kv : layers_) {
+            const int32_t type = kv.second.compositionType;
+            if (type == HWC2_COMPOSITION_CLIENT) continue;
+            if (mirrorOnly &&
+                (type == HWC2_COMPOSITION_DEVICE || type == HWC2_COMPOSITION_SOLID_COLOR)) continue;
+            pendingChanges_.push_back(kv.first);
+        }
         if (changedLayers) *changedLayers = pendingChanges_;
     }
 
@@ -167,18 +170,10 @@ public:
     // Returns the fd to hand back as the PRESENT FENCE, or -1 when there is none to give.
     // Ownership transfers to the caller, which passes it to SurfaceFlinger; SF closes it.
     //
-    // WHY WE RETURN A FENCE AT ALL (bd remora-o0mb). hwcomposer2.h is unconditional: "If this call
-    // succeeds, outPresentFence will be populated with a file descriptor referring to a present
-    // sync fence object." There is no -1 case. SurfaceFlinger holds us to it — Fence(-1) reports
-    // SIGNAL_TIME_INVALID, and PresentLatencyTracker::trackPendingFrame logs "Invalid present
-    // fence" ONCE PER PRESENTED FRAME, which is where the AMD hosts' log volume was coming from.
-    //
-    // The fence we return is the CLIENT TARGET ACQUIRE FENCE, and the reason that is sound is the
-    // sync_wait below: by the time we hand it back it has ALREADY SIGNALLED, so it can never wedge
-    // the compositor waiting on us — which is the risk the old -1 was chosen to avoid, and the one
-    // constraint this change must not trade away. It is also the honest answer to what the spec
-    // asks for: composition completing is the moment this frame "starts to appear", because
-    // publishing to the export path is synchronous and happens immediately after.
+    // This headless display has no scanout. Composition completing marks presentation, so the
+    // client target's acquire fence also serves as the present fence. SurfaceFlinger tracks the
+    // fence asynchronously. The frame-export protocol sends ready buffers, so that path waits
+    // before publishing the target.
     int present() {
         int fence;
         buffer_handle_t target;
@@ -188,6 +183,8 @@ public:
             clientTargetFence_ = -1;
             target = clientTarget_;
         }
+        if (!remora::frameExportEnabled()) return fence;
+
         // Export AFTER the wait below, never before: the acquire fence is what says the GPU has
         // finished writing this buffer, so publishing early would hand the encoder a half-drawn
         // frame. A frame with no fence is already complete and can go straight out.
@@ -205,9 +202,8 @@ public:
                                 std::chrono::steady_clock::now() - start).count();
             ALOGW("client target fence %d did not signal within %lld ms", fence,
                   static_cast<long long>(ms));
-            // NOT handed back. This is the one path where the fence is NOT known to be signalled,
-            // and an unsignalled present fence is precisely what stalls the compositor. A wedged
-            // GPU should cost us a log line, never the device.
+            // Keep the frame-export timeout bounded and report no present fence when this path
+            // cannot confirm that composition completed.
             close(fence);
             remora::frameExportPublish(target, width_, height_);
             return -1;
@@ -262,11 +258,10 @@ private:
             lk.unlock();
 
             const auto now = std::chrono::steady_clock::now();
-            next += period;
-            // A long stall (a suspended container, a stopped host) leaves the deadline far in the
-            // past; catching up would fire a burst of vsyncs with backdated timestamps, which is
-            // worse than the gap. Re-base instead.
-            if (next < now) next = now + period;
+            // Report the most recent display edge and skip missed edges. Keeping the phase
+            // prevents a delayed callback from shifting SurfaceFlinger's refresh clock.
+            const auto edge = next + period * ((now - next) / period);
+            next = edge + period;
 
             HWC2_PFN_VSYNC fn = nullptr;
             hwc2_callback_data_t data = nullptr;
@@ -277,7 +272,7 @@ private:
             }
             if (fn) {
                 const int64_t ts = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                       now.time_since_epoch()).count();
+                                       edge.time_since_epoch()).count();
                 fn(data, kPrimaryDisplay, ts);
                 ++sent;
             }
@@ -532,8 +527,8 @@ int32_t validateDisplay(hwc2_device_t *dev, hwc2_display_t display, uint32_t *ou
 
 int32_t presentDisplay(hwc2_device_t *dev, hwc2_display_t display, int32_t *outPresentFence) {
     if (display != kPrimaryDisplay) return HWC2_ERROR_BAD_DISPLAY;
-    // The already-signalled client target acquire fence, or -1 when there is none to give. See
-    // Display::present() for why handing one back is both required and safe (bd remora-o0mb).
+    // The client target acquire fence becomes the present fence. Display::present() also handles
+    // fence ownership and the frame-export wait.
     *outPresentFence = self(dev)->display.present();
     return HWC2_ERROR_NONE;
 }
@@ -753,7 +748,8 @@ int openDevice(const hw_module_t *module, const char *name, hw_device_t **device
     // mode is not in use.
     remora::frameExportInit();
     *device = &dev->base.common;
-    ALOGI("remora hwcomposer opened (HWC2 passthrough, client composition only)");
+    ALOGI("remora hwcomposer opened (primary frame export %s)",
+          remora::frameExportEnabled() ? "enabled" : "disabled");
     return 0;
 }
 

@@ -1,0 +1,136 @@
+From: Codex <codex@localhost>
+Date: Fri, 20 Nov 2026 11:23:10 -0500
+Subject: [PATCH] EncodeComponent: preserve frame pacing across jittered input
+
+Carry bounded timestamp credit across work items. A late vsync followed
+by an early one can now fill both frame slots at the requested rate.
+Reset on flush and timestamp discontinuities and preserve sync requests.
+
+diff --git a/components/EncodeComponent.cpp b/components/EncodeComponent.cpp
+index e1562c9740d44e2ef1fa35bb08769fc7e0095650..d3045ff696f396b4a44fdf26c6200f059169449a 100644
+--- a/components/EncodeComponent.cpp
++++ b/components/EncodeComponent.cpp
+@@ -456,34 +456,44 @@
+         return;
+     }
+ 
+-    // Component-side max-fps frame dropping (bd remora-rjh). Nothing else drops on this stack:
+-    // the SDK's KEY_MAX_FPS_TO_ENCODER only configures the framework's InputSurface, so any SF
+-    // render rate above the encoder drain rate backs the mirror BufferQueue up and the
+-    // backpressure stalls SurfaceFlinger globally. The cap arrives via the vendor tuning
+-    // ("vendor.remora-max-fps.value", per session) or the vendor.remora.encoder_max_fps
+-    // property (ops fallback). A dropped work completes immediately with no output — the same
+-    // contract as the empty-CSD discard above. Never dropped: the first frame (carries
+-    // CSD/IDR), EOS, non-monotonic timestamps, and frames with a sync-frame request pending
+-    // (the request is only consumed on the encode path).
+-    if (!work->input.buffers.empty() && !endOfStream && mDropLastTsUs &&
+-        timestamp > *mDropLastTsUs) {
++    // Enforce the session's vendor tuning, or the property fallback. Complete
++    // discarded work immediately so it cannot hold up the mirror BufferQueue.
++    // First frames, timestamp discontinuities, EOS and pending sync requests
++    // still reach the encoder.
++    if (!work->input.buffers.empty() && !endOfStream) {
+         int32_t maxFps = mInterface->getRemoraMaxFps();
+         if (maxFps <= 0) maxFps = mPropMaxFps;
+-        if (maxFps > 0 && (timestamp - *mDropLastTsUs) <
+-                                  static_cast<int64_t>(950000) / maxFps /* 5% vsync slack */) {
+-            C2StreamRequestSyncFrameTuning::output requestKeyFrame;
+-            const bool syncPending =
+-                    (mInterface->query({&requestKeyFrame}, {}, C2_DONT_BLOCK, nullptr) == C2_OK) &&
+-                    requestKeyFrame.value == C2_TRUE;
+-            if (!syncPending) {
+-                ALOGV("Dropping frame ts=%" PRId64 " (max-fps %d, gap %" PRId64 "us)", timestamp,
+-                      maxFps, timestamp - *mDropLastTsUs);
+-                reportWork(std::move(work));
+-                return;
++        if (maxFps > 0 && mLastInputTsUs != INT64_MIN && timestamp > mLastInputTsUs) {
++            const int64_t period = std::max<int64_t>(1, 1000000 / maxFps);
++            // Carry timing error across frames. Bound the credit after idle so
++            // the next burst cannot consume a backlog of unused frame slots.
++            // SurfaceFlinger can deliver adjacent display frames together.
++            // Borrow at most one 60 Hz interval, and charge it to later input.
++            const int64_t jitter = std::min<int64_t>(period, 16667);
++            const uint64_t elapsed = uint64_t(timestamp) - uint64_t(mLastInputTsUs);
++            mLastInputTsUs = timestamp;
++            mPaceCreditUs = std::min<int64_t>(period,
++                    std::max(mPaceCreditUs, -jitter) + static_cast<int64_t>(
++                            std::min<uint64_t>(elapsed, 2 * period + jitter)));
++            if (mPaceCreditUs < period - jitter) {
++                C2StreamRequestSyncFrameTuning::output requestKeyFrame;
++                const bool syncPending =
++                        (mInterface->query({&requestKeyFrame}, {}, C2_DONT_BLOCK, nullptr) == C2_OK) &&
++                        requestKeyFrame.value == C2_TRUE;
++                if (!syncPending) {
++                    ATRACE_NAME("RemoraMaxFpsDrop");
++                    reportWork(std::move(work));
++                    return;
++                }
++                mPaceCreditUs = 0;
++            } else {
++                mPaceCreditUs -= period;
+             }
+-        }
+-    }
+-    mDropLastTsUs = timestamp;
++        } else {
++            mLastInputTsUs = timestamp;
++            mPaceCreditUs = 0;
++        }
++    }
+ 
+     // By the time we get an input buffer, the output block pool should be configured.
+     if (!mOutputBlockPool && !getBlockPool()) {
+@@ -655,9 +665,6 @@
+     }
+     done->Signal();
+ 
+-    // Post-flush the next frame must always encode (fresh IDR/CSD), so forget the drop cadence.
+-    mDropLastTsUs.reset();
+-
+     flush();
+ }
+ 
+@@ -812,6 +819,8 @@
+ 
+ void EncodeComponent::flush() {
+     ATRACE_CALL();
++    mLastInputTsUs = INT64_MIN;
++    mPaceCreditUs = 0;
+     ALOGV("%s()", __func__);
+     ALOG_ASSERT(mEncoderTaskRunner->RunsTasksInCurrentSequence());
+ 
+diff --git a/components/EncodeInterface.cpp b/components/EncodeInterface.cpp
+index 646242626b9a8400d899499805988d6f08faa46a..6ad24340d11e7841f92c3c2405598c99f0e33fac 100644
+--- a/components/EncodeInterface.cpp
++++ b/components/EncodeInterface.cpp
+@@ -267,10 +267,8 @@
+                          .withSetter(Setter<decltype(*mBitrate)>::StrictValueWithNoDeps)
+                          .build());
+ 
+-    // Vendor encode-fps cap (bd remora-rjh): reachable from MediaFormat as
+-    // "vendor.remora-max-fps.value". EncodeComponent drops frames at the queue to honor it —
+-    // the SDK's KEY_MAX_FPS_TO_ENCODER never reaches a C2 component (CCodec routes it to the
+-    // InputSurface, which this stack doesn't service).
++    // The standard max-fps key configures the framework input surface. This
++    // vendor key lets the client select the component as the rate limiter.
+     addParameter(DefineParam(mRemoraMaxFps, C2_PARAMKEY_REMORA_MAX_FPS)
+                          .withDefault(new C2StreamRemoraMaxFpsTuning::input(0u, 0))
+                          .withFields({C2F(mRemoraMaxFps, value).inRange(0, 1000)})
+diff --git a/components/include/v4l2_codec2/components/EncodeComponent.h b/components/include/v4l2_codec2/components/EncodeComponent.h
+index a99e4e489a47afe0f08e0061145f40d2f2067a73..c1e984c018e4647f82a78b0adc6374252febc278 100644
+--- a/components/include/v4l2_codec2/components/EncodeComponent.h
++++ b/components/include/v4l2_codec2/components/EncodeComponent.h
+@@ -169,9 +169,10 @@
+     uint32_t mMaxFramerate = std::numeric_limits<uint32_t>::max();
+     // The timestamp of the last frame encoded, used to dynamically adjust the framerate.
+     std::optional<int64_t> mLastFrameTime;
+-    // Max-fps frame dropping (bd remora-rjh): timestamp of the last frame actually handed to
+-    // the encoder, and the boot-time property fallback for the cap (vendor param wins).
+-    std::optional<int64_t> mDropLastTsUs;
++    // The limiter accumulates input time and charges one period for each
++    // accepted frame. A flush or timestamp discontinuity resets its phase.
++    int64_t mLastInputTsUs = INT64_MIN;
++    int64_t mPaceCreditUs = 0;
+     int32_t mPropMaxFps = 0;
+ 
+     // Whether we need to extract and submit CSD (codec-specific data, e.g. H.264 SPS).

@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstring>
 
 #include <base/bind.h>
 #include <cutils/properties.h>
@@ -335,6 +336,14 @@ bool VaapiVideoEncoder::initialize() {
     }
     VADisplay dpy = mDevice->display();
 
+    char vaDriver[PROPERTY_VALUE_MAX];
+    property_get("ro.boot.va_driver", vaDriver, "");
+    const bool virglH264 = isH264Profile(mProfile) && std::strcmp(vaDriver, "virtio_gpu") == 0;
+    if (virglH264) {
+        // Back the visible VA context with macroblock-aligned AVC surfaces.
+        mCodedSize = ui::Size(alignUp(mVisibleSize.width, 16), alignUp(mVisibleSize.height, 16));
+    }
+
     // Resolve the encode entrypoint: prefer the low-power EncSliceLP (VDENC) path — it doubles
     // throughput on this VF (benchmarked 124 fps vs 62 fps EncSlice at 3760x1992, bd
     // remora-mzw.2), which is what makes a 120 Hz full-res mirror drain. VDENC's CBR/VBR rate
@@ -444,7 +453,11 @@ bool VaapiVideoEncoder::initialize() {
     mPackedHeaders = false;
     uint32_t packedMask = VA_ENC_PACKED_HEADER_SEQUENCE | VA_ENC_PACKED_HEADER_PICTURE |
                           VA_ENC_PACKED_HEADER_SLICE;
-    if (queried[2].value != VA_ATTRIB_NOT_SUPPORTED &&
+    if (virglH264) {
+        // Mesa's AVC packed-header parser can stall on the Codec2 slice headers. The
+        // VirGL host encoder writes the parameter sets that describe its own output.
+        ALOGI("VirGL AVC uses host-generated stream headers");
+    } else if (queried[2].value != VA_ATTRIB_NOT_SUPPORTED &&
         (queried[2].value & packedMask) == packedMask) {
         mPackedHeaders = true;
     } else {
@@ -493,7 +506,8 @@ bool VaapiVideoEncoder::initialize() {
 
     // The context is created over the reconstructed surfaces (the render targets).
     VASurfaceID renderTargets[2] = {mReconSurfaces[0], mReconSurfaces[1]};
-    status = vaCreateContext(dpy, mVAConfig, mCodedSize.width, mCodedSize.height, VA_PROGRESSIVE,
+    const ui::Size& contextSize = virglH264 ? mVisibleSize : mCodedSize;
+    status = vaCreateContext(dpy, mVAConfig, contextSize.width, contextSize.height, VA_PROGRESSIVE,
                              renderTargets, 2, &mVAContext);
     if (status != VA_STATUS_SUCCESS) {
         ALOGE("vaCreateContext() failed: %s", vaErrorStr(status));

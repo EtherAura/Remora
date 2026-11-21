@@ -30,10 +30,21 @@ PKGS="alpine-base kmod e2fsprogs \
 
 apk add --no-cache e2fsprogs e2fsprogs-extra qemu-img curl >/dev/null
 
+VARIANT=
+if [ "${VIDEO_PROTOTYPE:-0}" = 1 ]; then
+    VARIANT=-video
+    PKGS="$PKGS ffmpeg libva-utils libdrm libstdc++ libgcc expat libelf zlib zstd-libs"
+    MESA_KEY=$(sha256sum /guest/video-mesa.sh | cut -c1-16)
+    MESA_OUT="/cache/video-mesa-$MESA_KEY"
+    if [ ! -s "$MESA_OUT/virtio_gpu_drv_video.so" ] || [ ! -s "$MESA_OUT/license.rst" ]; then
+        sh /guest/video-mesa.sh "$MESA_OUT"
+    fi
+fi
+
 # The kernel, built once per version and configuration and cached across builds (~5 min cold).
 # Binder and binderfs, DMA-BUF heaps, and every driver from power-on to / built in; the rest as
 # Alpine configures it. See guest/kernel/remora.fragment for what differs and why.
-KKEY="$KERNEL-$(sha256sum /guest/kernel/config | cut -c1-16)"
+KKEY="$KERNEL-$(sha256sum /guest/kernel/config | cut -c1-16)$VARIANT"
 KOUT="/cache/kernel-$KKEY"
 if [ ! -f "$KOUT/vmlinuz" ]; then
     apk add --no-cache build-base bc bison flex perl openssl openssl-dev elfutils-dev \
@@ -43,25 +54,37 @@ if [ ! -f "$KOUT/vmlinuz" ]; then
         curl -fL -o "$TAR" "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL.tar.xz"
         echo "$KERNEL_SHA256  $TAR" | sha256sum -c -s || { echo "kernel source checksum" >&2; exit 1; }
     fi
-    # The tree is kept in the cache too, so a failure late in a build costs a rebuild of what
-    # changed rather than the whole kernel. One tree per version.
-    TREE="/cache/tree-$KERNEL"
+    # The tree is in the cache too while its kernel is being built, so a failure late in a build
+    # costs a rebuild of what changed rather than the whole kernel. Keep the experimental
+    # configuration in its own tree.
+    TREE="/cache/tree-$KERNEL$VARIANT"
     [ -d "$TREE" ] || { mkdir -p "$TREE.new" && tar -xf "$TAR" -C "$TREE.new" --strip-components=1 &&
                         mv "$TREE.new" "$TREE"; }
     rm -rf "$KOUT.new"
     mkdir -p "$KOUT.new"
     cd "$TREE"
     cp /guest/kernel/config .config
+    if [ "$VARIANT" = -video ]; then
+        apk add --no-cache bash >/dev/null
+        scripts/config --set-str LOCALVERSION -remora-video --enable DRM --enable DRM_VIRTIO_GPU
+    fi
     make -s olddefconfig
-    cmp -s .config /guest/kernel/config || {
+    if [ "$VARIANT" = -video ]; then
+        for option in DRM DRM_VIRTIO_GPU; do
+            grep -qx "CONFIG_$option=y" .config || { echo "assemble: CONFIG_$option did not take" >&2; exit 1; }
+        done
+    elif ! cmp -s .config /guest/kernel/config; then
         echo "guest/kernel/config is not complete for $KERNEL: rerun guest/kernel/derive-config.sh" >&2
         exit 1
-    }
+    fi
     make -s -j"$(nproc)" bzImage modules
     make -s INSTALL_MOD_PATH="$KOUT.new" INSTALL_MOD_STRIP=1 modules_install
     cp arch/x86/boot/bzImage "$KOUT.new/vmlinuz"
     cd /
     mv "$KOUT.new" "$KOUT"
+    # A built kernel is never built again, so its tree (about 12 GB) goes. It is worth keeping
+    # only while the configuration is still being changed: REMORA_GUEST_KEEP_TREE=1 keeps it.
+    [ "${KEEP_TREE:-0}" = 1 ] || rm -rf "$TREE"
 fi
 
 mkdir -p "$R/etc/apk"
@@ -77,6 +100,12 @@ apk add --root "$R" --initdb --no-cache $PKGS >/dev/null 2>"/tmp/apk.err" || {
 # the guest's remora account. In the guest they must be root's.
 cp -r /guest/rootfs/. "$R/"
 chmod 755 "$R/etc/init.d/remora-guest" "$R/usr/sbin/remora-run"
+if [ "$VARIANT" = -video ]; then
+    # Alpine 3.24 builds Mesa without virgl. Include the prototype's own VA driver.
+    install -D -m 644 "$MESA_OUT/virtio_gpu_drv_video.so" "$R/usr/lib/dri/virtio_gpu_drv_video.so"
+    install -D -m 644 "$MESA_OUT/license.rst" "$R/usr/share/licenses/remora-video-mesa/license.rst"
+    install -D -m 755 /guest/video-probe.sh "$R/usr/local/bin/remora-video-probe"
+fi
 
 # Alpine's own sysctl hardening, shadowed by a same-named copy in /etc with two values changed:
 #   kernel.unprivileged_bpf_disabled 1 -> 0: Android's netbpfload writes 0 at boot, a 1 is
@@ -100,6 +129,9 @@ grep -qx 'kernel.unprivileged_bpf_disabled = 0' "$R/etc/sysctl.d/00-alpine.conf"
 # '*' rather than adduser's '!': OpenSSH without PAM refuses key logins to a '!' (locked) account.
 chroot "$R" adduser -D -u 1000 -s /bin/bash remora
 chroot "$R" addgroup remora docker
+if [ "$VARIANT" = -video ]; then
+    chroot "$R" addgroup remora video
+fi
 sed -i 's/^remora:!/remora:*/' "$R/etc/shadow"
 
 for s in devfs dmesg mdev hwdrivers; do chroot "$R" rc-update add "$s" sysinit >/dev/null; done
@@ -141,6 +173,11 @@ echo "root=/dev/vda rootfstype=ext4 rw console=ttyS0 quiet panic=10 psi=1" \
     echo
     echo "packages:"
     apk info --root "$R" -v 2>/dev/null | sort
+    if [ "$VARIANT" = -video ]; then
+        echo
+        echo "Mesa virgl VA driver:"
+        (cd "$R" && sha256sum usr/lib/dri/virtio_gpu_drv_video.so)
+    fi
 } >/out/manifest.txt
 # The container runs as root; the files belong to whoever ran guest/build.sh.
 chmod 644 /out/*

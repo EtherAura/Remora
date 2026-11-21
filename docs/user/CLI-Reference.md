@@ -82,6 +82,7 @@ remora images list
 remora images check --tag remora24:x86_64-public
 remora images fetch --tag remora24:x86_64-public
 remora images rollback --tag remora24:x86_64-public
+remora images cleanup-plan --tag remora24:x86_64-public
 ```
 
 `images list` prints the signed catalog of Remora's public, redistributable Android 17 images.
@@ -99,6 +100,12 @@ Docker host. On Windows, which has no local Docker, a command without `--host` r
 profile's `ssh_host`, and is refused when the profile has none. `--source` names another signed
 catalog location. The workspace's **Official downloads** button adds the same source to the Image
 library.
+
+`images cleanup-plan` previews obsolete official release tags using local import receipts for the
+current user and the Docker inventory on the selected host. The JSON result lists candidate `tags`
+and retained image IDs. It protects current and rollback images, images used by running or stopped
+containers, and images with other tags or without a Remora rollback alias. Incomplete or changed
+observations fail the command. The plan is a read-only snapshot of tag names and image IDs.
 
 The public image is x86_64 only. It has no Google apps and no ARM translation, so apps that ship
 only ARM native code refuse to install on it. Add Google Play locally with `play-install` below.
@@ -153,7 +160,7 @@ the image this installer is meant for. The overlay it creates is private and is 
 | `remora recipe [<profile>] [--base <tag>]` | Print the custom-image Dockerfile for the profile's features. `--base` layers onto that image instead of the best-matching registered tag |
 | `remora build [--tag <tag>] [--base <tag>]` | Build that recipe for the active profile, as a Docker overlay. `--tag` names the result |
 | `remora build --source [<profile>]` | Full source build of the profile's image: the same chain the workspace runs. A profile with the `public_release` feature builds the redistributable `remora24:x86_64-public` image, and the build fails if the release audit does. On Windows it needs `source_host` |
-| `remora images list\|check\|fetch\|rollback [--tag <tag>] [--source <url>] [--host <user@host>]` | List, check for a newer release of, verify and import, or roll back an official signed image. Every action but `list` needs `--tag`. See above |
+| `remora images list\|check\|fetch\|rollback\|cleanup-plan [--tag <tag>] [--source <url>] [--host <user@host>]` | List, check for a newer release of, verify and import, roll back, or preview obsolete tags for an official signed image. Every action but `list` needs `--tag`. See above |
 | `remora venus-build [--dir <dir>] [--tag <version>\|latest]` | Build and install the NVIDIA Venus host renderer. `--dir` sets the install root, `--tag` the guest-library release |
 
 ## Move apps between instances

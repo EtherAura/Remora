@@ -1090,5 +1090,131 @@ class ReleaseRetention(unittest.TestCase):
             self.assertEqual(self.decide()['tags'], tuple(sorted(self.a_tags)))
 
 
+class CleanupPlan(unittest.TestCase):
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.xdg = Path(d.name) / 'cache'
+        self.cache = self.xdg / 'remora/images'
+        self.cache.mkdir(parents=True)
+        self.receipt = self.cache / (TAG.replace(':', '_') + '.receipt.json')
+        self.a, self.b, self.c = ('sha256:' + n * 64 for n in 'abc')
+        self.a_tags = [rollback_alias(self.a), TAG + '-20261113.012458']
+        self.receipt.write_text(json.dumps({'tag': TAG, 'image': self.c, 'signed_image_id': self.c,
+                                           'previous': self.b, 'backup': rollback_alias(self.b)}))
+        self.images = {self.a: {'Id': self.a, 'RepoTags': self.a_tags.copy()},
+                       self.b: {'Id': self.b, 'RepoTags': [rollback_alias(self.b)]},
+                       self.c: {'Id': self.c, 'RepoTags': [TAG]}}
+        self.containers = {}
+        self.calls = []
+
+    def docker(self, args, **kwargs):
+        self.calls.append(args)
+        if args == ('docker', 'context', 'inspect'):
+            out = json.dumps([{'Endpoints': {'docker': {'Host': 'unix:///var/run/docker.sock'}}}])
+        else:
+            self.assertEqual(args[0], 'docker')
+            self.assertIn(args[1], ('image', 'container'))
+            self.assertIn(args[2], ('ls', 'inspect'))
+            images = args[1] == 'image'
+            records = self.images if images else self.containers
+            if args[2] == 'ls':
+                self.assertEqual(args[3:], ('--all', '--quiet', '--no-trunc'))
+                out = '\n'.join(records)
+                if images:
+                    out += '\n' + self.a  # Docker may list the same image for each tag.
+            else:
+                field = 'RepoTags' if images else 'Image'
+                self.assertEqual(args[3:5], ('--format', '{"Id":{{json .Id}},"' + field
+                                                        + '":{{json .' + field + '}}}'))
+                out = '\n'.join(json.dumps(records[iid]) for iid in args[5:] if iid in records)
+        return subprocess.CompletedProcess(args, 0, stdout=out, stderr='')
+
+    def command(self, docker=None, failure=None):
+        out = io.StringIO()
+        with patch.dict('os.environ', {'XDG_CACHE_HOME': str(self.xdg), 'DOCKER_HOST': ''}), \
+                patch.object(catalog.subprocess, 'run', side_effect=docker or self.docker), \
+                patch.object(catalog, 'get', side_effect=AssertionError('catalog was fetched')), \
+                contextlib.redirect_stdout(out):
+            if failure:
+                with self.assertRaisesRegex(failure[0], failure[1]):
+                    catalog.main(['cleanup-plan', '--tag', TAG])
+                self.assertEqual(out.getvalue(), '')
+                return
+            self.assertEqual(catalog.main(['cleanup-plan', '--tag', TAG]), 0)
+        prefix = 'REMORA_IMAGES_RESULT='
+        self.assertTrue(out.getvalue().startswith(prefix), out.getvalue())
+        return json.loads(out.getvalue()[len(prefix):])
+
+    def test_lists_candidates_without_writing_cache_or_changing_docker(self):
+        original = self.receipt.read_bytes()
+        self.assertEqual(self.command(), {'tag': TAG, 'dry_run': True, 'complete': True,
+                                         'reason': None, 'tags': sorted(self.a_tags),
+                                         'retain': [self.b, self.c]})
+        self.assertEqual(list(self.cache.iterdir()), [self.receipt])
+        self.assertEqual(self.receipt.read_bytes(), original)
+        self.assertEqual(self.images[self.a]['RepoTags'], self.a_tags)
+
+    def test_retains_running_and_stopped_containers_images(self):
+        cid = '1' * 64
+        for running in (True, False):
+            with self.subTest(running=running):
+                self.containers[cid] = {'Id': cid, 'Image': self.a, 'State': {'Running': running}}
+                result = self.command()
+                self.assertEqual(result['tags'], [])
+                self.assertIn(self.a, result['retain'])
+
+    def test_retains_foreign_or_unanchored_tags(self):
+        for held in (self.a_tags + ['user/keep:latest'], self.a_tags[1:]):
+            with self.subTest(tags=held):
+                self.images[self.a]['RepoTags'] = held
+                self.assertEqual(self.command()['tags'], [])
+
+    def test_untagged_classic_store_image_is_not_a_candidate(self):
+        iid = 'sha256:' + 'f' * 64
+        self.images[iid] = {'Id': iid, 'RepoTags': None}
+        self.assertEqual(self.command()['tags'], sorted(self.a_tags))
+
+    def test_docker_error_or_partial_inspection_emits_no_plan(self):
+        for rc in (0, 1):
+            with self.subTest(returncode=rc):
+                def inspect(args, **kwargs):
+                    if args[1:3] == ('image', 'inspect'):
+                        return subprocess.CompletedProcess(args, rc, stdout='',
+                                                           stderr='docker unavailable' if rc else '')
+                    return self.docker(args, **kwargs)
+
+                reason = 'docker unavailable' if rc else 'Incomplete Docker image inspection'
+                self.command(docker=inspect, failure=(catalog.VerificationError, reason))
+
+    def test_inventory_change_emits_no_plan(self):
+        def inspect(args, **kwargs):
+            if args[1:3] == ('image', 'inspect') and args in self.calls:
+                self.images[self.a]['RepoTags'].append('user/hold:1')
+            return self.docker(args, **kwargs)
+
+        self.command(docker=inspect, failure=(catalog.VerificationError, 'changed during'))
+
+    def test_missing_container_image_emits_no_plan(self):
+        cid = '1' * 64
+        self.containers[cid] = {'Id': cid, 'Image': 'sha256:' + 'f' * 64}
+        self.command(failure=(catalog.VerificationError, 'container image is absent'))
+
+    def test_receipt_errors_precede_docker_queries(self):
+        pending = self.receipt.with_suffix('.pending.json')
+        pending.touch()
+        self.command(failure=(catalog.VerificationError, 'receipt is pending'))
+        pending.unlink()
+        self.receipt.write_text('{')
+        self.command(failure=(json.JSONDecodeError, 'Expecting property name'))
+        self.assertEqual(self.calls, [])
+
+    def test_missing_cache_fails_without_creating_it(self):
+        self.xdg = self.xdg.with_name('missing')
+        self.command(failure=(catalog.VerificationError, 'No verified-import receipt'))
+        self.assertFalse(self.xdg.exists())
+        self.assertEqual(self.calls, [])
+
+
 if __name__ == '__main__':
     unittest.main()

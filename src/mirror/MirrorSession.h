@@ -99,6 +99,7 @@ public:
     // context can take CUDA frames directly, and disarms it if interop fails mid-stream. A no-op
     // unless the decoder's hw device is CUDA.
     void setKeepHwFrames(bool keep) { decoder_.setKeepHwFrames(keep); }
+    void setKeepVaapiFrames(bool keep) { decoder_.setKeepVaapiFrames(keep); }
     void *decoderCudaContext() const { return decoder_.cudaContext(); }
     const MouseBindings &mouseBindings() const { return opts_.mouseBind; }
     const QHash<int, BindAction> &keyBindings() const { return opts_.keyBind; }
@@ -212,6 +213,8 @@ private:
     Recorder recorder_;
     bool recording_ = false;
     DeviceMessageParser deviceMsgs_;
+    QTimer videoDrain_;
+    bool videoEof_ = false;
     QTimer firstFrameTimer_;
     bool frameSeen_ = false;
     bool stopping_ = false;

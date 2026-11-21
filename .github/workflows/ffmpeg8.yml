@@ -68,12 +68,29 @@ jobs:
       # run.
       - name: Install dependencies
         run: |
+          set -euo pipefail
           pacman-key --init
           pacman-key --populate archlinux
-          pacman -Syyuu --noconfirm --needed \
-            base-devel cmake ninja pkgconf git python openssl \
-            qt6-base qt6-multimedia qt6-webengine \
+          packages=(
+            base-devel cmake ninja pkgconf git python openssl
+            qt6-base qt6-multimedia qt6-webengine
             ffmpeg ffnvcodec-headers vulkan-headers libva
+          )
+          # Retry archive transfers before any packages are installed. Successful downloads
+          # stay in pacman's cache, and the install uses the same repository databases.
+          for attempt in 1 2 3; do
+            if pacman -Syyuuw --noconfirm --needed "${packages[@]}"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Could not download packages from $ARCH_SNAPSHOT after $attempt attempts"
+              exit 1
+            fi
+            delay=$((15 * attempt))
+            echo "::warning::Arch snapshot download failed (attempt $attempt of 3). Retrying in ${delay}s."
+            sleep "$delay"
+          done
+          pacman -Suu --noconfirm --needed "${packages[@]}"
           pacman -Q ffmpeg libva vulkan-headers ffnvcodec-headers qt6-base gcc cmake
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

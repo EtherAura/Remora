@@ -1,0 +1,61 @@
+From: Remora <remora@localhost>
+Date: Fri, 20 Nov 2026 12:49:00 -0500
+Subject: [PATCH] SurfaceFlinger: retain negotiated VirGL mirror output textures
+
+The encoder sink can rotate through more buffers than the default
+RenderSurface texture cache holds. With Remora's mirror-only boot profile,
+size the per-virtual-display cache for the minimum undequeued count and
+one producer target. Keep BufferQueue allocation and synchronization intact.
+
+diff --git a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+index d6028bf4cf910f2256ce3a9501510fa47ca12de0..2fe8e0866cb7053cd83b173ae10b1f90d4ce2a1d 100644
+--- a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+@@ -16,6 +16,7 @@
+ 
+ #define ATRACE_TAG ATRACE_TAG_GRAPHICS
+ 
++#include <android-base/properties.h>
+ #include <android-base/stringprintf.h>
+ #include <android/native_window.h>
+ #include <common/trace.h>
+@@ -26,6 +27,7 @@
+ #include <compositionengine/impl/DumpHelpers.h>
+ #include <compositionengine/impl/OutputCompositionState.h>
+ #include <compositionengine/impl/RenderSurface.h>
++#include <gui/BufferQueueDefs.h>
+ #include <log/log.h>
+ #include <renderengine/ExternalTexture.h>
+ #include <renderengine/RenderEngine.h>
+@@ -87,6 +89,18 @@
+     ALOGE_IF(status != NO_ERROR, "Unable to set BQ format to RGBA888: %d", status);
+     status = native_window_set_usage(window, DEFAULT_USAGE);
+     ALOGE_IF(status != NO_ERROR, "Unable to set BQ usage bits for GPU rendering: %d", status);
++    if (status == NO_ERROR && mDisplay.isVirtual() &&
++        base::GetBoolProperty("ro.boot.remora_mirror_only", false)) {
++        int minUndequeued = 0;
++        if (window->query(window, NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS, &minUndequeued) == 0 &&
++            minUndequeued > 0 && minUndequeued < BufferQueueDefs::NUM_BUFFER_SLOTS) {
++            // RenderSurface dequeues one target. Keep the rest of the sink's
++            // active rotation mapped without increasing the queue depth.
++            mMaxTextureCacheSize = std::max(mMaxTextureCacheSize,
++                                            static_cast<size_t>(minUndequeued) + 1);
++            ALOGI("Remora virtual display texture cache: %zu", mMaxTextureCacheSize);
++        }
++    }
+ }
+ 
+ const ui::Size& RenderSurface::getSize() const {
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h
+index 202145ed6c2effbf9168c17627234bd5a0911391..6a7d8ee7b3a870334bde91ae5c69228fe6d12a98 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h
+@@ -84,7 +84,7 @@
+     std::shared_ptr<renderengine::ExternalTexture> mTexture;
+     const sp<DisplaySurface> mDisplaySurface;
+     ui::Size mSize;
+-    const size_t mMaxTextureCacheSize;
++    size_t mMaxTextureCacheSize;
+     bool mProtected{false};
+ };
+ 

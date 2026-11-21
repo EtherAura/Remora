@@ -4,14 +4,26 @@
 #include <QElapsedTimer>
 #include <QOpenGLBuffer>
 #include <QOpenGLShaderProgram>
+#ifdef Q_OS_LINUX
+#include <QOpenGLWindow>
+#else
 #include <QOpenGLWidget>
+#endif
 #include <QTimer>
 #include <optional>
 
 #include "CudaInterop.h"
+#include "VaapiInterop.h"
 #include "MirrorSession.h"
 
 namespace remora::mirror {
+
+#ifdef Q_OS_LINUX
+// A native surface can present each decoded frame without the widget backing store.
+using MirrorSurface = QOpenGLWindow;
+#else
+using MirrorSurface = QOpenGLWidget;
+#endif
 
 // The mirror surface: uploads decoded frames to a GPU texture and lets the GPU scale them to the
 // widget (stretched to fill), and translates Qt input into control messages.
@@ -20,7 +32,7 @@ namespace remora::mirror {
 // GPU rather than QPainter: drawImage() with SmoothPixmapTransform resamples on the CPU, on the
 // GUI thread, for every frame — 7.5 MP per frame at the daily-driver geometry, which made the
 // mirror measurably slower (bd remora-28ix.2.1).
-class MirrorWindow : public QOpenGLWidget, protected QOpenGLFunctions {
+class MirrorWindow : public MirrorSurface, protected QOpenGLFunctions {
     Q_OBJECT
 public:
     MirrorWindow(MirrorSession *session, const QString &title, QString shotPath = {});
@@ -62,7 +74,7 @@ protected:
     bool uploadCudaFrame(AVFrame *f, bool resized);
     // Interop is off for good: warn loudly, and tell the decoder to go back to downloading.
     void interopFailed(const QString &why);
-    // Fallback for CUDA frames already in flight when interop dies: hw → dlFrame_ here, then the
+    // Fallback for CUDA or VA-API frames already in flight when interop dies: hw → dlFrame_ here, then the
     // normal upload path takes it. False = the frame is lost; keep drawing the last texture.
     bool downloadFrame(AVFrame *f);
     void mousePressEvent(QMouseEvent *e) override;
@@ -75,6 +87,10 @@ protected:
 
 private:
     void onFrame(const VideoFrame &frame);
+    void releaseVaapiTextures();
+    void retireVaapiFrame();
+    void releaseVaapiFrames(bool wait);
+    void fenceVaapiDraw();
     void requestDisplayReflow();
     void sendTouch(quint8 action, QPointF pos, float pressure, qint32 actionButton,
                    qint32 buttons);
@@ -105,6 +121,20 @@ private:
     // is not driven by a frame (resize, expose) costs nothing but a redraw of the same texture.
     GLuint texY_ = 0, texUV_ = 0;   // NV12: luma plane + interleaved chroma
     QSize textureSize_;
+    VaapiInterop vaapi_;
+    GLuint vaapiY_ = 0, vaapiUV_ = 0;
+    bool vaapiEnabled_ = false;
+    // The decoder cannot reuse the surface until the window is done sampling it.
+    std::shared_ptr<AVFrame> vaapiTextureFrame_;
+    struct RetiredVaapiFrame {
+        std::shared_ptr<AVFrame> frame;
+        GLsync fence;
+    };
+    QList<RetiredVaapiFrame> retiredVaapiFrames_;
+    GLsync vaapiDrawFence_ = nullptr;
+    bool vaapiSync_ = false;
+    bool sourcePainting_ = false;
+
     bool frameDirty_ = false;
     bool rowLengthSupported_ = false;
     // Streaming uploads: the frame is copied into a mapped buffer and the texture is filled FROM
@@ -128,6 +158,7 @@ private:
     QOpenGLShaderProgram program_;
     qint64 fpsWindowMs_ = 0;
     int fpsFrames_ = 0;
+    int freshFrames_ = 0;
     QElapsedTimer uploadTimer_;
     qint64 uploadUsTotal_ = 0;
     int uploadCount_ = 0;

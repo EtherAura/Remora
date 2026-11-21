@@ -1,0 +1,40 @@
+From: Remora <remora@localhost>
+Date: Fri, 20 Nov 2026 13:42:20 -0500
+Subject: [PATCH] EncodeComponent: read linear RGB mirror layout from gralloc
+
+Use the allocation pitch for single-fd RGBA and RGBX hardware input on the
+VirGL mirror. Other layouts continue to use the mapped layout path.
+
+diff --git a/components/EncodeComponent.cpp b/components/EncodeComponent.cpp
+index d3045ff696f396b4a44fdf26c6200f059169449a..cd1f56d1971ef57da1c1b6873ee563a76691eb88 100644
+--- a/components/EncodeComponent.cpp
++++ b/components/EncodeComponent.cpp
+@@ -58,6 +58,28 @@
+ std::optional<std::vector<VideoFramePlane>> getVideoFrameLayout(const C2ConstGraphicBlock& block,
+                                                                 VideoPixelFormat* format) {
+     ALOGV("%s()", __func__);
++
++    // The Remora GPU mirror queues single-plane, DMA-BUF-backed RGB frames.
++    // For a hardware-only input the allocation metadata supplies the byte
++    // pitch without a CPU lock or a GPU readback.
++    const C2Handle* handle = block.handle();
++    if (handle && handle->numFds == 1 && !block.crop().left && !block.crop().top &&
++        property_get_bool("ro.boot.remora_mirror_only", false)) {
++        uint32_t width = 0, height = 0, halFormat = 0, pixelStride = 0, generation, slot;
++        uint64_t usage = 0, queueId;
++        _UnwrapNativeCodec2GrallocMetadata(handle, &width, &height, &halFormat, &usage,
++                                           &pixelStride, &generation, &queueId, &slot);
++        if ((usage & GRALLOC_USAGE_HW_VIDEO_ENCODER) && !(usage & GRALLOC_USAGE_SW_READ_MASK) &&
++            (halFormat == HAL_PIXEL_FORMAT_RGBA_8888 || halFormat == HAL_PIXEL_FORMAT_RGBX_8888) &&
++            width && height && block.crop().width <= width && block.crop().height <= height &&
++            pixelStride >= width && pixelStride <= UINT32_MAX / 4) {
++            // This minigbm backend allocates each linear RGB plane in its own BO at offset zero.
++            *format = VideoPixelFormat::ARGB;
++            ALOGI("Remora hardware RGB encoder layout: %ux%u, byte stride %u",
++                  width, height, pixelStride * 4);
++            return std::vector<VideoFramePlane>{{pixelStride * 4, 0, 0}};
++        }
++    }
+ 
+     // Get the C2PlanarLayout from the graphics block. The C2GraphicView returned by block.map()
+     // needs to be released before calling getGraphicBlockInfo(), or the lockYCbCr() call will block

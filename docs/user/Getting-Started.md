@@ -127,12 +127,11 @@ leave the machine alone for some hours.
 
 ### Prepare the build inputs
 
-A source build needs things that Remora cannot download for you. Do these before you start the
-build, because a build that is missing one stops before it compiles anything:
+A source build needs the following inputs and host settings:
 
-- **Build the Mesa payload** once on the host with
-  `vendor/host-prereqs/mesa-android/build-mesa.sh`, and enable the `mesa_source` feature. Every
-  source build requires it.
+- **Enable the `mesa_source` feature** and build the Mesa payload on the host. On a fresh tree,
+  first run `remora build --source` with a non-public profile for that tree. It builds libdrm and
+  the libva headers, then prints the `build-mesa.sh` command to run before you retry the image build.
 - **Supply the third-party payloads** for the features you ticked (Google apps, ARM translation,
   Widevine and others). `vendor/fetch-payloads.sh` reports what is present and what is missing.
 - **Set the two host settings** that otherwise kill the build in misleading ways:

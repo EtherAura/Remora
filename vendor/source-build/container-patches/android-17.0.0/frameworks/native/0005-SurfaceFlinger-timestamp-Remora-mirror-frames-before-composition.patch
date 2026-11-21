@@ -1,0 +1,23 @@
+From: Remora project
+Subject: [PATCH] SurfaceFlinger: timestamp GPU mirror frames before composition
+
+Use the actual start of composition for each refreshed mirror frame. GPU
+work may vary between frames, while the time the scene represents is already
+known before it runs. Preserve the output acquire fence and natural gaps.
+
+--- a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+@@ -138,6 +138,13 @@
+ }
+ 
+ status_t RenderSurface::beginFrame(bool mustRecompose) {
++    // Timestamp the mirrored scene before the GPU work for this frame.
++    // The default auto timestamp is sampled when queueBuffer runs, so a
++    // variable render or fence delay otherwise changes recorded frame pacing.
++    if (mDisplay.isVirtual() && mDisplay.getName() == "remora-mirror" &&
++        base::GetBoolProperty("ro.boot.remora_mirror_only", false)) {
++        native_window_set_buffers_timestamp(mNativeWindow.get(), systemTime(SYSTEM_TIME_MONOTONIC));
++    }
+     return mDisplaySurface->beginFrame(mustRecompose);
+ }
+ 

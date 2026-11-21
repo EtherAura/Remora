@@ -10,6 +10,8 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QOpenGLContext>
+#include <QOpenGLExtraFunctions>
+#include <QScopedValueRollback>
 #include <QScreen>
 #include <QWheelEvent>
 
@@ -31,10 +33,15 @@ MirrorWindow::MirrorWindow(MirrorSession *session, const QString &title, QString
             QOpenGLBuffer(QOpenGLBuffer::PixelUnpackBuffer)},
       pboUV_{QOpenGLBuffer(QOpenGLBuffer::PixelUnpackBuffer),
              QOpenGLBuffer(QOpenGLBuffer::PixelUnpackBuffer)} {
+#ifdef Q_OS_LINUX
+    setTitle(title);
+    setIcon(QGuiApplication::windowIcon());
+#else
     setWindowTitle(title);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(false);  // moves only while a button is down — hover is not touch
+#endif
     connect(session_, &MirrorSession::frameReady, this, &MirrorWindow::onFrame);
     connect(session_, &MirrorSession::deviceClipboard, this,
             [](const QString &text) { QGuiApplication::clipboard()->setText(text); });
@@ -44,6 +51,9 @@ MirrorWindow::MirrorWindow(MirrorSession *session, const QString &title, QString
 }
 
 MirrorWindow::~MirrorWindow() {
+    releaseVaapiTextures();
+    if (context()) disconnect(context(), &QOpenGLContext::aboutToBeDestroyed,
+                              this, &MirrorWindow::releaseVaapiTextures);
     if (dlFrame_) av_frame_free(&dlFrame_);
 }
 
@@ -52,7 +62,13 @@ void MirrorWindow::setExplicitGeometry(std::optional<QSize> size, std::optional<
     explicitPos_ = pos;
 }
 
-void MirrorWindow::setAlwaysOnTop(bool onTop) { setWindowFlag(Qt::WindowStaysOnTopHint, onTop); }
+void MirrorWindow::setAlwaysOnTop(bool onTop) {
+#ifdef Q_OS_LINUX
+    setFlag(Qt::WindowStaysOnTopHint, onTop);
+#else
+    setWindowFlag(Qt::WindowStaysOnTopHint, onTop);
+#endif
+}
 
 void MirrorWindow::setStartFullscreen(bool fs) { startFullscreen_ = fs; }
 
@@ -101,7 +117,7 @@ void MirrorWindow::endSplash() {
 }
 
 void MirrorWindow::resizeEvent(QResizeEvent *e) {
-    QOpenGLWidget::resizeEvent(e);
+    MirrorSurface::resizeEvent(e);
     // Flex reflow (bd remora-28ix.3.3): on a new display the window IS the display, so a resized
     // window asks the device to reflow content to the new size instead of letting paintGL()
     // stretch the old pixels. Debounced so a drag becomes one request once it settles.
@@ -158,10 +174,29 @@ void MirrorWindow::onFrame(const VideoFrame &frame) {
             aspect.scale(target, Qt::KeepAspectRatio);
             resize(aspect);
         }
-        if (explicitPos_) move(*explicitPos_);
-        startFullscreen_ ? showFullScreen() : show();
+        if (explicitPos_) {
+#ifdef Q_OS_LINUX
+            setPosition(*explicitPos_);
+#else
+            move(*explicitPos_);
+#endif
+        }
+        // The headless screenshot path captures decoded frames without a GL surface.
+        if (shotPath_.isEmpty() ||
+            QGuiApplication::platformName() != QLatin1String("offscreen"))
+            startFullscreen_ ? showFullScreen() : show();
     }
     update();
+#ifdef Q_OS_LINUX
+    // A socket read can deliver several frames. Present each imported frame while it
+    // is current instead of allowing the queued update to coalesce the whole burst.
+    if (vaapiEnabled_ && live_.av && live_.av->format == AV_PIX_FMT_VAAPI &&
+        !sourcePainting_ && isExposed() && format().swapInterval() == 0) {
+        const QScopedValueRollback painting(sourcePainting_, true);
+        QEvent render(QEvent::UpdateRequest);
+        QCoreApplication::sendEvent(this, &render);
+    }
+#endif
     if (!shotPath_.isEmpty()) {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (!firstFrameAtMs_) firstFrameAtMs_ = now;
@@ -206,9 +241,11 @@ void MirrorWindow::initializeGL() {
         varying vec2 vUv;
         uniform sampler2D texY;
         uniform sampler2D texUV;
+        uniform bool uvIsRG;
         void main() {
             float y = texture2D(texY, vUv).r;
-            vec2 uv = texture2D(texUV, vUv).ra - vec2(0.5, 0.5);
+            vec4 chroma = texture2D(texUV, vUv);
+            vec2 uv = (uvIsRG ? chroma.rg : chroma.ra) - vec2(0.5, 0.5);
             y = (y - 0.0625) * 1.164382;
             gl_FragColor = vec4(y + 1.596027 * uv.y,
                                 y - 0.391762 * uv.x - 0.812968 * uv.y,
@@ -262,6 +299,27 @@ void MirrorWindow::initializeGL() {
                            : nullptr;
     interopOn_ = !gate;
     if (interopOn_) session_->setKeepHwFrames(true);
+    if (ctx && QGuiApplication::platformName().startsWith(QLatin1String("wayland")) &&
+        qEnvironmentVariableIsEmpty("REMORA_MIRROR_NO_INTEROP") && shotPath_.isEmpty()) {
+        QString why;
+        vaapiEnabled_ = vaapi_.initialize(&why);
+        session_->setKeepVaapiFrames(vaapiEnabled_);
+        if (vaapiEnabled_) {
+            const auto format = context()->format();
+            vaapiSync_ = context()->isOpenGLES()
+                            ? format.majorVersion() >= 3
+                            : format.version() >= std::pair(3, 2)
+                                  || context()->hasExtension(QByteArrayLiteral("GL_ARB_sync"));
+            glGenTextures(1, &vaapiY_);
+            glGenTextures(1, &vaapiUV_);
+            makePlaneTexture(this, vaapiY_);
+            makePlaneTexture(this, vaapiUV_);
+            connect(context(), &QOpenGLContext::aboutToBeDestroyed,
+                    this, &MirrorWindow::releaseVaapiTextures, Qt::DirectConnection);
+        } else if (!qEnvironmentVariableIsEmpty("REMORA_MIRROR_FPS")) {
+            qInfo("mirror: VA-API texture import unavailable: %s", qUtf8Printable(why));
+        }
+    }
     if (!qEnvironmentVariableIsEmpty("REMORA_MIRROR_FPS"))
         qInfo("mirror: CUDA/GL zero-copy %s%s%s",
               interopOn_ ? "armed (frames stay on the GPU)" : "off (", gate ? gate : "",
@@ -277,13 +335,16 @@ void MirrorWindow::paintGL() {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (!fpsWindowMs_) fpsWindowMs_ = now;
         ++fpsFrames_;
+        if (frameDirty_ && !live_.isNull() && !splash_) ++freshFrames_;
         if (now - fpsWindowMs_ >= 1000) {
-            qInfo("mirror: %.1f fps drawn (%dx%d -> %dx%d), upload %.1f ms/frame",
+            qInfo("mirror: %.1f fps drawn (%dx%d -> %dx%d), upload %.1f ms/frame, %.1f fresh fps",
                   fpsFrames_ * 1000.0 / double(now - fpsWindowMs_), textureSize_.width(),
                   textureSize_.height(), width(), height(),
-                  uploadCount_ ? double(uploadUsTotal_) / double(uploadCount_) / 1000.0 : 0.0);
+                  uploadCount_ ? double(uploadUsTotal_) / double(uploadCount_) / 1000.0 : 0.0,
+                  freshFrames_ * 1000.0 / double(now - fpsWindowMs_));
             uploadUsTotal_ = 0; uploadCount_ = 0;
             fpsFrames_ = 0;
+            freshFrames_ = 0;
             fpsWindowMs_ = now;
         }
     }
@@ -315,18 +376,23 @@ void MirrorWindow::paintGL() {
     if (live_.isNull() || !program_.isLinked()) return;
     AVFrame *f = live_.av.get();
     const bool cudaFrame = f->format == AV_PIX_FMT_CUDA;
-    if (f->format != AV_PIX_FMT_NV12 && !cudaFrame) {
+    const bool vaapiFrame = f->format == AV_PIX_FMT_VAAPI;
+    if (f->format != AV_PIX_FMT_NV12 && !cudaFrame && !vaapiFrame) {
         // Only NV12 has a shader path; anything else falls back rather than showing nothing.
+        frameDirty_ = false;
+        retireVaapiFrame();
         QPainter p(this);
         p.setRenderHint(QPainter::SmoothPixmapTransform);
-        p.drawImage(rect(), live_.toImage());
+        p.drawImage(QRect(QPoint(), size()), live_.toImage());
         return;
     }
 
     if (frameDirty_) {
         frameDirty_ = false;
         if (fpsLog) uploadTimer_.start();
-        const bool resized = live_.size != textureSize_;
+        const bool hadVaapiTexture = bool(vaapiTextureFrame_);
+        const bool resized = live_.size != textureSize_ || hadVaapiTexture;
+        retireVaapiFrame();
         textureSize_ = live_.size;
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         // A CUDA frame goes texture-to-texture on the GPU; failure downloads it here so the
@@ -335,6 +401,23 @@ void MirrorWindow::paintGL() {
         AVFrame *src = f;
         if (cudaFrame) src = uploadCudaFrame(f, resized) ? nullptr
                                                          : (downloadFrame(f) ? dlFrame_ : nullptr);
+        if (vaapiFrame) {
+            QString why;
+            if (vaapiEnabled_ && vaapi_.bindFrame(f, live_.size, vaapiY_, vaapiUV_, &why)) {
+                if (!hadVaapiTexture)
+                    qInfo("mirror: VA-API DMA-BUF texture import active");
+                vaapiTextureFrame_ = live_.av;
+                src = nullptr;
+            } else {
+                if (vaapiEnabled_) {
+                    qWarning("mirror: VA-API texture import failed: %s", qUtf8Printable(why));
+                    vaapiEnabled_ = false;
+                    session_->setKeepVaapiFrames(false);
+                }
+                if (!downloadFrame(f)) return;
+                src = dlFrame_;
+            }
+        }
         if (src) {
             // Y: one byte per pixel. UV: interleaved, half resolution in both axes, so two bytes
             // per sample — 1.5 bytes/pixel total against BGRA's 4, which is most of the win.
@@ -363,11 +446,12 @@ void MirrorWindow::paintGL() {
     const GLfloat uvs[] = {0.f, 0.f, 1.f, 0.f, 0.f, 1.f, 1.f, 1.f};
     program_.bind();
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texY_);
+    glBindTexture(GL_TEXTURE_2D, vaapiTextureFrame_ ? vaapiY_ : texY_);
     program_.setUniformValue("texY", 0);
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, texUV_);
+    glBindTexture(GL_TEXTURE_2D, vaapiTextureFrame_ ? vaapiUV_ : texUV_);
     program_.setUniformValue("texUV", 1);
+    program_.setUniformValue("uvIsRG", bool(vaapiTextureFrame_));
     program_.enableAttributeArray(0);
     program_.enableAttributeArray(1);
     program_.setAttributeArray(0, verts, 2);
@@ -376,6 +460,66 @@ void MirrorWindow::paintGL() {
     program_.disableAttributeArray(0);
     program_.disableAttributeArray(1);
     program_.release();
+    if (vaapiTextureFrame_) fenceVaapiDraw();
+}
+
+void MirrorWindow::releaseVaapiTextures() {
+    if (!vaapiY_) return;
+    vaapiEnabled_ = false;
+    session_->setKeepVaapiFrames(false);
+    if (context() && context()->isValid()) {
+        makeCurrent();
+        if (QOpenGLContext::currentContext() == context()) {
+            retireVaapiFrame();
+            releaseVaapiFrames(true);
+            glDeleteTextures(1, &vaapiY_);
+            glDeleteTextures(1, &vaapiUV_);
+            doneCurrent();
+        }
+    }
+    vaapiTextureFrame_.reset();
+    retiredVaapiFrames_.clear();
+    vaapiDrawFence_ = nullptr;
+    vaapiY_ = vaapiUV_ = 0;
+    textureSize_ = QSize();
+    frameDirty_ = !live_.isNull();
+}
+
+// A rendered surface may still be sampled by GL when the next frame arrives. Keep
+// its decoder reference until the corresponding draw completes without stalling normal paints.
+void MirrorWindow::retireVaapiFrame() {
+    if (vaapiDrawFence_) {
+        retiredVaapiFrames_.append({std::move(vaapiTextureFrame_), vaapiDrawFence_});
+        vaapiDrawFence_ = nullptr;
+    } else {
+        vaapiTextureFrame_.reset();
+    }
+    if (!retiredVaapiFrames_.isEmpty())
+        releaseVaapiFrames(retiredVaapiFrames_.size() >= 4);
+}
+
+void MirrorWindow::releaseVaapiFrames(bool wait) {
+    auto *gl = context()->extraFunctions();
+    if (wait) glFinish();
+    while (!retiredVaapiFrames_.isEmpty()) {
+        auto &first = retiredVaapiFrames_.first();
+        if (!wait) {
+            const GLenum status = gl->glClientWaitSync(first.fence, 0, 0);
+            if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) break;
+        }
+        gl->glDeleteSync(first.fence);
+        retiredVaapiFrames_.removeFirst();
+    }
+}
+
+void MirrorWindow::fenceVaapiDraw() {
+    if (vaapiSync_) {
+        auto *gl = context()->extraFunctions();
+        if (vaapiDrawFence_) gl->glDeleteSync(vaapiDrawFence_);
+        vaapiDrawFence_ = gl->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (vaapiDrawFence_) return;
+    }
+    glFinish();
 }
 
 // One plane into the bound texture.
@@ -684,7 +828,11 @@ void MirrorWindow::keyPressEvent(QKeyEvent *e) {
             return;
         }
         if (e->key() == Qt::Key_F) {
+#ifdef Q_OS_LINUX
+            windowStates().testFlag(Qt::WindowFullScreen) ? showNormal() : showFullScreen();
+#else
             isFullScreen() ? showNormal() : showFullScreen();
+#endif
             return;
         }
     }

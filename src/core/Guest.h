@@ -11,6 +11,7 @@ struct GuestLaunch {
     QString qemu;           // qemu-system-x86_64
     QString firmwareDir;    // -L: bios-256k.bin, linuxboot_dma.bin (empty: QEMU's own default)
     QString accel;          // whpx | kvm | tcg
+    QString videoDisplay;   // QEMU's GL display backend for the video prototype
     int memoryMb = 0;
     int cpus = 0;
     QString kernel, initrd, cmdline;  // initrd may be empty: Remora's kernel needs none

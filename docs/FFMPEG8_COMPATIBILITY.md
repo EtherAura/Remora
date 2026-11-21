@@ -96,9 +96,9 @@ all three FFmpeg consumers against FFmpeg 8:
 - **Environment.** An Arch Linux image pinned by digest, on the same `ubuntu-24.04` hosted
   runner. Every enabled pacman repository is frozen to one dated
   `archive.archlinux.org` snapshot, and the job fails if any repository resolves elsewhere or does
-  not require package signatures. `pacman -Syyuu` then moves every package, including the ones
-  already in the image, to that snapshot's version, so the job never mixes package dates. That
-  snapshot carries FFmpeg 8.1.2.
+  not require package signatures. `pacman -Syyuuw` downloads the packages with up to three
+  attempts. `pacman -Suu` then installs from the same snapshot, including upgrades or downgrades
+  for packages already in the image. The snapshot carries FFmpeg 8.1.2.
 - **Version guard (after configure).** For libavcodec, libavformat, libavutil, libswscale,
   libswresample and libavfilter, the job reads the pkg-config version that configure recorded in
   `CMakeCache.txt` and the `LIB*_VERSION_MAJOR` macro from the headers in the same include
