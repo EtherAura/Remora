@@ -288,6 +288,30 @@ struct NetworkEnsure {
 NetworkEnsure ensureMacvlanNetwork(Spawner &sp, const ResolvedConfig &rc, const QString &host,
                                    const LineSink &log = {});
 
+// What docker says an EXISTING macvlan network is made of (bd remora-8pts). A container joins the
+// network as it was created, whatever the host's default route says today, so where the two
+// disagree the network is the truth. They do disagree, at login: a wired NIC still waiting for
+// carrier has no default route yet, the only one left is the Wi-Fi one, and a shim built from that
+// live scan lands on a NIC the container is not on and reaches nothing.
+struct MacvlanNetworkShape {
+    QString parent;   // "UMN"; empty when docker reports none (not a macvlan network)
+    QString subnet;   // "192.168.0.0/24", the first IPv4 IPAM entry; empty when there is none
+    QString gateway;  // "192.168.0.1"; empty when docker has none recorded
+};
+// `docker network inspect -f` format behind the shape: "<parent>|<subnet>|<gateway>|…", one
+// subnet/gateway pair per IPAM entry.
+extern const char *const kMacvlanNetworkShapeFormat;
+MacvlanNetworkShape parseMacvlanNetworkShape(const QString &inspectOut);
+// nullopt when the network does not exist (or docker cannot be asked).
+std::optional<MacvlanNetworkShape> inspectMacvlanNetwork(Spawner &sp, const QString &name,
+                                                         const QString &host,
+                                                         const LineSink &log = {});
+// Brings `rc` in line with the network: the parent, subnet and gateway follow it, and a pool and
+// shim address that nothing configured or derived are derived from its subnet the way the
+// resolver would have. Returns a note when the network overrode a DIFFERENT resolved parent, which
+// is worth telling the operator; empty otherwise.
+QString adoptMacvlanNetworkShape(ResolvedConfig &rc, const MacvlanNetworkShape &shape);
+
 
 // Put the macvlan host route in place so THIS machine can reach the container it is hosting
 // (bd remora-400). Bare only — everywhere else the docker host is a different machine and the
@@ -305,6 +329,9 @@ struct HostRouteResult {
     // entirely — a change to host networking that only appears in the GUI log has not been
     // announced to the person running the CLI.
     bool notable = false;
+    // The NIC the shim was reconciled against: the existing network's parent when docker reports
+    // one, else the resolved parent. The connect failure hint names this one (bd remora-8pts).
+    QString parent;
 };
 HostRouteResult ensureMacvlanHostRoute(Spawner &sp, const ResolvedConfig &rc,
                                        const LineSink &log = {});

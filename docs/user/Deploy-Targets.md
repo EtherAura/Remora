@@ -126,7 +126,10 @@ With `macvlan`, other machines see the instance as a device on the network, and 
 network can reach it. Remora derives the network from the docker host's default route (parent
 interface, subnet and gateway) and creates the docker network on the first deploy. The keys
 `macvlan_parent`, `macvlan_subnet`, `macvlan_gateway`, `macvlan_ip`, `macvlan_range` and
-`docker_network` override that. Addresses are assigned from the top /28 of the subnet by default:
+`docker_network` override that. Once the network exists, its own interface and subnet decide where
+the host-side shim goes and which addresses are accepted, because the container is always on that
+network. A default route that briefly leaves by another interface, such as a wired link still
+coming up at login, does not move them. Addresses are assigned from the top /28 of the subnet by default:
 check that the slice is outside your router's DHCP pool, or set `macvlan_range`.
 
 One kernel rule matters on `bare`: a macvlan interface and its parent cannot exchange traffic, so

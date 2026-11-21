@@ -20,6 +20,11 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   reducing stalls during mirroring and interactive input.
 - Android source builds use the headless composer's periodic display signals to estimate
   refresh timing.
+- An instance with its own LAN address (`network_mode=macvlan`) on a machine with both a wired and
+  a Wi-Fi connection no longer fails to connect when it starts at login. Remora built the host-side
+  shim interface on whichever connection had a default route at that moment, often the Wi-Fi while
+  the wired link was still coming up, and could not reach the device from there. The shim now
+  follows the docker network the container is on.
 
 ### Security
 

@@ -1168,6 +1168,69 @@ QStringList dockerHostArgv(const QString &host, const QString &cmd) {
     return Spawner::sshArgv(host, cmd);
 }
 
+const char *const kMacvlanNetworkShapeFormat =
+    "{{index .Options \"parent\"}}|{{range .IPAM.Config}}{{.Subnet}}|{{.Gateway}}|{{end}}";
+
+MacvlanNetworkShape parseMacvlanNetworkShape(const QString &inspectOut) {
+    MacvlanNetworkShape s;
+    const QStringList f = inspectOut.trimmed().split(QLatin1Char('|'));
+    // Go templates print a missing map key as "<no value>" in some docker versions and as nothing
+    // in others; both mean "no parent", and neither may become an interface name.
+    const QString parent = f.value(0).trimmed();
+    if (!parent.isEmpty() && parent != QLatin1String("<no value>") &&
+        !parent.contains(QLatin1Char(' ')))
+        s.parent = parent;
+    // Pairs after the parent, one per IPAM entry. A dual-stack network may list IPv6 first, and
+    // everything downstream (pin check, pool, shim address) is IPv4, so take the first IPv4 pair.
+    for (int i = 1; i + 1 < f.size(); i += 2) {
+        const QString subnet = ipv4NetworkCidr(f.at(i).trimmed());
+        if (subnet.isEmpty()) continue;
+        s.subnet = subnet;
+        const QString gw = f.at(i + 1).trimmed();
+        if (ipv4InSubnet(gw, subnet)) s.gateway = gw;
+        break;
+    }
+    return s;
+}
+
+std::optional<MacvlanNetworkShape> inspectMacvlanNetwork(Spawner &sp, const QString &name,
+                                                         const QString &host,
+                                                         const LineSink &log) {
+    if (name.isEmpty()) return std::nullopt;
+    const ProcResult r = sp.run(
+        dockerHostArgv(host, QStringLiteral("docker network inspect -f '%1' %2")
+                                 .arg(QString::fromUtf8(kMacvlanNetworkShapeFormat), name)),
+        {}, log);
+    if (r.rc != 0) return std::nullopt;
+    return parseMacvlanNetworkShape(r.out);
+}
+
+QString adoptMacvlanNetworkShape(ResolvedConfig &rc, const MacvlanNetworkShape &shape) {
+    QString note;
+    if (!shape.parent.isEmpty()) {
+        const QString resolved = rc.macvlanParent.value_or(QString());
+        if (!resolved.isEmpty() && resolved != shape.parent)
+            note = QStringLiteral("network '%1' is on %2, not %3 (where this host's default route "
+                                  "leaves right now) — following the network")
+                       .arg(rc.dockerNetwork.value_or(QString()), shape.parent, resolved);
+        rc.macvlanParent = shape.parent;
+    }
+    if (!shape.subnet.isEmpty()) rc.macvlanSubnet = shape.subnet;
+    if (!shape.gateway.isEmpty()) rc.macvlanGateway = shape.gateway;
+    // Only what nothing provided. A configured or already-derived pool and shim address stay as
+    // they are; a host that had NO default route at resolve time had neither, and without them the
+    // shim cannot be built at all. Derived exactly as the resolver does: the top /28, one below it.
+    if (!rc.macvlanRange.has_value() && rc.macvlanSubnet.has_value()) {
+        const QString range = ipv4TopRange(*rc.macvlanSubnet, 28);
+        if (!range.isEmpty()) rc.macvlanRange = range;
+    }
+    if (rc.macvlanHostRoute && !rc.macvlanShimIp.has_value() && rc.macvlanRange.has_value()) {
+        const QString shimIp = ipv4Offset(*rc.macvlanRange, -1);
+        if (!shimIp.isEmpty()) rc.macvlanShimIp = shimIp;
+    }
+    return note;
+}
+
 NetworkEnsure ensureMacvlanNetwork(Spawner &sp, const ResolvedConfig &rc, const QString &host,
                                    const LineSink &log) {
     if (rc.networkMode != QLatin1String("macvlan")) return {};
@@ -1176,18 +1239,22 @@ NetworkEnsure ensureMacvlanNetwork(Spawner &sp, const ResolvedConfig &rc, const 
         return {false, QStringLiteral("macvlan mode with no network name — set docker_network=")};
 
     const QString where = host.isEmpty() ? QStringLiteral("the host") : host;
-    if (sp.run(dockerHostArgv(host, QStringLiteral("docker network inspect %1 >/dev/null 2>&1")
-                                        .arg(name)),
-               {}, log)
-            .rc == 0) {
-        // Present. A pinned address on the wrong subnet is the one mismatch worth catching here:
-        // docker's own refusal ("no available IPv4 addresses") names neither the address nor the
-        // network, and the operator reads it as the pool being full.
-        if (rc.macvlanIp && rc.macvlanSubnet && !ipv4InSubnet(*rc.macvlanIp, *rc.macvlanSubnet))
+    if (const auto shape = inspectMacvlanNetwork(sp, name, host, log)) {
+        // Present, and the container will join it as it is. Judge the pin against the network's
+        // OWN subnet: the resolved one comes from whichever default route the host had a moment
+        // ago, and at login that can be another NIC entirely (bd remora-8pts).
+        ResolvedConfig eff = rc;
+        const QString note = adoptMacvlanNetworkShape(eff, *shape);
+        // A pinned address on the wrong subnet is the one mismatch worth catching here: docker's
+        // own refusal ("no available IPv4 addresses") names neither the address nor the network,
+        // and the operator reads it as the pool being full.
+        if (eff.macvlanIp && eff.macvlanSubnet && !ipv4InSubnet(*eff.macvlanIp, *eff.macvlanSubnet))
             return {false, QStringLiteral("macvlan_ip %1 is not inside %2 — the container could "
                                           "not be addressed on network '%3'")
-                               .arg(*rc.macvlanIp, *rc.macvlanSubnet, name)};
-        return {true, QStringLiteral("network '%1' present on %2").arg(name, where)};
+                               .arg(*eff.macvlanIp, *eff.macvlanSubnet, name)};
+        QString detail = QStringLiteral("network '%1' present on %2").arg(name, where);
+        if (!note.isEmpty()) detail += QStringLiteral(" (%1)").arg(note);
+        return {true, detail};
     }
 
     // Missing. Create it from whatever the host itself reports, which is the whole point: the
@@ -1213,9 +1280,21 @@ NetworkEnsure ensureMacvlanNetwork(Spawner &sp, const ResolvedConfig &rc, const 
                            rc.macvlanParent.value_or(QString()))};
 }
 
-HostRouteResult ensureMacvlanHostRoute(Spawner &sp, const ResolvedConfig &rc, const LineSink &log) {
-    if (rc.networkMode != QLatin1String("macvlan") || !rc.macvlanHostRoute) return {};
+HostRouteResult ensureMacvlanHostRoute(Spawner &sp, const ResolvedConfig &resolved,
+                                       const LineSink &log) {
+    if (resolved.networkMode != QLatin1String("macvlan") || !resolved.macvlanHostRoute) return {};
     const QString shim = QString::fromUtf8(kMacvlanShimName);
+
+    // The shim has to hang off the NIC the container's network is on, and the reconcile below
+    // REBUILDS it onto whatever parent it is given. So ask the network, not the default route the
+    // resolver read: at login the wired NIC can still be without carrier, and a shim rebuilt onto
+    // the Wi-Fi card from that moment's scan reaches nothing (bd remora-8pts). Bare only, so the
+    // docker host is this host.
+    ResolvedConfig rc = resolved;
+    QString adopted;
+    if (const auto shape =
+            inspectMacvlanNetwork(sp, rc.dockerNetwork.value_or(QString()), QString(), log))
+        adopted = adoptMacvlanNetworkShape(rc, *shape);
 
     // Already up? Then the routes may still need re-asserting (a container recreated on a new
     // address), but the ADDRESS conflict check below has already been passed once and re-running
@@ -1266,24 +1345,29 @@ HostRouteResult ensureMacvlanHostRoute(Spawner &sp, const ResolvedConfig &rc, co
         sp.run({"sh", "-c", "test -e /etc/systemd/system/remora-macvlan-shim.service"}, {}, log)
             .rc == 0;
 
+    const QString parent = rc.macvlanParent.value_or(QString());
     const ProcResult r = sp.run(argv, {}, log);
     if (r.rc != 0)
         return {false,
                 QStringLiteral("macvlan host route: could not configure %1 (%2). Run it by hand: "
                                "sudo sh vendor/host-prereqs/macvlan-shim/remora-macvlan-shim "
                                "install %3 %4")
-                    .arg(shim, r.stderrTail.trimmed(), rc.macvlanParent.value_or(QString()),
+                    .arg(shim, r.stderrTail.trimmed(), parent,
                          macvlanShimRoutes(rc).join(QLatin1Char(' '))),
-                true};
-    QString detail = QStringLiteral("host route via %1 (%2 -> %3)")
-                         .arg(shim, *rc.macvlanShimIp,
+                true, parent};
+    QString detail = QStringLiteral("host route via %1 on %2 (%3 -> %4)")
+                         .arg(shim, parent, *rc.macvlanShimIp,
                               macvlanShimRoutes(rc).join(QLatin1Char(' ')));
+    // Said in the step detail, not just the log: the operator's config or the host's routing
+    // disagrees with the network the container is on, and that is worth knowing even when the
+    // shim works because of it.
+    if (!adopted.isEmpty()) detail += QStringLiteral("; ") + adopted;
     if (rivalOwner)
         detail += QStringLiteral("; a remora-macvlan-shim systemd unit is installed too — Remora "
                                  "owns this interface now, so remove it (sudo systemctl disable "
                                  "--now remora-macvlan-shim.service) or set "
                                  "macvlan_host_route=false to hand ownership back");
-    return {true, detail, !present || rivalOwner};
+    return {true, detail, !present || rivalOwner || !adopted.isEmpty(), parent};
 }
 
 // "<network>=<ip> " per attachment. Both halves are needed: the NAME decides whether the container
@@ -1799,8 +1883,12 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
     // its own: a host with a second NIC on the same LAN reaches the container without it, so let
     // the connect attempt be the judge and keep the reason in the log for when it is not.
     QString hostRouteNote;
+    // The NIC the shim was actually built on, which is the container network's parent and not
+    // necessarily the resolved one (bd remora-8pts). The failure hint below names this one.
+    QString shimParent;
     if (ctx.backend == Backend::Bare) {
         const HostRouteResult hr = ensureMacvlanHostRoute(sp, ctx.rc, log);
+        shimParent = hr.parent;
         if (!hr.detail.isEmpty()) {
             log(hr.ok ? QStringLiteral("stdout") : QStringLiteral("stderr"), hr.detail);
             // Carried into the step's own detail when it is worth seeing: ConsoleSink prints step
@@ -2002,7 +2090,10 @@ StepResult doConnect(Spawner &sp, const RunContext &ctx, LogSink &sink, int retr
                             "host cannot reach its own macvlan children over the parent interface. "
                             "Install the shim once — sudo sh vendor/host-prereqs/macvlan-shim/"
                             "remora-macvlan-shim install %2 %3 — or use network_mode=bridge.")
-                            .arg(ip, ctx.rc.macvlanParent.value_or(QStringLiteral("<parent>")),
+                            .arg(ip,
+                                 !shimParent.isEmpty()
+                                     ? shimParent
+                                     : ctx.rc.macvlanParent.value_or(QStringLiteral("<parent>")),
                                  blocks.join(QLatin1Char(' ')));
             }
         }

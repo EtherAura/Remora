@@ -382,7 +382,7 @@ add a *No titlebar and frame* window rule for the `remora` window class.
 | `network_mode` | `bridge` | `bridge` publishes the adb port; `macvlan` gives the container its own LAN address |
 | `docker_network` | `lan` | macvlan docker network name |
 | `macvlan_ip` | assigned by docker | fixed LAN address for the container |
-| `macvlan_parent` / `macvlan_subnet` / `macvlan_gateway` | from the docker host's default route | macvlan network shape |
+| `macvlan_parent` / `macvlan_subnet` / `macvlan_gateway` | from the docker host's default route | macvlan network shape when the network is created; an existing network's own shape wins |
 | `macvlan_range` | top /28 of the subnet | pool docker assigns addresses from |
 | `macvlan_host_route` | on | add a host-side route so this machine can reach its own macvlan container (matters on `bare`) |
 | `macvlan_shim_ip` | one below the range | the host shim's own address |

@@ -33,7 +33,10 @@ through it. Two macvlan children of one parent *can* talk; only the parent itsel
 the first adb handshake — it does not merely create one if none exists:
 
 - wrong parent NIC, or the wrong **mode**, and the interface is torn down and rebuilt (neither can
-  be changed on a live device);
+  be changed on a live device). The right parent is the one the docker network was created on,
+  read from `docker network inspect`, not wherever the host's default route leaves at that moment:
+  at login a wired link can still be without carrier while the Wi-Fi already has a route, and a
+  shim on the Wi-Fi reaches nothing on the wired network;
 - the shim's address and every wanted route are re-asserted;
 - routes that are no longer wanted are **withdrawn**, so a re-pinned container does not leave the
   host routing an address nothing answers on.

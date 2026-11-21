@@ -161,6 +161,10 @@ public:
     bool nativeZygiskReady = true;
     QString macvlanIp = QStringLiteral("192.168.0.90");  // "" = discovery reads nothing back
     bool macvlanNetPresent = true;   // `docker network inspect <name>` succeeds
+    // What that inspect prints for the network's shape (kMacvlanNetworkShapeFormat). Empty by
+    // default, which reads as "docker reported nothing usable": the engine then keeps the
+    // resolved shape, so every test written before bd remora-8pts sees what it always saw.
+    QString macvlanNetShape;
     bool macvlanCreateOk = true;     // `docker network create …` succeeds
     QStringList netCreates;          // every create command the engine issued, in order
     // What the EXISTING container's network attachment inspects as ("<net>=<ip> " records). Empty
@@ -450,7 +454,7 @@ public:
         // compound command: answering that here would swallow the whole audit and report a guest
         // with nothing missing.
         if (cmd.contains("docker network inspect") && !cmd.contains("NO_LAN_NET"))
-            return R(macvlanNetPresent ? 0 : 1);
+            return macvlanNetPresent ? R(0, macvlanNetShape) : R(1, {}, "Error: No such network");
         if (cmd.contains("ip link show remora-shim0")) return R(shimPresent ? 0 : 1);
         if (cmd.startsWith(QLatin1String("sh -c ping"))) return R(shimIpAnswers ? 0 : 1);
         if (cmd.contains("remora-macvlan-shim.service")) return R(shimUnitInstalled ? 0 : 1);
@@ -3130,6 +3134,154 @@ private slots:
         QVERIFY(r.notable);
         QVERIFY(r.detail.contains(QStringLiteral("systemd unit")));
         QVERIFY(r.detail.contains(QStringLiteral("macvlan_host_route=false")));
+    }
+
+    // ─────────── the shim follows the container's network, not the default route (bd remora-8pts) ──
+
+    // The login race this is about: the wired NIC the network was made on has no carrier yet, so
+    // the only default route is the Wi-Fi one and that is what the resolver read.
+    static HostCapabilities wifiOnlyAtLogin(const QString &wifiSubnet = QStringLiteral("192.168.0.0/24")) {
+        HostCapabilities caps;
+        caps.hostLan = LanInterface{QStringLiteral("wlp6s0"), wifiSubnet,
+                                    QStringLiteral("192.168.0.1"), QStringLiteral("192.168.0.57")};
+        return caps;
+    }
+    static const QString &umnNetwork() {
+        static const QString shape = QStringLiteral("UMN|192.168.0.0/24|192.168.0.1|");
+        return shape;
+    }
+
+    void macvlanNetworkShapeIsParsedFromInspect() {
+        MacvlanNetworkShape s = parseMacvlanNetworkShape(QStringLiteral("UMN|192.168.0.0/24|192.168.0.1|\n"));
+        QCOMPARE(s.parent, QStringLiteral("UMN"));
+        QCOMPARE(s.subnet, QStringLiteral("192.168.0.0/24"));
+        QCOMPARE(s.gateway, QStringLiteral("192.168.0.1"));
+        // dual stack, IPv6 listed first: the IPv4 pair is the one everything downstream uses
+        s = parseMacvlanNetworkShape(
+            QStringLiteral("eno1|fd00:1::/64|fd00:1::1|10.4.0.0/16|10.4.0.1|"));
+        QCOMPARE(s.parent, QStringLiteral("eno1"));
+        QCOMPARE(s.subnet, QStringLiteral("10.4.0.0/16"));
+        QCOMPARE(s.gateway, QStringLiteral("10.4.0.1"));
+        // a network with no parent option (not macvlan) and docker's "<no value>" both read empty
+        QVERIFY(parseMacvlanNetworkShape(QStringLiteral("<no value>|172.18.0.0/16|172.18.0.1|"))
+                    .parent.isEmpty());
+        QVERIFY(parseMacvlanNetworkShape(QStringLiteral("|172.18.0.0/16|172.18.0.1|")).parent.isEmpty());
+        // nothing at all, and a gateway outside the subnet, are not invented into values
+        const MacvlanNetworkShape none = parseMacvlanNetworkShape(QString());
+        QVERIFY(none.parent.isEmpty() && none.subnet.isEmpty() && none.gateway.isEmpty());
+        QVERIFY(parseMacvlanNetworkShape(QStringLiteral("UMN|192.168.0.0/24|10.0.0.1|"))
+                    .gateway.isEmpty());
+    }
+
+    // The bug as it was first seen: at login the shim was rebuilt onto the Wi-Fi card and ARP to
+    // the container stayed INCOMPLETE for every try.
+    void hostRouteFollowsTheExistingNetworksParent() {
+        FakeSpawner sp;
+        sp.macvlanNetShape = umnNetwork();
+        RemoraConfig cfg;
+        cfg.network.networkMode = QStringLiteral("macvlan");
+        cfg.network.macvlanIp = QStringLiteral("192.168.0.78");
+        const ResolvedConfig rc = resolve(cfg, Backend::Bare, wifiOnlyAtLogin());
+        QCOMPARE(rc.macvlanParent.value_or(QString()), QStringLiteral("wlp6s0"));  // the race
+        const HostRouteResult r = ensureMacvlanHostRoute(sp, rc);
+        QVERIFY2(r.ok, qPrintable(r.detail));
+        QCOMPARE(sp.shimRuns.size(), 1);
+        const QString run = sp.shimRuns.first();
+        QVERIFY2(run.contains(QStringLiteral("ip link add remora-shim0 link UMN")), qPrintable(run));
+        QVERIFY2(run.contains(QStringLiteral("*remora-shim0@UMN:*")), qPrintable(run));
+        QVERIFY2(!run.contains(QStringLiteral("wlp6s0")), qPrintable(run));
+        QCOMPARE(r.parent, QStringLiteral("UMN"));
+        // …and the operator is told, in the step detail the CLI prints
+        QVERIFY(r.notable);
+        QVERIFY2(r.detail.contains(QStringLiteral("UMN")) && r.detail.contains(QStringLiteral("wlp6s0")),
+                 qPrintable(r.detail));
+    }
+
+    // Same network as the resolver read: nothing to report, nothing changes.
+    void hostRouteIsQuietWhenTheNetworkAgrees() {
+        FakeSpawner sp;
+        sp.shimPresent = true;
+        sp.macvlanNetShape = umnNetwork();
+        const HostRouteResult r = ensureMacvlanHostRoute(sp, macvlanRc());
+        QVERIFY(r.ok);
+        QVERIFY2(!r.notable, qPrintable(r.detail));
+        QCOMPARE(r.parent, QStringLiteral("UMN"));
+    }
+
+    // No default route at all at resolve time (both NICs still coming up): the resolver had no
+    // parent, no pool and no shim address, and used to give up on the shim. The network knows all
+    // of it.
+    void hostRouteIsBuiltFromTheNetworkWhenTheHostHadNoRoute() {
+        FakeSpawner sp;
+        sp.macvlanNetShape = umnNetwork();
+        RemoraConfig cfg;
+        cfg.network.networkMode = QStringLiteral("macvlan");
+        cfg.network.macvlanIp = QStringLiteral("192.168.0.78");
+        const ResolvedConfig rc = resolve(cfg, Backend::Bare);  // no caps: nothing was probed
+        QVERIFY(!rc.macvlanParent.has_value());
+        const HostRouteResult r = ensureMacvlanHostRoute(sp, rc);
+        QVERIFY2(r.ok, qPrintable(r.detail));
+        QCOMPARE(sp.shimRuns.size(), 1);
+        const QString run = sp.shimRuns.first();
+        QVERIFY2(run.contains(QStringLiteral("ip link add remora-shim0 link UMN")), qPrintable(run));
+        QVERIFY2(run.contains(QStringLiteral("ip addr replace 192.168.0.239/32")), qPrintable(run));
+        QVERIFY2(run.contains(QStringLiteral("want='192.168.0.240/28 192.168.0.78'")), qPrintable(run));
+    }
+
+    // A configured pool and shim address are the operator's: the network supplies the parent, not
+    // replacements for what was stated.
+    void hostRouteKeepsAConfiguredShimAddress() {
+        FakeSpawner sp;
+        sp.macvlanNetShape = umnNetwork();
+        RemoraConfig cfg;
+        cfg.network.networkMode = QStringLiteral("macvlan");
+        cfg.network.macvlanIp = QStringLiteral("192.168.0.78");
+        cfg.network.macvlanShimIp = QStringLiteral("192.168.0.200");
+        const HostRouteResult r =
+            ensureMacvlanHostRoute(sp, resolve(cfg, Backend::Bare, wifiOnlyAtLogin()));
+        QVERIFY2(r.ok, qPrintable(r.detail));
+        QVERIFY(sp.shimRuns.first().contains(QStringLiteral("ip addr replace 192.168.0.200/32")));
+    }
+
+    // The deploy-time check judges a pinned address against the subnet the container will really
+    // be on. A Wi-Fi on another subnet at resolve time used to reject a correct pin.
+    void ensureMacvlanNetworkJudgesThePinByTheNetworksOwnSubnet() {
+        FakeSpawner sp;
+        sp.macvlanNetShape = umnNetwork();
+        RemoraConfig cfg;
+        cfg.network.networkMode = QStringLiteral("macvlan");
+        cfg.network.macvlanIp = QStringLiteral("192.168.0.78");
+        const NetworkEnsure r = ensureMacvlanNetwork(
+            sp, resolve(cfg, Backend::Bare, wifiOnlyAtLogin(QStringLiteral("10.20.0.0/24"))),
+            QString());
+        QVERIFY2(r.ok, qPrintable(r.detail));
+        QVERIFY2(r.detail.contains(QStringLiteral("is on UMN, not wlp6s0")), qPrintable(r.detail));
+        QVERIFY(sp.netCreates.isEmpty());
+        // …and a pin that is outside the network's subnet is still refused, by that subnet
+        cfg.network.macvlanIp = QStringLiteral("10.20.0.9");
+        const NetworkEnsure bad = ensureMacvlanNetwork(
+            sp, resolve(cfg, Backend::Bare, wifiOnlyAtLogin(QStringLiteral("10.20.0.0/24"))),
+            QString());
+        QVERIFY(!bad.ok);
+        QVERIFY2(bad.detail.contains(QStringLiteral("192.168.0.0/24")), qPrintable(bad.detail));
+    }
+
+    // When the connect still fails, the remedy it prints must name the NIC the container is on.
+    // It named the resolved one, and so told the operator to put a shim on the Wi-Fi card.
+    void connectFailureHintNamesTheNetworksParent() {
+        SKIP_ON_WINDOWS(kBareDeploy);
+        FakeSpawner sp;
+        sp.macvlanNetShape = umnNetwork();
+        sp.adbStates = QStringList{QStringLiteral("unknown")};  // nothing ever answers
+        RemoraConfig cfg;
+        cfg.network.networkMode = QStringLiteral("macvlan");
+        cfg.network.macvlanIp = QStringLiteral("192.168.0.78");
+        auto ctx = makeContext(cfg, Backend::Bare, wifiOnlyAtLogin());
+        RecordingSink sink;
+        const StepResult r = doConnect(sp, ctx, sink, 2, 0, 0, 1);
+        QVERIFY(!r.ok);
+        QVERIFY2(r.detail.contains(QStringLiteral("own NIC (UMN)")), qPrintable(r.detail));
+        QVERIFY2(!r.detail.contains(QStringLiteral("(wlp6s0)")), qPrintable(r.detail));
     }
 
     void hostRouteRespectsTheOptOut() {
