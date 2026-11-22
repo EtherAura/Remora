@@ -125,7 +125,7 @@ without video no longer renumbers everything after it.
 After the role byte, the client sends one session request:
 
 ```
-u8  kind       1=mirror  2=compose  3=new-display  4=list-apps
+u8  kind       1=mirror  2=compose  3=new-display  4=list-apps  5=app-icon
 u16 optLen     then optLen bytes of UTF-8 "key=value\n" lines
 ```
 
@@ -142,6 +142,11 @@ client → agent and device messages agent → client, as records (MIRROR_PROTOC
 
 `list-apps` is a request/response on its own control connection: the ok reply, then one
 u32-prefixed UTF-8 blob of `" * Name  pkg"` lines. The connection is done once it is written.
+
+`app-icon` has the same shape, with the options `app=<id>` and `size=<px>` and a PNG of the app's
+launcher icon for the blob — what a client's launcher needs without a shell on the device. Today
+only the host agent serves it (the computer's own apps, [PHONE_APP.md](PHONE_APP.md)); the
+in-image agent gains it with the phone app.
 
 ### Video connection
 

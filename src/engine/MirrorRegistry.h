@@ -29,6 +29,11 @@ namespace remora {
 //  Windows  %LOCALAPPDATA%\remora\mirrors. RuntimeLocation there is the profile root itself.
 QString mirrorRegistryDir();
 
+// The lock a process holds for the life of an adb forward it made on a tunnel port (27183–27199).
+// A forward whose lock is free is a leak, and the mirror's sweep removes it (bd remora-6f92) — so
+// everything that forwards to the agent holds one: the mirror, and the link service's bridges.
+QString mirrorTunnelLockPath(quint16 port);
+
 // One mirror's registration, held for the life of this object. Best-effort like the tunnel lock:
 // a registration that cannot be made must not cost the user their mirror, so the mirror runs and
 // says so — the price is that nothing can find it to reap it (on Linux, the command-line

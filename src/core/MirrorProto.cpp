@@ -380,4 +380,194 @@ std::optional<DeviceMessage> DeviceMessageParser::next() {
     return std::nullopt;
 }
 
+// The agent's side --------------------------------------------------------------------------------
+
+std::optional<AgentHello> parseClientHello(const QByteArray &buf) {
+    // The same eight bytes in the other direction: magic, version, flags.
+    return parseAgentHello(buf);
+}
+
+QByteArray agentHelloReply(quint16 capabilities) {
+    QByteArray b(kAgentMagic, 4);
+    putU16(b, kAgentProtoVersion);
+    putU16(b, capabilities);
+    return b;
+}
+
+std::optional<ConnectionRequest> parseConnectionRequest(const QByteArray &buf, int *consumed,
+                                                        QString *error) {
+    if (buf.isEmpty()) return std::nullopt;
+    const uchar *d = reinterpret_cast<const uchar *>(buf.constData());
+    ConnectionRequest r;
+    const quint8 role = d[0];
+    if (role == quint8(ConnRole::Video) || role == quint8(ConnRole::Audio)) {
+        if (buf.size() < 5) return std::nullopt;
+        r.role = ConnRole(role);
+        r.sessionId = qFromBigEndian<quint32>(d + 1);
+        *consumed = 5;
+        return r;
+    }
+    if (role != quint8(ConnRole::Control)) {
+        *error = QStringLiteral("unknown connection role %1").arg(role);
+        return std::nullopt;
+    }
+    if (buf.size() < 4) return std::nullopt;
+    const quint8 kind = d[1];
+    if (kind < quint8(SessionKind::Mirror) || kind > quint8(SessionKind::AppIcon)) {
+        *error = QStringLiteral("unknown session kind %1").arg(kind);
+        return std::nullopt;
+    }
+    const quint16 len = qFromBigEndian<quint16>(d + 2);
+    if (buf.size() < 4 + int(len)) return std::nullopt;
+    r.kind = SessionKind(kind);
+    const QString block = QString::fromUtf8(buf.constData() + 4, len);
+    for (const QString &line : block.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const int eq = line.indexOf(QLatin1Char('='));
+        if (eq <= 0) continue;
+        r.options.insert(line.left(eq), line.mid(eq + 1));
+    }
+    *consumed = 4 + int(len);
+    return r;
+}
+
+QByteArray sessionAccepted(quint32 sessionId) {
+    QByteArray b;
+    putU8(b, 0);
+    putU32(b, sessionId);
+    return b;
+}
+
+QByteArray sessionRefused(const QString &reason, quint8 status) {
+    QByteArray b;
+    putU8(b, status ? status : 1);
+    putU32(b, 0);
+    const QByteArray utf8 = utf8Truncated(reason, 0xFFFF);
+    putU16(b, quint16(utf8.size()));
+    b.append(utf8);
+    return b;
+}
+
+QByteArray listAppsReply(const QByteArray &listing) {
+    QByteArray b = sessionAccepted(0);
+    putU32(b, quint32(listing.size()));
+    b.append(listing);
+    return b;
+}
+
+QByteArray streamStartRecord(quint8 codec) {
+    QByteArray body;
+    putU8(body, codec);
+    return record(quint8(StreamRecord::Start), body);
+}
+
+QByteArray streamConfigRecord(const QByteArray &config) {
+    return record(quint8(StreamRecord::Config), config);
+}
+
+QByteArray streamFrameRecord(quint64 ptsUs, bool keyFrame, const QByteArray &data) {
+    QByteArray body;
+    body.reserve(9 + data.size());
+    putU64(body, ptsUs);
+    putU8(body, keyFrame ? 1 : 0);
+    body.append(data);
+    return record(quint8(StreamRecord::Frame), body);
+}
+
+QByteArray streamEndRecord(quint8 reason, const QString &detail) {
+    QByteArray body;
+    putU8(body, reason);
+    body.append(detail.toUtf8());
+    return record(quint8(StreamRecord::End), body);
+}
+
+QByteArray deviceClipboardRecord(const QString &text) {
+    // The type byte and the size prefix live inside the limit too.
+    return record(quint8(DeviceRecord::Clipboard), utf8Truncated(text, int(kControlRecordMax) - 1));
+}
+
+QByteArray clipboardAckRecord(quint64 sequence) {
+    QByteArray body;
+    putU64(body, sequence);
+    return record(quint8(DeviceRecord::ClipboardAck), body);
+}
+
+namespace {
+// Big-endian readers over a record body whose length the caller has checked.
+quint32 getU32(const QByteArray &b, int at) {
+    return qFromBigEndian<quint32>(b.constData() + at);
+}
+float getF32(const QByteArray &b, int at) {
+    const quint32 bits = getU32(b, at);
+    float v;
+    std::memcpy(&v, &bits, sizeof v);
+    return v;
+}
+}  // namespace
+
+std::optional<ControlMessage> ControlMessageParser::next() {
+    // The fixed part of each type's body; Text has none and Clipboard's text follows its nine.
+    static const QHash<quint8, int> minSize = {
+        {quint8(ControlRecord::Key), 13},     {quint8(ControlRecord::Text), 0},
+        {quint8(ControlRecord::Pointer), 26}, {quint8(ControlRecord::Scroll), 20},
+        {quint8(ControlRecord::Back), 1},     {quint8(ControlRecord::Panel), 1},
+        {quint8(ControlRecord::Clipboard), 9}, {quint8(ControlRecord::Resize), 4},
+    };
+    while (!error_) {
+        const std::optional<Record> r = records_.next();
+        if (!r) return std::nullopt;
+        if (!minSize.contains(r->type)) continue;  // unknown: skipped
+        const QByteArray &b = r->body;
+        if (b.size() < minSize.value(r->type)) {
+            error_ = true;
+            return std::nullopt;
+        }
+        ControlMessage m;
+        m.type = ControlRecord(r->type);
+        switch (m.type) {
+        case ControlRecord::Key:
+            m.action = quint8(b[0]);
+            m.keycode = qint32(getU32(b, 1));
+            m.repeat = getU32(b, 5);
+            m.metaState = qint32(getU32(b, 9));
+            break;
+        case ControlRecord::Text:
+            m.text = QString::fromUtf8(b);
+            break;
+        case ControlRecord::Pointer:
+            m.action = quint8(b[0]);
+            m.tool = quint8(b[1]) == quint8(PointerTool::Mouse) ? PointerTool::Mouse
+                                                                : PointerTool::Finger;
+            m.pointerId = getU32(b, 2);
+            m.at = {getF32(b, 6), getF32(b, 10)};
+            m.pressure = getF32(b, 14);
+            m.actionButton = qint32(getU32(b, 18));
+            m.buttons = qint32(getU32(b, 22));
+            break;
+        case ControlRecord::Scroll:
+            m.at = {getF32(b, 0), getF32(b, 4)};
+            m.hScroll = getF32(b, 8);
+            m.vScroll = getF32(b, 12);
+            m.buttons = qint32(getU32(b, 16));
+            break;
+        case ControlRecord::Back:
+            m.action = quint8(b[0]);
+            break;
+        case ControlRecord::Panel:
+            m.panel = Panel(quint8(b[0]));
+            break;
+        case ControlRecord::Clipboard:
+            m.sequence = qFromBigEndian<quint64>(b.constData());
+            m.paste = b[8] != 0;
+            m.text = QString::fromUtf8(b.constData() + 9, b.size() - 9);
+            break;
+        case ControlRecord::Resize:
+            m.width = qFromBigEndian<quint16>(b.constData());
+            m.height = qFromBigEndian<quint16>(b.constData() + 2);
+            break;
+        }
+        return m;
+    }
+    return std::nullopt;
+}
+
 }  // namespace remora::mirror

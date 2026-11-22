@@ -96,7 +96,7 @@ ReadinessWorker::ReadinessWorker(Backend backend, QString sshHost, bool gpuHost,
 
 void ReadinessWorker::run() {
     RealSpawner sp;
-    const HostCapabilities caps = probeCapabilities(backend_, sshHost_, sp);
+    const HostCapabilities caps = probeCapabilities(backend_, sshHost_, sp, ImageStoreQuery::Ask);
     const auto results = checkReadiness(backend_, caps, gpuHost_, macvlan_, sharedInputs_,
                                         needsAshmem_, bareOnlyRequested_);
     QStringList lines;

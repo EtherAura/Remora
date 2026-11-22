@@ -1,5 +1,8 @@
 #include "core/Prereqs.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
 
@@ -11,6 +14,58 @@ static bool flag(const std::optional<bool> &v) { return v.has_value() && *v; }
 
 bool releaseNeedsAshmem(int androidVersion) { return androidVersion < 17; }
 
+static bool isDriverName(const QString &s) {
+    if (s.isEmpty()) return false;
+    for (const QChar c : s)
+        if (c.unicode() < 0x21 || c.unicode() > 0x7e) return false;
+    return true;
+}
+
+DockerImageStore parseDockerImageStore(const QString &dockerInfoJson) {
+    const QJsonDocument doc = QJsonDocument::fromJson(dockerInfoJson.toUtf8());
+    if (!doc.isObject()) return {};
+    const QJsonObject o = doc.object();
+    const QJsonValue driver = o.value(QLatin1String("Driver"));
+    if (!driver.isString() || !isDriverName(driver.toString())) return {};
+
+    const QJsonValue status = o.value(QLatin1String("DriverStatus"));
+    DockerImageStoreKind kind = DockerImageStoreKind::GraphDriver;
+    if (!status.isUndefined() && !status.isNull()) {
+        if (!status.isArray()) return {};
+        int driverTypes = 0;
+        QString driverType;
+        for (const QJsonValue &entry : status.toArray()) {
+            const QJsonArray pair = entry.toArray();
+            if (!entry.isArray() || pair.size() != 2 || !pair.at(0).isString() ||
+                !pair.at(1).isString())
+                return {};
+            if (pair.at(0).toString() == QLatin1String("driver-type")) {
+                ++driverTypes;
+                driverType = pair.at(1).toString();
+            }
+        }
+        if (driverTypes > 1) return {};
+        if (driverTypes == 1) {
+            // A whole-string comparison: the documented marker, with nothing before or after it.
+            if (driverType != QLatin1String("io.containerd.snapshotter.v1")) return {};
+            kind = DockerImageStoreKind::ContainerdSnapshotter;
+        }
+    }
+    return {kind, driver.toString()};
+}
+
+static QString dockerImageStoreLabel(const DockerImageStore &s) {
+    switch (s.kind) {
+    case DockerImageStoreKind::ContainerdSnapshotter:
+        return QStringLiteral("Docker image store: containerd snapshotter (%1)").arg(s.driver);
+    case DockerImageStoreKind::GraphDriver:
+        return QStringLiteral("Docker image store: %1 graph driver").arg(s.driver);
+    case DockerImageStoreKind::Unknown:
+        break;
+    }
+    return QStringLiteral("Docker image store: not reported by docker info");
+}
+
 QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &caps, bool gpuHost,
                                      bool macvlan, bool sharedInputs, bool needsAshmem,
                                      const QStringList &bareOnlyRequested) {
@@ -18,6 +73,13 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
     const auto add = [&](const QString &key, const QString &label, bool ok, const QString &remedy,
                          const QString &severity = QStringLiteral("required")) {
         out.append({key, label, ok, remedy, severity});
+    };
+    // Present only when a readiness display asked and the target daemon answered; "info"
+    // severity, always ok, no remedy, so it can never change isReady() or blockers().
+    const auto addImageStore = [&] {
+        if (caps.dockerImageStore)
+            add("docker_image_store", dockerImageStoreLabel(*caps.dockerImageStore), true,
+                QString(), QStringLiteral("info"));
     };
 
     // Every target's connect launches the local adb client — a missing tool otherwise
@@ -41,6 +103,7 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
         // first docker call with a message about a socket, one step after being told all was well.
         add("docker_daemon", "docker daemon reachable", flag(caps.dockerDaemonOk),
             "start the docker service (systemctl start docker) — or unset a stale DOCKER_HOST");
+        addImageStore();
         // Android 16 only — an Android 17 image runs on memfd and never needs the module.
         if (needsAshmem)
             add("ashmem", "IBT-fixed ashmem_linux.ko loaded (Android 16 images)", caps.modAshmem,
@@ -50,6 +113,7 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
             "confirm ssh access (key-based) to the remote host");
         add("remote_docker", "docker usable on the remote", flag(caps.remoteDockerOk),
             "install docker and add the remote user to the docker group");
+        addImageStore();
         // A profile fact, not a host one, but `check` is what someone runs before `up`, and `up`
         // refuses this at preflight — so it is a required row here too, with the same words.
         if (!bareOnlyRequested.isEmpty())

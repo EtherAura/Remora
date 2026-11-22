@@ -1,5 +1,7 @@
 #include "MirrorSession.h"
 
+#include "engine/MirrorRegistry.h"
+
 #include <unistd.h>
 
 #include <QCoreApplication>
@@ -106,17 +108,7 @@ void MirrorSession::warmDecoder() { decoder_.warmHardware(opts_.hwDecode); }
 //
 // On Windows Qt's runtime location is the user's profile root itself, so the locks would litter
 // C:\Users\<name>; they sit beside the mirror registry's entries instead (engine/MirrorRegistry).
-static QString tunnelLockPath(quint16 port) {
-#ifdef Q_OS_WIN
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
-                        QStringLiteral("/remora/mirrors");
-    QDir().mkpath(dir);
-#else
-    QString dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
-    if (dir.isEmpty()) dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-#endif
-    return dir + QStringLiteral("/remora-mirror-tunnel-%1.lock").arg(port);
-}
+static QString tunnelLockPath(quint16 port) { return mirrorTunnelLockPath(port); }
 
 void MirrorSession::takeTunnelLock(quint16 port) {
     tunnelLock_.reset(new QLockFile(tunnelLockPath(port)));
@@ -128,7 +120,42 @@ void MirrorSession::takeTunnelLock(quint16 port) {
                  qUtf8Printable(tunnelLockPath(port)));
 }
 
-void MirrorSession::startAgent() { tryAgentPort(kTunnelPortFirst); }
+// The agent's transport: TCP through the adb tunnel for a device, or a unix socket for an agent on
+// this machine (SessionOptions::agentSocket). Everything past the connect is QIODevice; these are
+// the few places the two socket classes differ.
+static QMetaObject::Connection onSocketConnected(QIODevice *d, QObject *ctx,
+                                                 std::function<void()> f) {
+    if (auto *t = qobject_cast<QTcpSocket *>(d))
+        return QObject::connect(t, &QTcpSocket::connected, ctx, std::move(f));
+    return QObject::connect(static_cast<QLocalSocket *>(d), &QLocalSocket::connected, ctx,
+                            std::move(f));
+}
+static QMetaObject::Connection onSocketError(QIODevice *d, QObject *ctx, std::function<void()> f) {
+    if (auto *t = qobject_cast<QTcpSocket *>(d))
+        return QObject::connect(t, &QTcpSocket::errorOccurred, ctx,
+                                [f](QAbstractSocket::SocketError) { f(); });
+    return QObject::connect(static_cast<QLocalSocket *>(d), &QLocalSocket::errorOccurred, ctx,
+                            [f](QLocalSocket::LocalSocketError) { f(); });
+}
+static QMetaObject::Connection onSocketDisconnected(QIODevice *d, QObject *ctx,
+                                                    std::function<void()> f) {
+    if (auto *t = qobject_cast<QTcpSocket *>(d))
+        return QObject::connect(t, &QTcpSocket::disconnected, ctx, std::move(f));
+    return QObject::connect(static_cast<QLocalSocket *>(d), &QLocalSocket::disconnected, ctx,
+                            std::move(f));
+}
+static bool socketConnected(const QIODevice *d) {
+    if (auto *t = qobject_cast<const QTcpSocket *>(d))
+        return t->state() == QAbstractSocket::ConnectedState;
+    auto *l = qobject_cast<const QLocalSocket *>(d);
+    return l && l->state() == QLocalSocket::ConnectedState;
+}
+
+void MirrorSession::startAgent() {
+    // A local agent needs no tunnel: its socket is already the connection's far end.
+    if (!opts_.agentSocket.isEmpty()) return agentHandshake();
+    tryAgentPort(kTunnelPortFirst);
+}
 
 void MirrorSession::tryAgentPort(quint16 from) {
     quint16 p = from;
@@ -185,8 +212,9 @@ void MirrorSession::tryAgentPort(quint16 from) {
 // is a child of this session, so a teardown mid-handshake takes it (and, because `this` is the
 // connection context, these handlers) with it.
 void MirrorSession::openAgentConnection(const QString &connectError, const QString &helloError,
-                                        std::function<void(QTcpSocket *, QString)> done) {
-    auto *sock = new QTcpSocket(this);
+                                        std::function<void(QIODevice *, QString)> done) {
+    QIODevice *sock = opts_.agentSocket.isEmpty() ? static_cast<QIODevice *>(new QTcpSocket(this))
+                                                  : new QLocalSocket(this);
     struct Dial {
         QByteArray hello;
         bool settled = false;
@@ -216,13 +244,9 @@ void MirrorSession::openAgentConnection(const QString &connectError, const QStri
         done(sock, QString());
     };
 
-    d->onConnected = connect(sock, &QTcpSocket::connected, this,
-                             [sock] { sock->write(agentHello()); });
-    d->onError = connect(sock, &QTcpSocket::errorOccurred, this,
-                         [settle, connectError](QAbstractSocket::SocketError) {
-                             settle(false, connectError);
-                         });
-    d->onRead = connect(sock, &QTcpSocket::readyRead, this, [sock, d, settle, helloError] {
+    d->onConnected = onSocketConnected(sock, this, [sock] { sock->write(agentHello()); });
+    d->onError = onSocketError(sock, this, [settle, connectError] { settle(false, connectError); });
+    d->onRead = connect(sock, &QIODevice::readyRead, this, [sock, d, settle, helloError] {
         d->hello.append(sock->readAll());
         if (d->hello.size() < kAgentHelloSize) return;
         // Nothing can follow the hello: the agent answers, it never speaks first, so there is no
@@ -238,7 +262,10 @@ void MirrorSession::openAgentConnection(const QString &connectError, const QStri
         settle(false, connectError);
     });
     d->deadline->start(5000);
-    sock->connectToHost(QHostAddress::LocalHost, port_);
+    if (auto *tcp = qobject_cast<QTcpSocket *>(sock))
+        tcp->connectToHost(QHostAddress::LocalHost, port_);
+    else
+        static_cast<QLocalSocket *>(sock)->connectToServer(opts_.agentSocket);
 }
 
 void MirrorSession::agentHandshake() {
@@ -249,10 +276,13 @@ void MirrorSession::agentHandshake() {
     // the permanent refusal for that gap and die with it (bd remora-j6yf). A refused CONNECT
     // retries until the grace expires; a bad hello is something answering that is not an agent,
     // which no amount of waiting fixes.
-    const QString notListening = QStringLiteral("nothing is listening on localabstract:%1")
-                                     .arg(QString::fromLatin1(kAgentSocketName));
+    const QString notListening =
+        opts_.agentSocket.isEmpty()
+            ? QStringLiteral("nothing is listening on localabstract:%1")
+                  .arg(QString::fromLatin1(kAgentSocketName))
+            : QStringLiteral("nothing is listening on %1").arg(opts_.agentSocket);
     openAgentConnection(notListening, QStringLiteral("no RMRA hello from the device"),
-                        [this, notListening](QTcpSocket *sock, QString err) {
+                        [this, notListening](QIODevice *sock, QString err) {
                             if (!sock) {
                                 if (err == notListening && !stopping_ &&
                                     QDateTime::currentMSecsSinceEpoch() < agentGraceUntilMs_) {
@@ -272,7 +302,7 @@ void MirrorSession::agentHandshake() {
                         });
 }
 
-void MirrorSession::agentControlReady(QTcpSocket *sock) {
+void MirrorSession::agentControlReady(QIODevice *sock) {
     // From here it IS an agent, whatever happens next — which is what stop() needs to know to
     // tear down the right tunnel, and what makes every failure below final rather than a fallback.
     agent_ = true;
@@ -319,7 +349,7 @@ void MirrorSession::agentControlReady(QTcpSocket *sock) {
         agentSessionOpen(sock, id, rest);
     };
 
-    r->onRead = connect(sock, &QTcpSocket::readyRead, this, [sock, r, give] {
+    r->onRead = connect(sock, &QIODevice::readyRead, this, [sock, r, give] {
         r->buf.append(sock->readAll());
         int consumed = 0;
         const auto sr = parseSessionReply(r->buf, &consumed);
@@ -336,14 +366,15 @@ void MirrorSession::agentControlReady(QTcpSocket *sock) {
     r->deadline->start(5000);
 }
 
-void MirrorSession::agentSessionOpen(QTcpSocket *sock, quint32 id, const QByteArray &leftover) {
+void MirrorSession::agentSessionOpen(QIODevice *sock, quint32 id, const QByteArray &leftover) {
     sessionId_ = id;
     // The connection IS the control socket from here; anything already read past the reply is
     // the first device message.
     control_ = sock;
-    control_->setSocketOption(QAbstractSocket::LowDelayOption, 1);
-    connect(control_, &QTcpSocket::readyRead, this, &MirrorSession::onControlData);
-    connect(control_, &QTcpSocket::disconnected, this, [this] {
+    if (auto *tcp = qobject_cast<QTcpSocket *>(control_))
+        tcp->setSocketOption(QAbstractSocket::LowDelayOption, 1);
+    connect(control_, &QIODevice::readyRead, this, &MirrorSession::onControlData);
+    onSocketDisconnected(control_, this, [this] {
         if (!stopping_) emit controlLost();
     });
     if (!leftover.isEmpty()) deviceMsgs_.feed(leftover);
@@ -363,7 +394,7 @@ void MirrorSession::agentSessionOpen(QTcpSocket *sock, quint32 id, const QByteAr
     }
     openAgentConnection(QStringLiteral("could not open the agent video connection"),
                         QStringLiteral("no RMRA hello on the agent video connection"),
-                        [this](QTcpSocket *vid, QString err) {
+                        [this](QIODevice *vid, QString err) {
                             if (!vid) {
                                 finishStart(false, err);
                                 return;
@@ -372,11 +403,11 @@ void MirrorSession::agentSessionOpen(QTcpSocket *sock, quint32 id, const QByteAr
                         });
 }
 
-void MirrorSession::agentVideoReady(QTcpSocket *vid) {
+void MirrorSession::agentVideoReady(QIODevice *vid) {
     vid->write(agentVideoAttach(sessionId_));
     video_ = vid;
-    connect(video_, &QTcpSocket::readyRead, this, &MirrorSession::onVideoData);
-    connect(video_, &QTcpSocket::disconnected, this, [this] {
+    connect(video_, &QIODevice::readyRead, this, &MirrorSession::onVideoData);
+    onSocketDisconnected(video_, this, [this] {
         if (stopping_) return;
         // Finish decoding the buffered tail, including any recording packets, first.
         videoEof_ = true;
@@ -397,7 +428,7 @@ void MirrorSession::agentAudioThenDone() {
     }
     openAgentConnection(QStringLiteral("could not open the agent audio connection"),
                         QStringLiteral("no RMRA hello on the agent audio connection"),
-                        [this](QTcpSocket *aud, QString err) {
+                        [this](QIODevice *aud, QString err) {
                             if (!aud) {
                                 qWarning("mirror: %s — audio off", qUtf8Printable(err));
                                 agentDone();
@@ -405,7 +436,7 @@ void MirrorSession::agentAudioThenDone() {
                             }
                             aud->write(agentAudioAttach(sessionId_));
                             audio_ = aud;
-                            connect(audio_, &QTcpSocket::readyRead, this,
+                            connect(audio_, &QIODevice::readyRead, this,
                                     &MirrorSession::onAudioData);
                             onAudioData();
                             agentDone();
@@ -427,6 +458,11 @@ void MirrorSession::agentUnavailable(const QString &why) {
     // to — and prescribing a rebuild for it was the wrong advice every time.
     if (why.startsWith(QLatin1String(kAgentVersionRefusalPrefix))) {
         finishStart(false, why);
+        return;
+    }
+    // A local agent is a program on this machine, not an image: no rebuild would bring it.
+    if (!opts_.agentSocket.isEmpty()) {
+        finishStart(false, why + QStringLiteral(" — is remora-host-agent serving?"));
         return;
     }
     if (why.startsWith(QLatin1String("no usable tunnel port"))) {
@@ -525,7 +561,7 @@ void MirrorSession::startAsync() {
     // The grace clock starts at bring-up, not per attempt: a boot that never produces an agent
     // must still end in the refusal, on schedule, no matter how many retries fit in between.
     agentGraceUntilMs_ = QDateTime::currentMSecsSinceEpoch() + opts_.agentWaitMs;
-    sweepStaleTunnels();
+    if (opts_.agentSocket.isEmpty()) sweepStaleTunnels();
     startAgent();
 }
 
@@ -814,13 +850,13 @@ void MirrorSession::onControlData() {
     if (deviceMsgs_.error()) {
         // A framing violation leaves no way to find the next record. Stop reading; the video
         // stream is unaffected.
-        disconnect(control_, &QTcpSocket::readyRead, this, &MirrorSession::onControlData);
+        disconnect(control_, &QIODevice::readyRead, this, &MirrorSession::onControlData);
         qWarning("mirror: device message framing error — control channel reads stopped");
     }
 }
 
 void MirrorSession::sendControl(const QByteArray &msg) {
-    if (control_ && control_->state() == QAbstractSocket::ConnectedState) control_->write(msg);
+    if (control_ && socketConnected(control_)) control_->write(msg);
 }
 
 void MirrorSession::fail(const QString &why) {
@@ -858,6 +894,51 @@ void MirrorSession::stop() {
     }
     tunnelOpen_ = false;
     tunnelLock_.reset();  // after the removal: the port stays owned until it stops existing
+}
+
+// The list-apps exchange on a connected agent socket — through the adb tunnel or a local one:
+// hello, request, the ok reply, then one u32-prefixed listing.
+static bool listAppsExchange(QIODevice &sock, QByteArray *out,
+                             const std::function<bool(const QString &, bool)> &failed) {
+    sock.write(agentHello());
+    QByteArray hello;
+    while (hello.size() < kAgentHelloSize && sock.waitForReadyRead(3000))
+        hello.append(sock.readAll());
+    const auto agent = parseAgentHello(hello);
+    if (!agent) return failed(QStringLiteral("no RMRA hello from the device"), true);
+    if (const QString refusal = agentVersionRefusal(*agent); !refusal.isEmpty())
+        return failed(refusal, false);
+
+    sock.write(agentSessionRequest(SessionKind::ListApps, {}));
+    QByteArray buf;
+    std::optional<SessionReply> sr;
+    int consumed = 0;
+    for (;;) {
+        sr = parseSessionReply(buf, &consumed);
+        if (sr) break;
+        if (!sock.waitForReadyRead(5000))
+            return failed(QStringLiteral("the agent did not answer the list-apps request"), false);
+        buf.append(sock.readAll());
+    }
+    if (sr->status != 0)
+        return failed(QStringLiteral("the agent declined list-apps: %1").arg(sr->reason), false);
+
+    // u32 length, then the listing. The blob is bounded only by the app count, but a framing
+    // error must not become an unbounded read — 8 MiB is orders of magnitude past any device.
+    buf = buf.mid(consumed);
+    while (buf.size() < 4 && sock.waitForReadyRead(5000)) buf.append(sock.readAll());
+    if (buf.size() < 4)
+        return failed(QStringLiteral("the agent sent no app listing"), false);
+    const quint32 len = qFromBigEndian<quint32>(
+        reinterpret_cast<const uchar *>(buf.constData()));
+    if (len > (8u << 20))
+        return failed(QStringLiteral("implausible app-listing length %1").arg(len), false);
+    while (quint32(buf.size()) < 4 + len && sock.waitForReadyRead(5000))
+        buf.append(sock.readAll());
+    if (quint32(buf.size()) < 4 + len)
+        return failed(QStringLiteral("the app listing was cut short"), false);
+    *out = buf.mid(4, int(len));
+    return true;
 }
 
 bool agentListApps(const QString &serial, QByteArray *out, QString *error, bool *absent) {
@@ -909,46 +990,23 @@ bool agentListApps(const QString &serial, QByteArray *out, QString *error, bool 
     if (!sock.waitForConnected(2000))
         return fail(QStringLiteral("nothing is listening on localabstract:%1")
                         .arg(QString::fromLatin1(kAgentSocketName)), true);
-    sock.write(agentHello());
-    QByteArray hello;
-    while (hello.size() < kAgentHelloSize && sock.waitForReadyRead(3000))
-        hello.append(sock.readAll());
-    const auto agent = parseAgentHello(hello);
-    if (!agent) return fail(QStringLiteral("no RMRA hello from the device"), true);
-    if (const QString refusal = agentVersionRefusal(*agent); !refusal.isEmpty())
-        return fail(refusal, false);
-
-    sock.write(agentSessionRequest(SessionKind::ListApps, {}));
-    QByteArray buf;
-    std::optional<SessionReply> sr;
-    int consumed = 0;
-    for (;;) {
-        sr = parseSessionReply(buf, &consumed);
-        if (sr) break;
-        if (!sock.waitForReadyRead(5000))
-            return fail(QStringLiteral("the agent did not answer the list-apps request"), false);
-        buf.append(sock.readAll());
-    }
-    if (sr->status != 0)
-        return fail(QStringLiteral("the agent declined list-apps: %1").arg(sr->reason), false);
-
-    // u32 length, then the listing. The blob is bounded only by the app count, but a framing
-    // error must not become an unbounded read — 8 MiB is orders of magnitude past any device.
-    buf = buf.mid(consumed);
-    while (buf.size() < 4 && sock.waitForReadyRead(5000)) buf.append(sock.readAll());
-    if (buf.size() < 4)
-        return fail(QStringLiteral("the agent sent no app listing"), false);
-    const quint32 len = qFromBigEndian<quint32>(
-        reinterpret_cast<const uchar *>(buf.constData()));
-    if (len > (8u << 20))
-        return fail(QStringLiteral("implausible app-listing length %1").arg(len), false);
-    while (quint32(buf.size()) < 4 + len && sock.waitForReadyRead(5000))
-        buf.append(sock.readAll());
-    if (quint32(buf.size()) < 4 + len)
-        return fail(QStringLiteral("the app listing was cut short"), false);
-    *out = buf.mid(4, int(len));
+    if (!listAppsExchange(sock, out, fail)) return false;
     adbRun(adbAgentTunnelArgv(adb, serial, port, true));
     return true;
+}
+
+bool localAgentListApps(const QString &socketPath, QByteArray *out, QString *error) {
+    QLocalSocket sock;
+    sock.connectToServer(socketPath);
+    if (!sock.waitForConnected(2000)) {
+        if (error) *error = QStringLiteral("nothing is listening on %1 — is remora-host-agent "
+                                           "serving?").arg(socketPath);
+        return false;
+    }
+    return listAppsExchange(sock, out, [error](const QString &why, bool) {
+        if (error) *error = why;
+        return false;
+    });
 }
 
 }  // namespace remora::mirror

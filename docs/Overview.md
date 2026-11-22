@@ -328,4 +328,5 @@ vulnerabilities privately, as [SECURITY.md](../SECURITY.md) describes. Release n
   published image mirror does not exist yet. [docs/IMAGE_MIRROR.md](IMAGE_MIRROR.md) records
   what each tag would carry and what that means for redistribution.
 - The **phone app** — the computer's Linux apps and a Remora instance's apps on an Android
-  phone. Designed in [ADR-0002](adr/0002-phone-app.md); not built yet.
+  phone — is a preview so far ([PHONE_APP.md](PHONE_APP.md)), and its reverse, the phone's apps on
+  the computer, is not built.

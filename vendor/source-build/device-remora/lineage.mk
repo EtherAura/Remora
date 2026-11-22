@@ -14,7 +14,10 @@
 # whose peripheral package overlays (SimpleDeviceConfig, LatinIME, …) risk A17 aapt2 conflicts.
 PRODUCT_PACKAGE_OVERLAYS += $(LOCAL_PATH)/lineage-overlay
 
-# NOTE: LineageParts and Profiles are deliberately NOT included. HALF the SDK wiring now exists:
+# NOTE: LineageParts and Profiles are deliberately NOT listed here. LineageParts ships all the
+# same: vendor/lineage/config/common.mk, which remora_x86_64.mk inherits, adds it, and it builds
+# on this base only with container patch packages/apps/LineageParts/0001.
+# HALF the SDK wiring now exists:
 # the frameworks/base lineage_platform_res patch loads the 0x3f org.lineageos.platform-res into
 # every process, so SDK resources resolve and the preference widgets self-remove instead of
 # throwing. Still absent is the SystemServer LineageSystemServer hook that starts the

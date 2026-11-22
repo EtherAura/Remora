@@ -3,6 +3,7 @@
 #include <QPoint>
 #include <QSize>
 #include <QByteArray>
+#include <QHash>
 #include <QString>
 #include <QStringList>
 #include <cstdint>
@@ -213,7 +214,9 @@ inline constexpr char kAgentMagic[] = "RMRA";
 inline constexpr quint16 kAgentProtoVersion = 3;
 inline constexpr int kAgentHelloSize = 8;  // magic + u16 version + u16 flags/capabilities
 
-enum class SessionKind : quint8 { Mirror = 1, Compose = 2, NewDisplay = 3, ListApps = 4 };
+// AppIcon (app=<id>, size=<px>) answers like ListApps: the accepted reply, then one u32-prefixed
+// PNG. The host agent serves it; the in-image agent gains it with the phone app (bd remora-6a1k.2).
+enum class SessionKind : quint8 { Mirror = 1, Compose = 2, NewDisplay = 3, ListApps = 4, AppIcon = 5 };
 
 // The connection ROLE, the byte right after the hello. One agent socket serves both kinds of
 // connection, so the role has to be readable before anything role-specific — and without it
@@ -278,6 +281,80 @@ public:
     DeviceMessageParser() : records_(kControlRecordMax) {}
     void feed(const QByteArray &data) { records_.feed(data); }
     std::optional<DeviceMessage> next();
+    bool error() const { return error_ || records_.error(); }
+
+private:
+    RecordReader records_;
+    bool error_ = false;
+};
+
+// The agent's side --------------------------------------------------------------------------------
+//
+// The host agent (src/hostagent/, docs/PHONE_APP.md) serves this same protocol for the
+// computer's own apps, so everything above has its mirror image here. The in-image agent's side
+// is Records.java and ControlReader.java; both must agree with these byte for byte.
+
+// The client's hello. nullopt when the magic is wrong; `capabilities` carries the client's
+// reserved flags.
+std::optional<AgentHello> parseClientHello(const QByteArray &buf);
+// "RMRA" u16 version u16 capabilities — the agent's reply to a hello.
+QByteArray agentHelloReply(quint16 capabilities = 0);
+
+struct ConnectionRequest {
+    ConnRole role = ConnRole::Control;
+    SessionKind kind = SessionKind::Mirror;  // control
+    QHash<QString, QString> options;         // control: the key=value lines
+    quint32 sessionId = 0;                   // video and audio: the session to attach to
+};
+// What follows the hello: the role, then the session request or the attach. nullopt until it is
+// complete (then *consumed is its length), or with *error set when it names a role or a session
+// kind no agent serves — the caller drops the connection.
+std::optional<ConnectionRequest> parseConnectionRequest(const QByteArray &buf, int *consumed,
+                                                        QString *error);
+
+// u8 0, u32 sessionId.
+QByteArray sessionAccepted(quint32 sessionId);
+// u8 status (non-zero), u32 0, u16-prefixed UTF-8 reason — what the client reports verbatim.
+QByteArray sessionRefused(const QString &reason, quint8 status = 1);
+// list-apps: the accepted reply, then one u32-prefixed UTF-8 listing. app-icon has the same
+// shape, with a PNG for the listing.
+QByteArray listAppsReply(const QByteArray &listing);
+// A media stream's records (§2), for an agent that produces one itself rather than relaying an
+// encoder's: START, CONFIG (codec configuration — for Opus the OpusHead), FRAME.
+QByteArray streamStartRecord(quint8 codec);
+QByteArray streamConfigRecord(const QByteArray &config);
+QByteArray streamFrameRecord(quint64 ptsUs, bool keyFrame, const QByteArray &data);
+// END: the last record of a media stream (§2).
+QByteArray streamEndRecord(quint8 reason, const QString &detail);
+// Device → client CLIPBOARD, cut to fit a control record.
+QByteArray deviceClipboardRecord(const QString &text);
+// Device → client CLIPBOARD_ACK: the client's CLIPBOARD with this sequence is applied.
+QByteArray clipboardAckRecord(quint64 sequence);
+
+struct ControlMessage {
+    ControlRecord type = ControlRecord::Key;
+    quint8 action = 0;                 // Key, Pointer, Back
+    qint32 keycode = 0, metaState = 0;  // Key — Android KeyEvent values
+    quint32 repeat = 0;                // Key
+    QString text;                      // Text, Clipboard
+    PointerTool tool = PointerTool::Finger;
+    quint32 pointerId = 0;
+    FramePoint at;                     // Pointer, Scroll
+    float pressure = 0, hScroll = 0, vScroll = 0;
+    qint32 actionButton = 0, buttons = 0;
+    Panel panel = Panel::Collapse;
+    quint64 sequence = 0;              // Clipboard
+    bool paste = false;
+    quint16 width = 0, height = 0;     // Resize
+};
+
+// Incremental parser for the control connection's client→agent direction. Unknown types are
+// skipped; a body shorter than its type's fields latches error(), as a framing violation does.
+class ControlMessageParser {
+public:
+    ControlMessageParser() : records_(kControlRecordMax) {}
+    void feed(const QByteArray &data) { records_.feed(data); }
+    std::optional<ControlMessage> next();
     bool error() const { return error_ || records_.error(); }
 
 private:

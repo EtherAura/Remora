@@ -15,7 +15,7 @@ Android 16 / 17 · Docker · Linux x86_64 · FreeBSD 15 amd64 · Windows (previe
 [![CodeQL](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml/badge.svg)](https://github.com/EtherAura/Remora/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/EtherAura/Remora)](https://github.com/EtherAura/Remora/releases/latest)
 
-[**Download**](https://github.com/EtherAura/Remora/releases/latest) · [**Getting started**](docs/user/Getting-Started.md) · [**User guide**](https://github.com/EtherAura/Remora/wiki)
+[**Website**](https://predecessor.digital/#remora) · [**Download**](https://github.com/EtherAura/Remora/releases/latest) · [**Getting started**](docs/user/Getting-Started.md) · [**User guide**](https://github.com/EtherAura/Remora/wiki)
 
 <img src="docs/workspace.png" alt="The Remora workspace: the Runners page, with the profile Phone running the ready-made image" width="880" />
 

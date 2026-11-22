@@ -3,6 +3,10 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QLocalSocket>
+#include <QStandardPaths>
+#include <QSysInfo>
+#include <QTcpSocket>
 #include <QFile>
 #include <QMessageBox>
 #include <QPushButton>
@@ -30,10 +34,13 @@
 #include "engine/PublicImages.h"
 #include "engine/Engine.h"
 #include "engine/GuestVm.h"
+#include "engine/Link.h"
 #include <csignal>
 #include <unistd.h>
 #include <QProcess>
 #include "engine/RedditLogin.h"
+#include "engine/SelfImage.h"
+#include "engine/UpdateWatch.h"
 #include "engine/SourceBuild.h"
 #include "store/Store.h"
 
@@ -448,7 +455,7 @@ static int cmdCheck(const QStringList &a, QTextStream &out) {
     const QString sshOverride = strArg(a, "--ssh-host");
     const HostCapabilities caps =
         probeCapabilities(b, sshOverride.isEmpty() ? rcc.sshHost.value_or(QString()) : sshOverride,
-                          sp);
+                          sp, ImageStoreQuery::Ask);
     // Ask the RESOLVED config, not the backend. This was once `b == Vm`, a proxy for "vm defaults to
     // host mode", which silently made the GPU checks unreachable on bare/remote however the profile
     // was configured — so the NVIDIA Venus lines could never appear there. The explicit flag still
@@ -666,6 +673,11 @@ static int cmdUp(const QStringList &a) {
     return ok ? 0 : 1;
 }
 
+// The path this process was launched as and its arguments: captured first thing in main() and only
+// read after that, on the main thread (update-watch restarts itself from them).
+static QString gLaunchPath;
+static QStringList gStartArgv;
+
 // remora sleep [<profile>] — freeze the device in place (docker pause): zero CPU, session fully
 // preserved. The next Connect/up wakes it in ~1s instead of a ~50s cold boot.
 // remora update-watch [<profile>] — the host half of the in-Android updater: the device
@@ -675,9 +687,7 @@ static int cmdUp(const QStringList &a) {
 // Two kinds of update: an image already on the Docker host that the profile's tag has moved to (a
 // source build promoted, an image fetched in the workspace), and — for a profile on Remora's
 // official public image — a newer release in the signed catalog, found by a check every few hours
-// and downloaded only when Apply asks for it.
-static constexpr int kReleaseCheckSecs = 6 * 3600;
-
+// and downloaded only when Apply asks for it. One pass is runUpdateWatchPass (UpdateWatch.h).
 static int cmdUpdateWatch(const QStringList &a) {
     QString inst;
     Backend b;
@@ -708,44 +718,34 @@ static int cmdUpdateWatch(const QStringList &a) {
     const LineSink say = [](const QString &, const QString &line) {
         QTextStream(stderr) << line << Qt::endl;
     };
-    QJsonObject offer;  // the catalog's newer release for the official image, when there is one
-    QString offerFor, lastError;
-    QDateTime nextCheck;  // invalid = check on the first pass
-    for (;;) {
+    // A replaced remora (an upgrade installs a new file at the path the unit runs) takes over at
+    // the top of the next pass (UpdateWatch.h has the order and what a fresh process holds back).
+    SelfImageWatch selfImage = SelfImageWatch::seeded(gLaunchPath, gStartArgv, realSelfImageOps());
+#ifdef Q_OS_UNIX
+    if (gLaunchPath.isEmpty())
+        QTextStream(stderr) << "remora update-watch: launched by a bare name — a replaced remora "
+                               "is not restarted automatically\n";
+#endif
+    // Re-read by ops.profile at the top of every pass and used by the rest of that pass.
+    RemoraConfig cfg;
+    ResolvedConfig rc;
+    const auto onHost = [&](const QString &script) {
+        return remote ? sp.run(Spawner::sshArgv(guest, script), {}, {})
+                      : sp.run({"sh", "-c", script}, {}, {});
+    };
+    UpdateWatchOps ops;
+    ops.profile = [&] {
         // RE-READ EVERY TICK, as auto-sleep does: Apply deploys what the profile says NOW. A
         // watcher holding its startup copy undid every GUI change made since — turn Google Play
         // on, Connect, then Apply in Android, and the device came back without it.
-        const RemoraConfig cfg = loadInstance(defaultRemorarcPath(), inst);
-        const ResolvedConfig rc = resolve(cfg, b);
-        // An image without the updater has nothing on the device to read the state. Stay
-        // resident, so a profile that moves onto one is served without a restart.
-        if (rc.updaterDir.isEmpty()) {
-            QThread::sleep(15);
-            continue;
-        }
-        // OFFICIAL RELEASES, for a profile that follows the official image and nothing else: a
-        // pinned version stays where it was pinned, and a private build was never published.
-        // Checked against the signed catalog, never downloaded here — the download is Apply's.
-        // A failed check waits for the next slot like a good one: a dead network is not retried
-        // every 15 seconds, and the last answer stands until a check replaces it.
-        if (rc.imageTag != kPublicImageTag) {
-            offer = {};
-            offerFor.clear();
-        } else if (offerFor != rc.imageTag || !nextCheck.isValid() ||
-                   QDateTime::currentDateTimeUtc() >= nextCheck) {
-            const ProcResult c = runPublicImages(sp, {"check", "--tag", kPublicImageTag},
-                                                 remote ? guest : QString());
-            const QJsonObject r = publicImagesResult(c.out);
-            if (c.rc == 0 && !r.isEmpty()) {
-                offer = r.value("update").toBool() ? r : QJsonObject();
-                offerFor = rc.imageTag;
-            } else {
-                QTextStream(stderr) << "release check failed: "
-                                    << (c.stderrTail.isEmpty() ? c.out.right(500) : c.stderrTail)
-                                    << Qt::endl;
-            }
-            nextCheck = QDateTime::currentDateTimeUtc().addSecs(kReleaseCheckSecs);
-        }
+        cfg = loadInstance(defaultRemorarcPath(), inst);
+        rc = resolve(cfg, b);
+        return UpdateWatchProfile{!rc.updaterDir.isEmpty(), rc.imageTag};
+    };
+    ops.checkRelease = [&] {
+        return runPublicImages(sp, {"check", "--tag", kPublicImageTag}, remote ? guest : QString());
+    };
+    ops.probe = [&](const QJsonObject &offer, const QString &lastError) {
         // What the update card says about a release not downloaded yet. The stamp is the build's
         // UTC time (do-build.sh), the form the app already renders for a built image. Quotes and
         // backslashes go: the probe prints the summary into JSON as it is.
@@ -812,39 +812,25 @@ static int cmdUpdateWatch(const QStringList &a) {
                 .arg(rc.containerName, rc.imageTag, rc.updaterDir, playBase,
                      offer.isEmpty() ? QStringLiteral("''") : QStringLiteral("1"),
                      shellQuote(offerBuilt), shellQuote(summary));
-        const auto onHost = [&](const QString &script) {
-            return remote ? sp.run(Spawner::sshArgv(guest, script), {}, {})
-                          : sp.run({"sh", "-c", script}, {}, {});
-        };
-        if (onHost(probe).out.contains(QLatin1String("APPLY=1"))) {
-            QTextStream(stderr) << "apply requested from the device — updating…\n";
-            lastError.clear();
-            bool ok = true;
-            // A release the host does not have yet is downloaded, verified and imported first;
-            // the deploy then finds the tag moved, layers Google Play over the new base when the
-            // profile has it, and recreates the device on it with its data kept.
-            if (!offer.isEmpty()) {
-                const ProcResult f = runPublicImages(sp, {"fetch", "--tag", kPublicImageTag},
-                                                     remote ? guest : QString(), say);
-                if (f.rc != 0) {
-                    ok = false;
-                    lastError = QStringLiteral("the download of %1 was not completed (%2)")
-                                    .arg(offer.value("version").toString(),
-                                         f.stderrTail.trimmed().section(QLatin1Char('\n'), -1));
-                } else {
-                    offer = {};
-                    nextCheck = QDateTime();  // confirm against the catalog on the next pass
-                }
-            }
-            // With the same live capability probe `up` takes: without one, host GPU mode cannot
-            // name its render node or the Venus stack, and the redeploy failed its host
-            // prerequisites on every NVIDIA profile.
-            if (ok && !smartRun(b, cfg, sink, sp, deployCapabilities(b, cfg, sp), inst,
-                                [](const Conflict &) { return true; }))
-                lastError = QStringLiteral("the device could not be restarted on the new image — "
-                                           "see journalctl --user -u remora-updater-*");
-            onHost(QStringLiteral("rm -f \"%1/apply\"").arg(rc.updaterDir));
-        }
+        return onHost(probe).out.contains(QLatin1String("APPLY=1"));
+    };
+    ops.fetchRelease = [&] {
+        return runPublicImages(sp, {"fetch", "--tag", kPublicImageTag}, remote ? guest : QString(),
+                               say);
+    };
+    // With the same live capability probe `up` takes: without one, host GPU mode cannot name its
+    // render node or the Venus stack, and the redeploy failed its host prerequisites on every
+    // NVIDIA profile.
+    ops.deploy = [&] {
+        return smartRun(b, cfg, sink, sp, deployCapabilities(b, cfg, sp), inst,
+                        [](const Conflict &) { return true; });
+    };
+    ops.clearApply = [&] { onHost(QStringLiteral("rm -f \"%1/apply\"").arg(rc.updaterDir)); };
+    ops.now = [] { return QDateTime::currentDateTimeUtc(); };
+    ops.say = [](const QString &line) { QTextStream(stderr) << line << Qt::endl; };
+    UpdateWatchState state;
+    for (;;) {
+        runUpdateWatchPass(selfImage, state, ops);
         QThread::sleep(15);
     }
 }
@@ -1323,6 +1309,110 @@ static int cmdApp(const QStringList &a) {
 // remora apps [<profile>] [--remove]  — refresh (or remove) the profile's desktop-menu folder.
 // Refresh needs the device running (Connect / `remora up` first); remove is purely local.
 // remora apps --remove-all — every profile's folder, deleted profiles' included (the uninstaller).
+// remora link — the phone app's way in (docs/PHONE_APP.md §2, docs/LINK_PROTOCOL.md).
+//   serve [--port N]   listen for paired phones until stopped
+//   pair  [--port N]   a one-time pairing code, as a URI and (with qrencode) a QR code
+//   devices            the paired phones
+//   forget <name>      unpair one
+static QString hostAgentSocketPath() {
+    return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) +
+           QStringLiteral("/remora-host-agent/agent.sock");
+}
+
+// A profile's adb target with its device answering, as `connect` resolves it — or empty with the
+// reason. With `connect`, adb is linked to it first, as `remora shell` does.
+static QString linkAdbTarget(const QString &inst, Spawner &sp, bool connect, QString *err) {
+    const RemoraConfig cfg = loadInstance(defaultRemorarcPath(), inst);
+    const QString target = resolveAdbTarget(sp, makeContext(cfg, inferBackend(cfg)), err);
+    if (target.isEmpty()) return {};
+    if (connect) sp.run({"adb", "connect", target}, {}, {});
+    if (sp.run({"adb", "-s", target, "get-state"}, {}, {}).out.trimmed() != QLatin1String("device")) {
+        *err = QStringLiteral("%1 is not running").arg(inst);
+        return {};
+    }
+    return target;
+}
+
+static int cmdLink(const QStringList &a, QTextStream &out) {
+    const QString sub = a.value(2);
+    quint16 port = link::kDefaultPort;
+    if (const int i = a.indexOf(QStringLiteral("--port")); i >= 0) port = quint16(a.value(i + 1).toUInt());
+    QTextStream err(stderr);
+    QString why;
+    if (sub == QLatin1String("serve")) {
+        auto sp = std::make_shared<RealSpawner>();
+        link::SourceProvider sources;
+        sources.hostAgentSocket = hostAgentSocketPath();
+        sources.list = [sp, socket = sources.hostAgentSocket] {
+            QList<link::Source> list;
+            QLocalSocket probe;
+            probe.connectToServer(socket);
+            if (probe.waitForConnected(300))
+                list << link::Source{link::kComputerSourceId,
+                                     QSysInfo::machineHostName(), QStringLiteral("computer")};
+            for (const QString &inst : listInstances(defaultRemorarcPath())) {
+                QString e;
+                // Connecting, not just asking: adb forgets a device across its own restarts, and
+                // a running instance must not drop off a phone's list for that.
+                if (!linkAdbTarget(inst, *sp, true, &e).isEmpty())
+                    list << link::Source{link::androidSourceId(inst), inst, QStringLiteral("android")};
+            }
+            return list;
+        };
+        sources.adbTarget = [sp](const QString &inst, QString *e) {
+            if (!listInstances(defaultRemorarcPath()).contains(inst)) {
+                *e = QStringLiteral("no profile %1").arg(inst);
+                return QString();
+            }
+            return linkAdbTarget(inst, *sp, true, e);
+        };
+        link::LinkServer server(sources);
+        if (!server.listen(port, &why)) {
+            err << "remora link: " << why << "\n";
+            return 1;
+        }
+        out << "remora link: serving paired phones on port " << port << " (fingerprint "
+            << link::hostFingerprint(&why).left(16) << "…)\n";
+        out.flush();
+        return QCoreApplication::exec();
+    }
+    if (sub == QLatin1String("pair")) {
+        const auto uri = link::beginPairing(port, &why);
+        if (!uri) {
+            err << "remora link: " << why << "\n";
+            return 1;
+        }
+        QProcess qr;
+        qr.start(QStringLiteral("qrencode"), {QStringLiteral("-t"), QStringLiteral("ansiutf8"), *uri});
+        if (qr.waitForFinished(5000) && qr.exitCode() == 0) out << qr.readAllStandardOutput();
+        out << *uri << "\n\nScan it in the Remora phone app, or open the link on the phone. "
+            << "It works once, for ten minutes.\n";
+        QTcpSocket probe;
+        probe.connectToHost(QHostAddress::LocalHost, port);
+        if (!probe.waitForConnected(500))
+            out << "Nothing is serving on port " << port << " yet: run `remora link serve`.\n";
+        return 0;
+    }
+    if (sub == QLatin1String("devices")) {
+        const auto devices = link::pairedDevices();
+        if (devices.isEmpty()) out << "no paired phones\n";
+        for (const auto &d : devices)
+            out << d.name << "  " << d.fingerprint.left(16) << "…  paired "
+                << QDateTime::fromMSecsSinceEpoch(d.pairedAtMs).toString(Qt::ISODate) << "\n";
+        return 0;
+    }
+    if (sub == QLatin1String("forget") && a.size() > 3) {
+        if (link::forgetDevice(a[3])) {
+            out << "forgot " << a[3] << "\n";
+            return 0;
+        }
+        err << "remora link: no paired phone named " << a[3] << "\n";
+        return 1;
+    }
+    err << "usage: remora link serve|pair [--port N] | devices | forget <name>\n";
+    return 2;
+}
+
 static int cmdApps(const QStringList &a) {
     RealSpawner sp;
     ConsoleSink sink;
@@ -2669,6 +2759,11 @@ static void printUsage(QTextStream &out) {
 }
 
 int main(int argc, char **argv) {
+    // The path this process was launched as, and its arguments, before anything can change the
+    // working directory: update-watch restarts itself from that path when it is replaced.
+    gStartArgv.reserve(argc);
+    for (int i = 0; i < argc; ++i) gStartArgv << QFile::decodeName(argv[i]);
+    if (argc > 0) gLaunchPath = launchPathFromArgv0(gStartArgv[0], QDir::currentPath());
 #ifdef Q_OS_WIN
     // Qt's messages to stderr, where a log can catch them. Without a console Qt sends them to the
     // debugger instead, so every detached mirror's log (stderr redirected to a file, no console)
@@ -2792,6 +2887,7 @@ int main(int argc, char **argv) {
     if (cmd == QLatin1String("reconnect")) return cmdReconnect(args);
     if (cmd == QLatin1String("app")) return cmdApp(args);
     if (cmd == QLatin1String("apps")) return cmdApps(args);
+    if (cmd == QLatin1String("link")) return cmdLink(args, out);
     if (cmd == QLatin1String("desktop")) return cmdDesktop(args);
     if (cmd == QLatin1String("shell")) return cmdShell(args);
     if (cmd == QLatin1String("logcat")) return cmdLogcat(args);

@@ -24,6 +24,10 @@ namespace remora::mirror {
 
 struct SessionOptions {
     QString serial;      // adb target
+    // An agent on THIS machine, reached through its unix socket instead of an adb tunnel: the
+    // host agent serving the computer's own apps (docs/PHONE_APP.md). Empty = the
+    // device's in-image agent over adb, as always.
+    QString agentSocket;
     QString videoCodec;  // empty = h264
     QString videoEncoder;         // pin a specific device encoder (the h265 hwc2 case)
     QString hwDecode;             // Decoder hw mode: off|auto|cuda|nvdec|vaapi|d3d11va|/dev/dri/…
@@ -63,6 +67,8 @@ struct SessionOptions {
 // the " * Name  pkg" lines verbatim; *absent set means "no agent answered" — since the v1 purge
 // that is a refusal with the rebuild advice, not a fallback cue.
 bool agentListApps(const QString &serial, QByteArray *out, QString *error, bool *absent);
+// The same over an agent's unix socket on this machine (SessionOptions::agentSocket).
+bool localAgentListApps(const QString &socketPath, QByteArray *out, QString *error);
 
 // One mirror session: push the server, open the tunnel, spawn app_process, then demux/decode the
 // video socket and speak the control socket. Single-threaded over the Qt event loop; teardown
@@ -165,11 +171,11 @@ private:
     // Connect one tunnel socket and complete its RMRA hello. `done` runs exactly once: the socket
     // on success, nullptr plus one of the two reasons on failure.
     void openAgentConnection(const QString &connectError, const QString &helloError,
-                             std::function<void(QTcpSocket *, QString)> done);
+                             std::function<void(QIODevice *, QString)> done);
     void agentHandshake();                       // control connection
-    void agentControlReady(QTcpSocket *sock);    // …then the session request
-    void agentSessionOpen(QTcpSocket *sock, quint32 id, const QByteArray &leftover);
-    void agentVideoReady(QTcpSocket *vid);
+    void agentControlReady(QIODevice *sock);    // …then the session request
+    void agentSessionOpen(QIODevice *sock, quint32 id, const QByteArray &leftover);
+    void agentVideoReady(QIODevice *vid);
     void agentAudioThenDone();                   // audio is optional and never fatal
     void agentDone();
     // Nothing answered as an agent: a plain refusal with the rebuild advice — no fallback since
@@ -190,9 +196,10 @@ private:
     quint32 sessionId_ = 0;     // agent-assigned
     bool audioCodecSeen_ = false;  // audio announced before the recorder opened — replay it
     std::unique_ptr<QLockFile> tunnelLock_;  // ownership of our forwarded port (bd remora-6f92)
-    QTcpSocket *video_ = nullptr;    // owned via parent
-    QTcpSocket *audio_ = nullptr;    // owned via parent; only with opts_.audio
-    QTcpSocket *control_ = nullptr;  // owned via parent
+    // The agent's connections: QTcpSocket through the adb tunnel, QLocalSocket for agentSocket.
+    QIODevice *video_ = nullptr;    // owned via parent
+    QIODevice *audio_ = nullptr;    // owned via parent; only with opts_.audio
+    QIODevice *control_ = nullptr;  // owned via parent
     QLocalSocket *extVideo_ = nullptr;  // compose mode: the encoder's unix socket
     // ...until the dial settles, at which point its descriptor is handed to reader_ and this
     // pointer is dropped: from then on nothing on THIS thread touches that socket, which is the

@@ -53,6 +53,9 @@ the command line is also the way to drive Remora over ssh.
 | `remora pip [<profile>]` | Toggle a small always-on-top second mirror. The device must be up |
 | `remora record [<profile>] [<out.mp4>]` | Relaunch the mirror with recording on. Close the mirror window to finish the file |
 | `remora shot [<profile>] [<out.png>]` | Save a device screenshot. No mirror needed |
+| `remora link serve [--port N]` | Let paired phones in (a preview, for the coming phone app): this computer's apps while `remora-host-agent serve` runs, and every profile whose device is up. TLS on port 27200, both sides pinned by certificate |
+| `remora link pair [--port N]` | Show a one-time pairing code, as a link and (with `qrencode` installed) a QR code. It works once, for ten minutes. `systemctl --user enable --now remora-link.service` keeps `link serve` running with the session |
+| `remora link devices` / `remora link forget <name>` | List the paired phones / unpair one. The workspace's Phone page does all of `link` with buttons, the QR code included |
 | `remora rotate [<profile>] [landscape\|portrait\|landscape-flip\|portrait-flip\|0-3\|auto]` | Rotate the device display. With no value it prints the current rotation |
 
 ## On the device
@@ -187,6 +190,13 @@ the image this installer is meant for. The overlay it creates is private and is 
 `remora mirror` is the mirror client itself. It is not in the usage text because you do not
 normally start it by hand: `up`, `reconnect`, `app`, `desktop`, `pip` and `record` launch it with
 the right arguments. `remora plan` prints the client command a profile resolves to.
+
+One case is by hand, for now: `remora mirror --agent-socket <path> --new-display WxH/dpi
+--start-app <app>` shows one of this computer's own Linux apps, served by `remora-host-agent serve`
+(a preview, KDE Plasma 6 only). `<app>` is the app's desktop-file id, such as `org.kde.kcalc`, and
+`--list-apps` with the same socket lists them, and with `--audio` the app's sound plays in the
+mirror instead of on this computer's speakers. The agent's socket is
+`$XDG_RUNTIME_DIR/remora-host-agent/agent.sock`.
 
 ## Exit status
 

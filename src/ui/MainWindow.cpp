@@ -93,6 +93,7 @@
 #include "core/SourcePatches.h"
 #include "store/Store.h"
 #ifdef REMORA_HAVE_WEBENGINE
+#include "ui/PhonePage.h"
 #include "ui/RedditLoginWindow.h"
 #endif
 #include "ui/Workers.h"
@@ -1046,6 +1047,8 @@ void MainWindow::buildUi() {
         pages_->setCurrentIndex(page.toInt());
         // the Apps page refreshes itself on every visit (there is no Refresh button)
         if (page.toInt() == appsPageIndex_) refreshAppsPage();
+        // whether the link serves and who is paired change outside the workspace too
+        if (page.toInt() == phonePageIndex_ && phonePage_) phonePage_->refresh();
         // the device may have been started or stopped since this page was last looked at
         if (page.toInt() == devicePageIndex_) refreshDataDirLock();
         // so does the Runners page — and while it stays open, a timer re-probes the statuses
@@ -2653,6 +2656,12 @@ void MainWindow::buildUi() {
         col->addWidget(box, 1);  // the archives tree gets the spare page height
     }
 
+    col->addStretch(1);
+    // ── Phone: pair a phone and let it in (docs/PHONE_APP.md §2) ────────────────
+    col = newPage(QStringLiteral("Phone"), {"kdeconnect", "network-wireless", "smartphone"});
+    phonePageIndex_ = pages_->count() - 1;  // for the visit-triggered refresh
+    phonePage_ = new PhonePage();
+    col->addWidget(phonePage_);
     col->addStretch(1);
     col = newPage(QStringLiteral("Settings"), {"configure", "preferences-system"});
 

@@ -12,7 +12,7 @@ struct PrereqResult {
     QString key, label;
     bool ok = false;
     QString remedy;
-    QString severity;  // required | gpu | optional
+    QString severity;  // required | gpu | optional | info
 };
 
 // Per-target prereqs evaluated against a capability probe. gpuHost adds the host-GPU rows;
@@ -34,6 +34,13 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
 // Each result was measured against an identical control with the module loaded. Older releases
 // are treated like 16, so a profile that never says which release it is still asks for the module.
 bool releaseNeedsAshmem(int androidVersion);
+
+// Read the image store out of a `docker info --format '{{json .}}'` reply. The containerd store
+// is the reply whose DriverStatus holds exactly one driver-type pair whose value is the whole
+// string io.containerd.snapshotter.v1, nothing before or after it; a reply with no DriverStatus
+// (absent or null) is a classic graph driver. Driver must be a non-empty run of printable ASCII
+// with no white space. Anything else, including any other driver-type value, is Unknown.
+DockerImageStore parseDockerImageStore(const QString &dockerInfoJson);
 
 bool isReady(const QVector<PrereqResult> &results);   // every REQUIRED prereq satisfied
 QVector<PrereqResult> blockers(const QVector<PrereqResult> &results);

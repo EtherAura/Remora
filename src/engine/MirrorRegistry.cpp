@@ -20,6 +20,18 @@
 
 namespace remora {
 
+QString mirrorTunnelLockPath(quint16 port) {
+#ifdef Q_OS_WIN
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
+                        QStringLiteral("/remora/mirrors");
+    QDir().mkpath(dir);
+#else
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    if (dir.isEmpty()) dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+#endif
+    return dir + QStringLiteral("/remora-mirror-tunnel-%1.lock").arg(port);
+}
+
 QString mirrorRegistryDir() {
 #ifdef Q_OS_WIN
     return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)

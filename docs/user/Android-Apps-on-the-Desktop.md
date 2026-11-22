@@ -180,6 +180,13 @@ The screen offers two kinds of update:
 - **A newer image already on the host**, such as a source build you promoted or an image you
   fetched in the workspace. Applying it restarts the device on that image.
 
+When an upgrade replaces the `remora` program, the watcher restarts itself on the new one at its
+next pass, so an installed upgrade reaches the updater without logging out. An update being
+applied at that moment finishes first, and a button press waiting for the watcher is kept. A
+request for a new public release waits until the watcher has an answer from the catalog: right
+after the watcher starts, with the network down, the request stays until the catalog can be
+reached.
+
 If an update fails, for example because the download was cut off or the disk is full, the screen
 says so and the device keeps running the image it had. `remora images check --tag
 remora24:x86_64-public` asks the catalog the same question from a terminal.

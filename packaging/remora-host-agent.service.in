@@ -1,0 +1,16 @@
+# Opt in with: systemctl --user enable --now remora-host-agent.service
+# Serves this computer's own apps to a paired phone (docs/PHONE_APP.md) for as long as the
+# graphical session lasts: it needs KWin, and it is part of the session, not of the machine.
+[Unit]
+Description=Remora host agent: this computer's apps for a paired phone
+Documentation=https://github.com/EtherAura/Remora/blob/main/docs/PHONE_APP.md
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/remora-host-agent serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

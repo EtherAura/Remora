@@ -4096,6 +4096,20 @@ private slots:
         QVERIFY(argv.contains("androidboot.remora_net_dns1=192.168.0.4"));
     }
 
+    // 60 is also the resolver's default, so a builder that hardcoded it or wrote the token twice
+    // would pass the cases above: a non-default rate must come through once, and unset, not at all.
+    void bootArgFpsCarriesResolvedValue() {
+        ResolvedConfig c = bareCfg();
+        c.fps = 90;
+        const QStringList argv = buildDockerRunArgv(c);
+        QCOMPARE(argv.count(QStringLiteral("androidboot.remora_fps=90")), qsizetype(1));
+        QVERIFY(!argv.contains(QStringLiteral("androidboot.remora_fps=60")));
+
+        const QStringList unset = buildDockerRunArgv(bareCfg());
+        for (const QString &tok : unset)
+            QVERIFY2(!tok.startsWith(QStringLiteral("androidboot.remora_fps=")), qPrintable(tok));
+    }
+
     // ── bd remora-4u4.2: per-profile identity, pinned at creation ──
 
     void profileSlugging() {

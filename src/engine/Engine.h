@@ -675,7 +675,16 @@ public:
 // On a Windows client the bare-only local rows (lsmod, docker group, local daemon, the local GPU
 // and LAN scans) are not asked at all: bare does not exist there, and every one of them is a Linux
 // command that would only come back as a misleading failure (bd remora-7oih.2).
-HostCapabilities probeCapabilities(Backend target, const QString &sshHost, Spawner &sp);
+//
+// Ask adds one `docker info --format '{{json .}}'` against the TARGET daemon (local for bare, the
+// ssh host's for remote), only after that daemon passed its reachability probe, through runTimed
+// with kImageStoreQueryTimeoutMs. A nonzero rc or a timeout is Unknown whatever stdout held, and
+// the reply is not logged. Only the readiness displays (`remora check`, the workspace's readiness
+// worker) pass Ask; status, deploy and doctor keep Skip.
+enum class ImageStoreQuery { Skip, Ask };
+inline constexpr int kImageStoreQueryTimeoutMs = 5000;
+HostCapabilities probeCapabilities(Backend target, const QString &sshHost, Spawner &sp,
+                                   ImageStoreQuery store = ImageStoreQuery::Skip);
 // "Is adb on this machine?" without a shell: `command -v` is a shell builtin, so Windows asks
 // where.exe instead. Shared by the readiness probe and preflight so the two cannot disagree.
 QStringList adbLookupArgv(LocalOs os);

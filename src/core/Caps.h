@@ -8,6 +8,14 @@
 
 namespace remora {
 
+// What the target daemon's `docker info` says about its image store. Unknown covers every reply
+// that is not exactly one of the two recognised shapes, and a query that failed or timed out.
+enum class DockerImageStoreKind { Unknown, ContainerdSnapshotter, GraphDriver };
+struct DockerImageStore {
+    DockerImageStoreKind kind = DockerImageStoreKind::Unknown;
+    QString driver;  // the reply's Driver, set only when kind is not Unknown
+};
+
 // Read-only host-capability snapshot (populated by the live probe). resolve() consumes it and,
 // per the capability-drift rule, only ever uses a LIVE render node — it never bakes one.
 struct HostCapabilities {
@@ -60,6 +68,9 @@ struct HostCapabilities {
     bool python3Present = false;
     std::optional<bool> sshReachable;       // remote only
     std::optional<bool> remoteDockerOk;
+    // The target daemon's image store, asked only by a readiness display and only once that
+    // daemon answered its reachability probe. nullopt = not asked; informational, never a blocker.
+    std::optional<DockerImageStore> dockerImageStore;
 };
 
 }  // namespace remora

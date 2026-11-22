@@ -1,4 +1,7 @@
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QtTest>
 
@@ -77,6 +80,167 @@ private slots:
         QVERIFY(named);
         c.dockerDaemonOk = true;
         QVERIFY(isReady(checkReadiness(Backend::Bare, c)));
+    }
+
+    void dockerImageStoreParse() {
+        const DockerImageStore ctr = parseDockerImageStore(QStringLiteral(
+            R"({"Driver":"overlayfs","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]})"));
+        QCOMPARE(ctr.kind, DockerImageStoreKind::ContainerdSnapshotter);
+        QCOMPARE(ctr.driver, QStringLiteral("overlayfs"));
+        const DockerImageStore o2 = parseDockerImageStore(QStringLiteral(
+            R"({"Driver":"overlay2","DriverStatus":[["Backing Filesystem","extfs"],["Supports d_type","true"]]})"));
+        QCOMPARE(o2.kind, DockerImageStoreKind::GraphDriver);
+        QCOMPARE(o2.driver, QStringLiteral("overlay2"));
+        QCOMPARE(parseDockerImageStore(QStringLiteral(R"({"Driver":"overlay2"})")).kind,
+                 DockerImageStoreKind::GraphDriver);
+        QCOMPARE(parseDockerImageStore(QStringLiteral(R"({"Driver":"overlay2","DriverStatus":null})"))
+                     .kind,
+                 DockerImageStoreKind::GraphDriver);
+    }
+
+    // The row sits after the daemon row, is always ok at "info" severity with no remedy, and is
+    // absent when nobody asked.
+    void dockerImageStoreRowIsInformational() {
+        for (const Backend target : {Backend::Bare, Backend::Remote}) {
+            HostCapabilities c = linuxClient();
+            c.inDockerGroup = true;
+            c.dockerDaemonOk = true;
+            c.sshReachable = true;
+            c.remoteDockerOk = true;
+            const auto plain = checkReadiness(target, c);
+            for (const auto &r : plain) QVERIFY(r.key != QLatin1String("docker_image_store"));
+            const QString daemonKey = target == Backend::Bare ? QStringLiteral("docker_daemon")
+                                                              : QStringLiteral("remote_docker");
+            const QList<QPair<DockerImageStore, QString>> cases{
+                {{DockerImageStoreKind::ContainerdSnapshotter, QStringLiteral("overlayfs")},
+                 QStringLiteral("Docker image store: containerd snapshotter (overlayfs)")},
+                {{DockerImageStoreKind::GraphDriver, QStringLiteral("overlay2")},
+                 QStringLiteral("Docker image store: overlay2 graph driver")},
+                {{}, QStringLiteral("Docker image store: not reported by docker info")}};
+            for (const auto &[store, label] : cases) {
+                c.dockerImageStore = store;
+                const auto rows = checkReadiness(target, c);
+                QCOMPARE(rows.size(), plain.size() + 1);
+                int at = -1;
+                for (int i = 0; i < rows.size(); ++i)
+                    if (rows.at(i).key == QLatin1String("docker_image_store")) at = i;
+                QVERIFY(at > 0);
+                QCOMPARE(rows.at(at - 1).key, daemonKey);
+                QCOMPARE(rows.at(at).label, label);
+                QVERIFY(rows.at(at).ok);
+                QVERIFY(rows.at(at).remedy.isEmpty());
+                QCOMPARE(rows.at(at).severity, QStringLiteral("info"));
+                QCOMPARE(isReady(rows), isReady(plain));
+            }
+        }
+    }
+
+    void dockerImageStoreMalformedStaysUnknown_data() {
+        QTest::addColumn<QString>("reply");
+        const QJsonValue absent(QJsonValue::Undefined);
+        const auto reply = [](const QJsonValue &driver, const QJsonValue &status) {
+            QJsonObject o;
+            if (!driver.isUndefined()) o.insert(QStringLiteral("Driver"), driver);
+            if (!status.isUndefined()) o.insert(QStringLiteral("DriverStatus"), status);
+            return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
+        };
+        const auto marker = [](const QString &v) {
+            return QJsonValue(QJsonArray{QJsonArray{QStringLiteral("driver-type"), v}});
+        };
+        const QString v1 = QStringLiteral("io.containerd.snapshotter.v1");
+        const QJsonValue good = marker(v1);
+        const QJsonValue ovl(QStringLiteral("overlayfs"));
+        QTest::newRow("not-json") << QStringLiteral("Cannot connect to the Docker daemon");
+        QTest::newRow("empty") << QString();
+        QTest::newRow("json-array") << QStringLiteral("[]");
+        QTest::newRow("status-object") << reply(ovl, QJsonObject{{"driver-type", v1}});
+        QTest::newRow("status-string") << reply(ovl, v1);
+        QTest::newRow("entry-not-array") << reply(ovl, QJsonArray{v1});
+        QTest::newRow("entry-one-element")
+            << reply(ovl, QJsonArray{QJsonArray{QStringLiteral("driver-type")}});
+        QTest::newRow("entry-three-elements")
+            << reply(ovl, QJsonArray{QJsonArray{QStringLiteral("driver-type"), v1, v1}});
+        QTest::newRow("entry-non-string-value")
+            << reply(ovl, QJsonArray{QJsonArray{QStringLiteral("driver-type"), 1}});
+        QTest::newRow("conflicting-driver-types")
+            << reply(ovl, QJsonArray{QJsonArray{QStringLiteral("driver-type"), v1},
+                                     QJsonArray{QStringLiteral("driver-type"),
+                                                QStringLiteral("io.containerd.snapshotter.v2")}});
+        QTest::newRow("repeated-driver-type")
+            << reply(ovl, QJsonArray{QJsonArray{QStringLiteral("driver-type"), v1},
+                                     QJsonArray{QStringLiteral("driver-type"), v1}});
+        QTest::newRow("other-version") << reply(ovl, marker(QStringLiteral("io.containerd.snapshotter.v2")));
+        QTest::newRow("other-namespace") << reply(ovl, marker(QStringLiteral("io.containerd.content.v1")));
+        QTest::newRow("bare-prefix-dot") << reply(ovl, marker(QStringLiteral("io.containerd.snapshotter.")));
+        QTest::newRow("bare-prefix") << reply(ovl, marker(QStringLiteral("io.containerd.snapshotter")));
+        QTest::newRow("bare-prefix-v") << reply(ovl, marker(QStringLiteral("io.containerd.snapshotter.v")));
+        QTest::newRow("marker-attached-text") << reply(ovl, marker(v1 + QStringLiteral("extra")));
+        QTest::newRow("marker-attached-digit") << reply(ovl, marker(v1 + QStringLiteral("0")));
+        QTest::newRow("marker-attached-dot") << reply(ovl, marker(v1 + QStringLiteral(".1")));
+        QTest::newRow("marker-trailing-lf") << reply(ovl, marker(v1 + QLatin1Char('\n')));
+        QTest::newRow("marker-trailing-crlf") << reply(ovl, marker(v1 + QStringLiteral("\r\n")));
+        QTest::newRow("marker-trailing-space") << reply(ovl, marker(v1 + QLatin1Char(' ')));
+        QTest::newRow("marker-trailing-text") << reply(ovl, marker(v1 + QStringLiteral(" extra")));
+        QTest::newRow("marker-second-line") << reply(ovl, marker(v1 + QStringLiteral("\nextra")));
+        QTest::newRow("marker-leading-lf") << reply(ovl, marker(QLatin1Char('\n') + v1));
+        QTest::newRow("marker-leading-space") << reply(ovl, marker(QLatin1Char(' ') + v1));
+        QTest::newRow("marker-uppercase") << reply(ovl, marker(v1.toUpper()));
+        QTest::newRow("driver-missing") << reply(absent, good);
+        QTest::newRow("driver-null") << reply(QJsonValue(), good);
+        QTest::newRow("driver-number") << reply(2, good);
+        QTest::newRow("driver-empty") << reply(QString(), good);
+        QTest::newRow("driver-blank") << reply(QStringLiteral("  "), absent);
+        QTest::newRow("driver-missing-classic") << reply(absent, absent);
+        const QList<QPair<const char *, QString>> badDrivers{
+            {"driver-leading-space", QStringLiteral(" overlay2")},
+            {"driver-trailing-lf", QStringLiteral("overlay2\n")},
+            {"driver-embedded-lf", QStringLiteral("over\nlay2")},
+            {"driver-embedded-space", QStringLiteral("over lay2")},
+            {"driver-tab", QStringLiteral("overlay2\t")},
+            {"driver-esc", QStringLiteral("overlay2") + QChar(0x1b)},
+            {"driver-nul", QStringLiteral("overlay2") + QChar(0x00)},
+            {"driver-del", QStringLiteral("overlay2") + QChar(0x7f)},
+            {"driver-c1", QStringLiteral("overlay2") + QChar(0x85)},
+            {"driver-line-separator", QStringLiteral("overlay2") + QChar(0x2028)},
+            {"driver-paragraph-separator", QStringLiteral("overlay2") + QChar(0x2029)},
+            {"driver-no-break-space", QStringLiteral("overlay") + QChar(0xa0) + QLatin1Char('2')}};
+        for (const auto &[name, driver] : badDrivers) {
+            QTest::newRow(name) << reply(driver, absent);
+            QTest::newRow(qPrintable(QStringLiteral("%1-with-marker").arg(QLatin1String(name))))
+                << reply(driver, good);
+        }
+    }
+
+    // Every reply that is not exactly one of the two recognised shapes reads "not reported" — one
+    // informational row for a daemon that was asked, with readiness and blockers unchanged.
+    void dockerImageStoreMalformedStaysUnknown() {
+        QFETCH(QString, reply);
+        const DockerImageStore store = parseDockerImageStore(reply);
+        QCOMPARE(store.kind, DockerImageStoreKind::Unknown);
+        QVERIFY(store.driver.isEmpty());
+        for (const Backend target : {Backend::Bare, Backend::Remote}) {
+            HostCapabilities c = linuxClient();
+            c.inDockerGroup = true;
+            c.dockerDaemonOk = true;
+            c.sshReachable = true;
+            c.remoteDockerOk = true;
+            const auto before = checkReadiness(target, c);
+            c.dockerImageStore = store;
+            const auto rows = checkReadiness(target, c);
+            QCOMPARE(rows.size(), before.size() + 1);
+            int found = 0;
+            for (const auto &r : rows) {
+                if (r.key != QLatin1String("docker_image_store")) continue;
+                ++found;
+                QCOMPARE(r.label, QStringLiteral("Docker image store: not reported by docker info"));
+                QVERIFY(r.ok);
+                QVERIFY(r.remedy.isEmpty());
+                QCOMPARE(r.severity, QStringLiteral("info"));
+            }
+            QCOMPARE(found, 1);
+            QCOMPARE(isReady(rows), isReady(before));
+            QCOMPARE(blockers(rows).size(), blockers(before).size());
+        }
     }
     // bd remora-oky7. The ashmem row belongs to the release, not the target: an Android 17 image
     // runs on memfd, so a bare host without the module is READY for it, and the row is not shown

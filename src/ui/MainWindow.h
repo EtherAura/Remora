@@ -246,6 +246,8 @@ private:
     void setEntryDenylisted(const QString &pkg, bool on);
     // Apps page: auto-refresh whenever the page is opened (replaces the Refresh-now button).
     int appsPageIndex_ = -1;
+    int phonePageIndex_ = -1;
+    class PhonePage *phonePage_ = nullptr;
     // Runners page: visit-triggered refresh + in-place status polling while the page is open
     int runnersPageIndex_ = -1;
     int devicePageIndex_ = -1;  // visit re-probes whether the data dir may be edited

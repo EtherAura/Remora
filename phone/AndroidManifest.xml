@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Remora phone app (docs/PHONE_APP.md): this computer's apps and its Remora
+     instances' Android apps, each opened on the phone at the phone's own size. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.github.etheraura.remora.phone">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@drawable/ic_launcher"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight"
+        android:allowBackup="false">
+
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- A pairing code scanned with the phone's own camera arrives here as its link. -->
+        <activity android:name=".PairActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="remora-link" android:host="pair" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".AppsActivity" android:exported="false" />
+
+        <!-- Rotation and folding reflow the remote display (RESIZE), so the activity keeps
+             running through them instead of being recreated. The keyboard waits for the ⌨
+             button: the session view is a focused text editor from the start, which Android
+             would otherwise answer by opening the keyboard over every new session. -->
+        <activity android:name=".SessionActivity" android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation"
+            android:windowSoftInputMode="adjustResize|stateHidden" />
+    </application>
+</manifest>

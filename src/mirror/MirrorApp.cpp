@@ -102,6 +102,10 @@ int runMirrorMain(QApplication &app) {
          QStringLiteral("an external authority positions the window (accepted; never self-move)")},
         {QStringLiteral("video-encoder"), QStringLiteral("pin a device encoder by name"),
          QStringLiteral("name")},
+        {QStringLiteral("agent-socket"),
+         QStringLiteral("an agent on this machine instead of a device's: this computer's own apps "
+                        "(remora-host-agent)"),
+         QStringLiteral("path")},
         {QStringLiteral("new-display"),
          QStringLiteral("desktop mode: mirror a new virtual display (WxH/dpi, or 'auto')"),
          QStringLiteral("size")},
@@ -151,8 +155,9 @@ int runMirrorMain(QApplication &app) {
 
     SessionOptions opts;
     opts.serial = p.value(QStringLiteral("serial"));
-    if (opts.serial.isEmpty()) {
-        fprintf(stderr, "mirror: need --serial\n");
+    opts.agentSocket = p.value(QStringLiteral("agent-socket"));
+    if (opts.serial.isEmpty() && opts.agentSocket.isEmpty()) {
+        fprintf(stderr, "mirror: need --serial (or --agent-socket)\n");
         return 2;
     }
     opts.videoCodec = p.value(QStringLiteral("video-codec"));
@@ -221,6 +226,14 @@ int runMirrorMain(QApplication &app) {
         QByteArray listing;
         QString err;
         bool absent = false;
+        if (!opts.agentSocket.isEmpty()) {
+            if (localAgentListApps(opts.agentSocket, &listing, &err)) {
+                fwrite(listing.constData(), 1, size_t(listing.size()), stdout);
+                return 0;
+            }
+            fprintf(stderr, "mirror: %s\n", qUtf8Printable(err));
+            return 1;
+        }
         if (agentListApps(opts.serial, &listing, &err, &absent)) {
             fwrite(listing.constData(), 1, size_t(listing.size()), stdout);
             return 0;
@@ -261,7 +274,9 @@ int runMirrorMain(QApplication &app) {
 
     MirrorSession session(opts);
     QString title = p.value(QStringLiteral("window-title"));
-    if (title.isEmpty()) title = QStringLiteral("Remora mirror — %1").arg(opts.serial);
+    if (title.isEmpty())
+        title = opts.agentSocket.isEmpty() ? QStringLiteral("Remora mirror — %1").arg(opts.serial)
+                                           : QStringLiteral("Remora — this computer");
 
     // Register for the life of the process (bd remora-7oih.1): the engine finds, stops and counts
     // mirrors by what is registered, not by a pgrep pattern over a command line that only Linux
@@ -269,7 +284,8 @@ int runMirrorMain(QApplication &app) {
     // window to reap it, which is said, not fatal.
     MirrorEntry self;
     self.pid = QCoreApplication::applicationPid();
-    self.serial = opts.serial;
+    // A local agent has no adb serial; the registry still needs a name that is not a device's.
+    self.serial = opts.agentSocket.isEmpty() ? opts.serial : QStringLiteral("this-computer");
     self.title = title;
     self.kind = mirrorKindFor(!opts.newDisplay.isEmpty(), p.isSet(QStringLiteral("boot-animation")),
                               appId, title);

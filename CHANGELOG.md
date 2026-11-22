@@ -7,6 +7,46 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+## [2026.11.9] - 2026-11-22
+
+### Added
+
+- A preview of `remora-host-agent`, the half of the coming phone app that shows this computer's
+  own Linux apps (KDE Plasma 6 only). `remora-host-agent serve` offers each app on a virtual
+  screen of the asking device's size and density, launched the way the desktop launches it,
+  streamed through the hardware encoder and driven by that device's touch, mouse and keyboard.
+  Keys typed on the device go only to its app: when a window on the desk has keyboard focus, the
+  app's window gets it back first, and keys it cannot deliver there are dropped.
+  The physical monitors are kept where they are while the virtual screen exists, mirrored ones
+  included, and a session is refused when the GPU driving them has too little memory left for
+  them (`serve --vram-reserve`, 1 GiB by default). An app that is
+  already open — a single-instance one answers a launch with the window it has — moves to the
+  phone and goes back exactly where it was afterwards; a window opened for the phone is
+  minimized, not closed, when the phone leaves. A rotated phone or a resized window gets the app
+  reflowed to the new shape rather than stretched. The app's sound plays on the asking device
+  instead of this computer's speakers, and only that app's. The clipboard follows in both directions, app
+  icons come from the desktop's icon theme, and a desk that was locked when the phone arrived is
+  locked again when it leaves. `systemctl --user enable --now remora-host-agent.service` keeps the
+  agent running with the session.
+  `remora mirror --agent-socket` connects to it, which is the way to try it before the phone app
+  exists. The design is [docs/PHONE_APP.md](docs/PHONE_APP.md).
+- A preview of `remora link`, the coming phone app's way in. `remora link pair` shows a one-time
+  code, as a link and a QR code, and `remora link serve` lets a phone that used it reach this
+  computer's apps and every running profile's Android, over TLS with both ends pinned by
+  certificate. `remora link devices` lists the paired phones and `remora link forget` unpairs one.
+  The workspace's new Phone page does the same: it shows the QR code, starts the link and forgets
+  a phone. The format is [docs/LINK_PROTOCOL.md](docs/LINK_PROTOCOL.md).
+- A first build of the phone app itself (`phone/`, built by `phone/build.sh` against an Android
+  source tree): pair by scanning the code with the phone's camera, then open any of this
+  computer's apps or a running profile's Android apps on the phone, at its own size or, to spare
+  the computer's GPU and the network, at a lighter one (*Session size*). See
+  [phone/README.md](phone/README.md).
+- `remora check` and the workspace's readiness list name the target docker daemon's image store
+  (the local daemon for bare, the ssh host's for remote) once that daemon answers: the
+  containerd snapshotter, a classic graph driver such as overlay2, or "not reported" when the
+  query fails, takes longer than a few seconds, or gives an answer Remora does not recognise. The
+  row is informational and never blocks a deploy; `status` and a deploy do not ask.
+
 ### Changed
 
 - The ready-made Android 17 image is rebuilt every week from the newest LineageOS sources and
@@ -16,6 +56,25 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- When a mirrored display changes size, the encoder keeps the new display's buffers and encodes
+  its first frame at once. It used to discard them along with the old ones and wait for the
+  next frame to bring them back, which a still screen never sends. In the phone app preview,
+  opening the keyboard over one of this computer's apps could leave the phone black until
+  something on the screen changed.
+- The mirror's encoder no longer shows the wrong frame, or crashes as it stops, after the screen
+  has sat still for a minute and then changes. Its cleanup of idle buffers left a stale pointer
+  behind, so a new buffer could be encoded from another buffer's memory and one frame was freed
+  twice. The encoder could then also report the GPU out of memory when it was not, and continue
+  at a lower resolution.
+- The update watcher (`remora update-watch`, the service behind the in-Android updater) restarts
+  itself on the new `remora` when an upgrade replaces the program file, at its next 15-second pass,
+  instead of running the old copy until it was restarted by hand. An update already being applied
+  finishes first. A replacement that cannot be started yet is retried at each pass, and the
+  running copy keeps serving meanwhile.
+- An Apply tapped in Android for a new public release is no longer lost when the watcher has just
+  started (after a login, a restart or an upgrade) and its first look at the release catalog
+  fails. It used to restart the device on the image it already ran and forget the request; it now
+  keeps the request until the catalog answers, then installs the release.
 - New Android images keep ADB replies moving when traffic backs up in the other direction,
   reducing stalls during mirroring and interactive input.
 - Android source builds use the headless composer's periodic display signals to estimate
@@ -661,7 +720,8 @@ First public release.
   then mirror with Remora's own Qt/FFmpeg client and an agent baked into the image — video, audio,
   input, clipboard, desktop-mode displays and app listing.
 
-[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.8...HEAD
+[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.9...HEAD
+[2026.11.9]: https://github.com/EtherAura/Remora/compare/v2026.11.8...v2026.11.9
 [2026.11.8]: https://github.com/EtherAura/Remora/compare/v2026.11.6...v2026.11.8
 [2026.11.6]: https://github.com/EtherAura/Remora/compare/v2026.11.5...v2026.11.6
 [2026.11.5]: https://github.com/EtherAura/Remora/compare/v2026.11.4...v2026.11.5

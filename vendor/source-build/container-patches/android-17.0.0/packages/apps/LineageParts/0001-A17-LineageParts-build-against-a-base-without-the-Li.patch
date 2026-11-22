@@ -1,0 +1,184 @@
+From 5c2955e4b70691aa4af63b322775939244937d64 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sun, 22 Nov 2026 13:53:12 -0500
+Subject: [PATCH] A17 LineageParts: build against a base without the LineageOS
+ framework
+
+LineageParts comes from lineage-23.2 and calls five things the
+LineageOS framework adds to frameworks/base, none of which the Android 17
+base this image pins has:
+
+  Settings.System.ACCELEROMETER_ROTATION_ANGLES  (DisplayRotation)
+  Settings.System.VOLUME_KEY_CURSOR_CONTROL      (ButtonSettings)
+  AbsSeekBar.updateTouchProgress, overridden     (BacklightTimeoutSeekBar)
+  DevicePolicyManager.requireSecureKeyguard()    (SetupActionsFragment)
+  com.android.internal.os.DeviceKeyHandler       (atv/ and gestures/)
+
+The image shipped LineageParts anyway, because its compiled classes
+dated from July and every incremental build since reused them. The
+DeviceKeyHandler interface was a file copied into the checkout by hand,
+which no manifest or patch recreated. The first build that recompiled
+LineageParts failed with six "cannot find symbol" errors.
+
+The two settings keys are spelled out, as the compiled app already had
+them inlined. The seek bar method stays, with no @Override, since nothing
+calls it on this base. requireSecureKeyguard makes the LineageOS
+framework's three tests from public DevicePolicyManager calls. The
+interface is declared in the app, where the hand-copied file had it.
+Behaviour matches the image that shipped, except that opening a
+profile's actions no longer throws NoSuchMethodError.
+---
+ .../android/internal/os/DeviceKeyHandler.java | 22 +++++++++++++++++++
+ .../hardware/DisplayRotation.java             |  8 +++++--
+ .../input/BacklightTimeoutSeekBar.java        |  3 ++-
+ .../lineageparts/input/ButtonSettings.java    |  8 +++++--
+ .../profiles/SetupActionsFragment.java        | 17 +++++++++++++-
+ 5 files changed, 52 insertions(+), 6 deletions(-)
+ create mode 100644 src/com/android/internal/os/DeviceKeyHandler.java
+
+diff --git a/src/com/android/internal/os/DeviceKeyHandler.java b/src/com/android/internal/os/DeviceKeyHandler.java
+new file mode 100644
+index 0000000..992f70a
+--- /dev/null
++++ b/src/com/android/internal/os/DeviceKeyHandler.java
+@@ -0,0 +1,22 @@
++/*
++ * SPDX-FileCopyrightText: The LineageOS Project
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++package com.android.internal.os;
++
++import android.view.KeyEvent;
++
++/**
++ * Device-specific key handler interface.
++ *
++ * The LineageOS framework declares this interface, and PhoneWindowManager hands key events to a
++ * device's implementation of it. The Android 17 base this image builds on does not declare it,
++ * and the image configures no device key handler (config_deviceKeyHandlerLib/Class are empty), so
++ * LineageParts' atv/ and gestures/ KeyHandler classes are never loaded. They still name the type,
++ * so it is declared here and compiled into LineageParts.apk. No framework copy exists to clash
++ * with it.
++ */
++public interface DeviceKeyHandler {
++    KeyEvent handleKeyEvent(KeyEvent event);
++}
+diff --git a/src/org/lineageos/lineageparts/hardware/DisplayRotation.java b/src/org/lineageos/lineageparts/hardware/DisplayRotation.java
+index 74fde65..c50fb6c 100644
+--- a/src/org/lineageos/lineageparts/hardware/DisplayRotation.java
++++ b/src/org/lineageos/lineageparts/hardware/DisplayRotation.java
+@@ -30,6 +30,10 @@ public class DisplayRotation extends SettingsPreferenceFragment {
+     private static final String ROTATION_180_PREF = "display_rotation_180";
+     private static final String ROTATION_270_PREF = "display_rotation_270";
+ 
++    // Settings.System.ACCELEROMETER_ROTATION_ANGLES in the LineageOS framework. The Android 17
++    // base this image builds on does not declare it, so the key is spelled out here.
++    private static final String ACCELEROMETER_ROTATION_ANGLES = "accelerometer_rotation_angles";
++
+     private MainSwitchPreference mAccelerometer;
+     private CheckBoxPreference mRotation0Pref;
+     private CheckBoxPreference mRotation90Pref;
+@@ -63,7 +67,7 @@ public class DisplayRotation extends SettingsPreferenceFragment {
+         mRotation270Pref = prefSet.findPreference(ROTATION_270_PREF);
+ 
+         int mode = Settings.System.getIntForUser(getContentResolver(),
+-                Settings.System.ACCELEROMETER_ROTATION_ANGLES,
++                ACCELEROMETER_ROTATION_ANGLES,
+                 ROTATION_0_MODE | ROTATION_90_MODE | ROTATION_270_MODE, UserHandle.USER_CURRENT);
+ 
+         mRotation0Pref.setChecked((mode & ROTATION_0_MODE) != 0);
+@@ -119,7 +123,7 @@ public class DisplayRotation extends SettingsPreferenceFragment {
+                 mRotation0Pref.setChecked(true);
+             }
+             Settings.System.putIntForUser(requireActivity().getContentResolver(),
+-                    Settings.System.ACCELEROMETER_ROTATION_ANGLES, mode, UserHandle.USER_CURRENT);
++                    ACCELEROMETER_ROTATION_ANGLES, mode, UserHandle.USER_CURRENT);
+             return true;
+         }
+ 
+diff --git a/src/org/lineageos/lineageparts/input/BacklightTimeoutSeekBar.java b/src/org/lineageos/lineageparts/input/BacklightTimeoutSeekBar.java
+index 43893ed..ec9f743 100644
+--- a/src/org/lineageos/lineageparts/input/BacklightTimeoutSeekBar.java
++++ b/src/org/lineageos/lineageparts/input/BacklightTimeoutSeekBar.java
+@@ -44,7 +44,8 @@ public class BacklightTimeoutSeekBar extends SeekBar {
+         super.setMax(max + 2 * mGap - 1);
+     }
+ 
+-    @Override
++    // Overrides AbsSeekBar.updateTouchProgress in the LineageOS framework. The Android 17 base
++    // this image builds on has no such hook, so here it is an ordinary method nothing calls.
+     protected int updateTouchProgress(int lastProgress, int newProgress) {
+         if (newProgress < mMax) {
+             return newProgress;
+diff --git a/src/org/lineageos/lineageparts/input/ButtonSettings.java b/src/org/lineageos/lineageparts/input/ButtonSettings.java
+index e14655c..98071be 100644
+--- a/src/org/lineageos/lineageparts/input/ButtonSettings.java
++++ b/src/org/lineageos/lineageparts/input/ButtonSettings.java
+@@ -56,6 +56,10 @@ public class ButtonSettings extends SettingsPreferenceFragment
+         implements Preference.OnPreferenceChangeListener, Searchable {
+     private static final String TAG = "SystemSettings";
+ 
++    // Settings.System.VOLUME_KEY_CURSOR_CONTROL in the LineageOS framework. The Android 17 base
++    // this image builds on does not declare it, so the key is spelled out here.
++    private static final String VOLUME_KEY_CURSOR_CONTROL = "volume_key_cursor_control";
++
+     private static final String KEY_BUTTON_BACKLIGHT = "button_backlight";
+     private static final String KEY_BACK_WAKE_SCREEN = "back_wake_screen";
+     private static final String KEY_CAMERA_LAUNCH = "camera_launch";
+@@ -386,7 +390,7 @@ public class ButtonSettings extends SettingsPreferenceFragment
+             }
+ 
+             int cursorControlAction = Settings.System.getInt(resolver,
+-                    Settings.System.VOLUME_KEY_CURSOR_CONTROL, 0);
++                    VOLUME_KEY_CURSOR_CONTROL, 0);
+             mVolumeKeyCursorControl = initList(KEY_VOLUME_KEY_CURSOR_CONTROL,
+                     cursorControlAction);
+ 
+@@ -620,7 +624,7 @@ public class ButtonSettings extends SettingsPreferenceFragment
+             return true;
+         } else if (preference == mVolumeKeyCursorControl) {
+             handleSystemListChange(mVolumeKeyCursorControl, newValue,
+-                    Settings.System.VOLUME_KEY_CURSOR_CONTROL);
++                    VOLUME_KEY_CURSOR_CONTROL);
+             return true;
+         } else if (preference == mTorchLongPressPowerTimeout) {
+             handleListChange(mTorchLongPressPowerTimeout, newValue,
+diff --git a/src/org/lineageos/lineageparts/profiles/SetupActionsFragment.java b/src/org/lineageos/lineageparts/profiles/SetupActionsFragment.java
+index 17196fc..49ce7ff 100644
+--- a/src/org/lineageos/lineageparts/profiles/SetupActionsFragment.java
++++ b/src/org/lineageos/lineageparts/profiles/SetupActionsFragment.java
+@@ -88,6 +88,21 @@ public class SetupActionsFragment extends SettingsPreferenceFragment
+ 
+     private static final int NEW_TRIGGER_REQUEST_CODE = 1001;
+ 
++    // DevicePolicyManager.requireSecureKeyguard() in the LineageOS framework, which the Android
++    // 17 base this image builds on does not have. The same three tests, from public calls.
++    private static boolean requireSecureKeyguard(DevicePolicyManager dpm) {
++        if (dpm.getPasswordQuality(null) > DevicePolicyManager.PASSWORD_QUALITY_UNSPECIFIED) {
++            return true;
++        }
++        final int encryption = dpm.getStorageEncryptionStatus();
++        if (encryption == DevicePolicyManager.ENCRYPTION_STATUS_ACTIVE
++                || encryption == DevicePolicyManager.ENCRYPTION_STATUS_ACTIVATING) {
++            return true;
++        }
++        return (dpm.getKeyguardDisabledFeatures(null)
++                & DevicePolicyManager.KEYGUARD_DISABLE_TRUST_AGENTS) != 0;
++    }
++
+     private static final int MENU_REMOVE = Menu.FIRST;
+     private static final int MENU_FILL_PROFILE = Menu.FIRST + 1;
+ 
+@@ -222,7 +237,7 @@ public class SetupActionsFragment extends SettingsPreferenceFragment
+         mItems.add(new RingModeItem(mProfile.getRingMode()));
+         mItems.add(new AirplaneModeItem(mProfile.getAirplaneMode()));
+         DevicePolicyManager dpm = context.getSystemService(DevicePolicyManager.class);
+-        if (!dpm.requireSecureKeyguard()) {
++        if (!requireSecureKeyguard(dpm)) {
+             mItems.add(new LockModeItem(mProfile));
+         } else {
+             mItems.add(new DisabledItem(R.string.profile_lockmode_title,
+-- 
+2.56.1
+

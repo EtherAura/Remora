@@ -447,7 +447,17 @@ static std::optional<QString> lineOrNull(const QString &out, int idx) {
     return n;
 }
 
-HostCapabilities probeCapabilities(Backend target, const QString &sshHost, Spawner &sp) {
+// The reply is parsed only on rc 0: a timeout (124) or a failure says nothing about the store,
+// even when what reached stdout looks like a whole answer. No line sink, so nothing is logged.
+static DockerImageStore queryImageStore(Spawner &sp, const QStringList &argv) {
+    const ProcResult r = sp.runTimed(argv, kImageStoreQueryTimeoutMs);
+    if (r.rc != 0) return {};
+    return parseDockerImageStore(r.out);
+}
+
+HostCapabilities probeCapabilities(Backend target, const QString &sshHost, Spawner &sp,
+                                   ImageStoreQuery store) {
+    const bool askStore = store == ImageStoreQuery::Ask;
     HostCapabilities c;
     c.localOs = sp.localOs();
     const bool localBare = c.localOs == LocalOs::Unix;
@@ -473,6 +483,10 @@ HostCapabilities probeCapabilities(Backend target, const QString &sshHost, Spawn
 
     if (target == Backend::Remote && !sshHost.isEmpty()) {
         probeSsh(sshHost);
+        if (askStore && c.sshReachable.value_or(false) && c.remoteDockerOk.value_or(false))
+            c.dockerImageStore = queryImageStore(
+                sp, Spawner::sshArgv(sshHost, QStringLiteral(
+                                                  "docker info --format '{{json .}}' 2>/dev/null")));
         c.hostLan = parseHostLanScan(sp.run(Spawner::sshArgv(sshHost, kHostLanScan)).out);
         fillRenderNodes(c, parseRenderNodes(sp.run(Spawner::sshArgv(sshHost, kAllNodesScan)).out));
         c.videoNodes = sp.run(Spawner::sshArgv(sshHost, QStringLiteral("ls /dev/video* 2>/dev/null")))
@@ -486,6 +500,10 @@ HostCapabilities probeCapabilities(Backend target, const QString &sshHost, Spawn
             sp.run(Spawner::sshArgv(sshHost, QStringLiteral("command -v python3 >/dev/null 2>&1")))
                 .rc == 0;
     } else if (target == Backend::Bare && localBare) {
+        if (askStore && c.dockerDaemonOk.value_or(false))
+            c.dockerImageStore =
+                queryImageStore(sp, {QStringLiteral("docker"), QStringLiteral("info"),
+                                     QStringLiteral("--format"), QStringLiteral("{{json .}}")});
         c.hostLan = parseHostLanScan(sp.run({"sh", "-c", kHostLanScan}).out);
         fillRenderNodes(c, parseRenderNodes(sp.run({"sh", "-c", kAllNodesScan}).out));
         c.videoNodes = sp.run({"sh", "-c", "ls /dev/video* 2>/dev/null"})

@@ -110,6 +110,8 @@ struct publisher {
     * maps go deaf (bd remora-e5x.19.2). */
    AVFrame *mapped[MAX_CACHED_FDS];
    int64_t used_us[MAX_CACHED_FDS]; /* last put or lookup — the eviction key */
+   /* The extent announced with each fd: a resize keeps the buffers already at the new one. */
+   uint32_t ext_w[MAX_CACHED_FDS], ext_h[MAX_CACHED_FDS];
    unsigned n_fds;
    /* Evicted mappings park here instead of being freed: the main loop's
     * keepalive holds a bare pointer into this cache (last_frame), so only the
@@ -118,9 +120,7 @@ struct publisher {
     * between sweeps. */
    AVFrame *dead[PUB_READ_BATCH];
    unsigned n_dead;
-   /* Rate limit for fd re-requests: one outstanding res_id, retried at most
-    * every 500 ms, so a missing fd costs one tiny message per frame burst
-    * rather than one per frame. */
+   /* Rate limit for fd re-requests (publisher_request_fd). */
    uint32_t req_res_id;
    int64_t req_us;
 
@@ -308,6 +308,54 @@ publisher_drop_buffers(struct publisher *p)
    p->n_dead = 0;
 }
 
+/* A resize. Every mapping belongs to the importer being torn down, so all of them go; an fd goes
+ * only if its buffer was announced at another extent. The publisher sends each fd once, so
+ * dropping the new display's own fds made each of its buffers cost a round trip on its next
+ * frame — and an idle screen sends no next frame: the first frames after a resize were lost and
+ * the mirror kept the last one before it, which on a reflow is the emptied old output, black
+ * (bd remora-6a1k.2). Same aliasing rule as publisher_drop_buffers. */
+static void
+publisher_keep_extent(struct publisher *p, uint32_t w, uint32_t h)
+{
+   unsigned kept = 0;
+   for (unsigned i = 0; i < p->n_fds; i++) {
+      av_frame_free(&p->mapped[i]);
+      if (p->ext_w[i] != w || p->ext_h[i] != h) {
+         close(p->fds[i]);
+         continue;
+      }
+      p->res_ids[kept] = p->res_ids[i];
+      p->fds[kept] = p->fds[i];
+      p->used_us[kept] = p->used_us[i];
+      p->ext_w[kept] = w;
+      p->ext_h[kept] = h;
+      kept++;
+   }
+   p->n_fds = kept;
+   for (unsigned i = 0; i < p->n_dead; i++)
+      av_frame_free(&p->dead[i]);
+   p->n_dead = 0;
+}
+
+/* Removes entry k, whose fd and mapping the caller has already released, by moving the last
+ * entry into its place. The vacated slot is cleared: the next fd appended lands there, and a
+ * mapping pointer left behind made that new entry alias the moved one — the wrong buffer encoded,
+ * then one frame freed twice: a 0x0 frame in the filter graph, read as the GPU being out of
+ * memory, and heap corruption at exit (bd remora-6a1k.2). */
+static void
+publisher_remove(struct publisher *p, unsigned k)
+{
+   const unsigned last = --p->n_fds;
+   p->res_ids[k] = p->res_ids[last];
+   p->fds[k] = p->fds[last];
+   p->mapped[k] = p->mapped[last];
+   p->used_us[k] = p->used_us[last];
+   p->ext_w[k] = p->ext_w[last];
+   p->ext_h[k] = p->ext_h[last];
+   p->mapped[last] = NULL;
+   p->fds[last] = -1;
+}
+
 static int
 publisher_slot(struct publisher *p, uint32_t res_id)
 {
@@ -319,8 +367,25 @@ publisher_slot(struct publisher *p, uint32_t res_id)
    return -1;
 }
 
+/* No fd for this resource: it predates this connection, or the cache evicted or a resize dropped
+ * it. Ask for it again — the publisher clears its sent-flag and sends the fd again, with its next
+ * frame of that buffer or at once if it is holding that frame. Rate-limited per publisher: one
+ * outstanding res_id, retried at most every 500 ms, so a missing fd costs one tiny message per
+ * frame burst rather than one per frame. */
 static void
-publisher_cache_fd(struct publisher *p, uint32_t res_id, int fd)
+publisher_request_fd(struct publisher *p, uint32_t res_id)
+{
+   const int64_t now = av_gettime_relative();
+   if (p->req_res_id == res_id && now - p->req_us <= 500000)
+      return;
+   const struct fd_req rq = { FDREQ_MAGIC, res_id };
+   (void)send(p->sock, &rq, sizeof(rq), MSG_DONTWAIT | MSG_NOSIGNAL);
+   p->req_res_id = res_id;
+   p->req_us = now;
+}
+
+static void
+publisher_cache_fd(struct publisher *p, uint32_t res_id, int fd, uint32_t w, uint32_t h)
 {
    for (unsigned i = 0; i < p->n_fds; i++) {
       if (p->res_ids[i] == res_id) {
@@ -342,13 +407,18 @@ publisher_cache_fd(struct publisher *p, uint32_t res_id, int fd)
          p->mapped[i] = NULL;
          p->fds[i] = fd;
          p->used_us[i] = av_gettime_relative();
+         p->ext_w[i] = w;
+         p->ext_h[i] = h;
          return;
       }
    }
    if (p->n_fds < MAX_CACHED_FDS) {
       p->res_ids[p->n_fds] = res_id;
       p->fds[p->n_fds] = fd;
+      p->mapped[p->n_fds] = NULL; /* a new buffer has no mapping yet, whatever the slot held */
       p->used_us[p->n_fds] = av_gettime_relative();
+      p->ext_w[p->n_fds] = w;
+      p->ext_h[p->n_fds] = h;
       p->n_fds++;
       return;
    }
@@ -375,6 +445,8 @@ publisher_cache_fd(struct publisher *p, uint32_t res_id, int fd)
    p->res_ids[v] = res_id;
    p->fds[v] = fd;
    p->used_us[v] = av_gettime_relative();
+   p->ext_w[v] = w;
+   p->ext_h[v] = h;
 }
 
 /* Read whatever is available. Returns the number of complete messages parsed
@@ -423,7 +495,7 @@ publisher_read(struct publisher *p, struct frame_msg *out, int max_out)
             fprintf(stderr, "res_id %u announced an fd but none arrived\n", m.res_id);
             return -1;
          }
-         publisher_cache_fd(p, m.res_id, p->pending_fd);
+         publisher_cache_fd(p, m.res_id, p->pending_fd, m.width, m.height);
          p->pending_fd = -1;
       }
       p->frames++;
@@ -670,11 +742,13 @@ importer_init(struct importer *im, const char *drm_node, int width, int height,
    err = av_hwframe_ctx_init(im->drm_frames);
    if (err < 0)
       die("initialising the DRM frames context", err);
+   live_pools++;
 
    err = av_hwframe_ctx_create_derived(&im->vk_frames, AV_PIX_FMT_VULKAN, im->vk_dev,
                                        im->drm_frames, AV_HWFRAME_MAP_READ);
    if (err < 0)
       die("deriving Vulkan frames from DRM frames", err);
+   live_pools++;
 }
 
 static void
@@ -825,6 +899,7 @@ import_frame_copy(struct importer *im, const struct frame_msg *m, int fd)
          goto fail;
       }
       im->up_frames = ref;
+      live_pools++;
    }
    if (av_hwframe_get_buffer(im->up_frames, vk, 0) < 0)
       goto fail;
@@ -1180,6 +1255,7 @@ encoder_init(struct encoder *e, struct importer *im, const char *codec_name,
          }
          die("initialising the CUDA frames context", err);
       }
+      live_pools++;
       int probe_err = 0;
       e->cuda_direct = cuda_probe_direct(im->vk_dev, e->cuda_dev,
                                          ((AVHWFramesContext *)sink_frames->data)->sw_format,
@@ -2045,6 +2121,7 @@ bench_source(struct importer *im, const char *drm_node, int w, int h, bool linea
    err = av_hwframe_ctx_init(im->vk_frames);
    if (err < 0)
       die("initialising the Vulkan frames context", err);
+   live_pools++;
 
    AVFrame *cpu = av_frame_alloc();
    if (!cpu)
@@ -2759,21 +2836,13 @@ main(int argc, char **argv)
          if (newest >= 0) {
             const struct frame_msg *m = &msgs[newest];
 
-            const int fd = publisher_fd_for(&pubs[i], m->res_id);
+            int fd = publisher_fd_for(&pubs[i], m->res_id);
             if (fd < 0) {
-               /* No fd for this resource: it predates this connection, or the
-                * cache evicted it. Ask for it again — the publisher clears its
-                * sent-flag and the fd rides this buffer's next frame. Counted:
-                * this drop used to be silent, which is precisely how going deaf
-                * per buffer stayed invisible (bd remora-e5x.19.2). */
-               const int64_t rnow = av_gettime_relative();
-               if (pubs[i].req_res_id != m->res_id || rnow - pubs[i].req_us > 500000) {
-                  const struct fd_req rq = { FDREQ_MAGIC, m->res_id };
-                  (void)send(pubs[i].sock, &rq, sizeof(rq), MSG_DONTWAIT | MSG_NOSIGNAL);
-                  pubs[i].req_res_id = m->res_id;
-                  pubs[i].req_us = rnow;
-               }
+               /* Counted: this drop used to be silent, which is precisely how going deaf per
+                * buffer stayed invisible (bd remora-e5x.19.2). */
+               publisher_request_fd(&pubs[i], m->res_id);
                dropped_no_fd++;
+               const int64_t rnow = av_gettime_relative();
                if (rnow - last_nofd_note_us > 5000000) {
                   fprintf(stderr,
                           "[encoder] %" PRIu64 " frames dropped awaiting a buffer fd "
@@ -2807,6 +2876,12 @@ main(int argc, char **argv)
              * The render server relabels when a display shrinks, so this is a
              * normal event, not an error. */
             if (ready && ((int)m->width != im.width || (int)m->height != im.height)) {
+               /* Still in flight from the extent the last resize abandoned: not a resize back.
+                * The rebuild now lands on the frame that triggered it, so this is where such a
+                * frame meets a ready pipeline (bd remora-8u0; deadline-bounded as below). */
+               if ((int)m->width == stale_w && (int)m->height == stale_h &&
+                   av_gettime_relative() < stale_until_us)
+                  continue;
                fprintf(stderr, "[encoder] display resized %dx%d -> %ux%u, rebuilding\n",
                        im.width, im.height, m->width, m->height);
                /* Both keepalive handles belong to the pipeline being torn down, and the publisher
@@ -2828,7 +2903,7 @@ main(int argc, char **argv)
                last_frame = NULL;
                av_frame_free(&last_copy);
                for (unsigned k = 0; k < n_pubs; k++)
-                  publisher_drop_buffers(&pubs[k]);
+                  publisher_keep_extent(&pubs[k], m->width, m->height);
                if (!probe)
                   encoder_free(&enc);
                stale_w = im.width;
@@ -2836,7 +2911,14 @@ main(int argc, char **argv)
                stale_until_us = av_gettime_relative() + 500000;
                importer_free(&im);
                ready = false;
-               continue; /* the fd for this resource is re-sent by the publisher */
+               /* This frame is the new display; rebuild on it rather than wait for another,
+                * which a still screen may never send. Its fd survives unless it was announced
+                * at another extent, and then it is asked for again. */
+               fd = publisher_fd_for(&pubs[i], m->res_id);
+               if (fd < 0) {
+                  publisher_request_fd(&pubs[i], m->res_id);
+                  continue;
+               }
             }
 
             if (!ready) {
@@ -2897,7 +2979,8 @@ main(int argc, char **argv)
                   }
                }
                ready = true;
-               stale_w = stale_h = 0; /* the rebuild landed; nothing is suspect any more */
+               /* The stale extent stays suspect until its deadline even though the rebuild has
+                * landed: it lands on the very frame that triggered it now, ahead of the stragglers. */
             }
 
             /* Map ONCE PER BUFFER, not per frame. The compositor writes into the
@@ -3044,11 +3127,7 @@ main(int argc, char **argv)
                   }
                   close(pubs[i].fds[k]);
                   av_frame_free(&pubs[i].mapped[k]); /* not last_frame — just checked */
-                  pubs[i].n_fds--;
-                  pubs[i].res_ids[k] = pubs[i].res_ids[pubs[i].n_fds];
-                  pubs[i].fds[k] = pubs[i].fds[pubs[i].n_fds];
-                  pubs[i].mapped[k] = pubs[i].mapped[pubs[i].n_fds];
-                  pubs[i].used_us[k] = pubs[i].used_us[pubs[i].n_fds];
+                  publisher_remove(&pubs[i], k);
                   swept++;
                }
             }

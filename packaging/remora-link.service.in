@@ -1,0 +1,16 @@
+# Opt in with: systemctl --user enable --now remora-link.service
+# Lets paired phones reach this computer (docs/LINK_PROTOCOL.md) for as long as the session lasts;
+# this computer's own apps are served by remora-host-agent.service beside it.
+[Unit]
+Description=Remora link: paired phones' way in
+Documentation=https://github.com/EtherAura/Remora/blob/main/docs/LINK_PROTOCOL.md
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/remora link serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

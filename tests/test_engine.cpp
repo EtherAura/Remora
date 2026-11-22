@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <utility>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QProcess>
@@ -21,12 +22,16 @@
 #include "core/ImageBuild.h"
 #include "core/ImageLineage.h"
 #include "core/ManagedHost.h"
+#include "core/Prereqs.h"
 #include "core/Resolver.h"
 #include "core/SourcePatches.h"
 #include "engine/AppTransfer.h"
 #include "engine/HostShell.h"
 #include "engine/PlayInstall.h"
 #include "engine/RedditLogin.h"
+#include "engine/SelfImage.h"
+#include "engine/PublicImages.h"
+#include "engine/UpdateWatch.h"
 #include "engine/Engine.h"
 #include "engine/MirrorRegistry.h"
 #include "store/Store.h"
@@ -1039,9 +1044,297 @@ static MesaTailRun runMesaTail(const QString &dir, const MesaTailSetup &s) {
     return r;
 }
 
+// A Linux client whose reachability probes answer as told, and which records every call. The
+// image-store query is answered on both run() and runTimed(), so only `timed` tells them apart.
+class StoreProbeSpawner : public Spawner {
+public:
+    bool localDockerUp = true, sshUp = true, remoteDockerUp = true;
+    int storeRc = 0;
+    QString storeOut;
+    QStringList calls;                     // every run() argv, joined
+    QList<QPair<QStringList, int>> timed;  // every runTimed() argv and deadline
+    bool timedHadSink = false;
+
+    static bool isStoreQuery(const QStringList &argv) {
+        return argv.join(QLatin1Char(' ')).contains(QLatin1String("docker info --format"));
+    }
+    ProcResult run(const QStringList &argv, const QMap<QString, QString> &,
+                   const LineSink &) override {
+        calls << argv.join(QLatin1Char(' '));
+        const QString last = argv.isEmpty() ? QString() : argv.last();
+        ProcResult r;
+        if (isStoreQuery(argv)) {
+            r.rc = storeRc;
+            r.out = storeOut;
+        } else if (argv.first() == QLatin1String("ssh") && last == QLatin1String("'echo ok'")) {
+            r.out = sshUp ? QStringLiteral("ok\n") : QString();
+            r.rc = sshUp ? 0 : 255;
+        } else if (argv.first() == QLatin1String("ssh") &&
+                   last.contains(QLatin1String("docker info >/dev/null"))) {
+            r.out = remoteDockerUp ? QStringLiteral("ok\n") : QString();
+        } else if (last.contains(QLatin1String("docker version"))) {
+            r.rc = localDockerUp ? 0 : 1;
+        }
+        return r;
+    }
+    ProcResult runTimed(const QStringList &argv, int timeoutMs, const LineSink &onLine) override {
+        timed.append({argv, timeoutMs});
+        if (onLine) timedHadSink = true;
+        return run(argv, {}, {});
+    }
+    Detached spawnDetached(const QStringList &, const QMap<QString, QString> &) override {
+        return {};
+    }
+    bool detachedAlive(const Detached &) override { return false; }
+    LocalOs localOs() const override { return LocalOs::Unix; }
+    QStringList nonStoreCalls() const {
+        QStringList out;
+        for (const QString &c : calls)
+            if (!c.contains(QLatin1String("docker info --format"))) out << c;
+        return out;
+    }
+};
+
+static const QString kStoreHost = QStringLiteral("tester@store.invalid");
+static const QStringList kLocalStoreArgv{"docker", "info", "--format", "{{json .}}"};
+static const QStringList kRemoteStoreArgv{
+    "ssh", "-o", "ConnectTimeout=5", "tester@store.invalid", "/bin/sh", "-c",
+    "'docker info --format '\\''{{json .}}'\\'' 2>/dev/null'"};
+static const QString kContainerdReply = QStringLiteral(
+    R"({"Driver":"overlayfs","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]})");
+static const QString kOverlay2Reply = QStringLiteral(
+    R"({"Driver":"overlay2","DriverStatus":[["Backing Filesystem","extfs"],["Supports d_type","true"]]})");
+
+static QVector<PrereqResult> storeRows(const QVector<PrereqResult> &rows) {
+    QVector<PrereqResult> out;
+    for (const PrereqResult &r : rows)
+        if (r.key == QLatin1String("docker_image_store")) out << r;
+    return out;
+}
+
+#ifdef Q_OS_LINUX
+// SelfImageWatch fixtures: real files and stat/access in a private temporary directory, with only
+// exec replaced by a recorder, so nothing is ever exec'd in the test runner.
+struct SelfExecLog {
+    QList<QPair<QString, QStringList>> calls;
+    int nextErr = 0;  // what the next exec "returns": 0 = it happened
+};
+
+static SelfImageOps recordingSelfOps(SelfExecLog &log) {
+    SelfImageOps ops = realSelfImageOps();
+    ops.exec = [&log](const QString &path, const QStringList &argv) {
+        log.calls.append({path, argv});
+        return log.nextErr;
+    };
+    return ops;
+}
+
+static bool writeSelfFile(const QString &path, const QByteArray &body, bool executable) {
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+    f.write(body);
+    f.close();
+    QFile::Permissions p = QFile::ReadOwner | QFile::WriteOwner;
+    if (executable) p |= QFile::ExeOwner;
+    return f.setPermissions(p);
+}
+
+// Stands in for /proc/self/exe: a link naming the file the process is executing.
+static bool pointSelfLink(const QString &link, const QString &target) {
+    QFile::remove(link);
+    return QFile::link(target, link);
+}
+
+// A host for runUpdateWatchPass: the profile, the catalog's answers, the Apply signal, and every
+// operation the pass performs, in order.
+static const QString kOfferVersion = QStringLiteral("20301231.120000");
+static ProcResult catalogAnswer(bool update) {
+    return {0,
+            QStringLiteral("REMORA_IMAGES_RESULT={\"update\": %1, \"version\": \"%2\", "
+                           "\"bytes\": 2000000000}\n")
+                .arg(update ? QStringLiteral("true") : QStringLiteral("false"), kOfferVersion),
+            {}};
+}
+static ProcResult catalogDown() { return {1, {}, QStringLiteral("network is unreachable")}; }
+
+struct FakeUpdateHost {
+    UpdateWatchProfile profile{true, kPublicImageTag};
+    QList<ProcResult> checks;  // answered in order; the last one repeats
+    bool applyWaiting = false;
+    int fetchRc = 0;
+    bool deployOk = true;
+    std::function<void()> duringDeploy;
+    QDateTime clock = QDateTime::fromString(QStringLiteral("2030-01-01T00:00:00Z"), Qt::ISODate);
+    QStringList events, said;
+    QJsonObject probedOffer;
+    QString probedError;
+
+    QStringList take() { return std::exchange(events, {}); }
+    UpdateWatchOps ops() {
+        UpdateWatchOps o;
+        o.profile = [this] { return profile; };
+        o.checkRelease = [this] {
+            events << QStringLiteral("check");
+            return checks.size() > 1 ? checks.takeFirst() : checks.value(0, catalogDown());
+        };
+        o.probe = [this](const QJsonObject &offer, const QString &lastError) {
+            events << QStringLiteral("probe");
+            probedOffer = offer;
+            probedError = lastError;
+            return applyWaiting;
+        };
+        o.fetchRelease = [this] {
+            events << QStringLiteral("fetch");
+            return ProcResult{fetchRc, {}, fetchRc ? QStringLiteral("write failed\ndisk full")
+                                                   : QString()};
+        };
+        o.deploy = [this] {
+            events << QStringLiteral("deploy");
+            if (duringDeploy) duringDeploy();
+            return deployOk;
+        };
+        o.clearApply = [this] {
+            events << QStringLiteral("clear");
+            applyWaiting = false;
+        };
+        o.now = [this] { return clock; };
+        o.say = [this](const QString &line) { said << line; };
+        return o;
+    }
+};
+#endif
+
 class TestEngine : public QObject {
     Q_OBJECT
 private slots:
+    // The readiness display asks the TARGET daemon, once, with a deadline, and only once that
+    // daemon answered: locally for bare, over ssh for remote.
+    void imageStoreProbeAsksTargetDaemon() {
+        StoreProbeSpawner bare;
+        bare.storeOut = kContainerdReply;
+        const HostCapabilities b =
+            probeCapabilities(Backend::Bare, QString(), bare, ImageStoreQuery::Ask);
+        QCOMPARE(bare.timed, (QList<QPair<QStringList, int>>{{kLocalStoreArgv, 5000}}));
+        QVERIFY(kImageStoreQueryTimeoutMs > 0);
+        QVERIFY(!bare.timedHadSink);
+        QVERIFY(b.dockerImageStore.has_value());
+        QCOMPARE(b.dockerImageStore->kind, DockerImageStoreKind::ContainerdSnapshotter);
+        const auto br = storeRows(checkReadiness(Backend::Bare, b));
+        QCOMPARE(br.size(), 1);
+        QCOMPARE(br.at(0).label,
+                 QStringLiteral("Docker image store: containerd snapshotter (overlayfs)"));
+        QCOMPARE(br.at(0).severity, QStringLiteral("info"));
+
+        StoreProbeSpawner remote;
+        remote.storeOut = kOverlay2Reply;
+        const HostCapabilities r =
+            probeCapabilities(Backend::Remote, kStoreHost, remote, ImageStoreQuery::Ask);
+        QCOMPARE(remote.timed, (QList<QPair<QStringList, int>>{{kRemoteStoreArgv, 5000}}));
+        QVERIFY(!remote.timedHadSink);
+        for (const QString &c : remote.calls)  // never the local daemon for a remote target
+            QVERIFY2(!c.startsWith(QLatin1String("docker info")), qPrintable(c));
+        const auto rr = storeRows(checkReadiness(Backend::Remote, r));
+        QCOMPARE(rr.size(), 1);
+        QCOMPARE(rr.at(0).label, QStringLiteral("Docker image store: overlay2 graph driver"));
+
+        // An unreachable target daemon is not asked: no query, no store, no row.
+        StoreProbeSpawner down;
+        down.localDockerUp = false;
+        down.storeOut = kContainerdReply;
+        const HostCapabilities d =
+            probeCapabilities(Backend::Bare, QString(), down, ImageStoreQuery::Ask);
+        QVERIFY(down.timed.isEmpty());
+        QVERIFY(!d.dockerImageStore);
+        QVERIFY(storeRows(checkReadiness(Backend::Bare, d)).isEmpty());
+        for (const bool sshUp : {false, true}) {
+            StoreProbeSpawner far;
+            far.sshUp = sshUp;
+            far.remoteDockerUp = false;  // the local daemon answers; there is no fallback to it
+            far.storeOut = kContainerdReply;
+            const HostCapabilities f =
+                probeCapabilities(Backend::Remote, kStoreHost, far, ImageStoreQuery::Ask);
+            QVERIFY(far.timed.isEmpty());
+            QVERIFY(!f.dockerImageStore);
+            QVERIFY(storeRows(checkReadiness(Backend::Remote, f)).isEmpty());
+        }
+    }
+
+    // Status, deploy capability discovery and the default probe never ask; Ask adds exactly the
+    // one query and leaves every other call as it was, in order.
+    void imageStoreQueryIsReadinessOnly() {
+        for (const Backend target : {Backend::Bare, Backend::Remote}) {
+            const QString host = target == Backend::Remote ? kStoreHost : QString();
+            StoreProbeSpawner plain;
+            plain.storeOut = kContainerdReply;
+            const HostCapabilities p = probeCapabilities(target, host, plain);
+            QVERIFY(!p.dockerImageStore);
+            QVERIFY(plain.timed.isEmpty());
+            QVERIFY(plain.calls == plain.nonStoreCalls());
+            QVERIFY(storeRows(checkReadiness(target, p)).isEmpty());
+
+            StoreProbeSpawner status;
+            status.storeOut = kContainerdReply;
+            const StatusReport rep = probeStatus(target, status, host, QString());
+            QVERIFY(!rep.host.dockerImageStore);
+            QVERIFY(status.timed.isEmpty());
+            QVERIFY(status.calls == status.nonStoreCalls());
+
+            StoreProbeSpawner deploy;
+            deploy.storeOut = kContainerdReply;
+            RemoraConfig cfg;
+            cfg.gpu.mode = GpuMode::Host;
+            if (target == Backend::Remote) cfg.backend.sshHost = kStoreHost;
+            const auto dc = deployCapabilities(target, cfg, deploy);
+            QVERIFY(dc.has_value());
+            QVERIFY(!deploy.calls.isEmpty());
+            QVERIFY(!dc->dockerImageStore);
+            QVERIFY(deploy.timed.isEmpty());
+            QVERIFY(deploy.calls == deploy.nonStoreCalls());
+
+            StoreProbeSpawner asked;
+            asked.storeOut = kContainerdReply;
+            const HostCapabilities a = probeCapabilities(target, host, asked, ImageStoreQuery::Ask);
+            QCOMPARE(asked.timed.size(), 1);
+            QCOMPARE(asked.nonStoreCalls(), plain.calls);
+            QCOMPARE(storeRows(checkReadiness(target, a)).size(), 1);
+        }
+    }
+
+    // A failed or timed-out query is "not reported" even with success-looking stdout, and the row
+    // it adds changes nothing else about readiness.
+    void imageStoreFailureAndTimeoutStayUnknown() {
+        for (const Backend target : {Backend::Bare, Backend::Remote}) {
+            for (const int rc : {1, 124}) {
+                const QString host = target == Backend::Remote ? kStoreHost : QString();
+                StoreProbeSpawner skip;
+                const auto before = checkReadiness(target, probeCapabilities(target, host, skip));
+                StoreProbeSpawner sp;
+                sp.storeRc = rc;
+                sp.storeOut = kContainerdReply;
+                const HostCapabilities c =
+                    probeCapabilities(target, host, sp, ImageStoreQuery::Ask);
+                QCOMPARE(sp.timed.size(), 1);
+                QCOMPARE(sp.timed.at(0).first,
+                         target == Backend::Bare ? kLocalStoreArgv : kRemoteStoreArgv);
+                QVERIFY(sp.timed.at(0).second > 0);
+                QVERIFY(c.dockerImageStore.has_value());
+                QCOMPARE(c.dockerImageStore->kind, DockerImageStoreKind::Unknown);
+                const auto after = checkReadiness(target, c);
+                QCOMPARE(after.size(), before.size() + 1);
+                const auto rows = storeRows(after);
+                QCOMPARE(rows.size(), 1);
+                QCOMPARE(rows.at(0).label,
+                         QStringLiteral("Docker image store: not reported by docker info"));
+                QVERIFY(rows.at(0).ok);
+                QVERIFY(rows.at(0).remedy.isEmpty());
+                QCOMPARE(isReady(after), isReady(before));
+                QCOMPARE(blockers(after).size(), blockers(before).size());
+                for (const PrereqResult &r : after)
+                    QVERIFY(!r.label.contains(QLatin1String("snapshotter")) &&
+                            !r.remedy.contains(QLatin1String("snapshotter")));
+            }
+        }
+    }
     // bd remora-lqnv. A fresh tree with mesa_source on and no payload: the chain prepares exactly
     // what build-mesa.sh reads from the tree, then STOPS — nonzero, with the helper's invocation,
     // and without staging Mesa, building the image, assembling it or recording patch state.
@@ -8493,6 +8786,354 @@ private slots:
         QCOMPARE(mirrorPids(instanceMirrors(found, QStringLiteral("10.9.8.7:5555"),
                                             QStringLiteral("legacy one"))),
                  QList<qint64>{4101});
+    }
+#endif
+
+    // bd remora-nx24: the update watcher restarts itself from the path it was launched as when an
+    // upgrade has replaced the file there.
+    void selfImageLaunchPathIsArgv0AsLaunched() {
+        QCOMPARE(launchPathFromArgv0(QStringLiteral("/opt/r/bin/remora"), QStringLiteral("/x")),
+                 QStringLiteral("/opt/r/bin/remora"));
+        QCOMPARE(launchPathFromArgv0(QStringLiteral("bin/remora"), QStringLiteral("/opt/r")),
+                 QStringLiteral("/opt/r/bin/remora"));
+        QCOMPARE(launchPathFromArgv0(QStringLiteral("./remora"), QStringLiteral("/opt/r/")),
+                 QStringLiteral("/opt/r/./remora"));
+        // A bare name was found on PATH; which file that was cannot be known now.
+        QVERIFY(launchPathFromArgv0(QStringLiteral("remora"), QStringLiteral("/opt/r")).isEmpty());
+        QVERIFY(launchPathFromArgv0(QString(), QStringLiteral("/opt/r")).isEmpty());
+        QVERIFY(launchPathFromArgv0(QStringLiteral("bin/remora"), QString()).isEmpty());
+#ifdef Q_OS_LINUX
+        // A final symlink is kept as the name the unit runs, never resolved to today's target.
+        QTemporaryDir d;
+        QVERIFY(writeSelfFile(d.filePath("remora-1"), "one", true));
+        QVERIFY(QFile::link(d.filePath("remora-1"), d.filePath("remora")));
+        QCOMPARE(launchPathFromArgv0(d.filePath("remora"), QStringLiteral("/")),
+                 d.filePath("remora"));
+#endif
+    }
+
+#ifdef Q_OS_LINUX
+    // The blocking case: the running binary was renamed to a backup BEFORE the watcher started,
+    // and the replacement is already at the original path. The executing-image link names the
+    // backup; the first check must pick the original launch path, with the original arguments.
+    void selfImageRenamedToBackupBeforeStartRestartsFromLaunchPath() {
+        QTemporaryDir d;
+        const QString inst = d.filePath("remora"), bak = d.filePath("remora.bak"),
+                      link = d.filePath("self-exe");
+        QVERIFY(writeSelfFile(inst, "old image", true));
+        QVERIFY(QFile::rename(inst, bak));
+        QVERIFY(pointSelfLink(link, bak));  // what /proc/self/exe now names
+        QVERIFY(writeSelfFile(inst, "new image, longer", true));
+        const QString launch = launchPathFromArgv0(inst, QStringLiteral("/"));
+        const QStringList argv{inst, QStringLiteral("update-watch"), QStringLiteral("My phone")};
+        SelfExecLog log;
+        SelfImageWatch w = SelfImageWatch::seeded(launch, argv, recordingSelfOps(log), link);
+        QCOMPARE(w.check(), SelfImageWatch::Outcome::Replaced);
+        QCOMPARE(log.calls.size(), 1);
+        QCOMPARE(log.calls[0].first, inst);
+        QCOMPARE(log.calls[0].second, argv);
+
+        // The rejected selection — the installation path read back from the link — names the
+        // backup, whose identity IS the running image: it never sees the replacement.
+        QCOMPARE(QFileInfo(link).symLinkTarget(), bak);
+        SelfExecLog rejected;
+        SelfImageWatch r = SelfImageWatch::seeded(QFileInfo(link).symLinkTarget(), argv,
+                                                  recordingSelfOps(rejected), link);
+        QCOMPARE(r.check(), SelfImageWatch::Outcome::Unchanged);
+        QCOMPARE(r.check(), SelfImageWatch::Outcome::Unchanged);
+        QVERIFY(rejected.calls.isEmpty());
+    }
+
+    // The ordinary upgrade: rename and install happen while the watcher is already running.
+    void selfImageRenamedWhileRunningRestartsAtNextCheck() {
+        QTemporaryDir d;
+        const QString inst = d.filePath("remora"), bak = d.filePath("remora.bak"),
+                      link = d.filePath("self-exe");
+        QVERIFY(writeSelfFile(inst, "old image", true));
+        QVERIFY(pointSelfLink(link, inst));
+        const QStringList argv{inst, QStringLiteral("update-watch")};
+        SelfExecLog log;
+        SelfImageWatch w = SelfImageWatch::seeded(inst, argv, recordingSelfOps(log), link);
+        QCOMPARE(w.check(), SelfImageWatch::Outcome::Unchanged);
+        QVERIFY(QFile::rename(inst, bak));
+        QVERIFY(pointSelfLink(link, bak));  // the kernel's link follows the renamed inode
+        // Mid-install: nothing at the launch path yet. Wait, do not exec the backup.
+        QCOMPARE(w.check(), SelfImageWatch::Outcome::Missing);
+        QVERIFY(writeSelfFile(inst, "new image", true));
+        QCOMPARE(w.check(), SelfImageWatch::Outcome::Replaced);
+        QCOMPARE(log.calls.size(), 1);
+        QCOMPARE(log.calls[0].first, inst);
+        QCOMPARE(log.calls[0].second, argv);
+    }
+
+    // The running image unlinked outright (an install by unlink + create). A real magic link to
+    // an open descriptor of the deleted file stands in for /proc/self/exe.
+    void selfImageUnlinkedRunningImageIsStillTheBaseline() {
+        QTemporaryDir d;
+        const QString inst = d.filePath("remora");
+        QVERIFY(writeSelfFile(inst, "old image", true));
+        QFile held(inst);
+        QVERIFY(held.open(QIODevice::ReadOnly));
+        QVERIFY(QFile::remove(inst));
+        QVERIFY(writeSelfFile(inst, "new image", true));
+        const QString link = QStringLiteral("/proc/self/fd/%1").arg(held.handle());
+        SelfExecLog log;
+        SelfImageWatch w = SelfImageWatch::seeded(inst, {inst, QStringLiteral("update-watch")},
+                                                  recordingSelfOps(log), link);
+        QCOMPARE(w.check(), SelfImageWatch::Outcome::Replaced);
+        QCOMPARE(log.calls.size(), 1);
+        QCOMPARE(log.calls[0].first, inst);
+    }
+
+    // The successor: its own link names the file at the launch path, so it never restarts again.
+    void selfImageSuccessorSeesItselfUnchanged() {
+        QTemporaryDir d;
+        const QString inst = d.filePath("remora"), link = d.filePath("self-exe");
+        QVERIFY(writeSelfFile(inst, "new image", true));
+        QVERIFY(pointSelfLink(link, inst));
+        SelfExecLog log;
+        SelfImageWatch w = SelfImageWatch::seeded(inst, {inst, QStringLiteral("update-watch")},
+                                                  recordingSelfOps(log), link);
+        for (int i = 0; i < 3; ++i) QCOMPARE(w.check(), SelfImageWatch::Outcome::Unchanged);
+        QVERIFY(log.calls.isEmpty());
+    }
+
+    // A replacement that cannot run yet is waited for; once its mode is repaired the SAME file
+    // is started at the next check — no delay, no extra polling.
+    void selfImageNotExecutableWaitsThenRunsAfterRepair() {
+        QTemporaryDir d;
+        const QString inst = d.filePath("remora"), bak = d.filePath("remora.bak"),
+                      link = d.filePath("self-exe");
+        QVERIFY(writeSelfFile(bak, "old image", true));
+        QVERIFY(pointSelfLink(link, bak));
+        QVERIFY(writeSelfFile(inst, "new image", false));
+        SelfExecLog log;
+        SelfImageWatch w = SelfImageWatch::seeded(inst, {inst, QStringLiteral("update-watch")},
+                                                  recordingSelfOps(log), link);
+        QCOMPARE(w.check(), SelfImageWatch::Outcome::NotExecutable);
+        QCOMPARE(w.check(), SelfImageWatch::Outcome::NotExecutable);
+        QVERIFY(log.calls.isEmpty());
+        QVERIFY(QFile(inst).setPermissions(QFile::ReadOwner | QFile::WriteOwner |
+                                           QFile::ExeOwner));
+        QCOMPARE(w.check(), SelfImageWatch::Outcome::Replaced);
+        QCOMPARE(log.calls.size(), 1);
+        QCOMPARE(log.calls[0].first, inst);
+    }
+
+    // exec refused (EACCES, e.g. a noexec mount or a mode the kernel rejects): the running image
+    // stays the baseline — the replacement's identity is never adopted — so after a permission-
+    // only repair the same, unchanged file is attempted again at the next check and succeeds.
+    void selfImageFailedExecKeepsRunningBaselineAndRetries() {
+        QTemporaryDir d;
+        const QString inst = d.filePath("remora"), bak = d.filePath("remora.bak"),
+                      link = d.filePath("self-exe");
+        QVERIFY(writeSelfFile(bak, "old image", true));
+        QVERIFY(pointSelfLink(link, bak));
+        QVERIFY(writeSelfFile(inst, "new image", true));
+        const QStringList argv{inst, QStringLiteral("update-watch"), QStringLiteral("p")};
+        SelfExecLog log;
+        const SelfImageOps ops = recordingSelfOps(log);
+        const std::optional<SelfFileId> before = ops.stat(inst);
+        SelfImageWatch w = SelfImageWatch::seeded(inst, argv, ops, link);
+        log.nextErr = EACCES;
+        QCOMPARE(w.check(), SelfImageWatch::Outcome::ExecFailed);
+        QCOMPARE(w.lastErrno(), EACCES);
+        log.nextErr = 0;  // the repair
+        QCOMPARE(w.check(), SelfImageWatch::Outcome::Replaced);
+        QCOMPARE(log.calls.size(), 2);
+        QCOMPARE(log.calls[1].first, inst);
+        QCOMPARE(log.calls[1].second, argv);
+        QVERIFY(before && ops.stat(inst) && *before == *ops.stat(inst));  // the same file
+    }
+
+    // Nothing reliable to restart from: never guess a path, never exec.
+    void selfImageWithoutLaunchPathOrRunningImageIsDisabled() {
+        QTemporaryDir d;
+        const QString inst = d.filePath("remora");
+        QVERIFY(writeSelfFile(inst, "new image", true));
+        SelfExecLog log;
+        SelfImageWatch bare = SelfImageWatch::seeded(
+            launchPathFromArgv0(QStringLiteral("remora"), d.path()),
+            {QStringLiteral("remora"), QStringLiteral("update-watch")}, recordingSelfOps(log),
+            d.filePath("self-exe"));
+        QCOMPARE(bare.check(), SelfImageWatch::Outcome::Disabled);
+        // The running image cannot be identified: no baseline is invented from the launch path.
+        SelfImageWatch blind = SelfImageWatch::seeded(
+            inst, {inst, QStringLiteral("update-watch")}, recordingSelfOps(log),
+            d.filePath("no-such-link"));
+        QCOMPARE(blind.check(), SelfImageWatch::Outcome::Disabled);
+        QVERIFY(log.calls.isEmpty());
+    }
+
+    // bd remora-nx24, the review's case: the old watcher holds a signed-catalog offer, the device
+    // taps Apply, and an upgrade replaces the watcher before that Apply is read. The successor
+    // starts with no offer and its first catalog check fails: the Apply must stay waiting —
+    // neither dropped nor served by redeploying the image the device already runs — and once the
+    // catalog answers, the requested release is downloaded and the device moved onto it.
+    void updateWatchSuccessorHoldsApplyUntilCatalogAnswers() {
+        QTemporaryDir d;
+        const QString inst = d.filePath("remora"), bak = d.filePath("remora.bak"),
+                      link = d.filePath("self-exe");
+        const QStringList argv{inst, QStringLiteral("update-watch"), QStringLiteral("p")};
+        QVERIFY(writeSelfFile(inst, "old image", true));
+        QVERIFY(pointSelfLink(link, inst));
+        SelfExecLog oldLog;
+        SelfImageWatch old = SelfImageWatch::seeded(inst, argv, recordingSelfOps(oldLog), link);
+        FakeUpdateHost host;
+        host.checks = {catalogAnswer(true)};
+        UpdateWatchState st;
+        QCOMPARE(runUpdateWatchPass(old, st, host.ops()), UpdateWatchPass::Idle);
+        QCOMPARE(host.take(), (QStringList{"check", "probe"}));
+        QCOMPARE(host.probedOffer.value("version").toString(), kOfferVersion);
+
+        host.applyWaiting = true;  // the device taps Apply
+        QVERIFY(QFile::rename(inst, bak));  // and an upgrade lands before the next pass
+        QVERIFY(pointSelfLink(link, bak));
+        QVERIFY(writeSelfFile(inst, "new image", true));
+        QCOMPARE(runUpdateWatchPass(old, st, host.ops()), UpdateWatchPass::Restarted);
+        QVERIFY(host.take().isEmpty());  // nothing read, nothing deployed, signal untouched
+        QVERIFY(host.applyWaiting);
+        QCOMPARE(oldLog.calls.size(), 1);
+        QCOMPARE(oldLog.calls[0].first, inst);
+        QCOMPARE(oldLog.calls[0].second, argv);
+
+        // The successor: a fresh process, so a fresh state; its own image is the one installed.
+        QVERIFY(pointSelfLink(link, inst));
+        SelfExecLog succLog;
+        SelfImageWatch succ = SelfImageWatch::seeded(inst, argv, recordingSelfOps(succLog), link);
+        UpdateWatchState fresh;
+        host.checks = {catalogDown()};
+        for (int pass = 0; pass < 3; ++pass) {
+            QCOMPARE(runUpdateWatchPass(succ, fresh, host.ops()), UpdateWatchPass::Held);
+            QCOMPARE(host.take(), (QStringList{"check", "probe"}));  // asked again every pass
+            QVERIFY(host.applyWaiting);
+            QVERIFY(fresh.lastError.isEmpty());
+            host.clock = host.clock.addSecs(15);
+        }
+        QCOMPARE(host.said.filter(QStringLiteral("the request is kept")).size(), 1);
+
+        host.checks = {catalogAnswer(true)};
+        QCOMPARE(runUpdateWatchPass(succ, fresh, host.ops()), UpdateWatchPass::Applied);
+        QCOMPARE(host.take(), (QStringList{"check", "probe", "fetch", "deploy", "clear"}));
+        QVERIFY(!host.applyWaiting);
+        QVERIFY(fresh.offer.isEmpty());
+        QVERIFY(!fresh.nextCheck.isValid());  // the catalog is asked again on the next pass
+        QVERIFY(fresh.lastError.isEmpty());
+        QVERIFY(succLog.calls.isEmpty());  // the successor never restarts itself
+    }
+
+    // The control: a watcher that has an answer keeps it through a failed check (the last answer
+    // stands), so an Apply is handled as it always was: the offered release fetched, then the
+    // deploy. A catalog that said "nothing newer" leaves a plain redeploy onto the local tag.
+    void updateWatchKeepsItsAnswerAcrossAFailedCheck() {
+        QTemporaryDir d;
+        const QString inst = d.filePath("remora"), link = d.filePath("self-exe");
+        QVERIFY(writeSelfFile(inst, "image", true));
+        QVERIFY(pointSelfLink(link, inst));
+        SelfExecLog log;
+        SelfImageWatch self = SelfImageWatch::seeded(inst, {inst, QStringLiteral("update-watch")},
+                                                     recordingSelfOps(log), link);
+        FakeUpdateHost host;
+        host.checks = {catalogAnswer(true)};
+        UpdateWatchState st;
+        QCOMPARE(runUpdateWatchPass(self, st, host.ops()), UpdateWatchPass::Idle);
+        host.take();
+        host.clock = host.clock.addSecs(kReleaseCheckSecs);
+        host.checks = {catalogDown()};
+        host.applyWaiting = true;
+        QCOMPARE(runUpdateWatchPass(self, st, host.ops()), UpdateWatchPass::Applied);
+        QCOMPARE(host.take(), (QStringList{"check", "probe", "fetch", "deploy", "clear"}));
+
+        FakeUpdateHost latest;
+        latest.checks = {catalogAnswer(false)};
+        latest.applyWaiting = true;
+        UpdateWatchState none;
+        QCOMPARE(runUpdateWatchPass(self, none, latest.ops()), UpdateWatchPass::Applied);
+        QCOMPARE(latest.take(), (QStringList{"check", "probe", "deploy", "clear"}));
+        QVERIFY(log.calls.isEmpty());
+    }
+
+    // A profile on its own tag never asks the catalog and never waits for it; a failed download
+    // of an offered release says so on the device's screen and does not deploy.
+    void updateWatchPrivateTagAndFailedDownload() {
+        QTemporaryDir d;
+        const QString inst = d.filePath("remora"), link = d.filePath("self-exe");
+        QVERIFY(writeSelfFile(inst, "image", true));
+        QVERIFY(pointSelfLink(link, inst));
+        SelfExecLog log;
+        SelfImageWatch self = SelfImageWatch::seeded(inst, {inst, QStringLiteral("update-watch")},
+                                                     recordingSelfOps(log), link);
+        FakeUpdateHost own;
+        own.profile.imageTag = QStringLiteral("remora24:x86_64-mine");
+        own.checks = {catalogDown()};
+        own.applyWaiting = true;
+        UpdateWatchState st;
+        QCOMPARE(runUpdateWatchPass(self, st, own.ops()), UpdateWatchPass::Applied);
+        QCOMPARE(own.take(), (QStringList{"probe", "deploy", "clear"}));
+
+        FakeUpdateHost cut;
+        cut.checks = {catalogAnswer(true)};
+        cut.fetchRc = 1;
+        cut.applyWaiting = true;
+        UpdateWatchState st2;
+        QCOMPARE(runUpdateWatchPass(self, st2, cut.ops()), UpdateWatchPass::Failed);
+        QCOMPARE(cut.take(), (QStringList{"check", "probe", "fetch", "clear"}));
+        QVERIFY(st2.lastError.contains(kOfferVersion));
+        QVERIFY(st2.lastError.contains(QStringLiteral("disk full")));
+        QCOMPARE(runUpdateWatchPass(self, st2, cut.ops()), UpdateWatchPass::Idle);
+        QVERIFY(cut.probedError.contains(kOfferVersion));  // what the device's screen is given
+    }
+
+    // The self-restart runs only at the top of a pass, through the production pass: an upgrade
+    // that lands during an Apply is taken after that Apply has finished and removed its signal; a
+    // replacement found with an Apply waiting execs before the signal is read and leaves it for
+    // the successor; a failed exec runs the ordinary pass, Apply included, and is said once.
+    void updateWatchSelfRestartOnlyBetweenPasses() {
+        QTemporaryDir d;
+        const QString inst = d.filePath("remora"), bak = d.filePath("remora.bak"),
+                      link = d.filePath("self-exe");
+        const QStringList argv{inst, QStringLiteral("update-watch")};
+        QVERIFY(writeSelfFile(inst, "old image", true));
+        QVERIFY(pointSelfLink(link, inst));
+        SelfExecLog log;
+        SelfImageWatch w = SelfImageWatch::seeded(inst, argv, recordingSelfOps(log), link);
+        FakeUpdateHost host;
+        host.profile.imageTag = QStringLiteral("remora24:x86_64-mine");
+        host.applyWaiting = true;
+        host.duringDeploy = [&]() {
+            QFile::rename(inst, bak);
+            pointSelfLink(link, bak);
+            writeSelfFile(inst, "new image", true);
+        };
+        UpdateWatchState st;
+        QCOMPARE(runUpdateWatchPass(w, st, host.ops()), UpdateWatchPass::Applied);
+        QCOMPARE(host.take(), (QStringList{"probe", "deploy", "clear"}));
+        QVERIFY(log.calls.isEmpty());
+        QCOMPARE(runUpdateWatchPass(w, st, host.ops()), UpdateWatchPass::Restarted);
+        QVERIFY(host.take().isEmpty());
+        QCOMPARE(log.calls.size(), 1);
+
+        // A new Apply waiting when the replacement is found: exec first, signal untouched.
+        host.duringDeploy = nullptr;
+        QVERIFY(pointSelfLink(link, inst));
+        SelfExecLog log2;
+        w = SelfImageWatch::seeded(inst, argv, recordingSelfOps(log2), link);
+        QVERIFY(QFile::remove(inst));
+        QVERIFY(writeSelfFile(inst, "newer image, again", true));
+        host.applyWaiting = true;
+        QCOMPARE(runUpdateWatchPass(w, st, host.ops()), UpdateWatchPass::Restarted);
+        QVERIFY(host.take().isEmpty());
+        QVERIFY(host.applyWaiting);
+
+        // exec refused: this process keeps serving, the Apply is handled, the failure said once.
+        log2.nextErr = EACCES;
+        QCOMPARE(runUpdateWatchPass(w, st, host.ops()), UpdateWatchPass::Applied);
+        QCOMPARE(host.take(), (QStringList{"probe", "deploy", "clear"}));
+        QCOMPARE(runUpdateWatchPass(w, st, host.ops()), UpdateWatchPass::Idle);
+        QCOMPARE(host.said.filter(QStringLiteral("could not start the replaced")).size(), 1);
+        QCOMPARE(log2.calls.size(), 3);  // tried again at every pass
+        log2.nextErr = 0;  // the repair
+        QCOMPARE(runUpdateWatchPass(w, st, host.ops()), UpdateWatchPass::Restarted);
     }
 #endif
 };

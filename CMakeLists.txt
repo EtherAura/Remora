@@ -64,16 +64,21 @@ add_library(remora_core STATIC
     src/core/Backend.cpp
     src/core/Resolver.cpp
     src/core/Builders.cpp
+    src/core/DesktopEntries.cpp
     src/core/Features.cpp
     src/core/Gating.cpp
+    src/core/GpuMemory.cpp
     src/core/ImageBuild.cpp
     src/core/Guest.cpp
+    src/core/HostInput.cpp
     src/core/ImageLineage.cpp
+    src/core/LinkProto.cpp
     src/core/ManagedHost.cpp
     src/core/MirrorHwDecode.cpp
     src/core/MirrorInput.cpp
     src/core/MirrorProto.cpp
     src/core/MirrorRegistry.cpp
+    src/core/OutputLayout.cpp
     src/core/Parsers.cpp
     src/core/Prereqs.cpp
     src/core/RedditSession.cpp
@@ -103,6 +108,9 @@ add_library(remora_engine STATIC
     src/engine/AppTransfer.cpp
     src/engine/RedditLogin.cpp
     src/engine/HostShell.cpp
+    src/engine/Link.cpp
+    src/engine/SelfImage.cpp
+    src/engine/UpdateWatch.cpp
 )
 target_include_directories(remora_engine PUBLIC src)
 # Network: GuestVm talks to its QEMU's control port and probes loopback ports (bd remora-7oih.5),
@@ -158,6 +166,7 @@ target_link_libraries(remora_mirror PUBLIC remora_core remora_engine Qt6::Widget
 # --- GUI (QtWidgets config workspace) ---
 add_library(remora_gui STATIC
     src/ui/MainWindow.cpp
+    src/ui/PhonePage.cpp
     src/ui/Workers.cpp
     src/ui/App.cpp
 )
@@ -288,6 +297,71 @@ endif()
 add_custom_target(remora_native ALL DEPENDS ${REMORA_NATIVE_OUTPUTS})
 endif()
 
+# --- the host agent: this computer's own apps, served to a phone (docs/PHONE_APP.md) ---
+# Its own executable, because KWin grants its restricted Wayland interfaces per executable. Linux
+# and Plasma only, and optional like the encoder: a build without Wayland, PipeWire or Plasma's
+# protocol files skips it and says so.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    pkg_check_modules(REMORA_HOSTAGENT_DEPS QUIET IMPORTED_TARGET wayland-client libpipewire-0.3
+        opus)
+    find_package(PlasmaWaylandProtocols QUIET)
+    find_program(REMORA_WAYLAND_SCANNER wayland-scanner)
+    if(REMORA_HOSTAGENT_DEPS_FOUND AND PlasmaWaylandProtocols_FOUND AND REMORA_WAYLAND_SCANNER
+       AND TARGET Qt6::DBus)
+        set(REMORA_HOSTAGENT_GEN "${CMAKE_BINARY_DIR}/hostagent-protocols")
+        file(MAKE_DIRECTORY "${REMORA_HOSTAGENT_GEN}")
+        set(REMORA_HOSTAGENT_PROTO_SOURCES)
+        foreach(proto zkde-screencast-unstable-v1 fake-input)
+            set(xml "${PLASMA_WAYLAND_PROTOCOLS_DIR}/${proto}.xml")
+            add_custom_command(
+                OUTPUT "${REMORA_HOSTAGENT_GEN}/${proto}-client-protocol.h"
+                       "${REMORA_HOSTAGENT_GEN}/${proto}-protocol.c"
+                COMMAND "${REMORA_WAYLAND_SCANNER}" client-header "${xml}"
+                        "${REMORA_HOSTAGENT_GEN}/${proto}-client-protocol.h"
+                COMMAND "${REMORA_WAYLAND_SCANNER}" private-code "${xml}"
+                        "${REMORA_HOSTAGENT_GEN}/${proto}-protocol.c"
+                DEPENDS "${xml}"
+                VERBATIM)
+            list(APPEND REMORA_HOSTAGENT_PROTO_SOURCES
+                "${REMORA_HOSTAGENT_GEN}/${proto}-client-protocol.h"
+                "${REMORA_HOSTAGENT_GEN}/${proto}-protocol.c")
+        endforeach()
+        add_executable(remora-host-agent
+            src/hostagent/main.cpp
+            src/hostagent/AppCatalog.cpp
+            src/hostagent/DeskClipboard.cpp
+            src/hostagent/DeskLayout.cpp
+            src/hostagent/Gpu.cpp
+            src/hostagent/HostAgent.cpp
+            src/hostagent/HostSession.cpp
+            src/hostagent/KWinWayland.cpp
+            src/hostagent/PipeWireCapture.cpp
+            src/hostagent/SessionAudio.cpp
+            src/hostagent/WindowPlacer.cpp
+            ${REMORA_HOSTAGENT_PROTO_SOURCES})
+        target_include_directories(remora-host-agent PRIVATE src "${REMORA_HOSTAGENT_GEN}")
+        target_compile_definitions(remora-host-agent PRIVATE REMORA_VENDOR_DIR="${REMORA_VENDOR_PATH}")
+        target_link_libraries(remora-host-agent PRIVATE remora_core Qt6::Gui Qt6::Network
+            Qt6::DBus PkgConfig::REMORA_HOSTAGENT_DEPS)
+        # The desktop entry is what grants KWin's restricted interfaces where they are enforced:
+        # KWin matches its Exec against the running executable, so it names the installed path.
+        configure_file(packaging/io.github.EtherAura.Remora.HostAgent.desktop.in
+            "${CMAKE_BINARY_DIR}/io.github.EtherAura.Remora.HostAgent.desktop" @ONLY)
+        install(TARGETS remora-host-agent RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+        install(FILES "${CMAKE_BINARY_DIR}/io.github.EtherAura.Remora.HostAgent.desktop"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+        # A user unit, installed but not enabled: serving the desk to a phone is an opt-in.
+        configure_file(packaging/remora-host-agent.service.in
+            "${CMAKE_BINARY_DIR}/remora-host-agent.service" @ONLY)
+        install(FILES "${CMAKE_BINARY_DIR}/remora-host-agent.service"
+            DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/user)
+        message(STATUS "remora-host-agent: building (Linux apps for the phone app)")
+    else()
+        message(STATUS "remora-host-agent: NOT built — needs wayland-client, libpipewire-0.3, opus, "
+            "plasma-wayland-protocols, wayland-scanner and Qt6 DBus")
+    endif()
+endif()
+
 # --- tests ---
 # Every test runs with HOME and the XDG base directories inside the build tree (set below, once
 # all tests are registered), so no suite can read or write the user's real configuration. The
@@ -365,6 +439,14 @@ remora_suite_test(addons)
 add_executable(test_builders tests/test_builders.cpp)
 target_link_libraries(test_builders PRIVATE remora_core Qt6::Test)
 remora_suite_test(builders)
+
+add_executable(test_link tests/test_link.cpp)
+target_link_libraries(test_link PRIVATE remora_engine remora_core Qt6::Network Qt6::Test)
+remora_suite_test(link)
+
+add_executable(test_hostagent tests/test_hostagent.cpp)
+target_link_libraries(test_hostagent PRIVATE remora_core Qt6::Test)
+remora_suite_test(hostagent)
 
 add_executable(test_gating tests/test_gating.cpp)
 target_link_libraries(test_gating PRIVATE remora_core Qt6::Test)
@@ -482,6 +564,12 @@ endforeach()
 
 # --- install (binary + vendored scripts + desktop integration) ---
 install(TARGETS remora RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# The link's user unit, installed but not enabled: letting phones in is an opt-in.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    configure_file(packaging/remora-link.service.in "${CMAKE_BINARY_DIR}/remora-link.service" @ONLY)
+    install(FILES "${CMAKE_BINARY_DIR}/remora-link.service"
+        DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/user)
+endif()
 # PRUNE BEFORE COPYING. install(DIRECTORY) copies but never removes, so a file deleted from the
 # repo lingers in the installed tree forever — and builds stage from the INSTALLED tree
 # (REMORA_INSTALLED_VENDOR), so a deleted patch keeps being applied. That cost a build

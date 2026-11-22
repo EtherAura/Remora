@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Remora host agent
+Comment=Serves this computer's apps to a paired phone
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/remora-host-agent serve
+Icon=io.github.EtherAura.Remora
+NoDisplay=true
+# KWin grants these restricted interfaces to the program this entry's Exec names: a virtual
+# output streamed through PipeWire, and input injected into it. No consent dialog is involved,
+# which is the point — nobody is at the desk to answer one.
+X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1,org_kde_kwin_fake_input

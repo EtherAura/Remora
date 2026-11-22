@@ -31,6 +31,8 @@ androguard.log
 # framework.jar. agent/out/ is scratch; vendor/agent/agent.dex is the deployable copy the engine
 # mounts (bd remora-28ix.3).
 /agent/out/
+# phone/build.sh output: the unsigned and signed APKs and their intermediates
+/phone/out/
 /vendor/agent/agent.dex
 /vendor/native/uinput-kbd
 
