@@ -475,6 +475,21 @@ private slots:
         QVERIFY(!hasGate(mixed, "gapps", "block"));
     }
 
+    // The recipe side of the same stale profile: buildRecipe drops a key the registry no longer
+    // knows, so it reads as nothing rather than as a feature no tag provides — which would demand
+    // a source build on every run. The base it picks is the one the known keys alone pick.
+    void recipeIgnoresRetiredFeatureKeys() {
+        QVERIFY(!findFeature("native_vulkan"));
+
+        const ImageRecipe stale = buildRecipe({"gapps", "native_vulkan"}, 16);
+        const ImageRecipe clean = buildRecipe({"gapps"}, 16);
+        QVERIFY(!stale.needsBuild);
+        QVERIFY(!stale.needsSourceBuild);
+        QVERIFY2(stale.unbuildable.isEmpty(), qPrintable(stale.unbuildable.join(',')));
+        QVERIFY(!clean.baseTag.isEmpty());
+        QCOMPARE(stale.baseTag, clean.baseTag);
+    }
+
     void gatesUnmetRequires() {
         QVERIFY(hasGate(featureGates({"shamiko"}), "shamiko", "warn"));  // needs root + play_spoof
         QVERIFY(!hasGate(featureGates({"gapps"}), "gapps", "warn"));  // native x86_64 APKs
