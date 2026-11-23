@@ -3982,7 +3982,10 @@ void MainWindow::applyAccentStyle() {
             // docker could not be asked — amber, neither the green of up nor the grey of down
             "QLabel[pill=\"unknown\"] { color: %8; background: rgba(230,160,0,70);"
             "  border-radius: 9px; padding: 1px 10px; font-weight: 600; }"
-            // transitory verbs ("starting…") — accent-tinted so they read as in-motion
+            // a slept (frozen) device — a cool blue, neither up's green nor down's grey
+            "QLabel[pill=\"asleep\"] { color: %8; background: rgba(70,130,180,70);"
+            "  border-radius: 9px; padding: 1px 10px; font-weight: 600; }"
+                        // transitory verbs ("starting…") — accent-tinted so they read as in-motion
             "QLabel[pill=\"busy\"] { color: %8; background: rgba(%1,55);"
             "  border-radius: 9px; padding: 1px 10px; font-weight: 600; }"
             // the status-bar busy spinner glyph
@@ -6658,7 +6661,9 @@ void MainWindow::probeRunStatuses() {
         // reported as ○ stopped, on the reasoning that an empty `docker ps` has no such container.
         // A daemon that is down, a socket that is gone or a host that dropped off ssh all produced
         // that empty output, and the row said the device was stopped while it ran.
-        struct RowState { bool up = false; QString dockerError; };
+        // A fourth since remora-dbrv: asleep. docker ps lists a paused container as well, so a
+        // device Sleep had frozen read as running.
+        struct RowState { bool up = false; bool asleep = false; QString dockerError; };
         QHash<QString, RowState> states;
         for (const Deployment &d : deps) {
             RemoraConfig cfg = loadInstance(settingsPath, d.profile);
@@ -6672,8 +6677,9 @@ void MainWindow::probeRunStatuses() {
             const QString host =
                 backend == Backend::Bare ? QString() : dockerHostOf(cfg.backend.sshHost.value_or(QString()));
             const ShellResult ps = runShellRc(
-                host, QStringLiteral("docker ps --filter name=^%1$ --format '{{.Names}}' 2>&1")
-                          .arg(rc.containerName),
+                host,
+                QStringLiteral("docker ps --filter name=^%1$ --format '{{.Names}} {{.State}}' 2>&1")
+                    .arg(rc.containerName),
                 12000);
             RowState st;
             if (ps.rc != 0) {
@@ -6681,7 +6687,9 @@ void MainWindow::probeRunStatuses() {
                 if (st.dockerError.isEmpty())
                     st.dockerError = QStringLiteral("docker ps exited %1").arg(ps.rc);
             } else {
-                st.up = ps.out.trimmed() == rc.containerName;
+                const PsState state = parseDockerPsState(ps.out, rc.containerName);
+                st.up = state == PsState::Running;
+                st.asleep = state == PsState::Paused;
             }
             states.insert(d.name, st);
         }
@@ -6699,6 +6707,9 @@ void MainWindow::probeRunStatuses() {
                     if (!st.dockerError.isEmpty())
                         setRunPill(it, QStringLiteral("? docker unreachable"),
                                    QStringLiteral("unknown"), st.dockerError);
+                    else if (st.asleep)
+                        setRunPill(it, QStringLiteral("◐ asleep"), QStringLiteral("asleep"),
+                                   QStringLiteral("Frozen: no CPU, its session kept. ▶ wakes it."));
                     else
                         setRunPill(it, st.up ? QStringLiteral("● running")
                                              : QStringLiteral("○ stopped"),

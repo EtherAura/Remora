@@ -19,6 +19,9 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- The Runners page shows a device that Sleep froze as **asleep**. It said running, because
+  `docker ps` lists a paused container too.
+
 - The mirror window is no longer black on Linux with an NVIDIA GPU. Since 2026.11.9 it drew
   through a window type that, with the desktop OpenGL the NVIDIA zero-copy path needs, shows
   nothing on a Wayland desktop, while the stream behind it kept running normally. The boot

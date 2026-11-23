@@ -209,6 +209,12 @@ bool parseReadOnlyTree(const QString &buildLog);
 
 QSet<QString> parseDockerPsNames(const QString &psOut);
 
+// One container's state from `docker ps --format '{{.Names}} {{.State}}'`. docker ps lists a
+// paused (slept) container too, so its name alone cannot tell a running device from a frozen one:
+// the Runners row said "running" for a device Sleep had frozen (remora-dbrv).
+enum class PsState { Absent, Running, Paused };
+PsState parseDockerPsState(const QString &psOut, const QString &container);
+
 // What a RUNNING container occupies, for multi-instance collision detection (bd remora-4u4.1).
 // Names alone cannot answer "would starting this profile break that one?" — two instances collide
 // on the host adb PORT and on the /data bind SOURCE, and those are the two that corrupt or fail.

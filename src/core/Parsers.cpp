@@ -271,6 +271,16 @@ QSet<QString> parseDockerPsNames(const QString &psOut) {
     return names;
 }
 
+PsState parseDockerPsState(const QString &psOut, const QString &container) {
+    for (const QString &ln : psOut.split(QLatin1Char('\n'))) {
+        const QStringList f =
+            ln.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+        if (f.isEmpty() || f[0] != container) continue;
+        return f.value(1) == QLatin1String("paused") ? PsState::Paused : PsState::Running;
+    }
+    return PsState::Absent;
+}
+
 QVector<ContainerFacts> parseDockerInspectFacts(const QString &out) {
     QVector<ContainerFacts> facts;
     // A '|'-joined column into a set of its trimmed, non-empty entries.

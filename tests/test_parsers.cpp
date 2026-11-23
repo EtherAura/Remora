@@ -238,6 +238,19 @@ private slots:
         QVERIFY(!parseLsmodHas(s, "nonexistent"));
     }
 
+    // remora-dbrv: `docker ps --format '{{.Names}} {{.State}}'` lists a slept device as paused
+    void dockerPsState() {
+        const QString ps = "remora-phone paused\nremora-android-17 running\njellyfin running\n";
+        QCOMPARE(parseDockerPsState(ps, "remora-phone"), PsState::Paused);
+        QCOMPARE(parseDockerPsState(ps, "remora-android-17"), PsState::Running);
+        QCOMPARE(parseDockerPsState(ps, "remora-bm"), PsState::Absent);
+        QCOMPARE(parseDockerPsState(QString(), "remora-phone"), PsState::Absent);
+        // a name is matched whole: remora-phone is not remora-phone-2
+        QCOMPARE(parseDockerPsState("remora-phone-2 running\n", "remora-phone"), PsState::Absent);
+        // an older docker without the State column reads as running, as before
+        QCOMPARE(parseDockerPsState("remora-phone\n", "remora-phone"), PsState::Running);
+    }
+
     void dockerPsNames() {
         const auto names = parseDockerPsNames(fx("host_docker_ps.txt"));
         QVERIFY(names.contains("jellyfin"));
