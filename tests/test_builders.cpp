@@ -2560,6 +2560,19 @@ private slots:
         QVERIFY(tuned.contains("; }; true"));
     }
 
+    // The refresh-rate pin starts strictly above 60. An explicit 60 is what a default profile
+    // resolves to, so a `>= 60` threshold would rewrite the refresh-rate settings on every
+    // default connect.
+    void deviceTuneRefreshRateBoundary() {
+        ResolvedConfig c = bareCfg();
+        const QStringList unset = buildDeviceTuneArgv(c, "localhost:5555");
+        c.fps = 60;
+        const QStringList at60 = buildDeviceTuneArgv(c, "localhost:5555");
+        QVERIFY(!at60.last().contains("peak_refresh_rate"));
+        QVERIFY(!at60.last().contains("min_refresh_rate"));
+        QCOMPARE(at60, unset);
+    }
+
     // Guest timezone (bd remora-c8t): emitted only when resolved (the resolver leaves it empty —
     // the host fill is engine-side, so the default tune vector above stays byte-identical),
     // guarded on the current value because a CHANGE broadcasts to every app, and validated to
