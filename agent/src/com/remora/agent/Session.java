@@ -93,13 +93,18 @@ public final class Session {
         if (audio == a) audio = null;
     }
 
-    /** The client's window was resized: reflow a new display rather than stretch its pixels. */
-    public void requestResize(int width, int height) {
+    /**
+     * The client's window was resized: reflow a new display rather than stretch its pixels.
+     * {@code dpi} is the client's density for it, or 0 for one that follows the long side.
+     */
+    public void requestResize(int width, int height, int dpi) {
         if (!(capture instanceof NewDisplayCapture)) {
             // A mirror's size follows its source; resizing it would desynchronise the two.
             return;
         }
-        ((NewDisplayCapture) capture).requestResize(width, height);
+        // Only the density changed: the display lays its content out again, and its frames,
+        // the same size as before, need no new encoder.
+        if (!((NewDisplayCapture) capture).requestResize(width, height, dpi)) return;
         ScreenEncoder e = encoder;
         // Rebuild the encoder around the new size, and mark the next FORMAT record as a CLIENT
         // resize so the client knows not to resize its window back.

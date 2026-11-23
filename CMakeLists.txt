@@ -381,6 +381,11 @@ file(MAKE_DIRECTORY "${REMORA_TEST_HOME}/.config" "${REMORA_TEST_HOME}/.local/sh
 # suites do not require Bash (the FreeBSD release job runs CTest there too).
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME gentoo_ebuild COMMAND bash "${CMAKE_SOURCE_DIR}/tools/test-gentoo-ebuild.sh")
+    # The phone app's QR decoder, on this machine's JVM against qrencode's codes. Skipped, not
+    # failed, without a JDK or qrencode: neither is needed to build Remora.
+    add_test(NAME phone_qr COMMAND bash "${CMAKE_SOURCE_DIR}/phone/test/run.sh"
+        "${CMAKE_BINARY_DIR}/phone-test")
+    set_tests_properties(phone_qr PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 endif()
 # Python runs four suites and two prereqs cases, and nothing that is built or installed, so a
 # machine without it still configures and builds Remora; those tests then do not run, and this

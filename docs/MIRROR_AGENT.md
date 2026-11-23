@@ -198,8 +198,9 @@ that has no video connection at all — neither side ever needs the other's reso
   drained and dropped, with a nudge schedule that keeps composition alive. No video connection
   exists: the host encoder serves the pixels (`host_encode`).
 - **new-display** — creates a virtual display (`new_display` size/dpi, or the main display's), optionally
-  starts `start_app` on it, reflows it when the client sends `RESIZE_DISPLAY`, ends the session when
-  the watched app exits if `close_on_app_exit=true`, and destroys the display's content on close.
+  starts `start_app` on it, reflows it when the client sends `RESIZE` (at the density it names, if
+  it names one), ends the session when the watched app exits if `close_on_app_exit=true`, and
+  destroys the display's content on close.
   The agent drives composition itself, because a fresh display composes nothing until something
   does. `video_compose=true` sends its frames to the host encoder, as compose does.
 

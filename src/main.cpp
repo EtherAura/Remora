@@ -1380,8 +1380,10 @@ static int cmdLink(const QStringList &a, QTextStream &out) {
             err << "remora link: " << why << "\n";
             return 1;
         }
+        // Level M, as the Phone page draws it: a phone at an angle to a screen misreads modules.
         QProcess qr;
-        qr.start(QStringLiteral("qrencode"), {QStringLiteral("-t"), QStringLiteral("ansiutf8"), *uri});
+        qr.start(QStringLiteral("qrencode"), {QStringLiteral("-t"), QStringLiteral("ansiutf8"),
+                                              QStringLiteral("-l"), QStringLiteral("M"), *uri});
         if (qr.waitForFinished(5000) && qr.exitCode() == 0) out << qr.readAllStandardOutput();
         out << *uri << "\n\nScan it in the Remora phone app, or open the link on the phone. "
             << "It works once, for ten minutes.\n";

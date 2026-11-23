@@ -101,7 +101,9 @@ private:
     bool openAudioSink();  // the session's sink, before the app; false when there is none
     void onControlData();
     void attachEncoder();
-    void requestResize(QSize pixels);
+    void requestResize(QSize pixels, int dpi);
+    double wantedScale() const;  // for the size asked for
+    bool reflowWanted() const;
     void beginReflow();
     void onReflowSettled();
     void finishReflow();
@@ -137,6 +139,9 @@ private:
     QSize refPixels_;
     double refScale_ = 1.0;
     QSize wantedPixels_;
+    // The largest of the app's windows' minimum sizes: the scale never goes above what fits it.
+    QSize minLogical_;
+    bool rescaleWaiting_ = false;  // re-place the windows once the new scale is laid out
     QTimer *reflowTimer_ = nullptr;
     VirtualOutput *nextOutput_ = nullptr;
     PipeWireCapture *nextCapture_ = nullptr;

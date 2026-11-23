@@ -154,9 +154,10 @@ final class Proto {
         return record(BACK, new byte[] {(byte) action});
     }
 
-    static byte[] resize(int width, int height) {
-        return record(RESIZE, ByteBuffer.allocate(4).putShort((short) width).putShort((short) height)
-                .array());
+    /** The remote display's new size and density; an agent before the density ignores it. */
+    static byte[] resize(int width, int height, int dpi) {
+        return record(RESIZE, ByteBuffer.allocate(6).putShort((short) width).putShort((short) height)
+                .putShort((short) dpi).array());
     }
 
     static byte[] clipboard(String text, boolean paste) {

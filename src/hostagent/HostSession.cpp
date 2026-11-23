@@ -4,6 +4,7 @@
 #include <QLocalSocket>
 #include <QTimer>
 
+#include <cmath>
 #include <csignal>
 #include <sys/prctl.h>
 
@@ -71,7 +72,8 @@ std::optional<SessionParams> SessionParams::fromOptions(const QHash<QString, QSt
 HostSession::HostSession(const Services &services, quint32 id, const QString &outputName,
                          const SessionParams &params, QObject *parent)
     : QObject(parent), s_(services), id_(id), outputName_(outputName), params_(params),
-      baseName_(outputName), refPixels_(params.pixels), refScale_(params.scale) {
+      baseName_(outputName), refPixels_(params.pixels), refScale_(params.scale),
+      wantedPixels_(params.pixels) {
     reflowTimer_ = new QTimer(this);
     reflowTimer_->setSingleShot(true);
     reflowTimer_->setInterval(250);  // a burst of RESIZEs (a drag, a fold) becomes one reflow
@@ -99,6 +101,13 @@ HostSession::HostSession(const Services &services, quint32 id, const QString &ou
         focusSettle_->stop();
         deliver(keys_.focusChanged(false));
         regainFocus();  // keys held while it was settling still wait for it
+    });
+    connect(s_.placer, &WindowPlacer::windowMinimum, this, [this](quint32 session, QSize min) {
+        if (session != id_) return;
+        const QSize grown = minLogical_.expandedTo(min);
+        if (grown == minLogical_) return;
+        minLogical_ = grown;
+        reflowTimer_->start();  // the scale, lowered until it fits (wantedScale)
     });
     connect(s_.placer, &WindowPlacer::windowPlaced, this,
             [this](quint32 session, const QString &, int pid, bool) {
@@ -152,6 +161,11 @@ void HostSession::onOutputReady(quint64 serial) {
 
 void HostSession::onDeskSettled(bool ok, const QString &detail) {
     refreshGeometry();
+    if (std::exchange(rescaleWaiting_, false)) {
+        // Placed again at the new scale: a window that did not fit before was left on the desk,
+        // and one that did is maximized to the output's new extent.
+        s_.placer->moveTo(id_, outputName());
+    }
     if (reflowWaiting_) {
         reflowWaiting_ = false;
         onReflowSettled();
@@ -269,7 +283,7 @@ void HostSession::onControlData() {
     if (control_) parser_.feed(control_->readAll());
     while (const auto m = parser_.next()) {
         if (m->type == ControlRecord::Resize) {
-            requestResize(QSize(m->width, m->height));
+            requestResize(QSize(m->width, m->height), m->dpi);
             continue;
         }
         if (m->type == ControlRecord::Clipboard) {
@@ -290,24 +304,50 @@ void HostSession::onControlData() {
     if (parser_.error()) end(QStringLiteral("the client broke the control framing"));
 }
 
-void HostSession::requestResize(QSize pixels) {
+void HostSession::requestResize(QSize pixels, int dpi) {
     if (!readyEmitted_ || ended_ || pixels.width() < 200 || pixels.height() < 200 ||
         pixels.width() > 8192 || pixels.height() > 8192)
         return;
     wantedPixels_ = pixels;
+    // A density given with the size is the client's own (the phone app's scale): it anchors the
+    // long-side rule from here on, so a later resize without one keeps that scale.
+    if (dpi > 0) {
+        refPixels_ = pixels;
+        refScale_ = dpi / 160.0;
+    }
     reflowTimer_->start();
+}
+
+double HostSession::wantedScale() const {
+    // Density follows the long side, as the in-image agent's reflow does: a rotation keeps it,
+    // and a window grown on a desk shows the same UI larger rather than more of it smaller.
+    const int refLong = std::max(refPixels_.width(), refPixels_.height());
+    const int newLong = std::max(wantedPixels_.width(), wantedPixels_.height());
+    const double rule = refLong > 0 ? refScale_ * newLong / refLong : refScale_;
+    return std::min(rule, outputs::fitScale(wantedPixels_, minLogical_));
+}
+
+bool HostSession::reflowWanted() const {
+    // In KWin's own steps of 1/120: a scale it would store the same is no change.
+    return wantedPixels_ != params_.pixels ||
+           std::lround(wantedScale() * 120) != std::lround(params_.scale * 120);
 }
 
 void HostSession::beginReflow() {
     if (ended_) return;
     if (nextOutput_) return reflowTimer_->start();  // one at a time; the latest size wins after
-    if (wantedPixels_ == params_.pixels) return;
+    if (!reflowWanted()) return;
+    if (wantedPixels_ == params_.pixels) {
+        // Only the scale: the same output, laid out again at the new one. Its pixels, and so the
+        // capture and the encoder, stay as they are; the app is laid out again in what it covers.
+        params_.scale = wantedScale();
+        qInfo("host agent: session %u rescaled to @%g", id_, params_.scale);
+        rescaleWaiting_ = true;
+        emit outputLive(id_);
+        return;
+    }
     nextPixels_ = wantedPixels_;
-    // Density follows the long side, as the in-image agent's reflow does: a rotation keeps it,
-    // and a window grown on a desk shows the same UI larger rather than more of it smaller.
-    const int refLong = std::max(refPixels_.width(), refPixels_.height());
-    const int newLong = std::max(nextPixels_.width(), nextPixels_.height());
-    nextScale_ = refLong > 0 ? refScale_ * newLong / refLong : refScale_;
+    nextScale_ = wantedScale();
     nextName_ = outputName_ == baseName_ ? baseName_ + QStringLiteral("-b") : baseName_;
     nextOutput_ = s_.wl->createVirtualOutput(nextName_, QStringLiteral("Remora phone"), nextPixels_);
     connect(nextOutput_, &VirtualOutput::ready, this, [this](quint64 serial) {
@@ -358,7 +398,7 @@ void HostSession::finishReflow() {
     qInfo("host agent: session %u reflowed to %dx%d @%g", id_, params_.pixels.width(),
           params_.pixels.height(), params_.scale);
     emit outputLive(id_);  // one output again
-    if (wantedPixels_ != params_.pixels) reflowTimer_->start();  // resized again meanwhile
+    if (reflowWanted()) reflowTimer_->start();  // resized again meanwhile
 }
 
 void HostSession::abandonReflow(const QString &why) {

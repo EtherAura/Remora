@@ -3,6 +3,8 @@
 // the client's own encoders, so the two halves cannot drift apart.
 #include <QtTest>
 
+#include <cmath>
+
 #include "core/DesktopEntries.h"
 #include "core/GpuMemory.h"
 #include "core/HostInput.h"
@@ -115,6 +117,22 @@ private slots:
     }
 
     // Two phones: the second parks after the first, one priority lower.
+    void scaleFitsTheAppsMinimum() {
+        // Elisa (minimum 612x459) on a Pixel 10 Pro XL at its own 480 dpi, scale 3: 448x997
+        // logical upright, 997x448 sideways, and KWin kept her on the desk.
+        const QSize elisa(612, 459);
+        const double upright = outputs::fitScale({1344, 2992}, elisa);
+        const double sideways = outputs::fitScale({2992, 1344}, elisa);
+        QCOMPARE(upright, 263 / 120.0);  // 1344 / 612 = 2.196, down to a step
+        QCOMPARE(sideways, 351 / 120.0);  // 1344 / 459 = 2.928
+        QVERIFY(1344 / upright >= 612 && 1344 / sideways >= 459);
+        // Nothing to fit, or no output: no limit.
+        QVERIFY(std::isinf(outputs::fitScale({1344, 2992}, {})));
+        QVERIFY(std::isinf(outputs::fitScale({}, elisa)));
+        // A desktop-sized minimum is not followed below half scale.
+        QCOMPARE(outputs::fitScale({1344, 2992}, {3000, 2000}), 0.5);
+    }
+
     void secondVirtualOutputStacks() {
         const auto before = outputs::parseKScreenJson(kscreen(false));
         QByteArray two = kscreen(true, 4314, 3, 2, 2.625);
@@ -373,6 +391,7 @@ private slots:
         p.feed(mirror::textMessage(QStringLiteral("héllo")));
         p.feed(mirror::clipboardMessage(5, true, QStringLiteral("copied")));
         p.feed(mirror::resizeMessage(1080, 2400));
+        p.feed(mirror::resizeMessage(1280, 678, 109));
         p.feed(mirror::backMessage(0));
 
         auto m = p.next();
@@ -402,6 +421,11 @@ private slots:
         QCOMPARE(m->type, mirror::ControlRecord::Resize);
         QCOMPARE(m->width, quint16(1080));
         QCOMPARE(m->height, quint16(2400));
+        QCOMPARE(m->dpi, quint16(0));  // the density follows the long side
+        m = p.next();
+        QCOMPARE(m->type, mirror::ControlRecord::Resize);
+        QCOMPARE(m->width, quint16(1280));
+        QCOMPARE(m->dpi, quint16(109));
         QCOMPARE(p.next()->type, mirror::ControlRecord::Back);
         QVERIFY(!p.next());
         QVERIFY(!p.error());

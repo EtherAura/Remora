@@ -43,7 +43,9 @@ QString scriptName(quint32 session) { return QStringLiteral("remora-session-%1")
 //    app's other windows on the desk stay where they are.
 //
 // Each report says whether the window is new ("not among the app's windows when the script
-// loaded") and how it was before, so the release can put a desk window back exactly.
+// loaded") and how it was before, so the release can put a desk window back exactly, and the
+// smallest it can be: KWin keeps a window that cannot fit on an output off it, so the agent
+// lowers the output's scale until it does.
 const char kPlaceScript[] = R"JS(
 var SESSION = %1, APP = %2, OUTPUT = %3, ADOPT = %4, MOVE = %5;
 var placed = {}, before = {};
@@ -59,9 +61,17 @@ function place(w) {
     if (!out || placed[w.internalId.toString()]) return;
     // Marked first: activating it below re-enters the windowActivated handler.
     placed[w.internalId.toString()] = true;
-    var isNew = !before[w.internalId.toString()];
-    var was = w.frameGeometry, border = !w.noBorder, allDesktops = w.onAllDesktops;
+    var b = before[w.internalId.toString()], isNew = !b;
+    var minimized = w.minimized || !!(b && b.minimized), maximized = w.maximizeMode;
+    var border = !w.noBorder, allDesktops = w.onAllDesktops;
     var g = out.geometry;
+    w.minimized = false;
+    // Restored first: KWin can already hold the window maximized, at the size it had (one that
+    // did not fit the output, placed again once the scale was lowered: 20 px short each side,
+    // measured with Elisa), and takes setMaximize(true) as no change. A desk window maximized
+    // there is then at its own size, which is the one to record.
+    w.setMaximize(false, false);
+    var was = w.frameGeometry;
     w.noBorder = true;
     w.onAllDesktops = true;
     w.demandsAttention = false;
@@ -71,13 +81,17 @@ function place(w) {
     callDBus("org.remora.HostAgent", "/Placement", "org.remora.HostAgent.Placement", "placed",
              JSON.stringify({session: SESSION, id: w.internalId.toString(), pid: w.pid,
                              isNew: isNew, x: was.x, y: was.y, width: was.width,
-                             height: was.height, border: border, allDesktops: allDesktops}));
+                             height: was.height, border: border, allDesktops: allDesktops,
+                             minimized: minimized, maximized: maximized,
+                             minWidth: w.minSize.width, minHeight: w.minSize.height}));
 }
 (function () {
     var ws = workspace.windowList();
     for (var i = 0; i < ws.length; i++) {
         if (ws[i].desktopFileName != APP) continue;
-        before[ws[i].internalId.toString()] = true;
+        // As it was before the launch: an app asked to activate its window has KWin unminimize
+        // it before the window is placed.
+        before[ws[i].internalId.toString()] = {minimized: ws[i].minimized};
         (function (w) {
             w.demandsAttentionChanged.connect(function () {
                 if (w.demandsAttention && nothingPlaced() && ours(w)) place(w);
@@ -129,9 +143,10 @@ if (pick) workspace.activeWindow = pick;
 )JS";
 
 // Gives windows back to the desk. Run once, after the session's script is unloaded. A window
-// that was already on the desk goes back exactly as it was; one opened for the phone is minimized
-// rather than closed — closing could cost unsaved work, and a prompt about it would appear on a
-// desk nobody is at.
+// that was already on the desk goes back exactly as it was — where it was, then maximized and
+// minimized again if it had been (maximized there, so its own size is the one it restores to);
+// one opened for the phone is minimized rather than closed — closing could cost unsaved work,
+// and a prompt about it would appear on a desk nobody is at.
 const char kReleaseScript[] = R"JS(
 var BACK = %1;
 var ws = workspace.windowList();
@@ -146,6 +161,8 @@ for (var i = 0; i < ws.length; i++) {
     } else {
         w.noBorder = !b.border;
         w.frameGeometry = {x: b.x, y: b.y, width: b.width, height: b.height};
+        if (b.maximized) w.setMaximize((b.maximized & 1) != 0, (b.maximized & 2) != 0);
+        w.minimized = b.minimized;
     }
 }
 )JS";
@@ -291,7 +308,9 @@ void WindowPlacer::release(quint32 session) {
                                           {QStringLiteral("width"), it->was.width()},
                                           {QStringLiteral("height"), it->was.height()},
                                           {QStringLiteral("border"), it->border},
-                                          {QStringLiteral("allDesktops"), it->allDesktops}});
+                                          {QStringLiteral("allDesktops"), it->allDesktops},
+                                          {QStringLiteral("minimized"), it->minimized},
+                                          {QStringLiteral("maximized"), it->maximized}});
     }
     runOnce(scriptName(session) + QStringLiteral("-release"),
             QString::fromUtf8(kReleaseScript)
@@ -311,12 +330,17 @@ void WindowPlacer::placed(const QString &json) {
                     int(o.value(QStringLiteral("y")).toDouble()),
                     int(o.value(QStringLiteral("width")).toDouble()),
                     int(o.value(QStringLiteral("height")).toDouble()));
+    const QSize minimum(int(o.value(QStringLiteral("minWidth")).toDouble()),
+                        int(o.value(QStringLiteral("minHeight")).toDouble()));
+    if (minimum.width() > 0 && minimum.height() > 0) emit windowMinimum(session, minimum);
     // A window re-placed by a reflow keeps what was recorded when it first came to the phone:
     // that is the state the release must give back.
     if (it->contains(id)) return;
     const bool isNew = o.value(QStringLiteral("isNew")).toBool();
     it->insert(id, {isNew, was, o.value(QStringLiteral("border")).toBool(true),
-                    o.value(QStringLiteral("allDesktops")).toBool(false)});
+                    o.value(QStringLiteral("allDesktops")).toBool(false),
+                    o.value(QStringLiteral("minimized")).toBool(false),
+                    o.value(QStringLiteral("maximized")).toInt()});
     emit windowPlaced(session, id, o.value(QStringLiteral("pid")).toInt(), isNew);
 }
 

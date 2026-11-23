@@ -41,4 +41,5 @@ public final class ControlMessage {
     public long sequence;
     public boolean paste;
     public int width, height;   // RESIZE
+    public int dpi;             // RESIZE: 0, or absent, follows the long side
 }

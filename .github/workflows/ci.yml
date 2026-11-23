@@ -45,6 +45,10 @@ jobs:
             libgl1-mesa-dev libffmpeg-nvenc-dev \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             libva-dev
+      # Test-only, and this job only: phone_qr checks the phone app's QR decoder against
+      # qrencode's codes (the runner's own JDK compiles it). Elsewhere it reports itself skipped.
+      - name: Install qrencode
+        run: sudo apt-get install -y --no-install-recommends qrencode
 
       # Python is required here, not just found: CMake registers the Python suites only when it
       # finds an interpreter, so a runner without one would otherwise pass with them missing.

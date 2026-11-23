@@ -30,7 +30,9 @@ Positional input is a fraction of the frame, so the two ends never need the same
 
 A phone roams across networks and sits behind NAT, so the computer runs a small **link service**
 (`remora link serve`). Pairing is by a QR code that `remora link pair` or the workspace's Phone
-page shows: the computer's address, its certificate fingerprint and a one-time token. After that,
+page shows: the computer's address, its certificate fingerprint and a one-time token. The phone
+app scans it with its own camera and decoder, and the code is also a link the app opens, so the
+phone's camera app or a pasted link pair it as well. After that,
 every connection is TLS with both certificates pinned, carrying protocol v3 unchanged. The link
 bridges a phone to each running instance's agent over the forward that exists already, and to the
 host agent locally. The wire format is [LINK_PROTOCOL.md](LINK_PROTOCOL.md). Away from home, the
@@ -64,7 +66,12 @@ a restore token granted once at the desk.
 - **Size in pixels, scale from the layout.** KWin makes the width and height it is sent the
   output's mode in pixels, although the protocol calls them logical, and ignores the scale. The
   agent asks for the phone's pixels and sets the scale with the layout below, in KWin's own steps
-  of 1/120.
+  of 1/120. A change of scale alone (the phone app's *Scale*) is that layout applied again: the
+  output, its capture and the encoder stay as they are.
+- **The app must fit.** KWin keeps a window that cannot be as small as an output off it, so Elisa,
+  at least 612x459, opened on the desk from a phone whose screen is 997x448 at its own scale 3.
+  The session's script reports each window's minimum size, and the agent lowers the output's scale
+  to the largest that holds it (in KWin's steps, never below 0.5) and places the window again.
 - **The physical monitors stay where they are.** KWin lays out a set of outputs it has never seen
   from scratch, which moves the physical ones. The agent records their positions and priorities
   first, puts them back, and parks the virtual output outside their bounding box with the lowest
@@ -93,8 +100,9 @@ its existing window to be activated, which KWin's focus-stealing prevention usua
 request for attention. The script watches for both. The phone's windows are borderless,
 maximized and on every virtual desktop, because desktops are global across outputs and switching
 one at the desk must not take the app off the phone. When the session ends, a window that was
-already on the desk goes back exactly where it was, and one opened for the phone is minimized,
-not closed.
+already on the desk goes back exactly as it was — where it was, and maximized or minimized again
+if it had been, as recorded before the launch, since a launch that activates a window unminimizes
+it — and one opened for the phone is minimized, not closed.
 
 ### Frames
 
@@ -117,7 +125,8 @@ A rotated phone, a resized window or the phone's on-screen keyboard reflows the 
 shape rather than stretching it. KWin cannot resize a virtual output, so a new one comes up beside
 the old, the app moves over, a capture of the new one replaces the old capture on the same
 encoder, and only then does the old output go. Density follows the long side, as the in-image
-agent's reflow does.
+agent's reflow does, unless the RESIZE names one: the phone app always does, since its scale is
+the client's to set, and the named density is the anchor for later ones.
 
 ### Input
 

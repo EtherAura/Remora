@@ -96,6 +96,7 @@ public final class ControlReader {
                 need(type, body, 2 + 2);
                 m.width = b.getShort() & 0xffff;
                 m.height = b.getShort() & 0xffff;
+                if (body.length >= 6) m.dpi = b.getShort() & 0xffff;
                 break;
             default:
                 return null;

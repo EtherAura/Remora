@@ -219,10 +219,11 @@ QByteArray clipboardMessage(quint64 sequence, bool paste, const QString &text) {
     return control(ControlRecord::Clipboard, b);
 }
 
-QByteArray resizeMessage(quint16 width, quint16 height) {
+QByteArray resizeMessage(quint16 width, quint16 height, quint16 dpi) {
     QByteArray b;
     putU16(b, width);
     putU16(b, height);
+    if (dpi) putU16(b, dpi);  // the four-byte form is what an agent before the density had
     return control(ControlRecord::Resize, b);
 }
 
@@ -563,6 +564,7 @@ std::optional<ControlMessage> ControlMessageParser::next() {
         case ControlRecord::Resize:
             m.width = qFromBigEndian<quint16>(b.constData());
             m.height = qFromBigEndian<quint16>(b.constData() + 2);
+            if (b.size() >= 6) m.dpi = qFromBigEndian<quint16>(b.constData() + 4);
             break;
         }
         return m;

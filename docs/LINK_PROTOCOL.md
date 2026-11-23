@@ -22,7 +22,7 @@ TLS 1.3 only.
 ## Pairing
 
 `remora link pair` makes a one-time token, good for ten minutes and stored only as its hash, and
-shows it as a URI, and as a QR code when `qrencode` is installed:
+shows it as a URI, and as a QR code at error-correction level M when `qrencode` is installed:
 
 ```
 remora-link://pair?h=192.168.0.10:27200&h=[fd00::1]:27200&fp=<fingerprint>&t=<token>&n=<host name>

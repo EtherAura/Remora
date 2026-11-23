@@ -1248,13 +1248,14 @@ private slots:
         QVERIFY(!d.dockerImageStore);
         QVERIFY(storeRows(checkReadiness(Backend::Bare, d)).isEmpty());
         for (const bool sshUp : {false, true}) {
-            StoreProbeSpawner far;
-            far.sshUp = sshUp;
-            far.remoteDockerUp = false;  // the local daemon answers; there is no fallback to it
-            far.storeOut = kContainerdReply;
+            // Not `far`: <windows.h> defines it (and `near`) as nothing.
+            StoreProbeSpawner remoteDown;
+            remoteDown.sshUp = sshUp;
+            remoteDown.remoteDockerUp = false;  // the local daemon answers; no fallback to it
+            remoteDown.storeOut = kContainerdReply;
             const HostCapabilities f =
-                probeCapabilities(Backend::Remote, kStoreHost, far, ImageStoreQuery::Ask);
-            QVERIFY(far.timed.isEmpty());
+                probeCapabilities(Backend::Remote, kStoreHost, remoteDown, ImageStoreQuery::Ask);
+            QVERIFY(remoteDown.timed.isEmpty());
             QVERIFY(!f.dockerImageStore);
             QVERIFY(storeRows(checkReadiness(Backend::Remote, f)).isEmpty());
         }

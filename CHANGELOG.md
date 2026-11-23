@@ -7,8 +7,28 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Added
+
+- The phone app preview pairs from inside the app. *Scan the code*, or *Pair another computer*
+  once one is paired, opens the phone's back camera and reads the code that `remora link pair` or
+  the workspace's Phone page shows. The app asks for the camera the first time, and reads the code
+  with its own decoder, so no camera app or library is involved. The same screen takes the link
+  pasted, which is how a device without a camera pairs.
+- In the phone app preview, a session has its own controls: a small handle on the edge of the
+  screen, which can be dragged anywhere along either side, opens a panel with the keyboard, *Paste
+  from phone*, the session size, the app's scale and *End session*. There was no way out of a
+  session before but leaving it, since Back goes to the app. The session size now changes from
+  inside a session too, and *Scale* (50 to 150% of the phone's own density, kept per source) lays
+  the app out smaller or larger without leaving it. The protocol's RESIZE message can name the
+  new density, which `remora-host-agent` and the in-image agent follow; an older agent keeps the
+  density it began with.
+
 ### Changed
 
+- `remora link pair` and the workspace's Phone page draw the pairing code with more error
+  correction (level M instead of qrencode's default, L). A phone held at an angle to the screen
+  misreads some of a code's squares, and the code now survives twice as many, for a code one size
+  larger.
 - In the phone app preview, a session stays open while the phone's screen is off or another app
   is in front, and its sound keeps playing; the app's notification leads back to it, and the
   picture comes back as it was. It used to end the moment the app left the screen. After five
@@ -19,6 +39,13 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- `remora-host-agent` shows an app whose window cannot be as small as the phone's screen, such as
+  Elisa, on the phone. KWin kept such a window on the desk, so the app opened there instead of on
+  the phone. The phone's screen is now laid out at the largest scale the app fits, and the app is
+  placed on it again.
+- When a phone session ends, `remora-host-agent` gives back a window that was already open on the
+  computer minimized or maximized if it was. It came back where it had been, but unminimized, and
+  a maximized one at full size but no longer maximized.
 - The Runners page shows a device that Sleep froze as **asleep**. It said running, because
   `docker ps` lists a paused container too.
 

@@ -92,8 +92,8 @@
 #include "engine/SourceBuild.h"
 #include "core/SourcePatches.h"
 #include "store/Store.h"
-#ifdef REMORA_HAVE_WEBENGINE
 #include "ui/PhonePage.h"
+#ifdef REMORA_HAVE_WEBENGINE
 #include "ui/RedditLoginWindow.h"
 #endif
 #include "ui/Workers.h"

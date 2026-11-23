@@ -31,12 +31,15 @@ bool linkServing() {
 }
 
 // The QR code as qrencode draws it. Nothing in Qt makes one, and the CLI already depends on
-// qrencode for the same picture; without it the page shows the link alone.
+// qrencode for the same picture; without it the page shows the link alone. Error correction at
+// level M rather than qrencode's L: a phone held at an angle to the screen misreads modules, and
+// M survives twice as many for one size step (phone/test measures it).
 QPixmap qrFor(const QString &text) {
     QProcess p;
     p.start(QStringLiteral("qrencode"), {QStringLiteral("-t"), QStringLiteral("PNG"),
                                          QStringLiteral("-s"), QStringLiteral("8"),
                                          QStringLiteral("-m"), QStringLiteral("2"),
+                                         QStringLiteral("-l"), QStringLiteral("M"),
                                          QStringLiteral("-o"), QStringLiteral("-"), text});
     QPixmap pm;
     if (p.waitForFinished(5000) && p.exitCode() == 0) pm.loadFromData(p.readAllStandardOutput(), "PNG");

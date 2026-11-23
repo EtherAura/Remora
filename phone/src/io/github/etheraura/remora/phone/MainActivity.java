@@ -2,14 +2,12 @@ package io.github.etheraura.remora.phone;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -58,16 +56,8 @@ public final class MainActivity extends Activity {
         if (hosts.isEmpty()) {
             list.addView(text("Pair with a computer", 22));
             list.addView(text("On the computer, run `remora link pair` or open the workspace's Phone "
-                    + "page, then scan the code with this phone's camera. Or paste the link:", 15));
-            EditText paste = new EditText(this);
-            paste.setHint("remora-link://pair?…");
-            paste.setSingleLine(true);
-            list.addView(paste);
-            Button pair = new Button(this);
-            pair.setText("Pair");
-            pair.setOnClickListener(v -> startActivity(new Intent(Intent.ACTION_VIEW,
-                    Uri.parse(paste.getText().toString().trim()), this, PairActivity.class)));
-            list.addView(pair);
+                    + "page, then scan the code it shows.", 15));
+            list.addView(scanButton("Scan the code"));
             return;
         }
         for (Link.Host host : hosts) {
@@ -86,10 +76,21 @@ public final class MainActivity extends Activity {
                 }
             });
         }
-        TextView hint = text("Pair another computer by scanning its code.", 13);
-        hint.setPadding(0, dp(24), 0, 0);
-        list.addView(hint);
+        Button another = scanButton("Pair another computer");
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(24);
+        list.addView(another, lp);
         list.addView(sessionSizeButton());
+    }
+
+    /** Opens the scanner, which also takes a pasted link. */
+    private Button scanButton(String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setOnClickListener(v -> startActivity(new Intent(this, ScanActivity.class)));
+        return b;
     }
 
     private void showSources(Link.Host host, List<Link.Source> found, TextView status,
@@ -113,8 +114,9 @@ public final class MainActivity extends Activity {
         }
     }
 
-    // Full, Balanced, Light: the remote display's long side (SessionActivity.remoteSize).
-    private static final int[] SIZES = {0, 1920, 1280};
+    // Full, Balanced, Light: the remote display's long side (SessionActivity.remoteSize), also
+    // changed from inside a session.
+    private static final int[] SIZES = SessionActivity.SIZES;
     private static final String[] SIZE_NAMES = {"Full (this screen's size)", "Balanced (1920 px)",
                                                 "Light (1280 px)"};
 

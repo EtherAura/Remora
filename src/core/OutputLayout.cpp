@@ -4,7 +4,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace remora::outputs {
 
@@ -67,6 +69,14 @@ int scaleSteps(double scale) {
     return int(std::lround(scale * 120.0));
 }
 }  // namespace
+
+double fitScale(QSize pixels, QSize minLogical) {
+    if (pixels.isEmpty() || minLogical.isEmpty()) return std::numeric_limits<double>::infinity();
+    const double most = std::min(double(pixels.width()) / minLogical.width(),
+                                 double(pixels.height()) / minLogical.height());
+    // Down to a whole step: rounded up, the output would come out a pixel too small again.
+    return std::max(std::floor(most * 120.0) / 120.0, 0.5);
+}
 
 QStringList repairArgs(const QList<OutputState> &before, const QList<OutputState> &now,
                        const QList<VirtualPlacement> &ours) {

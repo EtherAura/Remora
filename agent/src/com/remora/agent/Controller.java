@@ -161,7 +161,7 @@ public final class Controller {
             case ControlMessage.TYPE_RESIZE:
                 // The client's window was resized; reflow a new display to match (a mirror
                 // ignores this — its size follows its source).
-                session.requestResize(m.width, m.height);
+                session.requestResize(m.width, m.height, m.dpi);
                 break;
         }
     }

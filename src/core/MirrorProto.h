@@ -157,7 +157,8 @@ QByteArray scrollMessage(FramePoint at, float hScroll, float vScroll, qint32 but
 QByteArray backMessage(quint8 action);
 QByteArray panelMessage(Panel panel);
 QByteArray clipboardMessage(quint64 sequence, bool paste, const QString &text);
-QByteArray resizeMessage(quint16 width, quint16 height);
+// dpi 0 leaves the density to follow the long side; any other value is the display's new density.
+QByteArray resizeMessage(quint16 width, quint16 height, quint16 dpi = 0);
 
 // Session launch ---------------------------------------------------------------------------------
 
@@ -346,6 +347,7 @@ struct ControlMessage {
     quint64 sequence = 0;              // Clipboard
     bool paste = false;
     quint16 width = 0, height = 0;     // Resize
+    quint16 dpi = 0;                   // Resize: 0, or absent, follows the long side
 };
 
 // Incremental parser for the control connection's client→agent direction. Unknown types are

@@ -56,4 +56,10 @@ struct VirtualPlacement {
 QStringList repairArgs(const QList<OutputState> &before, const QList<OutputState> &now,
                        const QList<VirtualPlacement> &ours);
 
+// The largest scale, in KWin's steps of 1/120, at which an output of `pixels` still holds a window
+// whose minimum size is `minLogical`: KWin keeps a window that cannot fit off the output, so an
+// app with a large minimum (Elisa's is 612x459) opened on the desk instead of the phone. Never
+// below 0.5; infinity when there is nothing to fit.
+double fitScale(QSize pixels, QSize minLogical);
+
 }  // namespace remora::outputs

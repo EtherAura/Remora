@@ -10,14 +10,13 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.view.Gravity;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
-import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 import android.window.OnBackInvokedDispatcher;
 
@@ -26,6 +25,7 @@ import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -41,6 +41,10 @@ import javax.net.ssl.SSLSocket;
  * sent back. When the view changes size — rotation, unfolding, the keyboard — the remote display
  * is asked to reflow (RESIZE), never stretched.
  *
+ * Its controls (SessionControls) are a handle on the screen's edge: the keyboard, the phone's
+ * clipboard pasted into the app, the session size and the app's scale, both changed in place, and
+ * the way out. Back belongs to the remote app, so it cannot be the way out.
+ *
  * The screen going off, or the app going to the back, takes the surface away but not the session:
  * the video connection goes, the session and its sound stay, and the picture comes back on a new
  * video connection to the same session when the surface does (the agent opens every new one with
@@ -53,6 +57,8 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
 
     private final ExecutorService writer = Executors.newSingleThreadExecutor();
     private SessionView view;
+    private SessionControls controls;
+    private TextView sizeItem, scaleValue;
     private volatile SSLSocket control, video, audio;
     private volatile boolean ending;
     private boolean started;
@@ -64,7 +70,10 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
     private final Runnable awayTooLong = () -> end(null);
     private volatile Link.Host host;
     private volatile String source;
-    private volatile int sessionId = -1;
+    private volatile int sessionId = -1;  // -1 until the agent has answered the request
+    // {width, height, dpi} the remote display was last asked for: new-display, then RESIZE.
+    private volatile int[] asked;
+    private final Runnable resizeLater = this::syncSize;
     // A video connection's end is the session's only while it is the current one; one closed
     // because the surface went is not.
     private final AtomicInteger videoGen = new AtomicInteger();
@@ -82,8 +91,30 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
     // session that is still open, is then not shown.
     private static final String PREF_ASKED_NOTIFICATIONS = "askedNotifications";
 
+    // Full, Balanced, Light: the remote display's long side, 0 for the view's own.
+    static final int[] SIZES = {0, 1920, 1280};
+    private static final String[] SIZE_NAMES = {"Full", "Balanced", "Light"};
+
+    // The app's scale, per source, in percent of the phone's own density: smaller fits more of a
+    // desktop app on the phone, larger reads more easily. Browser zoom's steps, as far as a
+    // phone-sized remote display stays usable.
+    private static final int[] SCALES = {50, 67, 75, 80, 90, 100, 110, 125, 150};
+
+    private SharedPreferences prefs() {
+        return getSharedPreferences("session", MODE_PRIVATE);
+    }
+
     private int maxLongSide() {
-        return getSharedPreferences("session", MODE_PRIVATE).getInt(PREF_MAX_LONG_SIDE, 0);
+        return prefs().getInt(PREF_MAX_LONG_SIDE, 0);
+    }
+
+    private String scaleKey() {
+        Intent i = getIntent();
+        return "scale:" + i.getStringExtra(HOST) + ":" + i.getStringExtra(SOURCE);
+    }
+
+    private int scalePercent() {
+        return prefs().getInt(scaleKey(), 100);
     }
 
     /** {width, height, dpi} of the remote display for a view of w×h pixels. */
@@ -91,11 +122,24 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
         int dpi = getResources().getDisplayMetrics().densityDpi;
         int cap = maxLongSide();
         int longSide = Math.max(w, h);
-        if (cap <= 0 || longSide <= cap) return new int[] {w, h, dpi};
-        double f = (double) cap / longSide;
+        double f = cap > 0 && longSide > cap ? (double) cap / longSide : 1;
+        int scaled = Math.max(1, (int) Math.round(dpi * f * scalePercent() / 100.0));
+        if (f == 1) return new int[] {w, h, scaled};
         // Even sizes: video encoders work in 2×2 blocks.
-        return new int[] {(int) Math.round(w * f) & ~1, (int) Math.round(h * f) & ~1,
-                          Math.max(1, (int) Math.round(dpi * f))};
+        return new int[] {(int) Math.round(w * f) & ~1, (int) Math.round(h * f) & ~1, scaled};
+    }
+
+    /**
+     * Asks for the remote display this view and the settings now call for, if it is not the one
+     * last asked for. Every RESIZE names its density: the agent would otherwise keep the one it
+     * began with, and the scale could not change.
+     */
+    private void syncSize() {
+        if (!started || away || sessionId < 0) return;
+        int[] r = remoteSize(width, height);
+        if (Arrays.equals(r, asked)) return;
+        asked = r;
+        send(Proto.resize(r[0], r[1], r[2]));
     }
 
     @Override
@@ -110,15 +154,27 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
         view.setInput(this::send);
         view.getHolder().addCallback(this);
         root.addView(view);
+        controls = new SessionControls(this, prefs());
         // The keyboard, on demand: a remote text field cannot summon the phone's.
-        Button keyboard = new Button(this);
-        keyboard.setText("⌨");
-        keyboard.setAlpha(0.55f);
-        keyboard.setOnClickListener(v -> toggleKeyboard());
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.END);
-        root.addView(keyboard, lp);
+        controls.addItem("Keyboard", () -> {
+            controls.close();
+            toggleKeyboard();
+        });
+        // What the phone copied, typed into the app's focused field.
+        controls.addItem("Paste from phone", () -> {
+            controls.close();
+            pasteFromPhone();
+        });
+        controls.addDivider();
+        sizeItem = controls.addItem(sizeLabel(), this::nextSize);
+        scaleValue = controls.addStepper("Smaller", "Larger", () -> stepScale(-1),
+                                         () -> stepScale(1));
+        scaleValue.setText(scaleLabel());
+        controls.addDivider();
+        TextView endItem = controls.addItem("End session", () -> end(null));
+        endItem.setTextColor(0xFFFF8A80);
+        root.addView(controls, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         // The keyboard takes the bottom of the window and the remote app reflows into what is
         // left (RESIZE), never covered. Drawn edge to edge for immersive mode, the window is not
         // shrunk by adjustResize any more, so the keyboard's inset is applied here.
@@ -176,8 +232,63 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void sendBack() {
+        if (controls.isOpen()) {  // Back closes the panel first, as it would a menu
+            controls.close();
+            return;
+        }
         send(Proto.back(0));
         send(Proto.back(1));
+    }
+
+    // --- the controls' settings, changed in place ---------------------------------------------
+
+    private static int indexOf(int[] values, int v, int fallback) {
+        for (int i = 0; i < values.length; i++)
+            if (values[i] == v) return i;
+        return fallback;
+    }
+
+    private String sizeLabel() {
+        return "Size: " + SIZE_NAMES[indexOf(SIZES, maxLongSide(), 0)];
+    }
+
+    private String scaleLabel() {
+        return "Scale " + scalePercent() + "%";
+    }
+
+    /** Full → Balanced → Light → Full. The main screen's setting, so the next session keeps it. */
+    private void nextSize() {
+        int next = SIZES[(indexOf(SIZES, maxLongSide(), 0) + 1) % SIZES.length];
+        prefs().edit().putInt(PREF_MAX_LONG_SIDE, next).apply();
+        sizeItem.setText(sizeLabel());
+        resizeSoon();
+    }
+
+    private void stepScale(int by) {
+        int cur = scalePercent(), i = 0;
+        while (i < SCALES.length - 1 && SCALES[i] < cur) i++;
+        int next = SCALES[Math.max(0, Math.min(SCALES.length - 1, i + by))];
+        prefs().edit().putInt(scaleKey(), next).apply();
+        scaleValue.setText(scaleLabel());
+        resizeSoon();
+    }
+
+    // A few taps in a row become one change: each one lays the remote app out again.
+    private void resizeSoon() {
+        ui.removeCallbacks(resizeLater);
+        ui.postDelayed(resizeLater, 300);
+    }
+
+    private void pasteFromPhone() {
+        ClipData clip = getSystemService(ClipboardManager.class).getPrimaryClip();
+        CharSequence t = clip != null && clip.getItemCount() > 0
+                ? clip.getItemAt(0).coerceToText(this) : null;
+        if (t == null || t.length() == 0) {
+            Toast.makeText(this, "The phone's clipboard is empty.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        lastClip = t.toString();
+        send(Proto.clipboard(lastClip, true));
     }
 
     private void immersive() {
@@ -241,12 +352,9 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
                 }
             }, "video-attach").start();
         }
-        if (w != width || h != height) {
-            width = w;
-            height = h;
-            int[] r = remoteSize(w, h);
-            send(Proto.resize(r[0], r[1]));
-        }
+        width = w;
+        height = h;
+        syncSize();
     }
 
     @Override
@@ -277,6 +385,7 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
         host = MainActivity.host(this, getIntent().getStringExtra(HOST));
         source = getIntent().getStringExtra(SOURCE);
         String app = getIntent().getStringExtra(APP);
+        sessionId = -1;
         if (host == null) {
             end("That computer is no longer paired.");
             return;
@@ -290,6 +399,7 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
                 Proto.hello(in, out);
                 Map<String, String> opts = new LinkedHashMap<>();
                 int[] r = remoteSize(w, h);
+                asked = r;
                 opts.put("new_display", r[0] + "x" + r[1] + "/" + r[2]);
                 opts.put("start_app", app);
                 opts.put("close_on_app_exit", "true");
@@ -298,6 +408,7 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
                 out.flush();
                 int id = Proto.readSessionReply(in);
                 sessionId = id;
+                ui.post(this::syncSize);  // the settings may have changed while it connected
 
                 openVideo(surface);
                 SSLSocket a = attach(host, source, Proto.ROLE_AUDIO, id);
@@ -396,7 +507,9 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
         if (writer.isShutdown()) return;
         writer.execute(() -> {
             SSLSocket c = control;
-            if (c == null) return;
+            // Nothing before the agent's answer: input written then would land in the middle of
+            // the session request, and the agent would read it as part of one.
+            if (c == null || sessionId < 0) return;
             try {
                 c.getOutputStream().write(message);
                 c.getOutputStream().flush();
@@ -419,6 +532,7 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
     protected void onDestroy() {
         ending = true;
         ui.removeCallbacks(awayTooLong);
+        ui.removeCallbacks(resizeLater);
         if (service) stopService(new Intent(this, SessionService.class));
         writer.shutdownNow();
         // Closing the control connection is what ends the session on the computer.

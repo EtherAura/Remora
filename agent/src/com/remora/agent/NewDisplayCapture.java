@@ -46,7 +46,8 @@ public final class NewDisplayCapture implements Capture {
     // Written by the control thread (requestResize) and read by the video thread (prepare, the
     // rebuild after a reflow) — volatile is the whole synchronization, single writer per field.
     private volatile int width, height, dpi;
-    private final int refWidth, refHeight, refDpi;  // anchors for density rescaling
+    // Anchors for density rescaling; a RESIZE that names its density moves them (control thread).
+    private volatile int refWidth, refHeight, refDpi;
     private volatile long lastResizeMs;
     private volatile boolean appSeen;
     private Thread watchdog;
@@ -201,13 +202,21 @@ public final class NewDisplayCapture implements Capture {
 
     /**
      * The client's window was resized: reflow the display to match instead of stretching its
-     * pixels. Density is rescaled with the size so UI elements keep their physical size.
+     * pixels. Density is rescaled with the size so UI elements keep their physical size, unless
+     * the client names one ({@code dpi} &gt; 0, the phone app's scale): that one is used, and is
+     * the anchor for later resizes. True when the size changed, not only the density.
      */
-    public void requestResize(int w, int h) {
+    public boolean requestResize(int w, int h, int newDpi) {
         VirtualDisplay vd = display;
-        if (vd == null || w <= 0 || h <= 0) return;
+        if (vd == null || w <= 0 || h <= 0) return false;
         lastResizeMs = System.currentTimeMillis();
         int[] size = Sizes.constrain(w, h, 2, 0, Integer.MAX_VALUE, Integer.MAX_VALUE, 0);
+        if (newDpi > 0) {
+            refWidth = size[0];
+            refHeight = size[1];
+            refDpi = newDpi;
+        }
+        boolean resized = size[0] != width || size[1] != height;
         width = size[0];
         height = size[1];
         dpi = scaleDpi(size[0], size[1]);
@@ -216,6 +225,7 @@ public final class NewDisplayCapture implements Capture {
         } catch (Exception e) {
             Ln.w("could not resize the display: " + e);
         }
+        return resized;
     }
 
     private int scaleDpi(int w, int h) {

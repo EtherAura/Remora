@@ -89,7 +89,7 @@ On the session's control connection. Every type here is one the agent acts on.
 | 0x05 | BACK | `u8 action` — Back, or power when the display is off (down half only) |
 | 0x06 | PANEL | `u8 panel` — 0 collapse, 1 notifications, 2 quick settings |
 | 0x07 | CLIPBOARD | `u64 sequence, u8 paste, UTF-8 text` — sequence 0 asks for no acknowledgement |
-| 0x08 | RESIZE | `u16 width, u16 height` — reflows a new-display session; a mirror ignores it |
+| 0x08 | RESIZE | `u16 width, u16 height[, u16 dpi]` — reflows a new-display session; a mirror ignores it |
 
 - **x, y** are **fractions of the frame the client is showing**: 0 is the left or top edge, 1 the
   right or bottom. The agent multiplies by the session display's current size, so the client never
@@ -98,6 +98,11 @@ On the session's control connection. Every type here is one the agent acts on.
 - **tool**: 0 finger, 1 mouse; the agent treats an unknown tool as a finger. `action` is an Android `MotionEvent` action; `pressure` is in
   [0, 1]. A mouse POINTER with no buttons held moves the hover cursor.
 - **Scroll** amounts are in Android's `AXIS_HSCROLL`/`AXIS_VSCROLL` units — one notch is 1.0.
+- **RESIZE's density** is optional, and 0 means the same as leaving it out: the density then
+  follows the long side, so a rotation keeps it and a larger window shows the same UI larger.
+  Given, it is the display's new density, and later resizes follow the long side from it; a size
+  that is unchanged with a density that is changes only the density. An agent from before the
+  field reads the first four bytes and ignores the rest.
 
 ## 4. Device messages, agent → client
 

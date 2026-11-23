@@ -4,6 +4,7 @@
 #include <QPair>
 #include <QRect>
 #include <QSet>
+#include <QSize>
 #include <QString>
 
 namespace remora::hostagent {
@@ -51,6 +52,8 @@ public slots:
 
 signals:
     void windowPlaced(quint32 session, const QString &windowId, int pid, bool isNew);
+    // The smallest a placed window can be, in logical pixels.
+    void windowMinimum(quint32 session, QSize logical);
     void allWindowsClosed(quint32 session);
     // Keyboard focus went to one of the session's windows (true) or to any other (false).
     void focusChanged(quint32 session, bool ours);
@@ -63,9 +66,11 @@ private:
 
     struct Placed {
         bool isNew = true;
-        QRect was;           // where a window already on the desk was
+        QRect was;           // where a window already on the desk was, unmaximized
         bool border = true;
         bool allDesktops = false;
+        bool minimized = false;
+        int maximized = 0;   // KWin's MaximizeMode: 1 vertically, 2 horizontally, 3 both
     };
     QHash<quint32, QHash<QString, Placed>> windows_;
     QHash<quint32, QPair<QString, QString>> watched_;  // session → (app id, output)

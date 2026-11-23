@@ -223,6 +223,7 @@ private slots:
         QCOMPARE(panelMessage(Panel::Notifications), hex("00000002" "06" "01"));
         QCOMPARE(panelMessage(Panel::QuickSettings), hex("00000002" "06" "02"));
         QCOMPARE(resizeMessage(1920, 1080), hex("00000005" "08" "0780" "0438"));
+        QCOMPARE(resizeMessage(1920, 1080, 320), hex("00000007" "08" "0780" "0438" "0140"));
     }
 
     void clipboardGolden() {
