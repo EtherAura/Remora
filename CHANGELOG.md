@@ -98,6 +98,9 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   shim interface on whichever connection had a default route at that moment, often the Wi-Fi while
   the wired link was still coming up, and could not reach the device from there. The shim now
   follows the docker network the container is on.
+- With Play spoofing on, the ReZygisk module's description no longer gathers one more status line
+  every time the device starts: each start now begins from the module's original description in
+  the image, so only the current status shows.
 
 ### Security
 

@@ -1,8 +1,11 @@
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QTemporaryDir>
 #include <QtTest>
 
 #include "TestPlatform.h"
@@ -33,9 +36,330 @@ static HostCapabilities linuxClient() {
     return c;
 }
 
+static QByteArray readAll(const QString &path) {
+    QFile f(path);
+    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray("unreadable");
+}
+
+static bool writeFile(const QString &path, const QByteArray &bytes) {
+    QFile f(path);
+    return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size();
+}
+
+static int rezygiskStatuses(const QByteArray &prop) {
+    for (const QByteArray &line : prop.split('\n'))
+        if (line.startsWith("description=")) return int(line.count("[monitor started] "));
+    return -1;
+}
+
+static QString rezygiskBootScript() {
+    return QString::fromUtf8(readAll(
+        sourcePath(QStringLiteral("vendor/source-build/features/zygisk_pif/50-rezygisk-pif.sh"))));
+}
+
+// The play_spoof boot script's module.prop reset, alone: its reset_module_prop function as the
+// script defines it, run by /bin/sh on disposable files under a path with spaces in it. Nothing
+// else in the script runs, no monitor starts, and nothing is executed from the fixture.
+struct RezygiskFixture {
+    QTemporaryDir tmp{QDir::tempPath() + QStringLiteral("/rezygisk fixture XXXXXX")};
+    QByteArray clean;  // the image's own module.prop
+
+    QString root() const { return tmp.path(); }
+    QString mod() const { return root() + QStringLiteral("/module dir"); }
+    QString prop() const { return mod() + QStringLiteral("/module.prop"); }
+    QString baked() const { return root() + QStringLiteral("/baked copy/module.prop"); }
+
+    bool setUp() {
+        if (!tmp.isValid() || !root().contains(QLatin1Char(' '))) return false;
+        for (const QString &d : {mod(), QFileInfo(baked()).path()})
+            if (!QDir().mkpath(d)) return false;
+        clean = readAll(sourcePath(
+            QStringLiteral("vendor/source-build/features/zygisk_pif/rez-mod/module.prop")));
+        return clean.contains("\ndescription=Standalone implementation of Zygisk.\n") &&
+               writeFile(baked(), clean) && writeFile(prop(), clean);
+    }
+
+    // from the function's first line to its closing brace, as written
+    static QString resetFunction() {
+        const QStringList lines = rezygiskBootScript().split(QLatin1Char('\n'));
+        const qsizetype from = lines.indexOf(QStringLiteral("reset_module_prop() {"));
+        const qsizetype to = from < 0 ? -1 : lines.indexOf(QStringLiteral("}"), from);
+        return to < 0 ? QString() : lines.mid(from, to - from + 1).join(QLatin1Char('\n'));
+    }
+
+    // The guest's mv takes -T; a host's base mv may not. This stands in for exactly the call the
+    // reset makes, `mv -f -T <staged copy> <module.prop>`, as a rename of the pathname: a link at
+    // module.prop is unlinked itself, never followed, and a directory there is refused rather than
+    // moved into. Any other arguments, or paths outside the fixture's module directory, are
+    // refused out loud, which fails the reset.
+    static constexpr char kMvT[] =
+        "mv() {\n"
+        "  if [ \"$#\" -ne 4 ] || [ \"$1\" != -f ] || [ \"$2\" != -T ] ||\n"
+        "     [ \"$4\" != \"$FIXTURE_MOD/module.prop\" ]; then\n"
+        "    echo \"fixture mv: unexpected arguments: $*\" >&2; return 2\n"
+        "  fi\n"
+        "  case \"$3\" in\n"
+        "    \"$FIXTURE_MOD\"/.module.prop.*) ;;\n"
+        "    *) echo \"fixture mv: unexpected source: $3\" >&2; return 2 ;;\n"
+        "  esac\n"
+        "  if [ -L \"$4\" ]; then rm -f \"$4\" || return 1\n"
+        "  elif [ -d \"$4\" ]; then echo \"fixture mv: $4 is a directory\" >&2; return 1\n"
+        "  fi\n"
+        "  command mv -f -- \"$3\" \"$4\"\n"
+        "}\n";
+
+    // One start's reset, the clean copy and the module directory passed as the script passes
+    // them. `doubles` are shell functions standing in for a tool the reset calls: a function is
+    // found before any command, so no PATH changes and nothing on disk is run. Returns what went
+    // wrong, or nothing.
+    QString reset(const QByteArray &doubles = {}) const {
+        const QString fn = resetFunction();
+        if (fn.isEmpty()) return QStringLiteral("the script no longer defines reset_module_prop");
+        return runSh(fn + QLatin1Char('\n') + QString::fromUtf8(doubles) +
+                     QStringLiteral("\nreset_module_prop \"$1\" \"$2\"\n"));
+    }
+
+    // `script` under /bin/sh with the mv stand-in defined first (a double may replace it), $1 the
+    // clean copy and $2 the module directory
+    QString runSh(const QString &script) const {
+        QProcess p;
+        p.start(QStringLiteral("/bin/sh"),
+                {QStringLiteral("-c"),
+                 QStringLiteral("FIXTURE_MOD=$2\n") + QLatin1String(kMvT) + script,
+                 QStringLiteral("sh"), baked(), mod()});
+        if (!p.waitForFinished(10000)) return QStringLiteral("the reset did not finish");
+        const QString err = QString::fromUtf8(p.readAllStandardError());
+        return p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0 && err.isEmpty()
+                   ? QString()
+                   : QStringLiteral("the reset failed: ") + err;
+    }
+
+    // what the monitor does once it is up: prepend its status to the description, in place
+    bool monitorStarts() const {
+        QByteArray bytes = readAll(prop());
+        if (!bytes.contains("\ndescription=")) return false;
+        bytes.replace("\ndescription=", "\ndescription=[monitor started] ");
+        return writeFile(prop(), bytes);
+    }
+
+    // anything the reset staged and did not publish
+    QStringList leftovers() const {
+        return QDir(mod()).entryList({QStringLiteral(".module.prop.*")},
+                                     QDir::AllEntries | QDir::Hidden | QDir::System);
+    }
+};
+
+static constexpr QFileDevice::Permissions kMode0644 =
+    QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadUser |
+    QFileDevice::WriteUser | QFileDevice::ReadGroup | QFileDevice::ReadOther;
+static constexpr QFileDevice::Permissions kMode0600 =
+    QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadUser |
+    QFileDevice::WriteUser;
+
+static QFileDevice::Permissions modeOf(const QString &path) {
+    return QFileInfo(path).permissions() & 0x7777;
+}
+
 class TestPrereqs : public QObject {
     Q_OBJECT
 private slots:
+    // bd remora-4mba: /data outlives the container, so the monitor's status piled up in the
+    // persistent module.prop, one more per start. The boot script resets it from the baked copy.
+    void rezygiskMonitorStartsFromTheBakedModuleProp() {
+        SKIP_ON_WINDOWS("the boot script is POSIX sh run by the guest's init");
+        RezygiskFixture f;
+        QVERIFY(f.setUp());
+
+        // two starts on the same persistent file: one status, the base description intact
+        QCOMPARE(f.reset(), QString());
+        QVERIFY(f.monitorStarts());
+        QVERIFY2(rezygiskStatuses(readAll(f.prop())) == 1, readAll(f.prop()).constData());
+        QCOMPARE(f.reset(), QString());
+        QVERIFY(f.monitorStarts());
+        const QByteArray second = readAll(f.prop());
+        QCOMPARE(rezygiskStatuses(second), 1);
+        QByteArray expected = f.clean;
+        expected.replace("\ndescription=", "\ndescription=[monitor started] ");
+        QCOMPARE(second, expected);  // every other line of module.prop as baked
+        QVERIFY2(second.contains(
+                     "\ndescription=[monitor started] Standalone implementation of Zygisk.\n"),
+                 second.constData());
+        QCOMPARE(readAll(f.baked()), f.clean);  // the baked source is only read
+        QCOMPARE(modeOf(f.prop()), kMode0644);
+        QCOMPARE(f.leftovers(), QStringList());
+
+        // a module.prop that is a link is replaced, never written through to what it points at
+        const QString victim = f.root() + QStringLiteral("/elsewhere");
+        QVERIFY(writeFile(victim, "untouched\n"));
+        QVERIFY(QFile::setPermissions(victim, kMode0600));
+        QVERIFY(QFile::remove(f.prop()));
+        QVERIFY(QFile::link(victim, f.prop()));
+        QCOMPARE(f.reset(), QString());
+        QVERIFY(!QFileInfo(f.prop()).isSymLink());
+        QCOMPARE(readAll(f.prop()), f.clean);
+        QCOMPARE(readAll(victim), QByteArray("untouched\n"));
+        QCOMPARE(modeOf(victim), kMode0600);
+
+        // ...as is a link to a directory, which is not moved into
+        const QString elsewhereDir = f.root() + QStringLiteral("/elsewhere dir");
+        QVERIFY(QDir().mkpath(elsewhereDir));
+        QVERIFY(QFile::remove(f.prop()));
+        QVERIFY(QFile::link(elsewhereDir, f.prop()));
+        QCOMPARE(f.reset(), QString());
+        QVERIFY(!QFileInfo(f.prop()).isSymLink());
+        QCOMPARE(readAll(f.prop()), f.clean);
+        QCOMPARE(QDir(elsewhereDir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden),
+                 QStringList());
+        QCOMPARE(f.leftovers(), QStringList());
+
+        // ...and without the clean copy to reset from, the statuses pile up: the check above is
+        // measuring the reset, not something the fixture does on its own
+        QVERIFY(QFile::remove(f.baked()));
+        for (int start = 1; start <= 2; ++start) {
+            QCOMPARE(f.reset(), QString());
+            QVERIFY(f.monitorStarts());
+            QCOMPARE(rezygiskStatuses(readAll(f.prop())), start);
+        }
+        QCOMPARE(f.leftovers(), QStringList());
+    }
+
+    // The fixture's mv stand-in renames exactly the reset's call and refuses anything else, so the
+    // cases above run the same on a host whose own mv has no -T.
+    void rezygiskFixtureMvTakesOnlyTheResetsCall_data() {
+        QTest::addColumn<QString>("call");
+        QTest::addColumn<bool>("dirAtProp");
+        QTest::addColumn<bool>("renamed");
+        const QString stage = QStringLiteral("\"$FIXTURE_MOD/.module.prop.test\"");
+        const QString prop = QStringLiteral("\"$FIXTURE_MOD/module.prop\"");
+        QTest::newRow("the reset's call") << QStringLiteral("mv -f -T ") + stage + ' ' + prop
+                                          << false << true;
+        QTest::newRow("without -T") << QStringLiteral("mv -f ") + stage + ' ' + prop << false
+                                    << false;
+        QTest::newRow("an extra argument")
+            << QStringLiteral("mv -f -T ") + stage + ' ' + prop + QStringLiteral(" x") << false
+            << false;
+        QTest::newRow("a source outside the module")
+            << QStringLiteral("mv -f -T \"$1\" ") + prop << false << false;
+        QTest::newRow("another destination")
+            << QStringLiteral("mv -f -T ") + stage + QStringLiteral(" \"$FIXTURE_MOD/module.prop2\"")
+            << false << false;
+        QTest::newRow("a directory at module.prop")
+            << QStringLiteral("mv -f -T ") + stage + ' ' + prop << true << false;
+    }
+    void rezygiskFixtureMvTakesOnlyTheResetsCall() {
+        SKIP_ON_WINDOWS("the boot script is POSIX sh run by the guest's init");
+        QFETCH(QString, call);
+        QFETCH(bool, dirAtProp);
+        QFETCH(bool, renamed);
+        RezygiskFixture f;
+        QVERIFY(f.setUp());
+        const QString staged = f.mod() + QStringLiteral("/.module.prop.test");
+        QVERIFY(writeFile(staged, "staged\n"));
+        if (dirAtProp) {
+            QVERIFY(QFile::remove(f.prop()));
+            QVERIFY(QDir().mkpath(f.prop()));
+        }
+
+        const QString err = f.runSh(call + QLatin1Char('\n'));
+        QCOMPARE(err.isEmpty(), renamed);
+        QCOMPARE(QFileInfo::exists(staged), !renamed);
+        QCOMPARE(readAll(f.baked()), f.clean);
+        QVERIFY(!QFileInfo::exists(f.mod() + QStringLiteral("/module.prop2")));
+        if (dirAtProp) {
+            QVERIFY(QFileInfo(f.prop()).isDir());
+            QCOMPARE(QDir(f.prop()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden),
+                     QStringList());
+        } else {
+            QCOMPARE(readAll(f.prop()), renamed ? QByteArray("staged\n") : f.clean);
+        }
+    }
+
+    // The reset sits where it did, run on the image's copy just before the unchanged launch.
+    void rezygiskResetRunsJustBeforeTheMonitorLaunch() {
+        const QStringList lines = rezygiskBootScript().split(QLatin1Char('\n'));
+        QVERIFY(lines.contains(QStringLiteral("MODDIR=/data/adb/modules/rezygisk")));
+        const qsizetype defined = lines.indexOf(QStringLiteral("reset_module_prop() {"));
+        const qsizetype setup = lines.indexOf(
+            QStringLiteral("  sh /data/adb/modules/playintegrityfix/post-fs-data.sh >/dev/null 2>&1"));
+        const qsizetype called = lines.indexOf(QStringLiteral(
+            "reset_module_prop /system/etc/remora-spoof/rez-mod/module.prop \"$MODDIR\""));
+        QVERIFY(defined >= 0 && setup >= 0 && called >= 0);
+        QVERIFY(setup < defined && defined < called);
+        QCOMPARE(lines.count(QStringLiteral(
+                     "reset_module_prop /system/etc/remora-spoof/rez-mod/module.prop \"$MODDIR\"")),
+                 1);
+        QCOMPARE(lines.value(called + 1),
+                 QStringLiteral("cd \"$MODDIR\" && ./bin/zygisk-ptrace64 monitor >/dev/null 2>&1 &"));
+        QCOMPARE(lines.value(called + 2), QStringLiteral("exit 0"));
+    }
+
+    // Something that is neither a file nor a link at module.prop is not the reset's to remove.
+    void rezygiskResetLeavesADirectoryAtModulePropAlone() {
+        SKIP_ON_WINDOWS("the boot script is POSIX sh run by the guest's init");
+        RezygiskFixture f;
+        QVERIFY(f.setUp());
+        QVERIFY(QFile::remove(f.prop()));
+        QVERIFY(QDir().mkpath(f.prop()));
+        QVERIFY(writeFile(f.prop() + QStringLiteral("/sentinel"), "keep me\n"));
+        QVERIFY(QFile::setPermissions(f.prop() + QStringLiteral("/sentinel"), kMode0600));
+
+        QCOMPARE(f.reset(), QString());
+        QVERIFY(QFileInfo(f.prop()).isDir());
+        QVERIFY(!QFileInfo(f.prop()).isSymLink());
+        QCOMPARE(QDir(f.prop()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden),
+                 QStringList{QStringLiteral("sentinel")});
+        QCOMPARE(readAll(f.prop() + QStringLiteral("/sentinel")), QByteArray("keep me\n"));
+        QCOMPARE(modeOf(f.prop() + QStringLiteral("/sentinel")), kMode0600);
+        QCOMPARE(f.leftovers(), QStringList());
+    }
+
+    // A replacement that fails leaves a link at module.prop as it was, and what it points at.
+    void rezygiskFailedReplacementLeavesTheLinkAlone() {
+        SKIP_ON_WINDOWS("the boot script is POSIX sh run by the guest's init");
+        RezygiskFixture f;
+        QVERIFY(f.setUp());
+        const QString victim = f.root() + QStringLiteral("/elsewhere");
+        QVERIFY(writeFile(victim, "untouched\n"));
+        QVERIFY(QFile::setPermissions(victim, kMode0600));
+        QVERIFY(QFile::remove(f.prop()));
+        QVERIFY(QFile::link(victim, f.prop()));
+
+        QCOMPARE(f.reset("mv() { return 1; }\n"), QString());
+        QVERIFY(QFileInfo(f.prop()).isSymLink());
+        QCOMPARE(QFileInfo(f.prop()).symLinkTarget(), victim);
+        QCOMPARE(readAll(victim), QByteArray("untouched\n"));
+        QCOMPARE(modeOf(victim), kMode0600);
+        QCOMPARE(f.leftovers(), QStringList());  // only the staged copy is cleaned up
+    }
+
+    // A copy that fails, or comes out short while reporting success, never replaces the last good
+    // module.prop, not even in part.
+    void rezygiskFailedCopyKeepsTheLastGoodModuleProp_data() {
+        QTest::addColumn<QByteArray>("cat");
+        QTest::newRow("read fails part way")
+            << QByteArray("cat() { head -c 20 \"$1\"; return 1; }\n");
+        QTest::newRow("short copy reported as done")
+            << QByteArray("cat() { head -c 20 \"$1\"; }\n");
+    }
+    void rezygiskFailedCopyKeepsTheLastGoodModuleProp() {
+        SKIP_ON_WINDOWS("the boot script is POSIX sh run by the guest's init");
+        QFETCH(QByteArray, cat);
+        RezygiskFixture f;
+        QVERIFY(f.setUp());
+        QByteArray lastGood = f.clean;
+        lastGood.replace("description=", "description=[monitor started] ");
+        QVERIFY(writeFile(f.prop(), lastGood));
+        QVERIFY(QFile::setPermissions(f.prop(), kMode0644));
+
+        QCOMPARE(f.reset(cat), QString());
+        QVERIFY(QFileInfo(f.prop()).isFile());
+        QVERIFY(!QFileInfo(f.prop()).isSymLink());
+        QCOMPARE(readAll(f.prop()), lastGood);
+        QCOMPARE(modeOf(f.prop()), kMode0644);
+        QCOMPARE(readAll(f.baked()), f.clean);
+        QCOMPARE(f.leftovers(), QStringList());
+    }
+
     void nonLinuxBareIsOneLinuxRefusal_data() {
         QTest::addColumn<bool>("windows");
         QTest::newRow("Windows") << true;

@@ -17,5 +17,22 @@ chcon u:object_r:system_file:s0 "$TMP_PATH" 2>/dev/null || true
 # PlayIntegrityFix per-module setup (best effort; its .so injection is the real work)
 [ -f /data/adb/modules/playintegrityfix/post-fs-data.sh ] && \
   sh /data/adb/modules/playintegrityfix/post-fs-data.sh >/dev/null 2>&1
+# Every monitor start prepends its status to module.prop's description, and /data outlives the
+# container, so start each one from the clean copy baked into the image. The copy is staged whole
+# in a file of its own beside module.prop and only then renamed over it (-T: never into a
+# directory), so a failed copy leaves the last good file as it was and a link is replaced, not
+# written through. Anything at that path that is neither a file nor a link is left alone.
+# $1 is the clean copy, $2 the module's directory.
+reset_module_prop() {
+  CLEAN="$1"
+  PROP="$2/module.prop"
+  if [ -f "$CLEAN" ] && { [ -L "$PROP" ] || [ -f "$PROP" ] || [ ! -e "$PROP" ]; }; then
+    STAGE=$(mktemp "$2/.module.prop.XXXXXX") && {
+      { cat "$CLEAN" > "$STAGE" && cmp -s "$CLEAN" "$STAGE" && chmod 0644 "$STAGE" &&
+        mv -f -T "$STAGE" "$PROP"; } || rm -f "$STAGE"
+    }
+  fi
+}
+reset_module_prop /system/etc/remora-spoof/rez-mod/module.prop "$MODDIR"
 cd "$MODDIR" && ./bin/zygisk-ptrace64 monitor >/dev/null 2>&1 &
 exit 0
