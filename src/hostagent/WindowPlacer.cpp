@@ -29,8 +29,10 @@ QString scriptName(quint32 session) { return QStringLiteral("remora-session-%1")
 // The per-session script. It places the app's window on the output and every later one of its
 // windows until the session ends — a dialog or a second window opened from the phone belongs on
 // the phone. Borderless and maximized, because the output IS the phone's screen and a title bar
-// there is pixels the phone pays for; on every virtual desktop, because desktops are global across
-// outputs and switching one at the desk must not take the app off the phone.
+// there is pixels the phone pays for; on every virtual desktop and every activity, because both
+// are global across outputs and switching either at the desk must not take the app off the phone
+// (a window left on one activity vanished from the phone when the desk switched to another, and
+// the phone showed the empty desktop).
 //
 // Which window answered the launch:
 //  - a new one — windowAdded, or windowActivated for a Wayland window that is added before it
@@ -64,6 +66,8 @@ function place(w) {
     var b = before[w.internalId.toString()], isNew = !b;
     var minimized = w.minimized || !!(b && b.minimized), maximized = w.maximizeMode;
     var border = !w.noBorder, allDesktops = w.onAllDesktops;
+    var activities = [];  // none: every activity
+    for (var i = 0; i < w.activities.length; i++) activities.push(String(w.activities[i]));
     var g = out.geometry;
     w.minimized = false;
     // Restored first: KWin can already hold the window maximized, at the size it had (one that
@@ -74,6 +78,7 @@ function place(w) {
     var was = w.frameGeometry;
     w.noBorder = true;
     w.onAllDesktops = true;
+    w.activities = [];
     w.demandsAttention = false;
     w.frameGeometry = {x: g.x, y: g.y, width: g.width, height: g.height};
     w.setMaximize(true, true);
@@ -82,7 +87,7 @@ function place(w) {
              JSON.stringify({session: SESSION, id: w.internalId.toString(), pid: w.pid,
                              isNew: isNew, x: was.x, y: was.y, width: was.width,
                              height: was.height, border: border, allDesktops: allDesktops,
-                             minimized: minimized, maximized: maximized,
+                             minimized: minimized, maximized: maximized, activities: activities,
                              minWidth: w.minSize.width, minHeight: w.minSize.height}));
 }
 (function () {
@@ -155,6 +160,7 @@ for (var i = 0; i < ws.length; i++) {
     if (!b) continue;
     w.setMaximize(false, false);
     w.onAllDesktops = b.allDesktops;
+    w.activities = b.activities;
     if (b.isNew) {
         w.noBorder = false;
         w.minimized = true;
@@ -310,7 +316,9 @@ void WindowPlacer::release(quint32 session) {
                                           {QStringLiteral("border"), it->border},
                                           {QStringLiteral("allDesktops"), it->allDesktops},
                                           {QStringLiteral("minimized"), it->minimized},
-                                          {QStringLiteral("maximized"), it->maximized}});
+                                          {QStringLiteral("maximized"), it->maximized},
+                                          {QStringLiteral("activities"),
+                                           QJsonArray::fromStringList(it->activities)}});
     }
     runOnce(scriptName(session) + QStringLiteral("-release"),
             QString::fromUtf8(kReleaseScript)
@@ -337,10 +345,13 @@ void WindowPlacer::placed(const QString &json) {
     // that is the state the release must give back.
     if (it->contains(id)) return;
     const bool isNew = o.value(QStringLiteral("isNew")).toBool();
+    QStringList activities;
+    for (const QJsonValue &a : o.value(QStringLiteral("activities")).toArray())
+        activities << a.toString();
     it->insert(id, {isNew, was, o.value(QStringLiteral("border")).toBool(true),
                     o.value(QStringLiteral("allDesktops")).toBool(false),
                     o.value(QStringLiteral("minimized")).toBool(false),
-                    o.value(QStringLiteral("maximized")).toInt()});
+                    o.value(QStringLiteral("maximized")).toInt(), activities});
     emit windowPlaced(session, id, o.value(QStringLiteral("pid")).toInt(), isNew);
 }
 

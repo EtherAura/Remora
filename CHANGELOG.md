@@ -11,6 +11,11 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 - In the phone app preview, a session's controls open as a card beside their handle. The panel
   stretched across the whole screen and covered the handle, worst with the phone sideways.
+- `remora-host-agent` keeps an app on the phone when the computer switches to another KDE
+  activity. The app's window stayed on the activity it opened on, so the switch took it off the
+  phone, which showed the empty desktop until a key from the phone brought the window back and,
+  with it, switched the computer's activity back. While the app is on the phone its window is on
+  every activity, and it gets its own activities back afterwards.
 
 ## [2026.11.9] - 2026-11-22
 

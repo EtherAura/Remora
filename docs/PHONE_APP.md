@@ -98,11 +98,11 @@ app's is decided by desktop-file id, never by process id: a single-instance app 
 with a new window of the process already running, and an app that was already open only asks for
 its existing window to be activated, which KWin's focus-stealing prevention usually turns into a
 request for attention. The script watches for both. The phone's windows are borderless,
-maximized and on every virtual desktop, because desktops are global across outputs and switching
-one at the desk must not take the app off the phone. When the session ends, a window that was
-already on the desk goes back exactly as it was — where it was, and maximized or minimized again
-if it had been, as recorded before the launch, since a launch that activates a window unminimizes
-it — and one opened for the phone is minimized, not closed.
+maximized and on every virtual desktop and every activity, because both are global across outputs
+and switching either at the desk must not take the app off the phone. When the session ends, a
+window that was already on the desk goes back exactly as it was — where it was, and maximized or
+minimized again if it had been, as recorded before the launch, since a launch that activates a
+window unminimizes it — and one opened for the phone is minimized, not closed.
 
 ### Frames
 

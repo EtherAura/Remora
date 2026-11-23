@@ -6,6 +6,7 @@
 #include <QSet>
 #include <QSize>
 #include <QString>
+#include <QStringList>
 
 namespace remora::hostagent {
 
@@ -71,6 +72,7 @@ private:
         bool allDesktops = false;
         bool minimized = false;
         int maximized = 0;   // KWin's MaximizeMode: 1 vertically, 2 horizontally, 3 both
+        QStringList activities;  // empty: every activity
     };
     QHash<quint32, QHash<QString, Placed>> windows_;
     QHash<quint32, QPair<QString, QString>> watched_;  // session → (app id, output)
