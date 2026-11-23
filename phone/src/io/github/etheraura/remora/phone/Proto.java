@@ -133,12 +133,24 @@ final class Proto {
 
     // --- control messages -------------------------------------------------------------------
 
-    static byte[] pointer(int action, int pointerId, float x, float y, float pressure, int buttons) {
-        // tool 0: a finger. x and y are fractions of the frame shown.
+    static final int TOOL_FINGER = 0, TOOL_MOUSE = 1;
+
+    /**
+     * x and y are fractions of the frame shown. A mouse's actionButton is the button a DOWN or UP
+     * presses or lets go, and buttons those held after it; with none held, a mouse only moves.
+     */
+    static byte[] pointer(int action, int tool, int pointerId, float x, float y, float pressure,
+                          int actionButton, int buttons) {
         ByteBuffer b = ByteBuffer.allocate(26);
-        b.put((byte) action).put((byte) 0).putInt(pointerId).putFloat(x).putFloat(y)
-                .putFloat(pressure).putInt(0).putInt(buttons);
+        b.put((byte) action).put((byte) tool).putInt(pointerId).putFloat(x).putFloat(y)
+                .putFloat(pressure).putInt(actionButton).putInt(buttons);
         return record(POINTER, b.array());
+    }
+
+    /** Wheel notches at a point (fractions of the frame): Android's AXIS_HSCROLL/AXIS_VSCROLL. */
+    static byte[] scroll(float x, float y, float hScroll, float vScroll) {
+        return record(SCROLL, ByteBuffer.allocate(20).putFloat(x).putFloat(y).putFloat(hScroll)
+                .putFloat(vScroll).putInt(0).array());
     }
 
     static byte[] key(int action, int keycode, int metaState) {

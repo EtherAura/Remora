@@ -702,8 +702,10 @@ void MirrorWindow::mouseReleaseEvent(QMouseEvent *e) {
 }
 
 void MirrorWindow::wheelEvent(QWheelEvent *e) {
+    // Qt counts a wheel turned away from the user and one tilted left as positive; the protocol's
+    // axes are Android's, up and right.
     session_->sendControl(scrollMessage(positionAt(e->position()),
-                                        float(e->angleDelta().x()) / 120.0f,
+                                        -float(e->angleDelta().x()) / 120.0f,
                                         float(e->angleDelta().y()) / 120.0f, 0));
 }
 

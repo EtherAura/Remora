@@ -97,7 +97,8 @@ On the session's control connection. Every type here is one the agent acts on.
   connection all map the same way. A drag past the edge may carry values outside [0, 1].
 - **tool**: 0 finger, 1 mouse; the agent treats an unknown tool as a finger. `action` is an Android `MotionEvent` action; `pressure` is in
   [0, 1]. A mouse POINTER with no buttons held moves the hover cursor.
-- **Scroll** amounts are in Android's `AXIS_HSCROLL`/`AXIS_VSCROLL` units — one notch is 1.0.
+- **Scroll** amounts are in Android's `AXIS_HSCROLL`/`AXIS_VSCROLL` units — one notch is 1.0,
+  positive up and to the right.
 - **RESIZE's density** is optional, and 0 means the same as leaving it out: the density then
   follows the long side, so a rotation keeps it and a larger window shows the same UI larger.
   Given, it is the display's new density, and later resizes follow the long side from it; a size

@@ -136,8 +136,10 @@ Keys go to whichever window has keyboard focus, so the agent tracks it: the sess
 reports whether focus is on one of the phone's windows, and while it is not, the phone's keys
 wait, the phone's window is given focus again, and the keys follow once it has it. If it does not
 get focus, they are dropped rather than typed into a window on the desk. Desktop apps are
-pointer-first, so the phone offers a pointer mode: tap to click, long-press for the secondary
-button, two fingers to scroll.
+pointer-first, so the phone has a pointer mode, on for this computer's apps (the source's `kind`
+is `computer`) and off for Android's, and switched per source in the session's controls: the
+pointer goes where the finger is, a tap clicks there, a long press clicks the secondary button,
+one finger dragged holds the primary button, and two fingers scroll, the content following them.
 
 Typed text has no simple path on Wayland: it goes as keysyms, and a paste goes through the
 clipboard (the agent sets the desk's clipboard and presses Ctrl+V in the app). KWin types a keysym

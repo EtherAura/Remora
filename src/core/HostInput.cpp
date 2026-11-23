@@ -121,11 +121,12 @@ QList<InputOp> Translator::translate(const mirror::ControlMessage &m) {
             // The wheel turns whatever is under the pointer, so the pointer goes there first.
             InputOp move{InputOp::PointerMotion, global(m.at)};
             ops << move;
-            // Android's axes count notches up and left as positive; Wayland's run down and right.
+            // Android's axes count notches up and right as positive (AXIS_HSCROLL runs from -1,
+            // left, to 1, right); Wayland's run down and right.
             if (m.vScroll != 0)
                 ops << InputOp{InputOp::PointerAxis, {}, 0, false, false, -m.vScroll * kAxisPerNotch};
             if (m.hScroll != 0)
-                ops << InputOp{InputOp::PointerAxis, {}, 0, false, true, -m.hScroll * kAxisPerNotch};
+                ops << InputOp{InputOp::PointerAxis, {}, 0, false, true, m.hScroll * kAxisPerNotch};
             return ops;
         }
         case mirror::ControlRecord::Key: {

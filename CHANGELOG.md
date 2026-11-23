@@ -7,6 +7,13 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Added
+
+- In the phone app preview, this computer's apps are used with a pointer, as desktop apps expect:
+  it goes where the finger is, a tap clicks, a long press is the secondary click, one finger
+  dragged holds the button (selecting text, moving a slider), and two fingers scroll. Android's
+  apps keep touch. *Input* in a session's controls switches between the two, kept per source.
+
 ### Fixed
 
 - In the phone app preview, a session's controls open as a card beside their handle. The panel
@@ -16,6 +23,10 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   phone, which showed the empty desktop until a key from the phone brought the window back and,
   with it, switched the computer's activity back. While the app is on the phone its window is on
   every activity, and it gets its own activities back afterwards.
+- Scrolling sideways in the mirror window scrolls an Android app the way the wheel or the touchpad
+  went. It went the opposite way: the mirror sent Qt's sideways direction, which is the reverse
+  of Android's, and `remora-host-agent` reversed it back, so only this computer's own apps were
+  right.
 
 ## [2026.11.9] - 2026-11-22
 

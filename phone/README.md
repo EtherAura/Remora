@@ -13,13 +13,17 @@ at the phone's own size and density ([docs/PHONE_APP.md](../docs/PHONE_APP.md)).
 - **Sources** — this computer's apps while `remora-host-agent serve` runs, and every profile whose
   Android is up, while `remora link serve` (or `remora-link.service`) lets phones in.
 - **A session** — a new display of the phone's size on the source, the app launched on it,
-  decoded in the phone's hardware; touch, the keyboard, Back, rotation, sound and the clipboard
-  go both ways over protocol v3 ([MIRROR_AGENT.md](../docs/MIRROR_AGENT.md)).
+  decoded in the phone's hardware; touch or a pointer, the keyboard, Back, rotation, sound and the
+  clipboard go both ways over protocol v3 ([MIRROR_AGENT.md](../docs/MIRROR_AGENT.md)).
 - **Session controls** — a small handle on the edge of the screen, which can be dragged anywhere
   along either side and stays where it was left. It opens a panel: *Keyboard*; *Paste from phone*,
-  which types what the phone copied into the app's focused field; *Size* and *Scale*, both changed
-  in place; and *End session*, which closes the app's screen on the computer and goes back to the
-  list. Back goes to the remote app, and closes the panel first when it is open.
+  which types what the phone copied into the app's focused field; *Input*; *Size* and *Scale*, both
+  changed in place; and *End session*, which closes the app's screen on the computer and goes back
+  to the list. Back goes to the remote app, and closes the panel first when it is open.
+- **Input** — *Pointer* or *Touch*, per source. This computer's apps start with the pointer, since
+  desktop apps are made for a mouse: the pointer goes where the finger is, a tap clicks, a long
+  press is the secondary click, one finger dragged holds the button (selecting text, moving a
+  slider), and two fingers scroll. Android's apps start with touch, every finger its own.
 - **Away from a session** — the screen going off or another app in front leaves the session
   open, and its sound playing; the notification leads back to it, picture and all. After five
   minutes away it ends, since it holds a screen and an encoder on the computer. A connection lost

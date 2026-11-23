@@ -621,6 +621,14 @@ private slots:
         QCOMPARE(ops.size(), 2);
         QCOMPARE(ops[1].value, -15.0);
         QVERIFY(!ops[1].horizontal);
+
+        // Sideways, Android and Wayland agree: a notch right is positive in both.
+        m.vScroll = 0;
+        m.hScroll = 1.0f;
+        const auto right = t.translate(m);
+        QCOMPARE(right.size(), 2);
+        QVERIFY(right[1].horizontal);
+        QCOMPARE(right[1].value, 15.0);
     }
 };
 

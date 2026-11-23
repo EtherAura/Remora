@@ -108,6 +108,7 @@ public final class MainActivity extends Activity {
                 i.putExtra(AppsActivity.HOST, host.fingerprint);
                 i.putExtra(AppsActivity.SOURCE, s.id);
                 i.putExtra(AppsActivity.SOURCE_NAME, s.name);
+                i.putExtra(AppsActivity.SOURCE_KIND, s.kind);
                 startActivity(i);
             });
             into.addView(b);

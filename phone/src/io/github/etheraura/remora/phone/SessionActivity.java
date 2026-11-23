@@ -53,12 +53,13 @@ import javax.net.ssl.SSLSocket;
  * SessionService is what keeps the connections and the sound alive meanwhile.
  */
 public final class SessionActivity extends Activity implements SurfaceHolder.Callback {
-    static final String HOST = "host", SOURCE = "source", APP = "app", APP_NAME = "appName";
+    static final String HOST = "host", SOURCE = "source", APP = "app", APP_NAME = "appName",
+            KIND = "kind";
 
     private final ExecutorService writer = Executors.newSingleThreadExecutor();
     private SessionView view;
     private SessionControls controls;
-    private TextView sizeItem, scaleValue;
+    private TextView inputItem, sizeItem, scaleValue;
     private volatile SSLSocket control, video, audio;
     private volatile boolean ending;
     private boolean started;
@@ -117,6 +118,17 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
         return prefs().getInt(scaleKey(), 100);
     }
 
+    // Pointer or touch, per source. A desktop app is made for a mouse — hover, the secondary
+    // button, a wheel — so this computer's apps start with the pointer and Android's with touch.
+    private String pointerKey() {
+        Intent i = getIntent();
+        return "pointer:" + i.getStringExtra(HOST) + ":" + i.getStringExtra(SOURCE);
+    }
+
+    private boolean pointerMode() {
+        return prefs().getBoolean(pointerKey(), "computer".equals(getIntent().getStringExtra(KIND)));
+    }
+
     /** {width, height, dpi} of the remote display for a view of w×h pixels. */
     private int[] remoteSize(int w, int h) {
         int dpi = getResources().getDisplayMetrics().densityDpi;
@@ -152,6 +164,7 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
         FrameLayout root = new FrameLayout(this);
         view = new SessionView(this);
         view.setInput(this::send);
+        view.setPointerMode(pointerMode());
         view.getHolder().addCallback(this);
         root.addView(view);
         controls = new SessionControls(this, prefs());
@@ -165,6 +178,7 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
             controls.close();
             pasteFromPhone();
         });
+        inputItem = controls.addItem(inputLabel(), this::toggleInput);
         controls.addDivider();
         sizeItem = controls.addItem(sizeLabel(), this::nextSize);
         scaleValue = controls.addStepper("Smaller", "Larger", () -> stepScale(-1),
@@ -254,6 +268,17 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
 
     private String scaleLabel() {
         return "Scale " + scalePercent() + "%";
+    }
+
+    private String inputLabel() {
+        return pointerMode() ? "Input: Pointer" : "Input: Touch";
+    }
+
+    private void toggleInput() {
+        boolean next = !pointerMode();
+        prefs().edit().putBoolean(pointerKey(), next).apply();
+        inputItem.setText(inputLabel());
+        view.setPointerMode(next);
     }
 
     /** Full → Balanced → Light → Full. The main screen's setting, so the next session keeps it. */

@@ -34,7 +34,8 @@ import java.util.concurrent.Executors;
  * each (app-icon) as they scroll into view; a source that does not serve icons gets lettered tiles.
  */
 public final class AppsActivity extends Activity {
-    static final String HOST = "host", SOURCE = "source", SOURCE_NAME = "sourceName";
+    static final String HOST = "host", SOURCE = "source", SOURCE_NAME = "sourceName",
+            SOURCE_KIND = "sourceKind";
 
     private final ExecutorService listing = Executors.newSingleThreadExecutor();
     private final ExecutorService icons = Executors.newFixedThreadPool(4);
@@ -102,6 +103,7 @@ public final class AppsActivity extends Activity {
         Intent i = new Intent(this, SessionActivity.class);
         i.putExtra(SessionActivity.HOST, host.fingerprint);
         i.putExtra(SessionActivity.SOURCE, source);
+        i.putExtra(SessionActivity.KIND, getIntent().getStringExtra(SOURCE_KIND));
         i.putExtra(SessionActivity.APP, app.id);
         i.putExtra(SessionActivity.APP_NAME, app.name);
         startActivity(i);
