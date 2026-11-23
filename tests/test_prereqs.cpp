@@ -905,6 +905,23 @@ private slots:
             QVERIFY2(remora_encoder_name_allowed(n), n);
     }
 
+    // FFmpeg's V4L2 memory-to-memory encoders are a backend Remora never selects: pin that the
+    // encoder's own list never gains one. The list is read from the header, not copied, so an
+    // addition fails here.
+    void hostEncoderNeverSelectsV4l2M2m() {
+        const QByteArray suffix("_v4l2m2m");
+        const size_t count = sizeof(remora_encoder_names) / sizeof(remora_encoder_names[0]);
+        QVERIFY(count > 0);
+        for (size_t i = 0; i < count; i++) {
+            const QByteArray name(remora_encoder_names[i]);
+            QVERIFY2(!name.toLower().endsWith(suffix),
+                     qPrintable(QStringLiteral("remora_encoder_names[%1] is \"%2\", a V4L2 M2M "
+                                               "encoder; the host encoder must not offer one")
+                                    .arg(i)
+                                    .arg(QString::fromLatin1(name))));
+        }
+    }
+
     // Whatever a profile's video_codec says, the argv Remora builds for the encoder names a codec
     // the gate accepts: a bad setting must not become an encoder that refuses to start.
     void hostEncoderArgvCodecPassesTheGate() {
