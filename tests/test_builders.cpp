@@ -340,6 +340,27 @@ private slots:
         QCOMPARE(buildHostEncoderArgv(c), expected);
     }
 
+    // --fps is passed only for a positive rate: unset, zero and negative all leave the encoder to
+    // its own pacing rather than handing ffmpeg a rate it would reject or misread.
+    void hostEncoderFpsIsOptional() {
+        ResolvedConfig c;
+        c.hostEncodeFrameSocket = QStringLiteral("/f.sock");
+        c.hostEncodeVideoSocket = QStringLiteral("/v.sock");
+        QVERIFY(!c.fps.has_value());
+        QVERIFY(!buildHostEncoderArgv(c).contains(QStringLiteral("--fps")));
+        c.fps = 0;
+        QVERIFY(!buildHostEncoderArgv(c).contains(QStringLiteral("--fps")));
+        c.fps = -1;
+        QVERIFY(!buildHostEncoderArgv(c).contains(QStringLiteral("--fps")));
+        c.fps = 90;
+        const QStringList a = buildHostEncoderArgv(c);
+        QCOMPARE(a.count(QStringLiteral("--fps")), 1);
+        const int i = a.indexOf(QStringLiteral("--fps"));
+        QVERIFY(i >= 0);
+        QVERIFY(i + 1 < a.size());
+        QCOMPARE(a.at(i + 1), QStringLiteral("90"));
+    }
+
     // The encoder must import on the GPU that RENDERED the frames, so the node is always named
     // rather than left to its renderD128 default. That default held only while NVIDIA probed
     // first; a boot that enumerated xe first put it on the Intel GPU, the CUDA derive matched
