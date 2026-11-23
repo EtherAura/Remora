@@ -439,6 +439,27 @@ private slots:
         QVERIFY(!irrelevantPatches(p).contains("lineage_backport_deps"));
     }
 
+    // The ORDER of the needs, which aospTreeHidesEveryLineagePatch cannot see: it enables every
+    // patch, so the backport need is always met there. Here two needs fail at once, and the row
+    // must name the broader one — the source kind — rather than the backport being off.
+    void irrelevantPatchesNamesTheBroadestUnmetNeed() {
+        PatchProfile p;
+        p.features = featuresPatchesAskFor();
+        p.lineageTree = false;
+        p.venus = true;
+        for (const SourcePatch &s : sourcePatches())
+            if (s.key != QLatin1String("lineage_platform_backport")) p.enabledPatches << s.key;
+        const QString aosp = irrelevantPatches(p).value(QStringLiteral("lineage_backport_deps"));
+        QVERIFY2(aosp.contains(QStringLiteral("AOSP")), qPrintable(aosp));
+        QVERIFY2(!aosp.contains(QStringLiteral("inert without")), qPrintable(aosp));
+        // Only the tree changes: the backport need is the one left unmet, and it is named.
+        p.lineageTree = true;
+        const QString lineage = irrelevantPatches(p).value(QStringLiteral("lineage_backport_deps"));
+        QVERIFY2(lineage.contains(QStringLiteral("inert without the 'lineage_platform_backport' "
+                                                 "patch")),
+                 qPrintable(lineage));
+    }
+
     // Gating must never be able to hide a patch by ARGUING ITSELF INTO IT: a needs.patch chain
     // that loops would make two entries hide each other with no profile able to show either.
     void patchNeedsChainsTerminate() {
