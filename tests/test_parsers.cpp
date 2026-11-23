@@ -526,6 +526,16 @@ private slots:
                  QStringList({"com.foo", "org.bar"}));
     }
 
+    void pmPackagesSkipsEmptyNames() {
+        QCOMPARE(parsePmPackages(QStringLiteral(
+                     "package:com.example.one\n"
+                     "package:\n"
+                     "package:   \n"
+                     "package:/data/app/x/base.apk=\n"
+                     "package:org.example.two\n")),
+                 QStringList({"com.example.one", "org.example.two"}));
+    }
+
     // The one that actually breaks apps if it is wrong. A Play-installed app is usually SPLIT, and
     // installing only base.apk yields an app that launches and then dies on a missing resource —
     // so every path must come back, not just the first.
