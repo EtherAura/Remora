@@ -55,7 +55,7 @@ command exits 0 when the target is ready and 1 when it is not.
 
 | row | applies to | severity | remedy |
 |---|---|---|---|
-| `adb` present | all | required | install android-tools |
+| `adb` present | all | required | install android-tools on Linux and FreeBSD; on Windows, install Android SDK Platform-Tools and put `adb.exe` on `PATH` |
 | user in the `docker` group | bare | required | `usermod -aG docker $USER`, then log in again |
 | docker daemon reachable | bare | required | start docker, or unset a stale `DOCKER_HOST` |
 | IBT-fixed `ashmem_linux.ko` loaded | bare, Android 16 only | required | load the module. Android 17 needs none |
