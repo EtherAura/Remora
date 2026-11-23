@@ -125,7 +125,14 @@ final class SessionControls extends ViewGroup {
     }
 
     void addDivider() {
-        View line = new View(getContext());
+        // As wide as the panel and never wider. A plain View takes all the width it is offered, so
+        // the panel, sized to its widest row, came out as wide as the screen and over the handle.
+        View line = new View(getContext()) {
+            @Override
+            protected void onMeasure(int widthSpec, int heightSpec) {
+                setMeasuredDimension(resolveSize(0, widthSpec), resolveSize(0, heightSpec));
+            }
+        };
         line.setBackground(new ColorDrawable(0x33FFFFFF));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, dp(1) / 2));

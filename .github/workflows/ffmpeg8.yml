@@ -60,22 +60,37 @@ jobs:
           done
           exit $rc
 
+      # The list is ci.yml's, in Arch names: ffnvcodec-headers is what the mirror's CUDA interop
+      # includes, vulkan-headers and libavfilter (in ffmpeg) are the encoder's, libva is the
+      # decoder's; git, python and openssl are what the offline suites run.
+      - name: Package list
+        id: packages
+        run: |
+          printf '%s\n' base-devel cmake ninja pkgconf git python openssl \
+            qt6-base qt6-multimedia qt6-webengine \
+            ffmpeg ffnvcodec-headers vulkan-headers libva > /tmp/packages
+          key=$( { echo "$ARCH_SNAPSHOT"; cat /tmp/packages; } | sha256sum | cut -c1-16)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      # A frozen snapshot serves the same files on every run, so the packages are kept between
+      # runs, keyed by the snapshot and the list, and archive.archlinux.org is asked only for what
+      # the cache lacks: it stalls (twice in a day, through all three attempts below).
+      # A cached package is still checked against its signature when it is installed.
+      - name: Cache the snapshot's packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /var/cache/pacman/pkg
+          key: ffmpeg8-pacman-${{ steps.packages.outputs.key }}
+
       # Ordinary distro provisioning, signatures checked against the image's keyring. -uu takes
       # every installed package to the snapshot's version too, so nothing from the image's own
-      # date is mixed in. The list is ci.yml's, in Arch names: ffnvcodec-headers is what the
-      # mirror's CUDA interop includes, vulkan-headers and libavfilter (in ffmpeg) are the
-      # encoder's, libva is the decoder's; git, python and openssl are what the offline suites
-      # run.
+      # date is mixed in.
       - name: Install dependencies
         run: |
           set -euo pipefail
           pacman-key --init
           pacman-key --populate archlinux
-          packages=(
-            base-devel cmake ninja pkgconf git python openssl
-            qt6-base qt6-multimedia qt6-webengine
-            ffmpeg ffnvcodec-headers vulkan-headers libva
-          )
+          mapfile -t packages < /tmp/packages
           # Retry archive transfers before any packages are installed. Successful downloads
           # stay in pacman's cache, and the install uses the same repository databases.
           for attempt in 1 2 3; do

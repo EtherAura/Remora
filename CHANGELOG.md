@@ -7,55 +7,10 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
-### Added
-
-- The phone app preview pairs from inside the app. *Scan the code*, or *Pair another computer*
-  once one is paired, opens the phone's back camera and reads the code that `remora link pair` or
-  the workspace's Phone page shows. The app asks for the camera the first time, and reads the code
-  with its own decoder, so no camera app or library is involved. The same screen takes the link
-  pasted, which is how a device without a camera pairs.
-- In the phone app preview, a session has its own controls: a small handle on the edge of the
-  screen, which can be dragged anywhere along either side, opens a panel with the keyboard, *Paste
-  from phone*, the session size, the app's scale and *End session*. There was no way out of a
-  session before but leaving it, since Back goes to the app. The session size now changes from
-  inside a session too, and *Scale* (50 to 150% of the phone's own density, kept per source) lays
-  the app out smaller or larger without leaving it. The protocol's RESIZE message can name the
-  new density, which `remora-host-agent` and the in-image agent follow; an older agent keeps the
-  density it began with.
-
-### Changed
-
-- `remora link pair` and the workspace's Phone page draw the pairing code with more error
-  correction (level M instead of qrencode's default, L). A phone held at an angle to the screen
-  misreads some of a code's squares, and the code now survives twice as many, for a code one size
-  larger.
-- In the phone app preview, a session stays open while the phone's screen is off or another app
-  is in front, and its sound keeps playing; the app's notification leads back to it, and the
-  picture comes back as it was. It used to end the moment the app left the screen. After five
-  minutes away the session ends, because it holds a virtual screen and an encoder on the
-  computer, and if the connection was lost meanwhile, coming back opens the app again in a new
-  session. `remora-host-agent` waits that long for a session's video to come back, instead of
-  30 seconds.
-
 ### Fixed
 
-- `remora-host-agent` shows an app whose window cannot be as small as the phone's screen, such as
-  Elisa, on the phone. KWin kept such a window on the desk, so the app opened there instead of on
-  the phone. The phone's screen is now laid out at the largest scale the app fits, and the app is
-  placed on it again.
-- When a phone session ends, `remora-host-agent` gives back a window that was already open on the
-  computer minimized or maximized if it was. It came back where it had been, but unminimized, and
-  a maximized one at full size but no longer maximized.
-- The Runners page shows a device that Sleep froze as **asleep**. It said running, because
-  `docker ps` lists a paused container too.
-
-- The mirror window is no longer black on Linux with an NVIDIA GPU. Since 2026.11.9 it drew
-  through a window type that, with the desktop OpenGL the NVIDIA zero-copy path needs, shows
-  nothing on a Wayland desktop, while the stream behind it kept running normally. The boot
-  animation was black too. It uses the same window type as on Windows again.
-- Converting a mirror frame to an image (`--shot`, and the window's fallback drawing) refuses a
-  frame whose width or height is zero or negative and gives no image, instead of handing that
-  size to the colour converter.
+- In the phone app preview, a session's controls open as a card beside their handle. The panel
+  stretched across the whole screen and covered the handle, worst with the phone sideways.
 
 ## [2026.11.9] - 2026-11-22
 
@@ -73,9 +28,12 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   included, and a session is refused when the GPU driving them has too little memory left for
   them (`serve --vram-reserve`, 1 GiB by default). An app that is
   already open — a single-instance one answers a launch with the window it has — moves to the
-  phone and goes back exactly where it was afterwards; a window opened for the phone is
-  minimized, not closed, when the phone leaves. A rotated phone or a resized window gets the app
-  reflowed to the new shape rather than stretched. The app's sound plays on the asking device
+  phone and goes back as it was afterwards, where it was and minimized or maximized again if it
+  had been; a window opened for the phone is minimized, not closed, when the phone leaves. An app
+  whose window cannot be as small as the phone's screen, such as Elisa, gets that screen laid out
+  at the largest scale it fits, rather than staying on the desk. A rotated phone or a resized
+  window gets the app reflowed to the new shape rather than stretched, and the device can ask for
+  a new density without leaving the app. The app's sound plays on the asking device
   instead of this computer's speakers, and only that app's; an app the agent starts plays there
   from its first sound, and one that was already running moves there as each sound begins. The
   clipboard follows in both directions, app
@@ -85,16 +43,24 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   `remora mirror --agent-socket` connects to it, which is the way to try it before the phone app
   exists. The design is [docs/PHONE_APP.md](docs/PHONE_APP.md).
 - A preview of `remora link`, the coming phone app's way in. `remora link pair` shows a one-time
-  code, as a link and a QR code, and `remora link serve` lets a phone that used it reach this
+  code, as a link and a QR code (at error-correction level M, which a phone held at an angle to
+  the screen still reads), and `remora link serve` lets a phone that used it reach this
   computer's apps and every running profile's Android, over TLS with both ends pinned by
   certificate. `remora link devices` lists the paired phones and `remora link forget` unpairs one.
   The workspace's new Phone page does the same: it shows the QR code, starts the link and forgets
   a phone. The format is [docs/LINK_PROTOCOL.md](docs/LINK_PROTOCOL.md).
 - A first build of the phone app itself (`phone/`, built by `phone/build.sh` against an Android
-  source tree): pair by scanning the code with the phone's camera, then open any of this
-  computer's apps or a running profile's Android apps on the phone, at its own size or, to spare
-  the computer's GPU and the network, at a lighter one (*Session size*). See
-  [phone/README.md](phone/README.md).
+  source tree): pair by scanning the code from inside the app, which asks for the camera once and
+  reads the code with its own decoder, or by pasting the link; then open any of this computer's
+  apps or a running profile's Android apps on the phone, at its own size or, to spare the
+  computer's GPU and the network, at a lighter one (*Session size*). A handle on the screen's
+  edge, which can be dragged anywhere along either side, opens a session's controls: the
+  keyboard, *Paste from phone*, the session size, the app's scale (50 to 150% of the phone's own
+  density, kept per source) and *End session*. A session stays open while the phone's screen is
+  off or another app is in front, its sound still playing, and the app's notification leads back
+  to it; after five minutes away it ends, since it holds a virtual screen and an encoder on the
+  computer, and coming back opens the app again. An Android image from before this release keeps
+  the density a session began with. See [phone/README.md](phone/README.md).
 - `remora check` and the workspace's readiness list name the target docker daemon's image store
   (the local daemon for bare, the ssh host's for remote) once that daemon answers: the
   containerd snapshotter, a classic graph driver such as overlay2, or "not reported" when the
@@ -144,6 +110,11 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 - With Play spoofing on, the ReZygisk module's description no longer gathers one more status line
   every time the device starts: each start now begins from the module's original description in
   the image, so only the current status shows.
+- The Runners page shows a device that Sleep froze as **asleep**. It said running, because
+  `docker ps` lists a paused container too.
+- Converting a mirror frame to an image (`--shot`, and the window's fallback drawing) refuses a
+  frame whose width or height is zero or negative and gives no image, instead of handing that
+  size to the colour converter.
 
 ### Security
 
