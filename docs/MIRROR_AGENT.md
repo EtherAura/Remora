@@ -143,10 +143,12 @@ client → agent and device messages agent → client, as records (MIRROR_PROTOC
 `list-apps` is a request/response on its own control connection: the ok reply, then one
 u32-prefixed UTF-8 blob of `" * Name  pkg"` lines. The connection is done once it is written.
 
-`app-icon` has the same shape, with the options `app=<id>` and `size=<px>` and a PNG of the app's
-launcher icon for the blob — what a client's launcher needs without a shell on the device. Today
-only the host agent serves it (the computer's own apps, [PHONE_APP.md](PHONE_APP.md)); the
-in-image agent gains it with the phone app.
+`app-icon` has the same shape, with the options `app=<id>` and `size=<px>` (16 to 512, 192 when
+unset) and a PNG of the app's launcher icon for the blob — what a client's launcher needs without
+a shell on the device. The in-image agent draws it from the package manager, adaptive icons
+composited with the device's mask, the way IconDump draws the desktop app menu's; the host agent
+draws the computer's own apps from the desktop's icon theme ([PHONE_APP.md](PHONE_APP.md)). An app
+the device does not have is a refusal naming it.
 
 ### Video connection
 

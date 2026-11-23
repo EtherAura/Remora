@@ -15,9 +15,6 @@ import android.os.Looper;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
-import android.graphics.Canvas;
-import android.graphics.drawable.BitmapDrawable;
-import android.graphics.drawable.Drawable;
 import java.io.FileOutputStream;
 public class IconDump {
     public static void main(String[] args) {
@@ -31,16 +28,7 @@ public class IconDump {
             for (int i = 1; i < args.length; i++) {
                 String pkg = args[i];
                 try {
-                    Drawable d = pm.getApplicationIcon(pkg);
-                    Bitmap bmp;
-                    if (d instanceof BitmapDrawable && ((BitmapDrawable) d).getBitmap() != null) {
-                        bmp = ((BitmapDrawable) d).getBitmap();
-                    } else {
-                        bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-                        Canvas c = new Canvas(bmp);
-                        d.setBounds(0, 0, size, size);
-                        d.draw(c);
-                    }
+                    Bitmap bmp = AppIcon.render(pm, pkg, size);
                     FileOutputStream fos = new FileOutputStream(outDir + "/" + pkg + ".png");
                     bmp.compress(Bitmap.CompressFormat.PNG, 100, fos);
                     fos.close();

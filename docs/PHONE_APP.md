@@ -20,9 +20,10 @@ implements the same session kinds: `list-apps` from the desktop entries, `new-di
 decoder, one input mapper and one launcher with a section per source.
 
 Two additions to the protocol: `app-icon`, the app's launcher icon as a PNG (on the computer, from
-the desktop's icon theme), because a phone has no shell on the device to ask; and a source
-description in the listing, so the phone can default to a pointer mode for desktop apps. For a
-Linux app, the package field of `list-apps` carries the desktop-file id.
+the desktop's icon theme; on a profile's Android, from its package manager), because a phone has
+no shell on the device to ask; and a source description in the listing, so the phone can default
+to a pointer mode for desktop apps. For a Linux app, the package field of `list-apps` carries the
+desktop-file id.
 
 Positional input is a fraction of the frame, so the two ends never need the same screen size.
 

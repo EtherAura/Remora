@@ -13,6 +13,9 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   it goes where the finger is, a tap clicks, a long press is the secondary click, one finger
   dragged holds the button (selecting text, moving a slider), and two fingers scroll. Android's
   apps keep touch. *Input* in a session's controls switches between the two, kept per source.
+- In the phone app preview, a profile's Android apps are listed with their own icons. The image's
+  agent draws an app's launcher icon for the phone, as `remora-host-agent` does for this
+  computer's apps; an image from before this release still shows each app's initial.
 
 ### Fixed
 

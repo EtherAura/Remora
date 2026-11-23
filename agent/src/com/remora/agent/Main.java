@@ -37,6 +37,7 @@ public final class Main {
     static final int KIND_COMPOSE = 2;
     static final int KIND_NEW_DISPLAY = 3;
     static final int KIND_LIST_APPS = 4;
+    static final int KIND_APP_ICON = 5;
     // The connection ROLE, the byte immediately after the hello. One listener serves both kinds
     // of connection, so it must be able to tell them apart before reading anything role-specific
     // — and "kind=mirror" and "attach video" would otherwise both be a leading 0x01.
@@ -137,6 +138,16 @@ public final class Main {
 
     // A control connection: u8 kind, u16-prefixed "key=value\n" option block, then the connection
     // IS the control socket for the session it opened.
+    /** The refusal reply: u8 status 1, u32 sessionId 0, a u16-prefixed UTF-8 reason. */
+    private static void refuse(DataOutputStream out, String reason) throws IOException {
+        byte[] utf8 = reason.getBytes(StandardCharsets.UTF_8);
+        out.writeByte(1);
+        out.writeInt(0);
+        out.writeShort(utf8.length);
+        out.write(utf8);
+        out.flush();
+    }
+
     private static void serveControl(DataInputStream in, DataOutputStream out) throws IOException {
         final int kind = in.readUnsignedByte();
         int optLen = in.readUnsignedShort();
@@ -186,15 +197,30 @@ public final class Main {
                 out.flush();
                 return;
             }
-            default: {
-                byte[] reason = ("unknown session kind " + kind).getBytes(StandardCharsets.UTF_8);
-                out.writeByte(1);
-                out.writeInt(0);
-                out.writeShort(reason.length);
-                out.write(reason);
+            case KIND_APP_ICON: {
+                // list-apps' shape: the ok reply, then the app's launcher icon as one
+                // u32-prefixed PNG. An app the device does not have is a refusal naming it.
+                String app = opts.get("app");
+                byte[] png;
+                try {
+                    png = AppIcon.png(app, intOpt(opts, "size", 192));
+                } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+                    refuse(out, "no app " + app + " on this device");
+                    return;
+                } catch (RuntimeException e) {
+                    refuse(out, app + " has no icon this device can draw: " + e);
+                    return;
+                }
+                out.writeByte(0);
+                out.writeInt(nextSessionId.getAndIncrement());
+                out.writeInt(png.length);
+                out.write(png);
                 out.flush();
                 return;
             }
+            default:
+                refuse(out, "unknown session kind " + kind);
+                return;
         }
         runControlSession(new Session(nextSessionId.getAndIncrement(), opts, capture), kind,
                           in, out);
