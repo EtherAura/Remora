@@ -32,6 +32,7 @@
 #include "engine/SelfImage.h"
 #include "engine/PublicImages.h"
 #include "engine/UpdateWatch.h"
+#include "engine/AutoSleep.h"
 #include "engine/Engine.h"
 #include "engine/MirrorRegistry.h"
 #include "store/Store.h"
@@ -8810,6 +8811,48 @@ private slots:
         QCOMPARE(launchPathFromArgv0(d.filePath("remora"), QStringLiteral("/")),
                  d.filePath("remora"));
 #endif
+    }
+
+    // The idle episode cmdAutoSleep drives each poll: idle time accrues per poll, the freeze is
+    // asked for at the threshold, never twice in one episode (even after a failed attempt), and a
+    // returning client or a disabled profile resets it so the next idle stretch freezes again.
+    void autoSleepEpisodeFreezesOncePerIdleStretch() {
+        AutoSleepEpisode ep;
+        QCOMPARE(ep.idleSec, 0);
+        QVERIFY(!ep.slept);
+
+        // one minute at 30 s polls: the first poll counts, the second reaches the threshold
+        QVERIFY(!ep.idle(30, 1));
+        QCOMPARE(ep.idleSec, 30);
+        QVERIFY(ep.idle(30, 1));
+        QCOMPARE(ep.idleSec, 60);  // the figure the log line prints
+        ep.markAttempted();
+        QVERIFY(ep.slept);
+
+        // still idle after the attempt: counted, never asked again
+        QVERIFY(!ep.idle(30, 1));
+        QVERIFY(!ep.idle(30, 1));
+        QCOMPARE(ep.idleSec, 120);
+
+        // a returning client resets and re-arms
+        ep.reset();
+        QCOMPARE(ep.idleSec, 0);
+        QVERIFY(!ep.slept);
+        QVERIFY(!ep.idle(30, 1));
+        QVERIFY(ep.idle(30, 1));
+        ep.markAttempted();
+
+        // disabled resets the same way; a longer threshold is honoured to the poll
+        ep.reset();
+        for (int i = 1; i < 10; ++i) QVERIFY2(!ep.idle(30, 5), qPrintable(QString::number(i)));
+        QCOMPARE(ep.idleSec, 270);
+        QVERIFY(ep.idle(30, 5));
+        QCOMPARE(ep.idleSec, 300);
+
+        // past the threshold it asks until the attempt is marked, and then stops
+        QVERIFY(ep.idle(30, 5));
+        ep.markAttempted();
+        QVERIFY(!ep.idle(30, 5));
     }
 
 #ifdef Q_OS_LINUX

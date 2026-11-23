@@ -41,6 +41,7 @@
 #include "engine/RedditLogin.h"
 #include "engine/SelfImage.h"
 #include "engine/UpdateWatch.h"
+#include "engine/AutoSleep.h"
 #include "engine/SourceBuild.h"
 #include "store/Store.h"
 
@@ -847,31 +848,28 @@ static int cmdAutoSleep(const QStringList &a) {
     ConsoleSink sink;
     QTextStream(stderr) << "remora auto-sleep: watching '" << inst << "' (Ctrl-C to stop)\n";
     constexpr int kPollSec = 30;
-    int idleSec = 0;
-    bool slept = false;   // one freeze per idle episode — a returning client re-arms
-    QString target;       // cached; macvlan auto-IP re-resolves after a miss
+    AutoSleepEpisode episode;  // engine/AutoSleep.h: the idle count and the one-freeze mark
+    QString target;            // cached; macvlan auto-IP re-resolves after a miss
     for (;;) {
         QThread::sleep(kPollSec);
         const RemoraConfig cfg = loadInstance(path, inst);
         const std::optional<int> mins = cfg.advanced.autoSleepMinutes;
         if (!mins || *mins <= 0) {  // disabled — stay resident so enabling applies live
-            idleSec = 0;
-            slept = false;
+            episode.reset();
             continue;
         }
         const Backend b = inferBackend(cfg);
         if (target.isEmpty()) target = resolveAdbTarget(sp, makeContext(cfg, b));
         if (target.isEmpty()) continue;  // container gone — nothing to freeze; retry next tick
         if (countMirrorClients(sp, target) > 0) {
-            idleSec = 0;
-            slept = false;
+            episode.reset();
             continue;
         }
-        idleSec += kPollSec;
-        if (slept || idleSec < *mins * 60) continue;
-        QTextStream(stderr) << "no client for " << idleSec << "s — freezing '" << inst << "'\n";
+        if (!episode.idle(kPollSec, *mins)) continue;
+        QTextStream(stderr) << "no client for " << episode.idleSec << "s — freezing '" << inst
+                            << "'\n";
         sleepRun(b, cfg, sink, sp, std::nullopt, inst);
-        slept = true;  // even on failure: don't hammer a broken freeze; a client reset re-arms
+        episode.markAttempted();  // even on failure; a client reset re-arms
     }
 }
 
