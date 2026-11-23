@@ -192,6 +192,21 @@ private slots:
         QVERIFY(featurePatchGaps({"gapps"}, {"minigbm_rendernode"}, 17).isEmpty());
     }
 
+    // Several features at once: every one with a gap is reported, each with only its own
+    // patches, in feature-registry order — not the input set's hash order, and not just the
+    // first. The expected order is written out literally so a reordered registry fails here.
+    void featurePatchGapsReportEveryFeatureInRegistryOrder() {
+        const QVector<FeaturePatchGap> gaps = featurePatchGaps(
+            {"sensors", "usb_audio", "system_updater"}, {"minigbm_rendernode"}, 17);
+        QCOMPARE(gaps.size(), 3);
+        QCOMPARE(gaps.at(0).feature, QString("system_updater"));
+        QCOMPARE(gaps.at(0).missingPatches, QStringList({"settings_hide_stock_updater"}));
+        QCOMPARE(gaps.at(1).feature, QString("usb_audio"));
+        QCOMPARE(gaps.at(1).missingPatches, QStringList({"usb_audio_policy"}));
+        QCOMPARE(gaps.at(2).feature, QString("sensors"));
+        QCOMPARE(gaps.at(2).missingPatches, QStringList({"sensors_hal", "sensors_product"}));
+    }
+
     // THE CASE MOST LIKELY TO HIT THIS, and the one where the sibling warning's convention is
     // WRONG: an unpinned profile. Everywhere else empty means "unset ⇒ defaults apply", and
     // unappliedDefaultPatches reads that as "nothing pinned away, nothing to report". Here it
