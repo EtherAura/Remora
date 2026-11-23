@@ -435,6 +435,43 @@ private slots:
         QVERIFY(find(all, QStringLiteral("host_encode_capture")).ok);
     }
 
+    void blockersKeepOnlyFailedRequiredRows() {
+        const auto row = [](const char *key, bool ok, const char *severity) {
+            return PrereqResult{QString::fromLatin1(key), QString(), ok, QString(),
+                                QString::fromLatin1(severity)};
+        };
+        // Failing required rows on both sides of passing ones and of failing rows of every other
+        // severity, an empty severity and one that only contains "required".
+        const QVector<PrereqResult> mixed = {
+            row("pass_a", true, "required"),       row("fail_a", false, "required"),
+            row("gpu_off", false, "gpu"),          row("opt_off", false, "optional"),
+            row("pass_b", true, "required"),       row("info_off", false, "info"),
+            row("blank_off", false, ""),           row("near_off", false, "required_soft"),
+            row("fail_b", false, "required"),      row("case_off", false, "Required"),
+        };
+        QVERIFY(!isReady(mixed));
+        const QVector<PrereqResult> b = blockers(mixed);
+        QCOMPARE(b.size(), 2);
+        QCOMPARE(b.at(0).key, QStringLiteral("fail_a"));
+        QCOMPARE(b.at(1).key, QStringLiteral("fail_b"));
+
+        // Passing required rows and failing non-required rows only: ready, nothing blocks.
+        const QVector<PrereqResult> advisory = {
+            row("pass_a", true, "required"), row("gpu_off", false, "gpu"),
+            row("opt_off", false, "optional"), row("pass_b", true, "required"),
+            row("info_off", false, "info"),
+        };
+        QVERIFY(isReady(advisory));
+        QVERIFY(blockers(advisory).isEmpty());
+
+        // Nothing at all is ready, and a lone failing required row is the whole of the blockers.
+        QVERIFY(isReady({}));
+        QVERIFY(blockers({}).isEmpty());
+        const QVector<PrereqResult> lone = {row("fail_a", false, "required")};
+        QVERIFY(!isReady(lone));
+        QCOMPARE(blockers(lone).size(), 1);
+    }
+
     void bareReady() {
         HostCapabilities c = linuxClient();
         c.inDockerGroup = true;

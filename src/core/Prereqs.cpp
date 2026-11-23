@@ -261,16 +261,21 @@ QVector<PrereqResult> checkReadiness(Backend target, const HostCapabilities &cap
     return out;
 }
 
+// The one definition of a blocking row, so isReady() and blockers() cannot disagree.
+static bool blocks(const PrereqResult &r) {
+    return r.severity == QLatin1String("required") && !r.ok;
+}
+
 bool isReady(const QVector<PrereqResult> &results) {
     for (const PrereqResult &r : results)
-        if (r.severity == QLatin1String("required") && !r.ok) return false;
+        if (blocks(r)) return false;
     return true;
 }
 
 QVector<PrereqResult> blockers(const QVector<PrereqResult> &results) {
     QVector<PrereqResult> out;
     for (const PrereqResult &r : results)
-        if (r.severity == QLatin1String("required") && !r.ok) out.append(r);
+        if (blocks(r)) out.append(r);
     return out;
 }
 
