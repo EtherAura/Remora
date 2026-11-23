@@ -732,6 +732,56 @@ private slots:
         QCOMPARE(y.display.dpi, std::optional<int>(320));
     }
 
+    // The save side of the same layering: clearing one size of an instance that overrides all
+    // three must remove that key alone, so it inherits [Defaults] again while the other two keep
+    // their instance values. Removing the wrong key, or the trio together, would pass a load-only
+    // test. Presence is checked apart from the value, so an empty or zero key cannot pass for an
+    // absent one.
+    void clearingOneDisplaySizeOnSaveInheritsDefaultsAndKeepsSiblings() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.setValue("Defaults/width", 1280);
+            s.setValue("Defaults/height", 720);
+            s.setValue("Defaults/dpi", 240);
+            s.setValue("Instance-x/width", 1920);
+            s.setValue("Instance-x/height", 1080);
+            s.setValue("Instance-x/dpi", 320);
+            s.sync();
+            QCOMPARE(s.status(), QSettings::NoError);
+        }
+        RemoraConfig c = loadInstance(path, QStringLiteral("x"));
+        QCOMPARE(c.display.width, std::optional<int>(1920));
+        QCOMPARE(c.display.height, std::optional<int>(1080));
+        QCOMPARE(c.display.dpi, std::optional<int>(320));
+
+        c.display.height.reset();
+        saveInstance(path, QStringLiteral("x"), c);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            QCOMPARE(s.status(), QSettings::NoError);
+            s.beginGroup(QStringLiteral("Instance-x"));
+            QVERIFY(!s.contains(QStringLiteral("height")));
+            QVERIFY(!s.childKeys().contains(QStringLiteral("height")));
+            QVERIFY(s.contains(QStringLiteral("width")));
+            QCOMPARE(s.value("width").toString(), QStringLiteral("1920"));
+            QVERIFY(s.contains(QStringLiteral("dpi")));
+            QCOMPARE(s.value("dpi").toString(), QStringLiteral("320"));
+            s.endGroup();
+            s.beginGroup(QStringLiteral("Defaults"));
+            QVERIFY(s.contains(QStringLiteral("height")));
+            QCOMPARE(s.value("height").toString(), QStringLiteral("720"));
+            QCOMPARE(s.value("width").toString(), QStringLiteral("1280"));
+            QCOMPARE(s.value("dpi").toString(), QStringLiteral("240"));
+        }
+        const RemoraConfig reloaded = loadInstance(path, QStringLiteral("x"));
+        QCOMPARE(reloaded.display.width, std::optional<int>(1920));
+        QCOMPARE(reloaded.display.height, std::optional<int>(720));
+        QCOMPARE(reloaded.display.dpi, std::optional<int>(320));
+    }
+
     // The resolver turns an unset audio into false, so an explicit false is only distinguishable
     // when [Defaults] turns audio on. Saving false must persist it in the instance group, where it
     // overrides the default; clearing it must remove the key so the default shows through again.
