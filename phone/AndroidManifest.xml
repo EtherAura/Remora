@@ -5,6 +5,10 @@
     package="io.github.etheraura.remora.phone">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- SessionService: a session, and its sound, carry on while the app is not on screen. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="@string/app_name"
@@ -39,5 +43,8 @@
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation"
             android:windowSoftInputMode="adjustResize|stateHidden" />
+
+        <service android:name=".SessionService" android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
     </application>
 </manifest>

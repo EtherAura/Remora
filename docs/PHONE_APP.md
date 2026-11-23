@@ -105,6 +105,12 @@ the compressed layouts NVIDIA's Vulkan refuses, and the implicit modifier. It ho
 frame rather than handing it straight back, so KWin cannot draw into a buffer the encoder may
 still be reading, and so the encoder can be served that frame again at once if it asks.
 
+A session's video connection may go and come back. The phone lets its picture go while it is
+away, with the screen off or another app in front, keeps the session and its sound, and attaches
+a new video connection on its return; the encoder opens every new one with a keyframe. The phone
+ends a session after five minutes away, and the agent's encoder gives up a little later on its
+own. A client that never attaches its video is ended after 30 seconds.
+
 ### Reflow
 
 A rotated phone, a resized window or the phone's on-screen keyboard reflows the app to the new

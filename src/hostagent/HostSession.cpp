@@ -19,6 +19,12 @@ namespace remora::hostagent {
 
 using namespace remora::mirror;
 
+namespace {
+// How long a session waits for its client's first video connection, and for one that went to
+// come back (past the phone app's own five minutes away).
+constexpr int kFirstVideoMs = 30'000, kVideoAwaySec = 330;
+}  // namespace
+
 std::optional<SessionParams> SessionParams::fromOptions(const QHash<QString, QString> &o,
                                                         QString *error) {
     SessionParams p;
@@ -180,8 +186,11 @@ void HostSession::startEncoder() {
                      QStringLiteral("--codec"), params_.codec,
                      QStringLiteral("--bit-rate"), QString::number(params_.bitRate),
                      QStringLiteral("--fps"), QString::number(params_.maxFps),
-                     // A client that never attaches its video must not pin the GPU forever.
-                     QStringLiteral("--idle-timeout"), QStringLiteral("30")};
+                     // A video connection may go and come back: the phone app lets its picture
+                     // go while the phone is away (the screen off, another app in front) and ends
+                     // the session itself after five minutes. This is the backstop, a little
+                     // later; a client that never attaches at all is ended in takeControl.
+                     QStringLiteral("--idle-timeout"), QString::number(kVideoAwaySec)};
     if (params_.maxSize > 0) args << QStringLiteral("--max-size") << QString::number(params_.maxSize);
     encoder_->start(s_.encoder, args);
     // The encoder creates both sockets once it listens; poll for the frame socket.
@@ -246,6 +255,10 @@ void HostSession::takeControl(QLocalSocket *control, const QByteArray &pending) 
     connect(control, &QLocalSocket::readyRead, this, &HostSession::onControlData);
     connect(control, &QLocalSocket::disconnected, this,
             [this] { end(QStringLiteral("the client closed the session")); });
+    // A client that never attaches its video must not pin the GPU for long.
+    QTimer::singleShot(kFirstVideoMs, this, [this] {
+        if (!videoAttached_) end(QStringLiteral("no video connection came"));
+    });
     if (!pending.isEmpty()) {
         parser_.feed(pending);
         onControlData();
@@ -412,6 +425,7 @@ void HostSession::attachVideo(QLocalSocket *video) {
     // One video connection at a time: a reattach replaces the old one.
     if (video_) video_->deleteLater();
     video_ = video;
+    videoAttached_ = true;
     video->setParent(this);
     videoStarted_ = false;
     connect(video, &QLocalSocket::bytesWritten, this, [this, video] {

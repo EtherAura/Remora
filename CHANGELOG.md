@@ -7,6 +7,16 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Changed
+
+- In the phone app preview, a session stays open while the phone's screen is off or another app
+  is in front, and its sound keeps playing; the app's notification leads back to it, and the
+  picture comes back as it was. It used to end the moment the app left the screen. After five
+  minutes away the session ends, because it holds a virtual screen and an encoder on the
+  computer, and if the connection was lost meanwhile, coming back opens the app again in a new
+  session. `remora-host-agent` waits that long for a session's video to come back, instead of
+  30 seconds.
+
 ### Fixed
 
 - The mirror window is no longer black on Linux with an NVIDIA GPU. Since 2026.11.9 it drew

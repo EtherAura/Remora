@@ -121,7 +121,7 @@ private:
     QPointer<QLocalSocket> control_;
     QPointer<QLocalSocket> video_, encoderVideo_;
     std::unique_ptr<mirror::RecordReader> relay_;  // the encoder's stream, record by record
-    bool videoStarted_ = false, skipping_ = false;
+    bool videoStarted_ = false, skipping_ = false, videoAttached_ = false;
     mirror::ControlMessageParser parser_;
     hostinput::Translator input_;
     hostinput::KeyGate keys_;

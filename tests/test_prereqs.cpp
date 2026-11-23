@@ -5,6 +5,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -39,6 +40,50 @@ static HostCapabilities linuxClient() {
 static QByteArray readAll(const QString &path) {
     QFile f(path);
     return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray("unreadable");
+}
+
+// a file's bytes, or none at all when it is missing or unreadable (never a stand-in text)
+static QByteArray readSource(const QString &path) {
+    QFile f(path);
+    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
+
+// Every way the host encoder's source could reach a QSV encoder that its --codec gate would not
+// see: a QSV hardware device, a QSV name or device string, and QSV in resolve_codec's automatic
+// choice. A source with nothing in it, or without the gate and the choice to inspect, is a fault
+// too, so that absence never reads as clean.
+static QStringList qsvSourceFaults(const QByteArray &bytes) {
+    const QString src = QString::fromUtf8(bytes);
+    if (src.trimmed().isEmpty()) return {QStringLiteral("the source is missing, unreadable or empty")};
+    QStringList faults;
+    // it is the encoder whose gate the header's list is
+    if (!src.contains(QLatin1String("#include \"remora-encoder-names.h\"")) ||
+        !src.contains(QLatin1String("remora_encoder_name_allowed(codec_name)")))
+        faults << QStringLiteral("it does not gate --codec through remora-encoder-names.h");
+
+    const QRegularExpressionMatch device =
+        QRegularExpression(QStringLiteral("\\bAV_HWDEVICE_TYPE_QSV\\b"),
+                           QRegularExpression::CaseInsensitiveOption)
+            .match(src);
+    if (device.hasMatch()) faults << QStringLiteral("it names a QSV device: ") + device.captured(0);
+    // C string literals, escapes kept whole so an escaped quote does not end one early
+    const QRegularExpression literal(QStringLiteral("\"((?:[^\"\\\\\n]|\\\\.)*)\""));
+    for (auto it = literal.globalMatch(src); it.hasNext();) {
+        const QString s = it.next().captured(1);
+        if (s.contains(QLatin1String("qsv"), Qt::CaseInsensitive))
+            faults << QStringLiteral("it hard-codes a QSV name: \"%1\"").arg(s);
+    }
+
+    // the automatic choice, alone: from its definition to the function's closing brace
+    const qsizetype from = src.indexOf(QLatin1String("\nresolve_codec(const char *"));
+    const qsizetype to = from < 0 ? -1 : src.indexOf(QLatin1String("\n}\n"), from);
+    if (to < 0) return faults << QStringLiteral("resolve_codec's definition was not found");
+    const QString resolve = src.mid(from, to - from);
+    if (!literal.match(resolve).hasMatch())
+        faults << QStringLiteral("resolve_codec names no encoder at all");
+    if (resolve.contains(QLatin1String("qsv"), Qt::CaseInsensitive))
+        faults << QStringLiteral("resolve_codec can choose QSV");
+    return faults;
 }
 
 static bool writeFile(const QString &path, const QByteArray &bytes) {
@@ -1244,6 +1289,54 @@ private slots:
                                     .arg(i)
                                     .arg(QString::fromLatin1(name))));
         }
+    }
+
+    // FFmpeg's Intel Quick Sync (QSV) encoders are a backend Remora never selects either. Three
+    // ways one could arrive, each pinned: an explicit --codec name on the encoder's own list (read
+    // from the header, not copied); a QSV hardware device the encoder creates; a QSV name or device
+    // string written into the encoder source, which the --codec gate never sees — resolve_codec's
+    // automatic choice above all (qsvSourceFaults). The source is read from the checkout, and a
+    // missing or empty one fails rather than passing for want of anything to find.
+    void hostEncoderNeverSelectsQsv() {
+        const size_t count = sizeof(remora_encoder_names) / sizeof(remora_encoder_names[0]);
+        QVERIFY(count > 0);
+        for (size_t i = 0; i < count; i++) {
+            const QByteArray name(remora_encoder_names[i]);
+            QVERIFY2(!name.toLower().endsWith("_qsv"),
+                     qPrintable(QStringLiteral("remora_encoder_names[%1] is \"%2\", a QSV encoder; "
+                                               "the host encoder must not offer one")
+                                    .arg(i)
+                                    .arg(QString::fromLatin1(name))));
+        }
+        QVERIFY(!remora_encoder_name_allowed("hevc_qsv"));
+        QVERIFY(!remora_encoder_name_allowed("h264_qsv"));
+        QVERIFY(!remora_encoder_name_allowed("av1_qsv"));
+
+        // the check finds what it looks for, so the real source's clean result means something
+        const QByteArray head("#include \"remora-encoder-names.h\"\n"
+                              "int main(void) { return !remora_encoder_name_allowed(codec_name); }\n");
+        const QByteArray resolveOk("static const char *\nresolve_codec(const char *requested)\n"
+                                   "{\n   return \"hevc_vulkan\";\n}\n");
+        QVERIFY(qsvSourceFaults(head + resolveOk).isEmpty());  // the fixture alone is clean
+        const QList<std::pair<const char *, QByteArray>> faulty = {
+            {"unreadable", readSource(sourcePath(QStringLiteral("vendor/native/no-such-file.c")))},
+            {"empty", QByteArray()},
+            {"blank", QByteArray(" \n\t\n")},
+            {"a QSV device", head + resolveOk + "int d(void) { return AV_HWDEVICE_TYPE_qsv; }\n"},
+            {"a QSV device by name", head + resolveOk + "int d(void) { return find(\"qsv\"); }\n"},
+            {"an automatic QSV choice",
+             head + "static const char *\nresolve_codec(const char *requested)\n"
+                    "{\n   if (intel) return \"HEVC_QSV\";\n   return \"hevc_vulkan\";\n}\n"},
+            {"no resolve_codec", head},
+            {"no --codec gate", resolveOk},
+        };
+        for (const auto &[what, src] : faulty)
+            QVERIFY2(!qsvSourceFaults(src).isEmpty(), what);
+
+        const QString path = sourcePath(QStringLiteral("vendor/native/remora-frame-encoder.c"));
+        const QStringList faults = qsvSourceFaults(readSource(path));
+        QVERIFY2(faults.isEmpty(),
+                 qPrintable(path + QStringLiteral(": ") + faults.join(QStringLiteral("; "))));
     }
 
     // Whatever a profile's video_codec says, the argv Remora builds for the encoder names a codec
