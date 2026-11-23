@@ -52,6 +52,7 @@ std::optional<SessionParams> SessionParams::fromOptions(const QHash<QString, QSt
     if (o.contains(QStringLiteral("max_fps")))
         p.maxFps = qBound(1, int(o.value(QStringLiteral("max_fps")).toDouble()), 240);
     p.maxSize = o.value(QStringLiteral("max_size")).toInt();
+    p.audio = o.value(QStringLiteral("audio")) != QLatin1String("false");
     if (o.contains(QStringLiteral("audio_bit_rate")))
         p.audioBitRate = qBound(16'000, o.value(QStringLiteral("audio_bit_rate")).toInt(), 512'000);
     p.startApp = o.value(QStringLiteral("start_app"));
@@ -219,9 +220,17 @@ void HostSession::launchApp() {
         }
         // kstart goes through KIO: activation token, a systemd scope of the app's own, and
         // D-Bus activation for an app that asks for it — the way the desk's own launcher starts
-        // it, so a single-instance app answers exactly as it would there.
-        if (!QProcess::startDetached(QStringLiteral("kstart"),
-                                     {QStringLiteral("--application"), params_.startApp}))
+        // it, so a single-instance app answers exactly as it would there. KIO hands the app this
+        // environment, so the app starts pointed at the session's sink (openAudioSink).
+        QProcess kstart;
+        kstart.setProgram(QStringLiteral("kstart"));
+        kstart.setArguments({QStringLiteral("--application"), params_.startApp});
+        if (params_.audio && openAudioSink()) {
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert(QStringLiteral("PULSE_SINK"), audio_->sinkName());
+            kstart.setProcessEnvironment(env);
+        }
+        if (!kstart.startDetached())
             return fail(QStringLiteral("could not run kstart to launch %1").arg(params_.startApp));
         QTimer::singleShot(2500, this, [this] {
             if (!ended_) s_.placer->adoptIfUnplaced(id_);
@@ -459,22 +468,55 @@ void HostSession::attachEncoder() {
     enc->connectToServer(videoSocket_);
 }
 
-void HostSession::attachAudio(QLocalSocket *audio) {
-    delete audio_;  // a reattach replaces the old stream (and returns its streams to the desk first)
-    audio_ = nullptr;
-    audio->setParent(this);
-    auto *a = new SessionAudio(id_, audio, params_.audioBitRate, this);
+// The sink comes before the app, so the app can be launched pointed at it: its sound starts on
+// the phone, never on the desk first. A client that says it takes no sound (audio=false, a
+// desktop mirror without --audio) gets none of this. One that wants it attaches moments after the
+// session is up; if none does, the sink goes and the app's streams fall back to the desk.
+bool HostSession::openAudioSink() {
+    auto *a = new SessionAudio(id_, params_.audioBitRate, this);
     QString error;
-    if (!a->start(&error)) {
+    if (!a->openSink(&error)) {
+        qWarning("host agent: session %u: %s", id_, qUtf8Printable(error));
         delete a;
-        // Unavailable, not failed: a session without its sound is still the session.
-        audio->write(streamEndRecord(kEndUnavailable, error));
-        audio->flush();
-        audio->disconnectFromServer();
-        return;
+        return false;
     }
     audio_ = a;
     audio_->setProcesses(pids_);
+    QTimer::singleShot(5000, this, [this, a] {
+        if (audio_ != a || a->attached()) return;
+        audio_ = nullptr;
+        delete a;
+        qInfo("host agent: session %u: no audio connection — the app's sound stays on this "
+              "computer", id_);
+    });
+    return true;
+}
+
+void HostSession::attachAudio(QLocalSocket *audio) {
+    audio->setParent(this);
+    const auto unavailable = [audio](const QString &why) {
+        // Unavailable, not failed: a session without its sound is still the session.
+        audio->write(streamEndRecord(kEndUnavailable, why));
+        audio->flush();
+        audio->disconnectFromServer();
+    };
+    // The sink loaded at launch, unless a client already has it or it was given up: a reattach
+    // replaces the old stream (its streams go back to the desk first), and a late client gets a
+    // new sink with the app's streams moved onto it.
+    if (!audio_ || audio_->attached()) {
+        delete audio_;
+        audio_ = nullptr;
+        if (!openAudioSink()) return unavailable(QStringLiteral(
+            "pactl could not create a sink for the session — is PipeWire's PulseAudio service "
+            "running?"));
+    }
+    auto *a = audio_;
+    QString error;
+    if (!a->attach(audio, &error)) {
+        audio_ = nullptr;
+        delete a;
+        return unavailable(error);
+    }
     connect(audio, &QLocalSocket::disconnected, this, [this, a] {
         if (audio_ != a) return;
         audio_ = nullptr;

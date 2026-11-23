@@ -1050,30 +1050,35 @@ filter_init(struct encoder *e, struct importer *im, int fps, int out_w, int out_
       die("configuring the filter graph", err);
 }
 
-/* Map a generic codec request to the backend that is actually fast here, MEASURED at 3760x1992 on
- * an RTX 3070 Ti (driver 610.43.03, ffmpeg 8.1.2):
+/* Map a generic codec request to the backend that works and is fast here, MEASURED on an RTX 3070
+ * Ti. At 3760x1992 (driver 610.43.03, ffmpeg 8.1.2):
  *   hevc_vulkan 54.8 fps — the NVIDIA driver offers only slow internal presets to Vulkan sessions
  *   hevc_nvenc  ~200+ fps — same silicon through the NVENC SDK interface
- *   h264_vulkan 243 fps — fast preset mapping, zero-copy, nothing to fix
- * So a generic "hevc" prefers NVENC when a CUDA device can be derived from the render GPU, and a
- * generic "h264" stays on Vulkan. Explicit encoder names pass through untouched, and on hosts with
- * no NVENC (Intel/AMD, or ffmpeg built without it) everything resolves back to Vulkan — the same
- * binary behaves right on any GPU. */
+ *   h264_vulkan 243 fps — then; on driver 620.73.04 with ffmpeg 8.1.3 it fails its first frame at
+ *               every size ("Unable to perform query: VK_NOT_READY", the encoder exits), which
+ *               killed every H.264 session: the agent protocol's default codec, and the phone's
+ *               when it has no HEVC decoder (bd remora-6a1k.2)
+ *   h264_nvenc  1330 fps at 1280x678 on the same driver
+ * So a generic request prefers NVENC when a CUDA device can be derived from the render GPU, for
+ * either codec. Explicit encoder names pass through untouched, and on hosts with no NVENC
+ * (Intel/AMD, or ffmpeg built without it) everything resolves back to Vulkan — the same binary
+ * behaves right on any GPU. */
 static const char *
 resolve_codec(const char *requested, AVBufferRef *vk_dev)
 {
-   if (!strcmp(requested, "h264") || !strcmp(requested, "avc"))
-      return "h264_vulkan";
-   if (strcmp(requested, "hevc") && strcmp(requested, "h265"))
+   const bool h264 = !strcmp(requested, "h264") || !strcmp(requested, "avc");
+   const bool hevc = !strcmp(requested, "hevc") || !strcmp(requested, "h265");
+   if (!h264 && !hevc)
       return requested; /* explicit name — the caller knows best */
-   if (avcodec_find_encoder_by_name("hevc_nvenc") && vk_dev_is_nvidia(vk_dev)) {
+   const char *nvenc = h264 ? "h264_nvenc" : "hevc_nvenc";
+   if (avcodec_find_encoder_by_name(nvenc) && vk_dev_is_nvidia(vk_dev)) {
       AVBufferRef *cuda = NULL;
       if (av_hwdevice_ctx_create_derived(&cuda, AV_HWDEVICE_TYPE_CUDA, vk_dev, 0) >= 0) {
          av_buffer_unref(&cuda);
-         return "hevc_nvenc";
+         return nvenc;
       }
    }
-   return "hevc_vulkan";
+   return h264 ? "h264_vulkan" : "hevc_vulkan";
 }
 
 /* Decide whether a filtered Vulkan frame can move to CUDA without touching system memory.
@@ -2577,6 +2582,17 @@ main(int argc, char **argv)
       if (v && *v)
          rss_cap_kb = atol(v) * 1024;
    }
+   /* Fault injection for the runtime-degrade path, which otherwise runs only when the card is
+    * actually full: the Nth encoded frame is reported as a GPU allocation failure, and the 2Nth
+    * again — two degrades in a row, as the case that once fed the filter graph an empty frame and
+    * exited (bd remora-6a1k.2). */
+   uint64_t fault_oom_every = 0, fault_oom_at = 0;
+   int fault_oom_left = 2;
+   {
+      const char *v = getenv("REMORA_ENCODER_FAULT_OOM_AT");
+      if (v && *v)
+         fault_oom_at = fault_oom_every = strtoull(v, NULL, 10);
+   }
 
    while (!stop_requested) {
       const int64_t now = av_gettime_relative();
@@ -3058,9 +3074,16 @@ main(int argc, char **argv)
             }
 
             const bool force_key = outputs_take_keyframe_request(outs, n_outs);
-            const int enc_rc =
+            int enc_rc =
                encode_frame(&enc, outs, n_outs, vk, force_key, &stats, &encoded, max_frames,
                             pkt, filtered);
+            if (fault_oom_at && fault_oom_left > 0 && encoded >= fault_oom_at) {
+               fprintf(stderr, "[encoder] REMORA_ENCODER_FAULT_OOM_AT: reporting frame %" PRIu64
+                               " as out of GPU memory\n", encoded);
+               fault_oom_at = encoded + fault_oom_every;
+               fault_oom_left--;
+               enc_rc = 1;
+            }
             if (copied) {
                /* We own this one. Hand it to the keepalive and release the previous copy — doing
                 * it in this order matters, because last_frame may still point at that copy. */

@@ -7,6 +7,13 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Fixed
+
+- The mirror window is no longer black on Linux with an NVIDIA GPU. Since 2026.11.9 it drew
+  through a window type that, with the desktop OpenGL the NVIDIA zero-copy path needs, shows
+  nothing on a Wayland desktop, while the stream behind it kept running normally. The boot
+  animation was black too. It uses the same window type as on Windows again.
+
 ## [2026.11.9] - 2026-11-22
 
 ### Added
@@ -16,7 +23,9 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   screen of the asking device's size and density, launched the way the desktop launches it,
   streamed through the hardware encoder and driven by that device's touch, mouse and keyboard.
   Keys typed on the device go only to its app: when a window on the desk has keyboard focus, the
-  app's window gets it back first, and keys it cannot deliver there are dropped.
+  app's window gets it back first, and keys it cannot deliver there are dropped. Text typed on
+  the device arrives as typed — capitals, accented letters and symbols included — also on a desk
+  running Plasma's input method, which used to turn "Hello" into "hEllo" and drop "ä" and "€".
   The physical monitors are kept where they are while the virtual screen exists, mirrored ones
   included, and a session is refused when the GPU driving them has too little memory left for
   them (`serve --vram-reserve`, 1 GiB by default). An app that is
@@ -24,7 +33,9 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   phone and goes back exactly where it was afterwards; a window opened for the phone is
   minimized, not closed, when the phone leaves. A rotated phone or a resized window gets the app
   reflowed to the new shape rather than stretched. The app's sound plays on the asking device
-  instead of this computer's speakers, and only that app's. The clipboard follows in both directions, app
+  instead of this computer's speakers, and only that app's; an app the agent starts plays there
+  from its first sound, and one that was already running moves there as each sound begins. The
+  clipboard follows in both directions, app
   icons come from the desktop's icon theme, and a desk that was locked when the phone arrived is
   locked again when it leaves. `systemctl --user enable --now remora-host-agent.service` keeps the
   agent running with the session.
@@ -56,6 +67,9 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- H.264 from the host encoder works on NVIDIA again. With driver 620 the Vulkan H.264 encoder
+  failed on the first frame at every size and the encoder exited, which ended any mirror or phone
+  session asking for H.264; a plain H.264 request now uses NVENC on NVIDIA, as H.265 already did.
 - When a mirrored display changes size, the encoder keeps the new display's buffers and encodes
   its first frame at once. It used to discard them along with the old ones and wait for the
   next frame to bring them back, which a still screen never sends. In the phone app preview,

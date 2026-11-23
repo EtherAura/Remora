@@ -35,6 +35,7 @@ struct SessionParams {
     int maxFps = 60;
     int maxSize = 0;
     int audioBitRate = 128'000;
+    bool audio = true;             // false (audio=false): no client takes the sound; it stays here
     QString startApp;              // desktop-file id; empty shows the bare output
     bool closeOnAppExit = false;
 
@@ -97,6 +98,7 @@ private:
     void startEncoder();
     void startCapture();
     void launchApp();
+    bool openAudioSink();  // the session's sink, before the app; false when there is none
     void onControlData();
     void attachEncoder();
     void requestResize(QSize pixels);

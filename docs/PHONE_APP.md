@@ -125,15 +125,24 @@ pointer-first, so the phone offers a pointer mode: tap to click, long-press for 
 button, two fingers to scroll.
 
 Typed text has no simple path on Wayland: it goes as keysyms, and a paste goes through the
-clipboard (the agent sets the desk's clipboard and presses Ctrl+V in the app). The clipboard
+clipboard (the agent sets the desk's clipboard and presses Ctrl+V in the app). KWin types a keysym
+by setting the modifier state around it, but an input method holding the keyboard (Plasma's own)
+learns that state only from real keys, after the fact, so the agent reads the desk's keymap and
+holds the real Shift or AltGr key around any character that needs it. The clipboard
 follows in both directions through Klipper, the session's own clipboard reader and writer, over
 D-Bus.
 
 ### Sound
 
-The sound is that app's own. Its playback streams, matched by the processes behind the session's
-windows and their children, move to a sink of the session's own, whose monitor is encoded as Opus.
-The sound plays on the phone instead of the desk, and nothing else the desk plays goes with it.
+The sound is that app's own. It goes to a sink of the session's own, whose monitor is encoded as
+Opus, so it plays on the phone instead of the desk, and nothing else the desk plays goes with it.
+The sink exists before the app is launched, and the app is launched pointed at it (`PULSE_SINK`),
+so its sound and its children's starts on the phone. An app that was already running (a
+single-instance app's process) or that is started by D-Bus activation did not get that
+environment: its playback streams, matched by the processes behind the session's windows and
+their children, are moved to the sink as they appear, so the first moment of each can still play
+on the desk. When the session ends the sink goes, and an app still pointed at it falls back to the
+desk's own output.
 
 ## 4. A phone is a linked device, not a backend
 

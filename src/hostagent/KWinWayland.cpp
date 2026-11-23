@@ -1,7 +1,11 @@
 #include "KWinWayland.h"
 
+#include <QDBusInterface>
+#include <QDBusReply>
 #include <QSocketNotifier>
 
+#include <sys/mman.h>
+#include <unistd.h>
 #include <wayland-client.h>
 
 #include "fake-input-client-protocol.h"
@@ -73,6 +77,8 @@ KWinWayland::~KWinWayland() {
             wl_proxy_destroy(reinterpret_cast<wl_proxy *>(fakeInput_));
     }
     if (screencast_) zkde_screencast_unstable_v1_destroy(screencast_);
+    if (keyboard_) wl_keyboard_destroy(keyboard_);
+    if (seat_) wl_seat_destroy(seat_);
     if (registry_) wl_registry_destroy(registry_);
     if (display_) wl_display_disconnect(display_);
 }
@@ -129,10 +135,56 @@ void KWinWayland::onGlobal(void *data, wl_registry *registry, uint32_t name, con
             std::min<uint32_t>(version, org_kde_kwin_fake_input_interface.version);
         self->fakeInput_ = static_cast<org_kde_kwin_fake_input *>(wl_registry_bind(
             registry, name, &org_kde_kwin_fake_input_interface, self->fakeInputVersion_));
+    } else if (iface == wl_seat_interface.name && !self->seat_) {
+        self->seat_ = static_cast<wl_seat *>(
+            wl_registry_bind(registry, name, &wl_seat_interface, std::min<uint32_t>(version, 5)));
+        static const wl_seat_listener seatListener = {
+            &onSeatCapabilities, [](void *, wl_seat *, const char *) {}};
+        wl_seat_add_listener(self->seat_, &seatListener, self);
     }
 }
 
 void KWinWayland::onGlobalRemove(void *, wl_registry *, uint32_t) {}
+
+void KWinWayland::onSeatCapabilities(void *data, wl_seat *seat, uint32_t capabilities) {
+    auto *self = static_cast<KWinWayland *>(data);
+    if (!(capabilities & WL_SEAT_CAPABILITY_KEYBOARD) || self->keyboard_) return;
+    self->keyboard_ = wl_seat_get_keyboard(seat);
+    // Only the keymap matters; the rest is for a focused client, which this never is.
+    static const wl_keyboard_listener keyboardListener = {
+        &onKeymap,
+        [](void *, wl_keyboard *, uint32_t, wl_surface *, wl_array *) {},
+        [](void *, wl_keyboard *, uint32_t, wl_surface *) {},
+        [](void *, wl_keyboard *, uint32_t, uint32_t, uint32_t, uint32_t) {},
+        [](void *, wl_keyboard *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {},
+        [](void *, wl_keyboard *, int32_t, int32_t) {},
+    };
+    wl_keyboard_add_listener(self->keyboard_, &keyboardListener, self);
+}
+
+// Sent on binding and again whenever the desk's layouts change.
+void KWinWayland::onKeymap(void *data, wl_keyboard *, uint32_t format, int32_t fd, uint32_t size) {
+    auto *self = static_cast<KWinWayland *>(data);
+    if (format == WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 && size > 1) {
+        void *map = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (map != MAP_FAILED) {
+            // NUL-terminated by the protocol; the terminator is not part of the text.
+            if (!self->keymap_.load(QByteArray(static_cast<const char *>(map), int(size) - 1)))
+                qWarning("host agent: could not read the desk's keymap; typed capitals may lose "
+                         "their Shift");
+            munmap(map, size);
+        }
+    }
+    close(fd);
+}
+
+// The layout KWin types on: the one active at the desk. One layout, and any failure, is 0.
+quint32 KWinWayland::currentLayout() const {
+    QDBusInterface layouts(QStringLiteral("org.kde.keyboard"), QStringLiteral("/Layouts"),
+                           QStringLiteral("org.kde.KeyboardLayouts"));
+    const QDBusReply<uint> index = layouts.call(QStringLiteral("getLayout"));
+    return index.isValid() ? index.value() : 0;
+}
 
 void KWinWayland::dispatch() {
     if (wl_display_dispatch(display_) < 0) {
@@ -201,13 +253,31 @@ void KWinWayland::touchFrame() {
 void KWinWayland::key(quint32 evdevKey, bool pressed) {
     if (!fakeInput_ || fakeInputVersion_ < ORG_KDE_KWIN_FAKE_INPUT_KEYBOARD_KEY_SINCE_VERSION)
         return;
+    if (pressed) pressedKeys_.insert(evdevKey);
+    else pressedKeys_.remove(evdevKey);
     org_kde_kwin_fake_input_keyboard_key(fakeInput_, evdevKey, pressed ? 1 : 0);
 }
 
 bool KWinWayland::keysym(quint32 keysym, bool pressed) {
     if (!fakeInput_ || fakeInputVersion_ < ORG_KDE_KWIN_FAKE_INPUT_KEYBOARD_KEYSYM_SINCE_VERSION)
         return false;
-    org_kde_kwin_fake_input_keyboard_keysym(fakeInput_, keysym, pressed ? 1 : 0);
+    const bool keys = fakeInputVersion_ >= ORG_KDE_KWIN_FAKE_INPUT_KEYBOARD_KEY_SINCE_VERSION;
+    if (pressed) {
+        const quint32 layout = currentLayout();
+        Typed t{keymap_.spelledOn(keysym, layout), {}};
+        // A modifier the session already holds (a hardware Shift on the phone) stays its own.
+        if (keys)
+            for (const quint32 m : keymap_.modifierKeysFor(t.sent, layout))
+                if (!pressedKeys_.contains(m)) t.held << m;
+        for (const quint32 m : t.held) org_kde_kwin_fake_input_keyboard_key(fakeInput_, m, 1);
+        org_kde_kwin_fake_input_keyboard_keysym(fakeInput_, t.sent, 1);
+        typed_.insert(keysym, t);
+        return true;
+    }
+    const Typed t = typed_.take(keysym);
+    org_kde_kwin_fake_input_keyboard_keysym(fakeInput_, t.sent ? t.sent : keysym, 0);
+    for (auto m = t.held.crbegin(); m != t.held.crend(); ++m)
+        org_kde_kwin_fake_input_keyboard_key(fakeInput_, *m, 0);
     return true;
 }
 

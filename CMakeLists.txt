@@ -303,7 +303,7 @@ endif()
 # protocol files skips it and says so.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     pkg_check_modules(REMORA_HOSTAGENT_DEPS QUIET IMPORTED_TARGET wayland-client libpipewire-0.3
-        opus)
+        opus xkbcommon)
     find_package(PlasmaWaylandProtocols QUIET)
     find_program(REMORA_WAYLAND_SCANNER wayland-scanner)
     if(REMORA_HOSTAGENT_DEPS_FOUND AND PlasmaWaylandProtocols_FOUND AND REMORA_WAYLAND_SCANNER
@@ -330,6 +330,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             src/hostagent/main.cpp
             src/hostagent/AppCatalog.cpp
             src/hostagent/DeskClipboard.cpp
+            src/hostagent/DeskKeymap.cpp
             src/hostagent/DeskLayout.cpp
             src/hostagent/Gpu.cpp
             src/hostagent/HostAgent.cpp
@@ -358,7 +359,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         message(STATUS "remora-host-agent: building (Linux apps for the phone app)")
     else()
         message(STATUS "remora-host-agent: NOT built — needs wayland-client, libpipewire-0.3, opus, "
-            "plasma-wayland-protocols, wayland-scanner and Qt6 DBus")
+            "xkbcommon, plasma-wayland-protocols, wayland-scanner and Qt6 DBus")
     endif()
 endif()
 
@@ -446,6 +447,13 @@ remora_suite_test(link)
 
 add_executable(test_hostagent tests/test_hostagent.cpp)
 target_link_libraries(test_hostagent PRIVATE remora_core Qt6::Test)
+# The agent's keymap reading is pure given a keymap, and xkeyboard-config supplies real ones.
+pkg_check_modules(REMORA_TEST_XKB QUIET IMPORTED_TARGET xkbcommon)
+if(REMORA_TEST_XKB_FOUND)
+    target_sources(test_hostagent PRIVATE src/hostagent/DeskKeymap.cpp)
+    target_link_libraries(test_hostagent PRIVATE PkgConfig::REMORA_TEST_XKB)
+    target_compile_definitions(test_hostagent PRIVATE REMORA_TEST_XKB)
+endif()
 remora_suite_test(hostagent)
 
 add_executable(test_gating tests/test_gating.cpp)

@@ -8,6 +8,9 @@
 #include "core/HostInput.h"
 #include "core/MirrorProto.h"
 #include "core/OutputLayout.h"
+#ifdef REMORA_TEST_XKB
+#include "hostagent/DeskKeymap.h"
+#endif
 
 using namespace remora;
 
@@ -485,6 +488,42 @@ private slots:
         QCOMPARE(g.pass({vDown, vUp, ctrlUp}), Ops{});
         QCOMPARE(g.expire(), Ops{ctrlUp});
     }
+
+#ifdef REMORA_TEST_XKB
+    // Typed text: the real modifier keys held around a keysym, for the key and level KWin picks.
+    // Shift is evdev 42 and AltGr 100 on these layouts; a keysym the layout lacks needs nothing
+    // (KWin types it on a spare key).
+    void keysymsNeedTheirModifierKeys() {
+        using Keys = QList<quint32>;
+        hostagent::DeskKeymap us;
+        if (!us.loadNames("us")) QSKIP("no xkeyboard-config data to compile a keymap from");
+        QCOMPARE(us.modifierKeysFor('p'), Keys{});
+        QCOMPARE(us.modifierKeysFor('P'), Keys{42});
+        QCOMPARE(us.modifierKeysFor('*'), Keys{42});
+        QCOMPARE(us.modifierKeysFor('_'), Keys{42});
+        QCOMPARE(us.modifierKeysFor('7'), Keys{});
+        QCOMPARE(us.modifierKeysFor(0x20ac), Keys{});  // EuroSign: not on us
+        hostagent::DeskKeymap de;
+        QVERIFY(de.loadNames("de"));
+        QCOMPARE(de.modifierKeysFor('@'), Keys{100});      // AltGr+Q
+        QCOMPARE(de.modifierKeysFor(0x20ac), Keys{100});   // AltGr+E
+        QCOMPARE(de.modifierKeysFor(0xd6), Keys{42});      // Odiaeresis
+        QCOMPARE(de.modifierKeysFor('y'), Keys{});
+        hostagent::DeskKeymap eu;  // EurKEY: the accented letters on AltGr, their capitals on both
+        QVERIFY(eu.loadNames("eu"));
+        QCOMPARE(eu.modifierKeysFor(0xe4), Keys{100});      // adiaeresis
+        QCOMPARE(eu.modifierKeysFor(0xc4), (Keys{42, 100}));  // Adiaeresis
+        QCOMPARE(eu.modifierKeysFor('A'), Keys{42});
+        // Text spells the Euro sign as Unicode; a layout that has it lists the named EuroSign.
+        constexpr quint32 euroUnicode = 0x010020ac, euroNamed = 0x20ac;
+        QCOMPARE(eu.spelledOn(euroUnicode), euroNamed);
+        QCOMPARE(eu.modifierKeysFor(euroNamed), Keys{100});  // AltGr+5
+        QCOMPARE(de.spelledOn(euroUnicode), euroNamed);
+        constexpr quint32 zheUnicode = 0x01000436;  // Cyrillic zhe: not on us, left for KWin's spare key
+        QCOMPARE(us.spelledOn(zheUnicode), zheUnicode);
+        QCOMPARE(us.spelledOn('a'), quint32('a'));
+    }
+#endif
 
     // The desktop mirror's mouse: left as DOWN/UP, the rest as BUTTON_PRESS/RELEASE, hover as
     // HOVER_MOVE with no buttons — placed on the output at its position on the desk.

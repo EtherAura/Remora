@@ -4,11 +4,7 @@
 #include <QElapsedTimer>
 #include <QOpenGLBuffer>
 #include <QOpenGLShaderProgram>
-#ifdef Q_OS_LINUX
-#include <QOpenGLWindow>
-#else
 #include <QOpenGLWidget>
-#endif
 #include <QTimer>
 #include <optional>
 
@@ -18,13 +14,12 @@
 
 namespace remora::mirror {
 
-#ifdef Q_OS_LINUX
-// A native surface can present each decoded frame without the widget backing store.
-using MirrorSurface = QOpenGLWindow;
-#else
-using MirrorSurface = QOpenGLWidget;
-#endif
-
+// A QOpenGLWidget on every platform, Linux included. A QOpenGLWindow given the desktop GL context
+// that CUDA zero-copy needs presents NOTHING under NVIDIA's Wayland EGL — not even a glClear —
+// while paintGL runs at rate and every log stays green: the mirror was a black window on every
+// NVIDIA Linux host (bd remora-mdov). The widget presents the same context fine, and the VA-API
+// DMA-BUF import binds into whichever context is current, so it loses nothing by this.
+//
 // The mirror surface: uploads decoded frames to a GPU texture and lets the GPU scale them to the
 // widget (stretched to fill), and translates Qt input into control messages.
 // Window sizing follows the frame's aspect on first frame; afterwards the desktop owns the frame.
@@ -32,7 +27,7 @@ using MirrorSurface = QOpenGLWidget;
 // GPU rather than QPainter: drawImage() with SmoothPixmapTransform resamples on the CPU, on the
 // GUI thread, for every frame — 7.5 MP per frame at the daily-driver geometry, which made the
 // mirror measurably slower (bd remora-28ix.2.1).
-class MirrorWindow : public MirrorSurface, protected QOpenGLFunctions {
+class MirrorWindow : public QOpenGLWidget, protected QOpenGLFunctions {
     Q_OBJECT
 public:
     MirrorWindow(MirrorSession *session, const QString &title, QString shotPath = {});

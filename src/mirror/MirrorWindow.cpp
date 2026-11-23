@@ -33,15 +33,10 @@ MirrorWindow::MirrorWindow(MirrorSession *session, const QString &title, QString
             QOpenGLBuffer(QOpenGLBuffer::PixelUnpackBuffer)},
       pboUV_{QOpenGLBuffer(QOpenGLBuffer::PixelUnpackBuffer),
              QOpenGLBuffer(QOpenGLBuffer::PixelUnpackBuffer)} {
-#ifdef Q_OS_LINUX
-    setTitle(title);
-    setIcon(QGuiApplication::windowIcon());
-#else
     setWindowTitle(title);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(false);  // moves only while a button is down — hover is not touch
-#endif
     connect(session_, &MirrorSession::frameReady, this, &MirrorWindow::onFrame);
     connect(session_, &MirrorSession::deviceClipboard, this,
             [](const QString &text) { QGuiApplication::clipboard()->setText(text); });
@@ -62,13 +57,7 @@ void MirrorWindow::setExplicitGeometry(std::optional<QSize> size, std::optional<
     explicitPos_ = pos;
 }
 
-void MirrorWindow::setAlwaysOnTop(bool onTop) {
-#ifdef Q_OS_LINUX
-    setFlag(Qt::WindowStaysOnTopHint, onTop);
-#else
-    setWindowFlag(Qt::WindowStaysOnTopHint, onTop);
-#endif
-}
+void MirrorWindow::setAlwaysOnTop(bool onTop) { setWindowFlag(Qt::WindowStaysOnTopHint, onTop); }
 
 void MirrorWindow::setStartFullscreen(bool fs) { startFullscreen_ = fs; }
 
@@ -117,7 +106,7 @@ void MirrorWindow::endSplash() {
 }
 
 void MirrorWindow::resizeEvent(QResizeEvent *e) {
-    MirrorSurface::resizeEvent(e);
+    QOpenGLWidget::resizeEvent(e);
     // Flex reflow (bd remora-28ix.3.3): on a new display the window IS the display, so a resized
     // window asks the device to reflow content to the new size instead of letting paintGL()
     // stretch the old pixels. Debounced so a drag becomes one request once it settles.
@@ -174,29 +163,20 @@ void MirrorWindow::onFrame(const VideoFrame &frame) {
             aspect.scale(target, Qt::KeepAspectRatio);
             resize(aspect);
         }
-        if (explicitPos_) {
-#ifdef Q_OS_LINUX
-            setPosition(*explicitPos_);
-#else
-            move(*explicitPos_);
-#endif
-        }
+        if (explicitPos_) move(*explicitPos_);
         // The headless screenshot path captures decoded frames without a GL surface.
         if (shotPath_.isEmpty() ||
             QGuiApplication::platformName() != QLatin1String("offscreen"))
             startFullscreen_ ? showFullScreen() : show();
     }
     update();
-#ifdef Q_OS_LINUX
     // A socket read can deliver several frames. Present each imported frame while it
     // is current instead of allowing the queued update to coalesce the whole burst.
     if (vaapiEnabled_ && live_.av && live_.av->format == AV_PIX_FMT_VAAPI &&
-        !sourcePainting_ && isExposed() && format().swapInterval() == 0) {
+        !sourcePainting_ && isVisible() && format().swapInterval() == 0) {
         const QScopedValueRollback painting(sourcePainting_, true);
-        QEvent render(QEvent::UpdateRequest);
-        QCoreApplication::sendEvent(this, &render);
+        repaint();
     }
-#endif
     if (!shotPath_.isEmpty()) {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (!firstFrameAtMs_) firstFrameAtMs_ = now;
@@ -828,11 +808,7 @@ void MirrorWindow::keyPressEvent(QKeyEvent *e) {
             return;
         }
         if (e->key() == Qt::Key_F) {
-#ifdef Q_OS_LINUX
-            windowStates().testFlag(Qt::WindowFullScreen) ? showNormal() : showFullScreen();
-#else
             isFullScreen() ? showNormal() : showFullScreen();
-#endif
             return;
         }
     }

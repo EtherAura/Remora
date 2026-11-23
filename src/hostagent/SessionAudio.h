@@ -15,23 +15,35 @@ namespace remora::hostagent {
 // on the phone instead of the desk's speakers. Through the PulseAudio interface PipeWire serves,
 // with the tools every such desk has:
 //
-//   pactl load-module module-null-sink   a sink of the session's own, "remora-phone-<id>"
-//   pactl move-sink-input                the app's playback streams onto it — matched by the
-//                                        processes behind the session's windows and their
-//                                        children (a browser plays from a child process)
-//   pactl subscribe                      streams the app opens later, as they appear
-//   parec <sink>.monitor                 48 kHz stereo s16 from it, encoded here as 20 ms Opus
+//   pactl load-module module-null-sink   a sink of the session's own, "remora-phone-<pid>-<id>"
+//   PULSE_SINK=<sink>                    in the launched app's environment: its streams, and its
+//                                        children's, START on the sink, so not a moment of them
+//                                        plays on the desk (the session loads the sink first)
+//   pactl move-sink-input                the streams of processes it did not launch — a
+//                                        single-instance app's running process, a D-Bus-activated
+//                                        one — matched by the processes behind the session's
+//                                        windows and their children (a browser plays from a
+//                                        child), moved as they appear (pactl subscribe)
+//   parec <sink>.monitor                 48 kHz stereo s16 from it, encoded here as 20 ms Opus,
+//                                        once a client has attached
 //
-// Unloading the sink at the end sends every stream back to the desk's default output.
+// Unloading the sink at the end sends every stream back to the desk's default output, and a
+// stream opened later by an app still pointed at it falls back to that output too.
 class SessionAudio : public QObject {
     Q_OBJECT
 public:
-    SessionAudio(quint32 session, QLocalSocket *client, int bitRate, QObject *parent = nullptr);
+    SessionAudio(quint32 session, int bitRate, QObject *parent = nullptr);
     ~SessionAudio() override;
 
-    // False with *error when the sink or the capture cannot be set up; the caller then ends the
-    // audio stream with END (unavailable), which costs the session nothing.
-    bool start(QString *error);
+    // Loads the session's sink and starts claiming the session's streams. False with *error when
+    // there is no PulseAudio service to ask.
+    bool openSink(QString *error);
+    QString sinkName() const { return sinkName_; }
+    // Sends the sink's sound to `client`. False with *error when it cannot be captured or
+    // encoded; the caller then ends the audio stream with END (unavailable), which costs the
+    // session nothing.
+    bool attach(QLocalSocket *client, QString *error);
+    bool attached() const { return client_ != nullptr; }
     // The processes whose streams belong to the session (its windows' owners). Streams already
     // playing move now; later ones as they appear.
     void setProcesses(const QSet<int> &pids);

@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QLocalSocket>
+#include <QProcess>
 #include <QStandardPaths>
 
 #include "AppCatalog.h"
@@ -44,6 +45,16 @@ HostAgent::~HostAgent() {
     const auto sessions = sessions_.values();
     sessions_.clear();
     qDeleteAll(sessions);
+    // An ended session hands its encoder here to exit in its own time, SIGTERM already sent. At
+    // shutdown there is no own time left: wait for each, so NVENC tears down cleanly, rather than
+    // let QObject destroy a QProcess whose child still runs (Qt kills it outright, and says so).
+    for (QProcess *enc : findChildren<QProcess *>(Qt::FindDirectChildrenOnly)) {
+        if (enc->state() == QProcess::NotRunning) continue;
+        if (!enc->waitForFinished(3000)) {
+            enc->kill();
+            enc->waitForFinished(1000);
+        }
+    }
     if (desk_.hasSnapshot()) desk_.restore();
 }
 

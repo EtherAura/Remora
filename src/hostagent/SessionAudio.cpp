@@ -1,5 +1,6 @@
 #include "SessionAudio.h"
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -63,13 +64,17 @@ QByteArray opusHead(int preSkip) {
 
 }  // namespace
 
-SessionAudio::SessionAudio(quint32 session, QLocalSocket *client, int bitRate, QObject *parent)
-    : QObject(parent), session_(session), client_(client), bitRate_(bitRate),
-      sinkName_(QStringLiteral("remora-phone-%1").arg(session)) {}
+// The agent's pid in the name: session ids start again at 1 when the agent restarts, and an app
+// launched for an earlier agent's session 1, still running, must not play into this one's.
+SessionAudio::SessionAudio(quint32 session, int bitRate, QObject *parent)
+    : QObject(parent), session_(session), bitRate_(bitRate),
+      sinkName_(QStringLiteral("remora-phone-%1-%2")
+                    .arg(QCoreApplication::applicationPid())
+                    .arg(session)) {}
 
 SessionAudio::~SessionAudio() { stop(); }
 
-bool SessionAudio::start(QString *error) {
+bool SessionAudio::openSink(QString *error) {
     bool ok = false;
     const QByteArray module = pactl({QStringLiteral("load-module"),
                                      QStringLiteral("module-null-sink"),
@@ -84,6 +89,20 @@ bool SessionAudio::start(QString *error) {
     }
     moduleIndex_ = QString::fromUtf8(module).trimmed();
 
+    subscribe_ = new QProcess(this);
+    subscribe_->setChildProcessModifier([] { ::prctl(PR_SET_PDEATHSIG, SIGTERM); });
+    connect(subscribe_, &QProcess::readyReadStandardOutput, this, [this] {
+        bool fresh = false;
+        while (subscribe_->canReadLine())
+            fresh = subscribe_->readLine().contains("'new' on sink-input") || fresh;
+        if (fresh) claimStreams();
+    });
+    subscribe_->start(QStringLiteral("pactl"), {QStringLiteral("subscribe")});
+    claimStreams();
+    return true;
+}
+
+bool SessionAudio::attach(QLocalSocket *client, QString *error) {
     int err = 0;
     opus_ = opus_encoder_create(kRate, kChannels, OPUS_APPLICATION_AUDIO, &err);
     if (!opus_) {
@@ -94,29 +113,18 @@ bool SessionAudio::start(QString *error) {
     opus_encoder_ctl(opus_, OPUS_SET_BITRATE(bitRate_));
     opus_int32 lookahead = 0;
     opus_encoder_ctl(opus_, OPUS_GET_LOOKAHEAD(&lookahead));
+    client_ = client;
     client_->write(streamStartRecord(kCodecOpus));
     client_->write(streamConfigRecord(opusHead(int(lookahead))));
 
-    const auto orphanProof = [] { ::prctl(PR_SET_PDEATHSIG, SIGTERM); };
     parec_ = new QProcess(this);
-    parec_->setChildProcessModifier(orphanProof);
+    parec_->setChildProcessModifier([] { ::prctl(PR_SET_PDEATHSIG, SIGTERM); });
     connect(parec_, &QProcess::readyReadStandardOutput, this, &SessionAudio::onPcm);
     parec_->start(QStringLiteral("parec"),
                   {QStringLiteral("--device=") + sinkName_ + QStringLiteral(".monitor"),
                    QStringLiteral("--format=s16le"), QStringLiteral("--rate=%1").arg(kRate),
                    QStringLiteral("--channels=%1").arg(kChannels), QStringLiteral("--raw"),
                    QStringLiteral("--latency-msec=20")});
-
-    subscribe_ = new QProcess(this);
-    subscribe_->setChildProcessModifier(orphanProof);
-    connect(subscribe_, &QProcess::readyReadStandardOutput, this, [this] {
-        bool fresh = false;
-        while (subscribe_->canReadLine())
-            fresh = subscribe_->readLine().contains("'new' on sink-input") || fresh;
-        if (fresh) claimStreams();
-    });
-    subscribe_->start(QStringLiteral("pactl"), {QStringLiteral("subscribe")});
-    claimStreams();
     return true;
 }
 
@@ -137,11 +145,14 @@ void SessionAudio::claimStreams() {
         const QJsonObject in = v.toObject();
         const QString index = QString::number(in.value(QStringLiteral("index")).toInteger());
         if (moved_.contains(index)) continue;
-        const int pid = in.value(QStringLiteral("properties"))
-                            .toObject()
-                            .value(QStringLiteral("application.process.id"))
-                            .toString()
-                            .toInt();
+        const QJsonObject props = in.value(QStringLiteral("properties")).toObject();
+        // Headed here already: launched pointed at this sink. Asked by target, not by the sink it
+        // is on, because a stream is announced before it is linked to anything.
+        if (props.value(QStringLiteral("target.object")).toString() == sinkName_) {
+            moved_.insert(index);
+            continue;
+        }
+        const int pid = props.value(QStringLiteral("application.process.id")).toString().toInt();
         if (pid <= 0 || !descendsFrom(pid, pids_)) continue;
         bool moved = false;
         pactl({QStringLiteral("move-sink-input"), index, sinkName_}, &moved);

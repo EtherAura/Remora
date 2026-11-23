@@ -1,11 +1,18 @@
 #pragma once
+#include <QHash>
+#include <QList>
 #include <QObject>
 #include <QPointF>
+#include <QSet>
 #include <QSize>
 #include <QString>
 
+#include "DeskKeymap.h"
+
 struct wl_display;
 struct wl_registry;
+struct wl_seat;
+struct wl_keyboard;
 struct zkde_screencast_unstable_v1;
 struct zkde_screencast_stream_unstable_v1;
 struct org_kde_kwin_fake_input;
@@ -18,6 +25,9 @@ class QSocketNotifier;
 //   zkde_screencast_unstable_v1  stream_virtual_output: an output only the stream shows, sized to
 //                                the phone, published as a PipeWire node
 //   org_kde_kwin_fake_input      pointer, touch and keys, in the compositor's global coordinates
+//
+// and the seat's keyboard, for nothing but the desk's keymap (DeskKeymap): the agent never has
+// keyboard focus, but every client is sent the keymap.
 //
 // Plain libwayland-client, dispatched from the Qt event loop: one connection, one thread.
 
@@ -85,7 +95,8 @@ public:
     void touchUp(quint32 id);
     void touchFrame();
     void key(quint32 evdevKey, bool pressed);
-    // A keysym KWin maps onto the active layout itself (fake_input v6); false when unavailable.
+    // A keysym KWin maps onto the active layout itself (fake_input v6), with the real Shift or
+    // AltGr key it needs held around it (DeskKeymap); false when unavailable.
     bool keysym(quint32 keysym, bool pressed);
 
     void flush();
@@ -98,13 +109,25 @@ private:
     static void onGlobal(void *data, wl_registry *, uint32_t name, const char *interface,
                          uint32_t version);
     static void onGlobalRemove(void *data, wl_registry *, uint32_t name);
+    static void onSeatCapabilities(void *data, wl_seat *, uint32_t capabilities);
+    static void onKeymap(void *data, wl_keyboard *, uint32_t format, int32_t fd, uint32_t size);
     void dispatch();
+    quint32 currentLayout() const;
 
     wl_display *display_ = nullptr;
     wl_registry *registry_ = nullptr;
     zkde_screencast_unstable_v1 *screencast_ = nullptr;
     org_kde_kwin_fake_input *fakeInput_ = nullptr;
+    wl_seat *seat_ = nullptr;
+    wl_keyboard *keyboard_ = nullptr;
     uint32_t screencastVersion_ = 0, fakeInputVersion_ = 0;
+    DeskKeymap keymap_;
+    QSet<quint32> pressedKeys_;                // evdev keys the session holds down (key())
+    struct Typed {
+        quint32 sent = 0;      // the keysym as the layout spells it (DeskKeymap::spelledOn)
+        QList<quint32> held;   // the modifier keys held around it
+    };
+    QHash<quint32, Typed> typed_;  // by the keysym asked for, until its release
     QSocketNotifier *notifier_ = nullptr;
 };
 
