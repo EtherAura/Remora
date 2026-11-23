@@ -221,6 +221,65 @@ private slots:
         QVERIFY(!s.contains("camera_devices"));
     }
 
+    // A load-modify-save that changes one display value must keep the display keys that were set
+    // and must not write the ones that were not: an unset dpi, max_fps, timezone or use_memfd has
+    // to stay absent so the resolver's default still applies on the next load.
+    void resaveOneDisplayValueKeepsSetSiblingsAndLeavesUnsetAbsent() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = rc(dir);
+        {
+            QSettings s(path, QSettings::IniFormat);
+            s.beginGroup(QStringLiteral("Instance-x"));
+            s.setValue("width", 1280);
+            s.setValue("height", 720);
+            s.setValue("fps", 60);
+            s.endGroup();
+            s.sync();
+            QCOMPARE(s.status(), QSettings::NoError);
+            // No [Defaults] layer, so nothing but Instance-x can supply a display value.
+            QCOMPARE(s.childGroups(), QStringList{QStringLiteral("Instance-x")});
+        }
+
+        RemoraConfig c = loadInstance(path, QStringLiteral("x"));
+        QCOMPARE(c.display.width, std::optional<int>(1280));
+        QCOMPARE(c.display.height, std::optional<int>(720));
+        QCOMPARE(c.display.fps, std::optional<int>(60));
+        QVERIFY(!c.display.dpi.has_value());
+        QVERIFY(!c.display.maxFps.has_value());
+        QVERIFY(!c.display.timezone.has_value());
+        QVERIFY(!c.display.useMemfd.has_value());
+
+        c.display.fps = 30;
+        saveInstance(path, QStringLiteral("x"), c);
+
+        {
+            QSettings s(path, QSettings::IniFormat);
+            QCOMPARE(s.status(), QSettings::NoError);
+            QVERIFY(!s.childGroups().contains(QStringLiteral("Defaults")));
+            s.beginGroup(QStringLiteral("Instance-x"));
+            QVERIFY(s.contains("width"));
+            QVERIFY(s.contains("height"));
+            QVERIFY(s.contains("fps"));
+            QCOMPARE(s.value("width").toInt(), 1280);
+            QCOMPARE(s.value("height").toInt(), 720);
+            QCOMPARE(s.value("fps").toInt(), 30);
+            QVERIFY(!s.contains("dpi"));
+            QVERIFY(!s.contains("max_fps"));
+            QVERIFY(!s.contains("timezone"));
+            QVERIFY(!s.contains("use_memfd"));
+        }
+
+        const RemoraConfig reloaded = loadInstance(path, QStringLiteral("x"));
+        QCOMPARE(reloaded.display.width, std::optional<int>(1280));
+        QCOMPARE(reloaded.display.height, std::optional<int>(720));
+        QCOMPARE(reloaded.display.fps, std::optional<int>(30));
+        QVERIFY(reloaded.display.dpi == std::nullopt);
+        QVERIFY(reloaded.display.maxFps == std::nullopt);
+        QVERIFY(reloaded.display.timezone == std::nullopt);
+        QVERIFY(reloaded.display.useMemfd == std::nullopt);
+    }
+
     // An engaged-but-empty camera list means "cameras off", unset means auto-detect, so the
     // empty list must persist as a present, empty camera_devices= rather than a removed key —
     // the remove-on-empty list writer would silently turn "off" back into "auto".
