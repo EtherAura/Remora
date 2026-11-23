@@ -3,6 +3,7 @@
 #include <QList>
 #include <QSize>
 #include <QString>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -11,6 +12,7 @@ struct AVCodec;
 struct AVCodecContext;
 struct AVFrame;
 struct AVPacket;
+struct SwsContext;
 
 namespace remora::mirror {
 
@@ -20,8 +22,14 @@ struct VideoFrame {
     std::shared_ptr<AVFrame> av;
     QSize size;
     bool isNull() const { return !av; }
-    // Software conversion to RGB — the old per-frame path, now used only on demand.
+    // Software conversion to RGB — the old per-frame path, now used only on demand. A frame with
+    // a zero or negative width or height converts to an empty image.
     QImage toImage() const;
+    // How toImage() creates its scaling context: (srcW, srcH, srcFormat, dstW, dstH, dstFormat),
+    // formats as AVPixelFormat widened. A seam for the offline tests, which observe whether a
+    // context was asked for at all; toImage() uses sws_getContext.
+    using ScalerFactory = std::function<SwsContext *(int, int, int, int, int, int)>;
+    QImage toImage(const ScalerFactory &makeScaler) const;
 };
 
 // libavcodec wrapper: merged media-packet payloads in, RGB frames out. Hardware decode follows

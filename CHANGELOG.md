@@ -13,6 +13,9 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   through a window type that, with the desktop OpenGL the NVIDIA zero-copy path needs, shows
   nothing on a Wayland desktop, while the stream behind it kept running normally. The boot
   animation was black too. It uses the same window type as on Windows again.
+- Converting a mirror frame to an image (`--shot`, and the window's fallback drawing) refuses a
+  frame whose width or height is zero or negative and gives no image, instead of handing that
+  size to the colour converter.
 
 ## [2026.11.9] - 2026-11-22
 

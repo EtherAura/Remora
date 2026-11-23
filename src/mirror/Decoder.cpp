@@ -254,7 +254,14 @@ void *Decoder::cudaContext() const {
 // NOT on the render path: at 3760x1992 this measured 7.4 ms of colour conversion plus a 3.0 ms
 // 30 MiB copy, per frame.
 QImage VideoFrame::toImage() const {
-    if (!av) return {};
+    return toImage([](int srcW, int srcH, int srcFormat, int dstW, int dstH, int dstFormat) {
+        return sws_getContext(srcW, srcH, AVPixelFormat(srcFormat), dstW, dstH,
+                              AVPixelFormat(dstFormat), SWS_BILINEAR, nullptr, nullptr, nullptr);
+    });
+}
+
+QImage VideoFrame::toImage(const ScalerFactory &makeScaler) const {
+    if (!av || !makeScaler) return {};
     AVFrame *f = av.get();
     // A frame the zero-copy path kept on the GPU downloads here first — acceptable, because
     // this function is on-demand (--shot, the non-NV12 fallback), never the render path.
@@ -265,9 +272,11 @@ QImage VideoFrame::toImage() const {
         if (!downloaded || av_hwframe_transfer_data(downloaded.get(), f, 0) < 0) return {};
         f = downloaded.get();
     }
-    SwsContext *sws = sws_getContext(f->width, f->height, AVPixelFormat(f->format), f->width,
-                                     f->height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr,
-                                     nullptr);
+    // The frame actually converted, after any download: no scaler and no buffer for a size that
+    // has no pixels, or one whose sign would turn the buffer arithmetic below into a huge size.
+    if (f->width <= 0 || f->height <= 0) return {};
+    SwsContext *sws = makeScaler(f->width, f->height, f->format, f->width, f->height,
+                                 AV_PIX_FMT_BGRA);
     if (!sws) return {};
     // Never hand sws_scale a QImage's own bits: its SIMD writers overrun the destination's tail
     // when the width is not a multiple of the vector stride — measured 16 bytes past the end at

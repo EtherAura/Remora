@@ -1,5 +1,6 @@
 #include <QtTest>
 
+#include <climits>
 #include <optional>
 #include <type_traits>
 
@@ -1074,6 +1075,58 @@ private slots:
             QVERIFY(!dec.init(id, QStringLiteral("auto"), &error));
             QCOMPARE(lookups, QList<int>{int(avId)});
             QCOMPARE(error, QStringLiteral("no decoder for codec 0x%1").arg(id, 2, 16, QLatin1Char('0')));
+        }
+    }
+
+    // VideoFrame::toImage through its scaler seam, on frames that carry metadata only (no planes):
+    // the stub records each call and creates nothing, so no real scaler runs. A width or height of
+    // zero or below is refused before a scaling context is asked for; a valid size does reach the
+    // stub, with the frame's own size and format, which shows the stub is the one toImage() calls.
+    void toImageRefusesNonPositiveSizeBeforeScaler() {
+        struct Call {
+            int srcW, srcH, srcFormat, dstW, dstH, dstFormat;
+        };
+        QList<Call> calls;
+        const VideoFrame::ScalerFactory stub = [&calls](int sw, int sh, int sf, int dw, int dh,
+                                                        int df) -> SwsContext * {
+            calls.append({sw, sh, sf, dw, dh, df});
+            return nullptr;
+        };
+        const auto frameOf = [](int width, int height) {
+            VideoFrame vf;
+            vf.av = std::shared_ptr<AVFrame>(av_frame_alloc(), [](AVFrame *p) { av_frame_free(&p); });
+            vf.av->width = width;
+            vf.av->height = height;
+            vf.av->format = AV_PIX_FMT_NV12;
+            vf.size = QSize(width, height);
+            return vf;
+        };
+        const std::pair<int, int> refused[] = {{0, 1080},  {1920, 0},    {0, 0},
+                                               {-1, 1080}, {1920, -1},   {-1, -1},
+                                               {INT_MIN, 1080}, {1920, INT_MIN}};
+        for (const auto &[w, h] : refused) {
+            calls.clear();
+            const VideoFrame vf = frameOf(w, h);
+            QVERIFY(vf.av);
+            QVERIFY2(vf.toImage(stub).isNull(), qPrintable(QStringLiteral("%1x%2").arg(w).arg(h)));
+            QVERIFY2(calls.isEmpty(), qPrintable(QStringLiteral("%1x%2").arg(w).arg(h)));
+        }
+        // A null frame asks for nothing either.
+        calls.clear();
+        QVERIFY(VideoFrame().toImage(stub).isNull());
+        QVERIFY(calls.isEmpty());
+        // Positive controls: valid sizes, including the smallest, reach the stub exactly once.
+        for (const auto &[w, h] : {std::pair{1920, 1080}, std::pair{1, 1}, std::pair{1932, 1}}) {
+            calls.clear();
+            const VideoFrame vf = frameOf(w, h);
+            QVERIFY(vf.toImage(stub).isNull());  // the stub made no context
+            QCOMPARE(calls.size(), 1);
+            QCOMPARE(calls[0].srcW, w);
+            QCOMPARE(calls[0].srcH, h);
+            QCOMPARE(calls[0].srcFormat, int(AV_PIX_FMT_NV12));
+            QCOMPARE(calls[0].dstW, w);
+            QCOMPARE(calls[0].dstH, h);
+            QCOMPARE(calls[0].dstFormat, int(AV_PIX_FMT_BGRA));
         }
     }
 
