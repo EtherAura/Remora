@@ -46,7 +46,8 @@ Tick features on the **Image** page, or list them in the profile's `features=` k
 
 1. An explicit `image_tag=` wins outright.
 2. Otherwise the requested features (or the version's defaults) are matched against the registered
-   tags for that Android version. The tag missing the fewest requested features wins.
+   tags for that Android version. The tag missing the fewest requested features wins. When tags
+   tie on that count, the one carrying the fewest unrequested extras wins.
 3. What that tag still lacks decides the rest. `gapps`, `widevine_l3`, `magisk_root` and
    `arm_translate` can be layered on as a Docker overlay ([below](#layer-a-feature-onto-an-existing-image)): `remora
    recipe` prints the Dockerfile and `remora build` builds it. Anything else needs a source build.
