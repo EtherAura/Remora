@@ -631,6 +631,53 @@ private slots:
         QVERIFY(!isReady(checkReadiness(Backend::Remote, c)));
     }
 
+    // The adb row blocks a local host: on an otherwise-ready bare host a missing adb is the sole
+    // blocker, named with its package, and a present one leaves the host ready. linuxClient()
+    // pins the remedy's wording, which follows the client OS rather than the target.
+    void bareAdbMissingIsTheSoleRequiredBlocker() {
+        const auto find = [](const QVector<PrereqResult> &v, const QString &key) {
+            int found = 0;
+            PrereqResult row;
+            for (const PrereqResult &r : v)
+                if (r.key == key) {
+                    ++found;
+                    row = r;
+                }
+            return qMakePair(found, row);
+        };
+        HostCapabilities c = linuxClient();
+        c.inDockerGroup = true;
+        c.dockerDaemonOk = true;
+        c.modAshmem = true;
+
+        c.adbPresent = false;
+        const QVector<PrereqResult> missing = checkReadiness(Backend::Bare, c);
+        const auto [missingCount, bad] = find(missing, QStringLiteral("adb"));
+        QCOMPARE(missingCount, 1);
+        QCOMPARE(bad.label, QStringLiteral("adb present on the host"));
+        QVERIFY(!bad.ok);
+        QCOMPARE(bad.severity, QStringLiteral("required"));
+        QCOMPARE(bad.remedy, QStringLiteral("install android-tools (provides adb)"));
+        QVERIFY(!isReady(missing));
+        const QVector<PrereqResult> blocking = blockers(missing);
+        QCOMPARE(blocking.size(), 1);
+        QCOMPARE(blocking.first().key, QStringLiteral("adb"));
+        QCOMPARE(blocking.first().label, bad.label);
+        QCOMPARE(blocking.first().remedy, bad.remedy);
+        QVERIFY(!blocking.first().ok);
+        QCOMPARE(blocking.first().severity, QStringLiteral("required"));
+
+        c.adbPresent = true;
+        const QVector<PrereqResult> present = checkReadiness(Backend::Bare, c);
+        const auto [presentCount, good] = find(present, QStringLiteral("adb"));
+        QCOMPARE(presentCount, 1);
+        QCOMPARE(good.label, QStringLiteral("adb present on the host"));
+        QVERIFY(good.ok);
+        QCOMPARE(good.severity, QStringLiteral("required"));
+        QVERIFY(isReady(present));
+        QVERIFY(blockers(present).isEmpty());
+    }
+
     // bd remora-bm7.11. A TARGET_ARCH_VARIANT image SIGILLs on a CPU without the ISA — it does not
     // degrade — and delivering an image between machines is a `docker save | ssh docker load` with
     // no step that would notice. These pin the table against the REAL CPUs involved, because the
