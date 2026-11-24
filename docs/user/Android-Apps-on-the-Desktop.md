@@ -63,7 +63,8 @@ remora up <profile>      # wake it
 
 `remora sleep` freezes the whole device in place with `docker pause`: it uses no CPU and the
 session is fully preserved. The next `remora up`, or a connect from the workspace, wakes it in
-about a second instead of a cold boot.
+about a second instead of a cold boot. While it sleeps, the Runners page shows it as asleep, and
+`remora status` reports `"asleep": true` with `"running": false`.
 
 ### Auto-sleep
 

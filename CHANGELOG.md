@@ -95,6 +95,10 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   image is on the host. Before, it kept the offer on screen and said the host was recreating the
   device for the whole download, so a slow download looked like a hang. Images from this release
   on show the steps when the host runs this Remora.
+- `remora status` reports a device that Sleep froze as asleep (`"asleep": true`, with
+  `"running": false`), on this computer and on a remote host. It said running with no boot,
+  renderer or adb readings, because docker refuses every command to a frozen container.
+  `remora up` or Connect wakes it, as before.
 
 ## [2026.11.9] - 2026-11-22
 

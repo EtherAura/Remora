@@ -551,10 +551,12 @@ StatusReport probeStatus(Backend backend, Spawner &sp, const QString &sshHost,
     // while the container was up behind an unreachable socket. Carry the failure as its own fact.
     // Only Linux clients can have a local Android container.
     if (sp.localOs() == LocalOs::Unix) {
-        const ProcResult psLocal = sp.run({"docker", "ps", "--format", "{{.Names}}"});
+        const ProcResult psLocal = sp.run({"docker", "ps", "--format", "{{.Names}} {{.State}}"});
         if (psLocal.rc != 0) r.bareDockerError = firstLine(psLocal.stderrTail, psLocal.out);
-        const auto local = parseDockerPsNames(psLocal.rc == 0 ? psLocal.out : QString());
-        r.bareRunning = local.contains(bareContainer);
+        const PsState state =
+            parseDockerPsState(psLocal.rc == 0 ? psLocal.out : QString(), bareContainer);
+        r.bareRunning = state == PsState::Running;
+        r.bareAsleep = state == PsState::Paused;
     }
     if (r.bareRunning)
         r.bareBoot = parseBootCompleted(
@@ -575,10 +577,12 @@ StatusReport probeStatus(Backend backend, Spawner &sp, const QString &sshHost,
                 sp.run(Spawner::sshArgv(sshHost, "echo ok")).out.trimmed() == QLatin1String("ok");
     if (r.remoteSshOk) {
         const ProcResult psRemote =
-            sp.run(Spawner::sshArgv(sshHost, "docker ps --format '{{.Names}}'"));
+            sp.run(Spawner::sshArgv(sshHost, "docker ps --format '{{.Names}} {{.State}}'"));
         if (psRemote.rc != 0) r.remoteDockerError = firstLine(psRemote.stderrTail, psRemote.out);
-        const auto g = parseDockerPsNames(psRemote.rc == 0 ? psRemote.out : QString());
-        r.remoteRunning = g.contains(guestContainer);
+        const PsState state =
+            parseDockerPsState(psRemote.rc == 0 ? psRemote.out : QString(), guestContainer);
+        r.remoteRunning = state == PsState::Running;
+        r.remoteAsleep = state == PsState::Paused;
         if (r.remoteRunning) {
             r.remoteGpuNode = parseBakedGpuNode(
                 sp.run(Spawner::sshArgv(
@@ -719,8 +723,12 @@ QString statusToJson(const StatusReport &r) {
     QJsonObject bare;
     // `running` is omitted when docker itself could not be asked, so a consumer cannot read the
     // daemon being down as the container being stopped — the same rule play_cert follows below.
+    // `asleep` sits beside it: a slept device is neither, and `remora up` or Connect wakes it.
     if (r.bareDockerError) bare["docker_error"] = *r.bareDockerError;
-    else bare["running"] = r.bareRunning;
+    else {
+        bare["running"] = r.bareRunning;
+        bare["asleep"] = r.bareAsleep;
+    }
     if (r.bareBoot) bare["boot_completed"] = *r.bareBoot;
     if (r.bareGles) bare["gles"] = *r.bareGles;
     o["bare"] = bare;
@@ -728,7 +736,10 @@ QString statusToJson(const StatusReport &r) {
     QJsonObject remote;
     remote["ssh_ok"] = r.remoteSshOk;
     if (r.remoteDockerError) remote["docker_error"] = *r.remoteDockerError;
-    else remote["running"] = r.remoteRunning;
+    else {
+        remote["running"] = r.remoteRunning;
+        remote["asleep"] = r.remoteAsleep;
+    }
     if (r.remoteBoot) remote["boot_completed"] = *r.remoteBoot;
     if (r.remoteGpuNode) remote["gpu_node"] = *r.remoteGpuNode;
     if (r.remoteGralloc) remote["gralloc"] = *r.remoteGralloc;

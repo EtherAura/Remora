@@ -7989,6 +7989,49 @@ private slots:
         QVERIFY(!ok.contains("docker_error"));
     }
 
+    // A device Sleep froze is asleep, not running (remora-dbrv). docker ps lists a paused container
+    // too, so status said running, then asked the frozen device for its boot, renderer and adb
+    // door, and docker refused every exec. Both rows, the JSON, and the two forms that still mean
+    // running: an explicit state, and a docker too old to print one.
+    void statusSaysAsleepForAPausedContainer() {
+        const auto json = [](const StatusReport &r, const char *row) {
+            return QJsonDocument::fromJson(statusToJson(r).toUtf8()).object().value(row).toObject();
+        };
+        FakeSpawner bare;
+        bare.localPs = QStringLiteral("remora-bm paused\n");
+        const StatusReport b = probeStatus(Backend::Bare, bare);
+        QVERIFY(!b.bareRunning);
+        QVERIFY(b.bareAsleep);
+        QVERIFY(!b.bareBoot.has_value());
+        QVERIFY(!hasCall(bare, "docker exec"));
+        const QJsonObject bareRow = json(b, "bare");
+        QVERIFY(bareRow.value("asleep").isBool());
+        QVERIFY(bareRow.value("asleep").toBool());
+        QVERIFY(bareRow.value("running").isBool());
+        QVERIFY(!bareRow.value("running").toBool(true));
+
+        FakeSpawner remote;
+        remote.guestPs = QStringLiteral("other running\nremora-remote paused\n");
+        const StatusReport g =
+            probeStatus(Backend::Remote, remote, QStringLiteral("tester@guest.invalid"));
+        QVERIFY(g.remoteSshOk);
+        QVERIFY(!g.remoteRunning);
+        QVERIFY(g.remoteAsleep);
+        QVERIFY(!hasCall(remote, "docker exec"));
+        QVERIFY(json(g, "remote").value("asleep").toBool());
+        QVERIFY(!json(g, "remote").value("running").toBool(true));
+
+        for (const QString &ps : {QStringLiteral("remora-bm running\n"), QStringLiteral("remora-bm\n")}) {
+            FakeSpawner up;
+            up.localPs = ps;
+            const StatusReport u = probeStatus(Backend::Bare, up);
+            QVERIFY2(u.bareRunning, qPrintable(ps));
+            QVERIFY(!u.bareAsleep);
+            QVERIFY(json(u, "bare").value("asleep").isBool());
+            QVERIFY(!json(u, "bare").value("asleep").toBool(true));
+        }
+    }
+
     void assertAdbEndpointGatesOnDeviceState() {
         FakeSpawner sp;
         QCOMPARE(assertAdbEndpoint(sp, QStringLiteral("10.0.0.5:5555")),

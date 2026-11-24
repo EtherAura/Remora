@@ -713,6 +713,9 @@ struct StatusReport {
     Backend backend;
     // bare
     bool bareRunning = false;
+    // Frozen by Sleep (remora-dbrv): neither running nor stopped. docker ps lists a paused
+    // container too, so this read as running, and every docker exec below was then refused.
+    bool bareAsleep = false;
     // Set when `docker ps` itself failed (daemon down, socket unreachable, not in the docker
     // group): the container's state is then UNKNOWN, and bareRunning=false must not be read as
     // "stopped" — statusToJson omits `running` and emits this instead.
@@ -722,6 +725,7 @@ struct StatusReport {
     // remote (the ssh docker host)
     bool remoteSshOk = false;
     bool remoteRunning = false;
+    bool remoteAsleep = false;  // same as bareAsleep, on the ssh host
     std::optional<QString> remoteDockerError;  // same as bareDockerError, for the ssh host's docker
     std::optional<bool> remoteBoot;
     std::optional<QString> remoteGpuNode, remoteGralloc, remoteGles;
