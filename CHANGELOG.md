@@ -51,6 +51,9 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   went. It went the opposite way: the mirror sent Qt's sideways direction, which is the reverse
   of Android's, and `remora-host-agent` reversed it back, so only this computer's own apps were
   right.
+- Opening Settings > Display on the Android 17 image no longer crashes LineageParts. Settings
+  asks it for the LiveDisplay color profile's summary there, and the image has no LiveDisplay, so
+  each visit stopped the app in the background.
 
 ## [2026.11.9] - 2026-11-22
 

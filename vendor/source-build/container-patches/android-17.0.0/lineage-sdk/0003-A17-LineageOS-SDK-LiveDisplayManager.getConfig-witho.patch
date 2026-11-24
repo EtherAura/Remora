@@ -1,0 +1,96 @@
+From a6711269836cc46ac157941d3d5d85c4076acf3c Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Tue, 24 Nov 2026 08:27:27 -0500
+Subject: [PATCH] A17 LineageOS SDK: LiveDisplayManager.getConfig() without a
+ service
+
+LiveDisplayManager.getConfig() returned null whenever no
+LiveDisplayService was registered, and nothing that calls it checks for
+that. On a device that runs the service the case never arises, so the
+callers were written for a config that is always there.
+
+This image has no LiveDisplayService: the livedisplay feature XML is
+not shipped (the lineage_sdk_features source patch), so
+LineageSystemServer does not start it ("Not starting service ...
+LiveDisplayService due to feature not declared on device"). Every call
+returns null, and opening Settings > Display killed LineageParts in the
+background when Settings asked it for the Color profile row's summary:
+
+  java.lang.NullPointerException: Attempt to invoke virtual method
+    'boolean lineageos.hardware.LiveDisplayConfig.hasFeature(int)' on a
+    null object reference
+    at org.lineageos.lineageparts.livedisplay.ColorProfileFragment$3.getSummary
+    at org.lineageos.lineageparts.PartsUpdater.fillResultExtras
+    at lineageos.preference.RemotePreferenceUpdater.onReceive
+
+The same dereference sits in LineageParts' two LiveDisplay search
+providers, in LiveDisplaySettings, DisplayTemperature and
+PictureAdjustment: seven sites in all.
+
+Answering with a config that has no capabilities fixes them in one place
+and gives each one the answer it already handles: hasFeature() is false,
+so the summary is empty and the rows are not indexed or shown.
+RemoteException takes the same path rather than returning null.
+
+Change-Id: I433dd3dd17950f9a27b5159f228a41055ab542f0
+---
+ .../hardware/LiveDisplayManager.java          | 20 ++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/sdk/src/java/lineageos/hardware/LiveDisplayManager.java b/sdk/src/java/lineageos/hardware/LiveDisplayManager.java
+index 98190ad6..0e680e90 100644
+--- a/sdk/src/java/lineageos/hardware/LiveDisplayManager.java
++++ b/sdk/src/java/lineageos/hardware/LiveDisplayManager.java
+@@ -10,9 +10,12 @@ import android.os.IBinder;
+ import android.os.RemoteException;
+ import android.os.ServiceManager;
+ import android.util.Log;
++import android.util.Range;
+ 
+ import lineageos.app.LineageContextConstants;
+ 
++import java.util.BitSet;
++
+ /**
+  * LiveDisplay is an advanced set of features for improving
+  * display quality under various ambient conditions.
+@@ -133,6 +136,13 @@ public class LiveDisplayManager {
+     private static LiveDisplayManager sInstance;
+     private static ILiveDisplayService sService;
+ 
++    // What getConfig() answers with no LiveDisplayService: no capabilities, so every hasFeature()
++    // is false and each caller takes its "unsupported" branch.
++    private static final LiveDisplayConfig NO_SERVICE_CONFIG = new LiveDisplayConfig(
++            new BitSet(), MODE_OFF, -1, -1, false, false, false, false,
++            Range.create(0, 0), Range.create(0, 0), Range.create(0f, 0f), Range.create(0f, 0f),
++            Range.create(0f, 0f), Range.create(0f, 0f), Range.create(0f, 0f));
++
+     /**
+      * @hide to prevent subclassing from outside of the framework
+      */
+@@ -192,17 +202,17 @@ public class LiveDisplayManager {
+     /**
+      * Gets the static configuration and settings.
+      *
+-     * @return the configuration
++     * @return the configuration, never null: with no service it has no features
+      */
+     public LiveDisplayConfig getConfig() {
+         try {
+-            if (mConfig == null) {
+-                mConfig = checkService() ? sService.getConfig() : null;
++            if (mConfig == null && checkService()) {
++                mConfig = sService.getConfig();
+             }
+-            return mConfig;
+         } catch (RemoteException e) {
+-            return null;
++            // Answered below, as if there were no service.
+         }
++        return mConfig != null ? mConfig : NO_SERVICE_CONFIG;
+     }
+ 
+     /**
+-- 
+2.56.1
+
