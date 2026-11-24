@@ -37,6 +37,7 @@ QList<OutputState> parseKScreenJson(const QByteArray &json) {
         s.priority = o.value(QStringLiteral("priority")).toInt();
         s.rotation = o.value(QStringLiteral("rotation")).toInt(1);
         s.replicationSource = o.value(QStringLiteral("replicationSource")).toInt(0);
+        s.hdr = o.value(QStringLiteral("hdr")).toBool(false);
         const QString mode = o.value(QStringLiteral("currentModeId")).toVariant().toString();
         for (const QJsonValue &m : o.value(QStringLiteral("modes")).toArray()) {
             const QJsonObject mo = m.toObject();

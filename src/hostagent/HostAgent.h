@@ -32,7 +32,9 @@ public:
     static QString defaultSocketPath();
 
     bool start(const QString &socketPath, const QString &encoder, QString *error);
-    // Video memory kept free for the desk's own monitors when a session starts (MiB).
+    // What a session must leave free for the desk's monitors, in MiB; kAutoReserve sizes it from
+    // the monitors that are lit (gpumem::monitorReserveMiB).
+    static constexpr qint64 kAutoReserve = -1;
     void setVramReserve(qint64 mib) { vramReserveMiB_ = mib; }
 
 signals:
@@ -59,8 +61,8 @@ private:
     QHash<QLocalSocket *, bool> helloDone_;
     QHash<quint32, HostSession *> sessions_;
     quint32 nextSession_ = 1;
-    bool lockedAtStart_ = false;
-    qint64 vramReserveMiB_ = 1024;  // the desk was locked when the first of the live sessions began
+    bool lockedAtStart_ = false;  // the desk was locked when the first of the live sessions began
+    qint64 vramReserveMiB_ = kAutoReserve;
 };
 
 }  // namespace remora::hostagent

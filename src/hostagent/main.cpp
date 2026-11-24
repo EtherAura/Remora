@@ -175,7 +175,9 @@ int runProbe(const QCommandLineParser &args) {
 int runServe(const QCommandLineParser &args) {
     QTextStream err(stderr);
     HostAgent agent;
-    agent.setVramReserve(args.value(QStringLiteral("vram-reserve")).toLongLong());
+    const QString reserve = args.value(QStringLiteral("vram-reserve"));
+    agent.setVramReserve(reserve == QLatin1String("auto") ? HostAgent::kAutoReserve
+                                                          : reserve.toLongLong());
     QString why;
     const QString socket = args.isSet(QStringLiteral("socket"))
                                ? args.value(QStringLiteral("socket"))
@@ -232,10 +234,11 @@ int main(int argc, char **argv) {
     args.addPositionalArgument(QStringLiteral("command"), QStringLiteral("serve | probe"));
     args.addOption({QStringLiteral("socket"), QStringLiteral("serve: listen here."),
                     QStringLiteral("path")});
+    // 1331 MiB (1.3 GiB): a monitor's mode set failed with about that much free.
     args.addOption({QStringLiteral("vram-reserve"),
                     QStringLiteral("serve: video memory (MiB) a session must leave free for the "
-                                   "desk's own monitors."),
-                    QStringLiteral("MiB"), QStringLiteral("1024")});
+                                   "desk's own monitors, or auto: twice their screen buffers."),
+                    QStringLiteral("MiB|auto"), QStringLiteral("1331")});
     args.addOption({QStringLiteral("name"), QStringLiteral("Output name."), QStringLiteral("name"),
                     QStringLiteral("remora-probe")});
     args.addOption({QStringLiteral("width"), QStringLiteral("Width in pixels."),

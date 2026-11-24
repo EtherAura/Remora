@@ -219,8 +219,11 @@ void HostAgent::startSession(QLocalSocket *sock, const ConnectionRequest &req,
     // Before anything touches the desk: a session on a GPU without room for it can leave the
     // desk's own monitors without scanout memory (core/GpuMemory.h).
     if (const auto usage = vramUsage(renderNodeForConnector(desk_.primaryOutput()))) {
+        const qint64 reserve = vramReserveMiB_ != kAutoReserve
+                                   ? vramReserveMiB_
+                                   : gpumem::monitorReserveMiB(desk_.snapshotOutputs());
         const QString refusal =
-            gpumem::vramRefusal(*usage, gpumem::sessionNeedMiB(params->pixels, vramReserveMiB_));
+            gpumem::vramRefusal(*usage, gpumem::sessionNeedMiB(params->pixels, reserve));
         if (!refusal.isEmpty()) {
             qInfo("host agent: refused a session: %s", qUtf8Printable(refusal));
             sock->write(sessionRefused(refusal));

@@ -87,9 +87,13 @@ a restore token granted once at the desk.
   meanwhile was tried and dropped: KWin turns a blanked monitor back on at the phone's next input,
   and a mirrored monitor cannot be switched off on its own.
 - **GPU memory.** A session's frames live on the GPU that drives the desk, so a session that
-  would leave that GPU too little memory for the desk is refused (`remora-host-agent serve
-  --vram-reserve`, 1 GiB by default). The phone app's *Session size* setting asks for a smaller
-  screen than the phone's, which the phone scales up, to spare the GPU and the network.
+  would leave that GPU too little memory for the desk is refused. A session is counted at what it
+  was measured to take (the encoder about 190 MiB plus 57 a megapixel, KWin's buffers and the
+  app's own), and it must leave 1.3 GiB free (`remora-host-agent serve --vram-reserve`): on an
+  8 GB card a monitor's mode set failed with about that much free, and the monitor stayed dark
+  until memory was freed. `--vram-reserve auto` keeps twice the lit monitors' screen buffers free
+  instead, which is less and closer to that edge. The phone app's *Session size* setting asks for
+  a smaller screen than the phone's, which the phone scales up, to spare the GPU and the network.
 
 ### The app on it
 

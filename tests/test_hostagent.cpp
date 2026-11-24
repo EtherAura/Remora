@@ -19,7 +19,7 @@ using namespace remora;
 namespace {
 
 // kscreen-doctor -j, trimmed to the fields the planner reads, in the shape Plasma 6.8 prints:
-// a 4K monitor at scale 2 above-left of an unscaled one that is primary, plus (optionally) a
+// a 4K monitor at scale 2 above-left of an unscaled HDR one that is primary, plus (optionally) a
 // virtual output as KWin placed it — overlapping, and with a priority above the second monitor.
 // The virtual output's entry has no "enabled" key, which is how kscreen reports one.
 QByteArray kscreen(bool withVirtual, int virtX = 1920, int virtPriority = 2, int secondPriority = 3,
@@ -30,7 +30,7 @@ QByteArray kscreen(bool withVirtual, int virtX = 1920, int virtPriority = 2, int
        "currentModeId":"1","modes":[{"id":"1","size":{"width":3840,"height":2160}},
                                      {"id":"2","size":{"width":1920,"height":1080}}]},
       {"name":"HDMI-A-1","enabled":true,"connected":true,"pos":{"x":474,"y":1011},"scale":1,
-       "priority":1,"rotation":1,"currentModeId":"32",
+       "priority":1,"rotation":1,"hdr":true,"currentModeId":"32",
        "modes":[{"id":"32","size":{"width":3840,"height":2160}}]},
       {"name":"HDMI-A-2","enabled":false,"connected":false,"pos":{"x":0,"y":0},"scale":1,
        "priority":0,"rotation":1,"currentModeId":"","modes":[]})";
@@ -55,6 +55,8 @@ private slots:
         QCOMPARE(outs[0].name, QStringLiteral("DP-1"));
         QCOMPARE(outs[0].pixelSize, QSize(3840, 2160));
         QCOMPARE(outs[0].logicalSize(), QSize(1920, 1080));
+        QVERIFY(!outs[0].hdr);
+        QVERIFY(outs[1].hdr);
         QVERIFY(!outs[2].enabled);
         // No "enabled" key: connected stands in.
         QVERIFY(outs[3].enabled);
@@ -195,11 +197,34 @@ private slots:
     // The measured case: an 8 GB card at 6.9 GB used, where a monitor was left without scanout
     // memory, refuses a phone session; the same card at its everyday 5.8 GB does not.
     void refusesWhenTheDeskWouldStarve() {
-        const qint64 need = gpumem::sessionNeedMiB({1080, 2400}, 1024);
-        QCOMPARE(need, qint64(640 + 40 + 1024));
+        const qint64 need = gpumem::sessionNeedMiB({1080, 2400}, 1331);
+        // 220 + 166 for the encoder (2.592 megapixels), 70 for seven frames of the output.
+        QCOMPARE(need, qint64(220 + 166 + 70 + 1331));
         const QString no = gpumem::vramRefusal({6901, 8192}, need);
         QVERIFY(no.contains(QStringLiteral("1291 MiB")));
         QVERIFY(gpumem::vramRefusal({5817, 8192}, need).isEmpty());
+    }
+
+    // What sessions took, measured on the GPU as a whole (the encoder, KWin's buffers and the
+    // app's own), stays inside the budget, and the 3760x1992 encoder alone (687 MiB) too.
+    void budgetsASessionAsMeasured() {
+        QVERIFY(gpumem::sessionNeedMiB({1280, 678}, 0) >= 290);
+        QVERIFY(gpumem::sessionNeedMiB({1920, 1016}, 0) >= 346);
+        QVERIFY(gpumem::sessionNeedMiB({2992, 1344}, 0) >= 558);
+        QVERIFY(gpumem::sessionNeedMiB({3760, 1992}, 0) >= 687);
+        // ...and not the old flat 640 for the encoder alone at a phone's size.
+        QVERIFY(gpumem::sessionNeedMiB({1280, 678}, 0) < 400);
+    }
+
+    // Twice the lit monitors' screen buffers, an HDR one's at eight bytes a pixel; never under
+    // 256 MiB. Two 4K monitors, one HDR: 3 x (33 + 66) MB, twice.
+    void reservesForTheLitMonitors() {
+        QCOMPARE(gpumem::monitorReserveMiB(outputs::parseKScreenJson(kscreen(false))), qint64(570));
+        outputs::OutputState one;
+        one.enabled = true;
+        one.pixelSize = {1920, 1080};
+        QCOMPARE(gpumem::monitorReserveMiB({one}), qint64(256));
+        QCOMPARE(gpumem::monitorReserveMiB({}), qint64(256));
     }
 
     // --- the app list --------------------------------------------------------------------------

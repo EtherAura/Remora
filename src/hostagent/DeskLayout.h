@@ -24,6 +24,7 @@ public:
     // what every later repair restores. False with *error when kscreen-doctor cannot be run.
     bool snapshot(QString *error);
     bool hasSnapshot() const { return !before_.isEmpty(); }
+    const QList<outputs::OutputState> &snapshotOutputs() const { return before_; }
     // The snapshot's primary output (priority 1): the one KWin renders for.
     QString primaryOutput() const;
     // An output's global logical rectangle, as of the latest look at the desk.

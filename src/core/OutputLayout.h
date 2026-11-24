@@ -35,6 +35,7 @@ struct OutputState {
     // no place of its own on the desk: KWin shows it at its source's geometry and does not
     // advertise it to clients, and its stored position and priority are not what is on screen.
     int replicationSource = 0;
+    bool hdr = false;      // its screen buffers are 16 bits a channel
     // Logical extent: the mode, rotated, divided by the scale.
     QSize logicalSize() const;
 };

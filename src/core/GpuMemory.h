@@ -1,7 +1,10 @@
 #pragma once
+#include <QList>
 #include <QSize>
 #include <QString>
 #include <optional>
+
+#include "OutputLayout.h"
 
 // Whether a phone session fits in the GPU that drives the desk (docs/PHONE_APP.md).
 // Pure: the agent reads the numbers, this decides.
@@ -26,10 +29,17 @@ std::optional<VramUsage> fromAmdgpuBytes(const QString &used, const QString &tot
 // "0000:01:00.0" (sysfs) → "00000000:01:00.0", the form `nvidia-smi -i` takes.
 QString nvidiaBusId(const QString &pciAddress);
 
-// The encoder and its contexts (budgeted from a measured 4K NVENC encoder, 610 MiB), KWin's
-// stream buffers for an output of `pixels`, and `reserveMiB` kept free for the desk's own
-// monitors.
+// What a session for an output of `pixels` takes from the GPU, plus `reserveMiB` that must stay
+// free beside it. The encoder is budgeted from remora-frame-encoder as measured (HEVC on NVENC,
+// RTX 3070 Ti): 242 MiB at 1280x678, 297 at 1920x1016, 423 at 2992x1344 — about 192
+// fixed (a Vulkan device and the CUDA context derived from it) and 57 a megapixel — and 687 at
+// 3760x1992 earlier; KWin's stream buffers and the app's own window are frames of the output.
 qint64 sessionNeedMiB(QSize pixels, qint64 reserveMiB);
+
+// What the desk's lit monitors need free while a session runs: their screen buffers (three each,
+// four bytes a pixel, eight for an HDR output), twice over, since a mode set — a monitor waking,
+// say — allocates the new ones before it frees the old; never less than 256 MiB.
+qint64 monitorReserveMiB(const QList<outputs::OutputState> &outputs);
 
 // Empty when there is room; otherwise the refusal a client shows, naming the numbers.
 QString vramRefusal(const VramUsage &usage, qint64 needMiB);

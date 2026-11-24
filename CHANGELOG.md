@@ -17,6 +17,14 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   agent draws an app's launcher icon for the phone, as `remora-host-agent` does for this
   computer's apps; an image from before this release still shows each app's initial.
 
+### Changed
+
+- `remora-host-agent` counts a session at what it was measured to take from the GPU, not a 4K
+  encoder's worth, and keeps 1.3 GiB free for the computer's monitors instead of 1 GiB: a mode set
+  failed with about that much free and left a monitor dark. A Light session from the phone needs
+  about 1.6 GB free to start instead of 1.7, a full-size one about 1.9. `serve --vram-reserve auto`
+  keeps twice the lit monitors' screen buffers free instead, which is less and closer to that edge.
+
 ### Fixed
 
 - In the phone app preview, a session's controls open as a card beside their handle. The panel

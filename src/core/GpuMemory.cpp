@@ -5,8 +5,16 @@
 namespace remora::gpumem {
 
 namespace {
-constexpr qint64 kEncoderMiB = 640;
-constexpr int kStreamBuffers = 4;  // KWin's screencast pool, BGRA
+// 220 + 64 a megapixel stays above every measurement in GpuMemory.h.
+constexpr qint64 kEncoderMiB = 220, kEncoderMiBPerMegapixel = 64;
+// KWin's screencast pool (four) and the app's own buffers (three), BGRA at the output's size.
+constexpr int kOutputFrames = 4 + 3;
+constexpr int kScanoutBuffers = 3;
+constexpr qint64 kMinReserveMiB = 256;
+
+qint64 ceilMiB(qint64 bytes) {
+    return (bytes + (1 << 20) - 1) >> 20;
+}
 }  // namespace
 
 std::optional<VramUsage> parseNvidiaSmi(const QString &out) {
@@ -36,9 +44,19 @@ QString nvidiaBusId(const QString &pciAddress) {
 }
 
 qint64 sessionNeedMiB(QSize pixels, qint64 reserveMiB) {
-    const qint64 frameBytes = qint64(pixels.width()) * pixels.height() * 4;
-    const qint64 streamMiB = (frameBytes * kStreamBuffers + (1 << 20) - 1) >> 20;
-    return kEncoderMiB + streamMiB + reserveMiB;
+    const qint64 px = qint64(pixels.width()) * pixels.height();
+    const qint64 encoderMiB = kEncoderMiB + (px * kEncoderMiBPerMegapixel + 999999) / 1000000;
+    return encoderMiB + ceilMiB(px * 4 * kOutputFrames) + reserveMiB;
+}
+
+qint64 monitorReserveMiB(const QList<outputs::OutputState> &outputs) {
+    qint64 bytes = 0;
+    for (const outputs::OutputState &o : outputs) {
+        if (!o.enabled || o.pixelSize.isEmpty()) continue;
+        bytes += qint64(o.pixelSize.width()) * o.pixelSize.height() * (o.hdr ? 8 : 4)
+                 * kScanoutBuffers;
+    }
+    return qMax(kMinReserveMiB, 2 * ceilMiB(bytes));
 }
 
 QString vramRefusal(const VramUsage &usage, qint64 needMiB) {
