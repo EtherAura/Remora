@@ -47,6 +47,9 @@ public:
     // a button left down on the desk would follow the user's real pointer around.
     QList<InputOp> releaseAll();
 
+    // A mouse button is down on the session's behalf: the pointer is the session's until it is up.
+    bool buttonsHeld() const { return !buttons_.isEmpty(); }
+
 private:
     QPointF global(mirror::FramePoint p) const;
     QList<InputOp> pointer(const mirror::ControlMessage &m);
@@ -60,9 +63,11 @@ private:
 // focus, and the phone shares the desk's one seat: a window activated at the desk, by the person
 // there or by a program, took the phone's next keystrokes — seen in testing, a digit typed on the
 // phone never reached its calculator because a desk window had focus. So a key that arrives while
-// another window has focus is held until the session's window has it again (the agent asks KWin
-// to activate it), and dropped if that does not happen. Everything else passes: a pointer or a
-// touch goes to the virtual output by position, and a click there focuses the app by itself.
+// another window has focus is held — briefly, while focus the session's window just gained
+// settles — and otherwise dropped (expire): the agent never takes focus back from the desk, where
+// doing so took it from the person working there and typed the phone's keys into their windows.
+// Everything else passes: a pointer or a touch goes to the virtual output by position, and a tap
+// there focuses the app by itself.
 class KeyGate {
 public:
     // The ops to inject now, in order; keys that must wait are kept. holding() then says so.

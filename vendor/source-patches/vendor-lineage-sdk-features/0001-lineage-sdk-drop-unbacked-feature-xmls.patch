@@ -1,23 +1,17 @@
 diff --git a/config/lineage_sdk_common.mk b/config/lineage_sdk_common.mk
-index 217f8374..523818c9 100644
+index 217f8374..c23c2aac 100644
 --- a/config/lineage_sdk_common.mk
 +++ b/config/lineage_sdk_common.mk
-@@ -1,12 +1,11 @@
+@@ -1,8 +1,11 @@
  # Permissions for lineage sdk services
-+# Only org.lineageos.settings — its provider (LineageSettingsProvider) actually ships
-+# and answers. The other six declared services (globalactions, hardware, health, livedisplay,
-+# profiles, trust) have no LineageSystemServer hook on this pure-AOSP-tracking branch, so
-+# declaring them made hasSystemFeature() lie and LineageHardwareManager Log.wtf on every init
-+# (bd remora-4ei.62). Restore a line here if its service half is ever brought up.
++# All but org.lineageos.health: LineageSystemServer starts a service for each feature declared
++# here, and HealthInterfaceService publishes nothing without the vendor.lineage.health HAL, which a
++# container does not have. Declaring it would make hasSystemFeature() claim charging control that no
++# service answers. The other five run in a container (bd remora-0145).
  PRODUCT_COPY_FILES += \
--    vendor/lineage/config/permissions/org.lineageos.globalactions.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.globalactions.xml \
--    vendor/lineage/config/permissions/org.lineageos.hardware.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.hardware.xml \
+     vendor/lineage/config/permissions/org.lineageos.globalactions.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.globalactions.xml \
+     vendor/lineage/config/permissions/org.lineageos.hardware.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.hardware.xml \
 -    vendor/lineage/config/permissions/org.lineageos.health.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.health.xml \
--    vendor/lineage/config/permissions/org.lineageos.livedisplay.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.livedisplay.xml \
--    vendor/lineage/config/permissions/org.lineageos.profiles.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.profiles.xml \
--    vendor/lineage/config/permissions/org.lineageos.settings.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.settings.xml \
--    vendor/lineage/config/permissions/org.lineageos.trust.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.trust.xml
-+    vendor/lineage/config/permissions/org.lineageos.settings.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.settings.xml
- 
- # Lineage Platform Library
- PRODUCT_PACKAGES += \
+     vendor/lineage/config/permissions/org.lineageos.livedisplay.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.livedisplay.xml \
+     vendor/lineage/config/permissions/org.lineageos.profiles.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.profiles.xml \
+     vendor/lineage/config/permissions/org.lineageos.settings.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/org.lineageos.settings.xml \

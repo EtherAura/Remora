@@ -6,10 +6,12 @@ import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.View;
@@ -59,7 +61,7 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
     private final ExecutorService writer = Executors.newSingleThreadExecutor();
     private SessionView view;
     private SessionControls controls;
-    private TextView inputItem, sizeItem, scaleValue;
+    private TextView inputItem, sizeItem, scaleValue, windowValue, deskItem, bypassItem;
     private volatile SSLSocket control, video, audio;
     private volatile boolean ending;
     private boolean started;
@@ -100,6 +102,52 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
     // desktop app on the phone, larger reads more easily. Browser zoom's steps, as far as a
     // phone-sized remote display stays usable.
     private static final int[] SCALES = {50, 67, 75, 80, 90, 100, 110, 125, 150};
+
+    // A computer's app: its window's share of each side of the phone's screen, per app; whether
+    // the phone's screen extends that computer's desk — its pointer and windows can cross onto
+    // it — or stands apart from it; and whether the app bypasses the desktop, both per computer.
+    // Bypassing it, the app fills a screen of its own on the computer, maximized, where no
+    // wallpaper shows and tiling scripts leave it alone, and a smaller window is a smaller screen,
+    // shown at the same size on black. Not bypassing it, the app is a window of the desk's like
+    // any other at that size, with the desktop behind it and tiling scripts arranging it.
+    private static final int[] WINDOWS = {50, 60, 75, 90, 100};
+
+    private boolean computer() {
+        return "computer".equals(getIntent().getStringExtra(KIND));
+    }
+
+    private String windowKey() {
+        Intent i = getIntent();
+        return "window:" + i.getStringExtra(HOST) + ":" + i.getStringExtra(SOURCE) + ":"
+                + i.getStringExtra(APP);
+    }
+
+    private int windowPercent() {
+        return prefs().getInt(windowKey(), 100);
+    }
+
+    private String deskKey() {
+        return "extendDesk:" + getIntent().getStringExtra(HOST);
+    }
+
+    private boolean extendDesk() {
+        return prefs().getBoolean(deskKey(), true);
+    }
+
+    private String bypassKey() {
+        return "bypassDesktop:" + getIntent().getStringExtra(HOST);
+    }
+
+    private boolean bypassDesktop() {
+        return prefs().getBoolean(bypassKey(), true);
+    }
+
+    /** The Window setting, as Bypass desktop says to carry it out; `tell`: the computer too. */
+    private void applyWindow(boolean tell) {
+        boolean bypass = bypassDesktop();
+        view.setShare(bypass ? windowPercent() : 100);
+        if (tell) send(Proto.window(bypass ? 100 : windowPercent(), !bypass));
+    }
 
     private SharedPreferences prefs() {
         return getSharedPreferences("session", MODE_PRIVATE);
@@ -166,7 +214,10 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
         view.setInput(this::send);
         view.setPointerMode(pointerMode());
         view.getHolder().addCallback(this);
-        root.addView(view);
+        root.setBackgroundColor(Color.BLACK);
+        root.addView(view, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
+        if (computer()) applyWindow(false);
         controls = new SessionControls(this, prefs());
         // The keyboard, on demand: a remote text field cannot summon the phone's.
         controls.addItem("Keyboard", () -> {
@@ -184,6 +235,13 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
         scaleValue = controls.addStepper("Smaller", "Larger", () -> stepScale(-1),
                                          () -> stepScale(1));
         scaleValue.setText(scaleLabel());
+        if (computer()) {
+            windowValue = controls.addStepper("Smaller window", "Larger window",
+                                              () -> stepWindow(-1), () -> stepWindow(1));
+            windowValue.setText(windowLabel());
+            deskItem = controls.addItem(deskLabel(), this::toggleDesk);
+            bypassItem = controls.addItem(bypassLabel(), this::toggleBypass);
+        }
         controls.addDivider();
         TextView endItem = controls.addItem("End session", () -> end(null));
         endItem.setTextColor(0xFFFF8A80);
@@ -272,6 +330,41 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
 
     private String inputLabel() {
         return pointerMode() ? "Input: Pointer" : "Input: Touch";
+    }
+
+    private String windowLabel() {
+        int p = windowPercent();
+        return p >= 100 ? "Window: Full screen" : "Window: " + p + "%";
+    }
+
+    private void stepWindow(int by) {
+        int cur = windowPercent(), i = 0;
+        while (i < WINDOWS.length - 1 && WINDOWS[i] < cur) i++;
+        int next = WINDOWS[Math.max(0, Math.min(WINDOWS.length - 1, i + by))];
+        prefs().edit().putInt(windowKey(), next).apply();
+        windowValue.setText(windowLabel());
+        applyWindow(true);
+    }
+
+    private String bypassLabel() {
+        return bypassDesktop() ? "Bypass desktop: On" : "Bypass desktop: Off";
+    }
+
+    private void toggleBypass() {
+        prefs().edit().putBoolean(bypassKey(), !bypassDesktop()).apply();
+        bypassItem.setText(bypassLabel());
+        applyWindow(true);
+    }
+
+    private String deskLabel() {
+        return extendDesk() ? "Desk: Extended" : "Desk: Separate";
+    }
+
+    private void toggleDesk() {
+        boolean next = !extendDesk();
+        prefs().edit().putBoolean(deskKey(), next).apply();
+        deskItem.setText(deskLabel());
+        send(Proto.desk(next));
     }
 
     private void toggleInput() {
@@ -428,6 +521,12 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
                 opts.put("new_display", r[0] + "x" + r[1] + "/" + r[2]);
                 opts.put("start_app", app);
                 opts.put("close_on_app_exit", "true");
+                if (computer()) {
+                    boolean bypass = bypassDesktop();
+                    opts.put("window", String.valueOf(bypass ? 100 : windowPercent()));
+                    opts.put("desktop", String.valueOf(!bypass));
+                    opts.put("extend_desk", String.valueOf(extendDesk()));
+                }
                 opts.put("video_codec", Streams.hasHevcDecoder() ? "h265" : "h264");
                 out.write(Proto.sessionRequest(Proto.KIND_NEW_DISPLAY, opts));
                 out.flush();
@@ -489,6 +588,10 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
     private void readDeviceMessages(DataInputStream in) {
         try {
             for (Proto.Record r; (r = Proto.readRecord(in, Proto.CONTROL_LIMIT)) != null; ) {
+                if (r.type == Proto.DEVICE_NOTICE) {
+                    String text = Proto.utf8(r.body, 0);
+                    runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
+                }
                 if (r.type == Proto.DEVICE_CLIPBOARD) {
                     String text = Proto.utf8(r.body, 0);
                     runOnUiThread(() -> {

@@ -399,13 +399,16 @@ const QVector<SourcePatch> &sourcePatches() {
         // edit. It belongs here on the merits too: generator.go is a soong change, which is what
         // this entry is for.
         {"lineage_sdk_features", "Honest Lineage SDK feature set",
-         "Ship only the Lineage SDK feature XMLs the image actually backs. lineage-24.0 is a "
-         "pure AOSP-17 tracking branch with no LineageSystemServer hook, so six declared "
-         "services (globalactions, hardware, health, livedisplay, profiles, trust) never run — "
-         "hasSystemFeature() lied, LineageHardwareManager Log.wtf'd on every init, and "
-         "lineageos.preference rows tombstoned instead of hiding. org.lineageos.settings stays: "
-         "LineageSettingsProvider ships and answers queries. Verified live: removing the six "
-         "XMLs drops the features, kills the wtf, and LineageParts stays healthy "
+         "Ship only the Lineage SDK feature XMLs whose services run in a container. "
+         "LineageSystemServer starts each Lineage service whose feature is declared, and five do "
+         "run here: globalactions (the power menu editor), hardware and livedisplay (reading mode "
+         "and color calibration), profiles, and trust. health is left out: HealthInterfaceService "
+         "publishes nothing without the vendor.lineage.health HAL, so declaring it would make "
+         "hasSystemFeature() claim charging control that no service answers, and LineageParts' "
+         "Charging control screen crashes on it. Verified on a container: all five start, "
+         "system_server and SystemUI stay up, and LineageParts' System profiles, Trust and power "
+         "menu screens, which crashed without them, work (bd remora-0145).\n\n"
+         "Before LineageOS 24.0 carried LineageSystemServer, this stripped all six "
          "(bd remora-4ei.62).\n\n"
          "A16 SKIPs this (the -a16 marker): lineage-23.0 HAS the SystemServer hook at the pin "
          "and all seven service halves, and its keyguard calls LineageGlobalActions without a "

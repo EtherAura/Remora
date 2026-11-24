@@ -29,7 +29,11 @@ QString scriptName(quint32 session) { return QStringLiteral("remora-session-%1")
 // The per-session script. It places the app's window on the output and every later one of its
 // windows until the session ends — a dialog or a second window opened from the phone belongs on
 // the phone. Borderless and maximized, because the output IS the phone's screen and a title bar
-// there is pixels the phone pays for; on every virtual desktop and every activity, because both
+// there is pixels the phone pays for, and because a tiling script leaves a maximized window alone —
+// unless the phone asked for a smaller window (WINDOW, a percentage of each side) or a desktop one
+// (DESKTOP): then centred at that size, with its title bar, which the phone's pointer can move it
+// by and resize it from, and which a tiling script arranges as it would any window of the desk's;
+// on every virtual desktop and every activity, because both
 // are global across outputs and switching either at the desk must not take the app off the phone
 // (a window left on one activity vanished from the phone when the desk switched to another, and
 // the phone showed the empty desktop).
@@ -49,7 +53,7 @@ QString scriptName(quint32 session) { return QStringLiteral("remora-session-%1")
 // smallest it can be: KWin keeps a window that cannot fit on an output off it, so the agent
 // lowers the output's scale until it does.
 const char kPlaceScript[] = R"JS(
-var SESSION = %1, APP = %2, OUTPUT = %3, ADOPT = %4, MOVE = %5;
+var SESSION = %1, APP = %2, OUTPUT = %3, ADOPT = %4, MOVE = %5, WINDOW = %6, DESKTOP = %7;
 var placed = {}, before = {};
 function output() {
     var s = workspace.screens;
@@ -58,6 +62,40 @@ function output() {
 }
 function ours(w) { return w && w.desktopFileName == APP && w.normalWindow; }
 function nothingPlaced() { for (var k in placed) return false; return true; }
+// The output filled, maximized and borderless, or WINDOW percent of each side of it, centred: never
+// below the window's own minimum, never past the output. Sent to the output through KWin first: a
+// geometry set from a script is applied only once the app answers it, so a maximize asked for
+// meanwhile was done on the output the window was still on (seen: maximized on the desk, where a
+// tiling script then sized it as a tile).
+function fit(w, out) {
+    var g = out.geometry;
+    if (!w.output || w.output.name != out.name) workspace.sendClientToScreen(w, out);
+    if (WINDOW >= 100 && !DESKTOP) {
+        w.noBorder = true;
+        w.setMaximize(true, true);
+        return;
+    }
+    w.noBorder = false;
+    var width = Math.min(g.width, Math.max(Math.round(g.width * WINDOW / 100), w.minSize.width));
+    var height = Math.min(g.height, Math.max(Math.round(g.height * WINDOW / 100), w.minSize.height));
+    w.frameGeometry = {x: g.x + Math.round((g.width - width) / 2),
+                       y: g.y + Math.round((g.height - height) / 2), width: width, height: height};
+}
+// A tiling script that saw the window first can arrange it after this one placed it, on the
+// output it opened on: Krohnkite's handler for a new window runs before this one's and tiles it a
+// moment later. While the session holds it, a window taken off the output is placed again — three
+// times at most, so a script that keeps taking it back is not fought forever.
+function keep(w) {
+    var tries = 0;
+    w.outputChanged.connect(function () {
+        var out = output();
+        if (!out || !placed[w.internalId.toString()] || (w.output && w.output.name == OUTPUT) ||
+            tries >= 3)
+            return;
+        tries++;
+        fit(w, out);
+    });
+}
 function place(w) {
     var out = output();
     if (!out || placed[w.internalId.toString()]) return;
@@ -68,7 +106,6 @@ function place(w) {
     var border = !w.noBorder, allDesktops = w.onAllDesktops;
     var activities = [];  // none: every activity
     for (var i = 0; i < w.activities.length; i++) activities.push(String(w.activities[i]));
-    var g = out.geometry;
     w.minimized = false;
     // Restored first: KWin can already hold the window maximized, at the size it had (one that
     // did not fit the output, placed again once the scale was lowered: 20 px short each side,
@@ -76,13 +113,15 @@ function place(w) {
     // there is then at its own size, which is the one to record.
     w.setMaximize(false, false);
     var was = w.frameGeometry;
-    w.noBorder = true;
     w.onAllDesktops = true;
     w.activities = [];
     w.demandsAttention = false;
-    w.frameGeometry = {x: g.x, y: g.y, width: g.width, height: g.height};
-    w.setMaximize(true, true);
-    workspace.activeWindow = w;
+    fit(w, out);
+    keep(w);
+    // Focused when it first comes to the phone, the app the phone just opened. Not when it is
+    // placed again (a reflow, a new window size): that would take focus from the desk, where
+    // someone may be working, at every turn of the phone.
+    if (MOVE.indexOf(w.internalId.toString()) < 0) workspace.activeWindow = w;
     callDBus("org.remora.HostAgent", "/Placement", "org.remora.HostAgent.Placement", "placed",
              JSON.stringify({session: SESSION, id: w.internalId.toString(), pid: w.pid,
                              isNew: isNew, x: was.x, y: was.y, width: was.width,
@@ -117,15 +156,39 @@ if (ADOPT) {
     if (!pick && ours(workspace.activeWindow)) pick = workspace.activeWindow;
     if (pick) place(pick);
 }
-// Whether the window with keyboard focus is one of the phone's: the agent holds the phone's keys
-// while it is not. Connected after the placing handler, so a window placed on activation counts.
+// Whether the window with keyboard focus is the phone's: one placed here, or any other on the
+// phone's screen (a dialog, which is not placed, opens over its window there) except the
+// desktop's own, where typing would start a search on the desk. The agent types the phone's keys
+// into nothing else. Connected after the placing handler, so a window placed on activation counts.
+function onOutput(w) {
+    return !!w && !!w.output && w.output.name == OUTPUT && !w.desktopWindow && !w.dock;
+}
 function reportFocus(w) {
     var id = w ? w.internalId.toString() : "";
     callDBus("org.remora.HostAgent", "/Placement", "org.remora.HostAgent.Placement", "focus",
-             JSON.stringify({session: SESSION, id: id, ours: !!placed[id]}));
+             JSON.stringify({session: SESSION, id: id, ours: !!placed[id] || onOutput(w)}));
 }
 workspace.windowActivated.connect(reportFocus);
 reportFocus(workspace.activeWindow);
+// Where the desk's pointer was when the phone took it onto this output: the agent puts it back
+// when the phone lets go of an output that stands apart, which the pointer cannot leave by itself.
+var deskPointer = null, pointerHere = false;
+function pointerMoved() {
+    var out = output(), p = workspace.cursorPos;
+    var g = out ? out.geometry : null;
+    if (!g || p.x < g.x || p.y < g.y || p.x >= g.x + g.width || p.y >= g.y + g.height) {
+        deskPointer = {x: p.x, y: p.y};
+        pointerHere = false;
+        return;
+    }
+    if (pointerHere) return;
+    pointerHere = true;
+    if (deskPointer)
+        callDBus("org.remora.HostAgent", "/Placement", "org.remora.HostAgent.Placement",
+                 "pointerEntered", JSON.stringify({session: SESSION, x: deskPointer.x, y: deskPointer.y}));
+}
+workspace.cursorPosChanged.connect(pointerMoved);
+pointerMoved();
 workspace.windowRemoved.connect(function (w) {
     var id = w.internalId.toString();
     if (!placed[id]) return;
@@ -135,16 +198,6 @@ workspace.windowRemoved.connect(function (w) {
     callDBus("org.remora.HostAgent", "/Placement", "org.remora.HostAgent.Placement",
              "windowClosed", JSON.stringify({session: SESSION, id: id, last: left == 0}));
 });
-)JS";
-
-// Gives the phone's window keyboard focus again, the one it had last if it is still there.
-const char kActivateScript[] = R"JS(
-var IDS = %1;
-var ws = workspace.windowList(), pick = null;
-for (var k = 0; k < IDS.length && !pick; k++)
-    for (var i = 0; i < ws.length && !pick; i++)
-        if (ws[i].internalId.toString() == IDS[k]) pick = ws[i];
-if (pick) workspace.activeWindow = pick;
 )JS";
 
 // Gives windows back to the desk. Run once, after the session's script is unloaded. A window
@@ -241,26 +294,41 @@ void WindowPlacer::unloadScript(const QString &name) {
 }
 
 bool WindowPlacer::watch(quint32 session, const QString &appId, const QString &output,
-                         QString *error) {
+                         Window window, QString *error) {
     windows_.insert(session, {});
-    watched_.insert(session, {appId, output});
+    watched_.insert(session, {appId, output, window});
     return runScript(scriptName(session), placeScript(session, false), error);
 }
 
 QString WindowPlacer::placeScript(quint32 session, bool adopt, const QStringList &move) const {
-    const auto [appId, output] = watched_.value(session);
+    const Watched w = watched_.value(session);
     const QString moveJs = QString::fromUtf8(
         QJsonDocument(QJsonArray::fromStringList(move)).toJson(QJsonDocument::Compact));
     return QString::fromUtf8(kPlaceScript)
         .arg(session)
-        .arg(jsString(appId), jsString(output),
-             adopt ? QStringLiteral("true") : QStringLiteral("false"), moveJs);
+        .arg(jsString(w.appId), jsString(w.output),
+             adopt ? QStringLiteral("true") : QStringLiteral("false"), moveJs,
+             QString::number(w.window.percent),
+             w.window.desktop ? QStringLiteral("true") : QStringLiteral("false"));
 }
 
 void WindowPlacer::moveTo(quint32 session, const QString &output) {
     auto it = watched_.find(session);
     if (it == watched_.end()) return;
-    it->second = output;
+    it->output = output;
+    replace(session);
+}
+
+void WindowPlacer::setWindow(quint32 session, Window window) {
+    auto it = watched_.find(session);
+    if (it == watched_.end() ||
+        (it->window.percent == window.percent && it->window.desktop == window.desktop))
+        return;
+    it->window = window;
+    replace(session);
+}
+
+void WindowPlacer::replace(quint32 session) {
     QString error;
     if (!runScript(scriptName(session), placeScript(session, false, windows_.value(session).keys()),
                    &error))
@@ -273,20 +341,6 @@ void WindowPlacer::adoptIfUnplaced(quint32 session) {
     QString error;
     if (!runScript(scriptName(session), placeScript(session, true), &error))
         qWarning("host agent: %s", qUtf8Printable(error));
-}
-
-void WindowPlacer::activate(quint32 session) {
-    const auto it = windows_.constFind(session);
-    if (it == windows_.constEnd() || it->isEmpty()) return;
-    QStringList ids;
-    const QString last = lastFocused_.value(session);
-    if (it->contains(last)) ids << last;
-    for (auto w = it->cbegin(); w != it->cend(); ++w)
-        if (w.key() != last) ids << w.key();
-    runOnce(scriptName(session) + QStringLiteral("-activate"),
-            QString::fromUtf8(kActivateScript)
-                .arg(QString::fromUtf8(
-                    QJsonDocument(QJsonArray::fromStringList(ids)).toJson(QJsonDocument::Compact))));
 }
 
 void WindowPlacer::runOnce(const QString &name, const QString &source) {
@@ -303,7 +357,6 @@ void WindowPlacer::runOnce(const QString &name, const QString &source) {
 void WindowPlacer::release(quint32 session) {
     unloadScript(scriptName(session));
     watched_.remove(session);
-    lastFocused_.remove(session);
     const QHash<QString, Placed> windows = windows_.take(session);
     if (windows.isEmpty()) return;
     QJsonObject back;
@@ -359,9 +412,15 @@ void WindowPlacer::focus(const QString &json) {
     const QJsonObject o = QJsonDocument::fromJson(json.toUtf8()).object();
     const quint32 session = quint32(o.value(QStringLiteral("session")).toInt());
     if (!watched_.contains(session)) return;
-    const bool ours = o.value(QStringLiteral("ours")).toBool();
-    if (ours) lastFocused_.insert(session, o.value(QStringLiteral("id")).toString());
-    emit focusChanged(session, ours);
+    emit focusChanged(session, o.value(QStringLiteral("ours")).toBool());
+}
+
+void WindowPlacer::pointerEntered(const QString &json) {
+    const QJsonObject o = QJsonDocument::fromJson(json.toUtf8()).object();
+    const quint32 session = quint32(o.value(QStringLiteral("session")).toInt());
+    if (!watched_.contains(session)) return;
+    emit deskPointer(session, QPointF(o.value(QStringLiteral("x")).toDouble(),
+                                      o.value(QStringLiteral("y")).toDouble()));
 }
 
 void WindowPlacer::windowClosed(const QString &json) {

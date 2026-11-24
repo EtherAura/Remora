@@ -149,6 +149,27 @@ private slots:
                                     QStringLiteral("output.Virtual-remora-2.scale.2")}));
     }
 
+    // A phone that does not extend the desk stands a gap away from everything, after the ones
+    // that do, so the desk's pointer cannot reach it and no extension is cut off behind it.
+    void apartOutputStandsOffTheDesk() {
+        const auto before = outputs::parseKScreenJson(kscreen(false));
+        QByteArray two = kscreen(true, 4314, 3, 2, 2.625);
+        two.chop(2);  // "]}"
+        two += R"(,{"name":"Virtual-remora-2","connected":true,"pos":{"x":0,"y":0},"scale":1,
+                  "priority":4,"rotation":1,"currentModeId":"0",
+                  "modes":[{"id":"0","size":{"width":1200,"height":2000}}]}]})";
+        const QStringList args = outputs::repairArgs(
+            before, outputs::parseKScreenJson(two),
+            {{QStringLiteral("Virtual-remora-1"), 2.625, true}, {QStringLiteral("Virtual-remora-2"), 2}});
+        // remora-2 extends the desk at its edge (4314), 600 logical wide; remora-1 is kApartGap on.
+        QCOMPARE(args, (QStringList{QStringLiteral("output.Virtual-remora-2.position.4314,0"),
+                                    QStringLiteral("output.Virtual-remora-2.priority.3"),
+                                    QStringLiteral("output.Virtual-remora-2.scale.2"),
+                                    QStringLiteral("output.Virtual-remora-1.position.%1,0")
+                                        .arg(4314 + 600 + outputs::kApartGap),
+                                    QStringLiteral("output.Virtual-remora-1.priority.4")}));
+    }
+
     // A mirrored desk: the second monitor shows the first's picture. Its stored position and
     // priority are not what is on screen, and setting them would end the mirroring — so the repair
     // never names it, and it does not widen the desk the virtual output is parked beside.
@@ -474,6 +495,39 @@ private slots:
         QCOMPARE(hostinput::evdevKey(113), std::optional<quint32>(29));  // CTRL_LEFT
         QCOMPARE(hostinput::evdevKey(142), std::optional<quint32>(88));  // F12
         QVERIFY(!hostinput::evdevKey(3));  // HOME: the phone's, not the app's
+    }
+
+    // The phone's window size and whether its screen extends the desk: one byte each, and a
+    // NOTICE back for what the phone's user must be told.
+    void windowAndDeskRoundTrip() {
+        QCOMPARE(mirror::windowMessage(75), QByteArray::fromHex("00000003094b00"));
+        mirror::ControlMessageParser p;
+        p.feed(mirror::windowMessage(75));
+        p.feed(mirror::windowMessage(100, true));
+        p.feed(mirror::record(quint8(mirror::ControlRecord::Window), QByteArray(1, char(60))));
+        p.feed(mirror::deskMessage(false));
+        p.feed(mirror::deskMessage(true));
+        auto m = p.next();
+        QCOMPARE(m->type, mirror::ControlRecord::Window);
+        QCOMPARE(m->windowPercent, quint8(75));
+        QVERIFY(!m->windowDesktop);
+        m = p.next();
+        QCOMPARE(m->windowPercent, quint8(100));
+        QVERIFY(m->windowDesktop);
+        m = p.next();  // the one-byte form: not a desktop window
+        QCOMPARE(m->windowPercent, quint8(60));
+        QVERIFY(!m->windowDesktop);
+        m = p.next();
+        QCOMPARE(m->type, mirror::ControlRecord::Desk);
+        QVERIFY(!m->extendDesk);
+        m = p.next();
+        QVERIFY(m->extendDesk);
+        QVERIFY(!p.error());
+        mirror::DeviceMessageParser d;
+        d.feed(mirror::deviceNoticeRecord(QStringLiteral("Tap the app first.")));
+        const auto n = d.next();
+        QCOMPARE(n->type, mirror::DeviceRecord::Notice);
+        QCOMPARE(n->notice, QStringLiteral("Tap the app first."));
     }
 
     void textBecomesKeysyms() {

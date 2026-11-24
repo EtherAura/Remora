@@ -47,10 +47,16 @@ QList<OutputState> parseKScreenJson(const QByteArray &json);
 struct VirtualPlacement {
     QString name;   // the connector name, "Virtual-…"
     double scale = 1.0;
+    bool apart = false;  // not an extension of the desk: no edge of it touches another output
 };
 
+// How far an output kept apart stands from the rest. KWin moves the pointer to the output nearest
+// where it would go, so a gap only holds if no single motion can land nearer the far side.
+constexpr int kApartGap = 2000;
+
 // kscreen-doctor arguments that put every enabled output of `before` back where it was and park
-// `ours` to the right of them, top-aligned, in order, at priorities after the existing ones.
+// `ours` to the right of them, top-aligned, in order, at priorities after the existing ones: the
+// desk's extensions edge to edge, then the ones kept apart, each kApartGap beyond the last.
 // Outputs in `now` that are neither in `before` nor ours are left alone, and so is every mirror
 // copy: telling one where to be is telling KWin to stop mirroring. Empty when nothing needs to
 // change.

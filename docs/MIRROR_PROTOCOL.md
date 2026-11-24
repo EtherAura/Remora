@@ -90,6 +90,8 @@ On the session's control connection. Every type here is one the agent acts on.
 | 0x06 | PANEL | `u8 panel` — 0 collapse, 1 notifications, 2 quick settings |
 | 0x07 | CLIPBOARD | `u64 sequence, u8 paste, UTF-8 text` — sequence 0 asks for no acknowledgement |
 | 0x08 | RESIZE | `u16 width, u16 height[, u16 dpi]` — reflows a new-display session; a mirror ignores it |
+| 0x09 | WINDOW | `u8 percent[, u8 desktop]` — the app's window as that share of each side of the display, centred; 100 fills it |
+| 0x0A | DESK | `u8 extend` — 1: the display extends the computer's desk; 0: it stands apart from it |
 
 - **x, y** are **fractions of the frame the client is showing**: 0 is the left or top edge, 1 the
   right or bottom. The agent multiplies by the session display's current size, so the client never
@@ -104,6 +106,13 @@ On the session's control connection. Every type here is one the agent acts on.
   Given, it is the display's new density, and later resizes follow the long side from it; a size
   that is unchanged with a density that is changes only the density. An agent from before the
   field reads the first four bytes and ignores the rest.
+- **WINDOW and DESK** are the host agent's, for a computer's apps (docs/PHONE_APP.md): an
+  Android app always fills its display, and the in-image agent skips both, as it does any type it
+  does not know. WINDOW's `desktop` byte, 1, makes the window a desk window like any other — a
+  title bar, never maximized, arranged by the desk's tiling scripts — and 0, or leaving it out,
+  keeps it filling its display untouched. The host agent takes the same as the session's
+  `window=<percent>`, `desktop=true|false` and `extend_desk=true|false` options, and keeps a
+  window no smaller than 25% or the app's minimum.
 
 ## 4. Device messages, agent → client
 
@@ -113,5 +122,6 @@ On the same control connection, in the other direction:
 |---|---|---|
 | 0x01 | CLIPBOARD | UTF-8 text — the device clipboard changed |
 | 0x02 | CLIPBOARD_ACK | `u64 sequence` — a CLIPBOARD control message with that sequence is applied |
+| 0x03 | NOTICE | UTF-8 text — something the client's user should be told, such as keys not typed |
 
 The agent cuts clipboard text to fit the 1 MiB record, never splitting a UTF-8 sequence.

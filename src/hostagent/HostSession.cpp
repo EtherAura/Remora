@@ -24,6 +24,11 @@ namespace {
 // How long a session waits for its client's first video connection, and for one that went to
 // come back (past the phone app's own five minutes away).
 constexpr int kFirstVideoMs = 30'000, kVideoAwaySec = 330;
+// The smallest window the phone may ask for, as a share of each side of its screen.
+constexpr int kMinWindowPercent = 25;
+// How long the phone's pointer rests before the desk's goes back, and how often at most the phone
+// is told its keys were not typed.
+constexpr int kPointerReturnMs = 1500, kNoticeEveryMs = 5000;
 }  // namespace
 
 std::optional<SessionParams> SessionParams::fromOptions(const QHash<QString, QString> &o,
@@ -66,6 +71,11 @@ std::optional<SessionParams> SessionParams::fromOptions(const QHash<QString, QSt
     // The in-image agent's "+pkg" (force-stop first) and "?label" forms have no meaning here.
     if (p.startApp.startsWith(QLatin1Char('+'))) p.startApp.remove(0, 1);
     p.closeOnAppExit = o.value(QStringLiteral("close_on_app_exit")) == QLatin1String("true");
+    bool ok = false;
+    const int window = o.value(QStringLiteral("window")).toInt(&ok);
+    if (ok) p.windowPercent = qBound(kMinWindowPercent, window, 100);
+    p.windowDesktop = o.value(QStringLiteral("desktop")) == QLatin1String("true");
+    p.extendDesk = o.value(QStringLiteral("extend_desk")) != QLatin1String("false");
     return p;
 }
 
@@ -78,29 +88,25 @@ HostSession::HostSession(const Services &services, quint32 id, const QString &ou
     reflowTimer_->setSingleShot(true);
     reflowTimer_->setInterval(250);  // a burst of RESIZEs (a drag, a fold) becomes one reflow
     connect(reflowTimer_, &QTimer::timeout, this, &HostSession::beginReflow);
-    focusTimer_ = new QTimer(this);
-    focusTimer_->setSingleShot(true);
-    focusTimer_->setInterval(1500);
-    connect(focusTimer_, &QTimer::timeout, this, [this] {
-        deliver(keys_.expire());
-        qWarning("host agent: session %u: keys dropped — its window did not get keyboard focus back",
-                 id_);
-    });
     // Focus is not usable the instant KWin reports it: a key injected right then reached nothing,
     // neither the window that lost focus nor the one that gained it. Measured with a calculator.
     focusSettle_ = new QTimer(this);
     focusSettle_->setSingleShot(true);
     focusSettle_->setInterval(100);
-    connect(focusSettle_, &QTimer::timeout, this, [this] {
-        focusTimer_->stop();
-        deliver(keys_.focusChanged(true));
-    });
+    connect(focusSettle_, &QTimer::timeout, this, [this] { deliver(keys_.focusChanged(true)); });
     connect(s_.placer, &WindowPlacer::focusChanged, this, [this](quint32 session, bool ours) {
         if (session != id_) return;
         if (ours) return focusSettle_->start();
         focusSettle_->stop();
         deliver(keys_.focusChanged(false));
-        regainFocus();  // keys held while it was settling still wait for it
+        dropHeldKeys();  // keys held while it was settling: focus went elsewhere instead
+    });
+    pointerReturn_ = new QTimer(this);
+    pointerReturn_->setSingleShot(true);
+    pointerReturn_->setInterval(kPointerReturnMs);
+    connect(pointerReturn_, &QTimer::timeout, this, &HostSession::returnPointer);
+    connect(s_.placer, &WindowPlacer::deskPointer, this, [this](quint32 session, QPointF at) {
+        if (session == id_) deskPointer_ = at;
     });
     connect(s_.placer, &WindowPlacer::windowMinimum, this, [this](quint32 session, QSize min) {
         if (session != id_) return;
@@ -135,8 +141,9 @@ HostSession::~HostSession() { end(QStringLiteral("the agent is stopping")); }
 QString HostSession::outputName() const { return QStringLiteral("Virtual-") + outputName_; }
 
 QList<outputs::VirtualPlacement> HostSession::placements() const {
-    QList<outputs::VirtualPlacement> out{{outputName(), params_.scale}};
-    if (nextOutput_) out.append({QStringLiteral("Virtual-") + nextName_, nextScale_});
+    const bool apart = !params_.extendDesk;
+    QList<outputs::VirtualPlacement> out{{outputName(), params_.scale, apart}};
+    if (nextOutput_) out.append({QStringLiteral("Virtual-") + nextName_, nextScale_, apart});
     return out;
 }
 
@@ -163,7 +170,8 @@ void HostSession::onDeskSettled(bool ok, const QString &detail) {
     refreshGeometry();
     if (std::exchange(rescaleWaiting_, false)) {
         // Placed again at the new scale: a window that did not fit before was left on the desk,
-        // and one that did is maximized to the output's new extent.
+        // and one that did is maximized to the output's new extent. Or the output moved, to stand
+        // apart from the desk or to extend it: the windows go with it.
         s_.placer->moveTo(id_, outputName());
     }
     if (reflowWaiting_) {
@@ -235,7 +243,9 @@ void HostSession::launchApp() {
     if (readyEmitted_) return;
     if (!params_.startApp.isEmpty()) {
         QString error;
-        if (!s_.placer->watch(id_, params_.startApp, outputName(), &error)) return fail(error);
+        if (!s_.placer->watch(id_, params_.startApp, outputName(),
+                              {params_.windowPercent, params_.windowDesktop}, &error))
+            return fail(error);
         if (params_.closeOnAppExit) {
             connect(s_.placer, &WindowPlacer::allWindowsClosed, this, [this](quint32 session) {
                 if (session == id_) end(QStringLiteral("the app closed its last window"));
@@ -284,6 +294,16 @@ void HostSession::onControlData() {
     while (const auto m = parser_.next()) {
         if (m->type == ControlRecord::Resize) {
             requestResize(QSize(m->width, m->height), m->dpi);
+            continue;
+        }
+        if (m->type == ControlRecord::Window) {
+            params_.windowPercent = qBound(kMinWindowPercent, int(m->windowPercent), 100);
+            params_.windowDesktop = m->windowDesktop;
+            s_.placer->setWindow(id_, {params_.windowPercent, params_.windowDesktop});
+            continue;
+        }
+        if (m->type == ControlRecord::Desk) {
+            setExtendDesk(m->extendDesk);
             continue;
         }
         if (m->type == ControlRecord::Clipboard) {
@@ -421,14 +441,44 @@ void HostSession::abandonReflow(const QString &why) {
 
 void HostSession::inject(const QList<hostinput::InputOp> &ops) {
     deliver(keys_.pass(ops));
-    regainFocus();
+    if (!focusSettle_->isActive()) dropHeldKeys();
+    using Op = hostinput::InputOp;
+    for (const Op &op : ops) {
+        if (op.kind == Op::PointerMotion || op.kind == Op::PointerButton ||
+            op.kind == Op::PointerAxis) {
+            pointerReturn_->start();
+            break;
+        }
+    }
 }
 
-// Keys wait while another window has focus: the phone's window gets it back, once per wait.
-void HostSession::regainFocus() {
-    if (!keys_.holding() || ended_ || focusTimer_->isActive() || focusSettle_->isActive()) return;
-    s_.placer->activate(id_);
-    focusTimer_->start();
+// Another window has the keyboard: the phone's keys are not typed into it, and focus is not taken
+// back — at the desk that took it from the person working there.
+void HostSession::dropHeldKeys() {
+    if (!keys_.holding()) return;
+    deliver(keys_.expire());
+    if (!control_ || (noticed_.isValid() && noticed_.elapsed() < kNoticeEveryMs)) return;
+    noticed_.start();
+    control_->write(deviceNoticeRecord(QStringLiteral(
+        "Not typed: another window on the computer has the keyboard. Tap the app, then type.")));
+}
+
+void HostSession::setExtendDesk(bool extend) {
+    if (params_.extendDesk == extend || ended_) return;
+    params_.extendDesk = extend;
+    qInfo("host agent: session %u %s", id_,
+          extend ? "extends the desk" : "stands apart from the desk");
+    rescaleWaiting_ = true;  // the windows follow the output to its new place
+    emit outputLive(id_);
+    if (!extend) pointerReturn_->start();  // the pointer may be there already
+}
+
+// The phone let go of the pointer on an output apart from the desk: the desk's comes back to
+// where it was, since nothing at the desk can move it off that output.
+void HostSession::returnPointer() {
+    if (ended_ || params_.extendDesk || !deskPointer_) return;
+    if (input_.buttonsHeld()) return pointerReturn_->start();  // a drag still going
+    deliver({hostinput::InputOp{hostinput::InputOp::PointerMotion, *std::exchange(deskPointer_, {})}});
 }
 
 void HostSession::deliver(const QList<hostinput::InputOp> &ops) {

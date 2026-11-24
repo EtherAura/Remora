@@ -1,6 +1,8 @@
 #pragma once
+#include <QElapsedTimer>
 #include <QHash>
 #include <QObject>
+#include <QPointF>
 #include <QPointer>
 #include <QProcess>
 #include <QSet>
@@ -8,6 +10,7 @@
 #include <QString>
 
 #include <memory>
+#include <optional>
 
 #include "core/HostInput.h"
 #include "core/OutputLayout.h"
@@ -38,6 +41,9 @@ struct SessionParams {
     bool audio = true;             // false (audio=false): no client takes the sound; it stays here
     QString startApp;              // desktop-file id; empty shows the bare output
     bool closeOnAppExit = false;
+    int windowPercent = 100;       // window=: the app's window, a share of each side; 100 fills
+    bool windowDesktop = false;    // desktop=true: a desk window like any other (see WINDOW)
+    bool extendDesk = true;        // extend_desk=false: the output stands apart from the desk
 
     // nullopt with *error for options this agent cannot serve.
     static std::optional<SessionParams> fromOptions(const QHash<QString, QString> &options,
@@ -110,7 +116,9 @@ private:
     void abandonReflow(const QString &why);
     void inject(const QList<hostinput::InputOp> &ops);  // through the key gate
     void deliver(const QList<hostinput::InputOp> &ops);  // straight to KWin
-    void regainFocus();
+    void dropHeldKeys();  // keys another window has focus for: dropped, and the client told
+    void setExtendDesk(bool extend);
+    void returnPointer();
     void fail(const QString &why);
 
     Services s_;
@@ -127,8 +135,12 @@ private:
     mirror::ControlMessageParser parser_;
     hostinput::Translator input_;
     hostinput::KeyGate keys_;
-    QTimer *focusTimer_ = nullptr;  // how long held keys wait for the window to get focus back
     QTimer *focusSettle_ = nullptr;  // focus regained, not yet usable
+    QElapsedTimer noticed_;          // since the client was last told its keys were dropped
+    // Where the desk's pointer was when the phone took it, and how long the phone's pointer may
+    // rest before it goes back there — on an output apart from the desk, which it cannot leave.
+    std::optional<QPointF> deskPointer_;
+    QTimer *pointerReturn_ = nullptr;
     quint64 serial_ = 0;
     bool readyEmitted_ = false, ended_ = false, layoutWaiting_ = false;
 
@@ -141,7 +153,7 @@ private:
     QSize wantedPixels_;
     // The largest of the app's windows' minimum sizes: the scale never goes above what fits it.
     QSize minLogical_;
-    bool rescaleWaiting_ = false;  // re-place the windows once the new scale is laid out
+    bool rescaleWaiting_ = false;  // re-place the windows once the new scale or place is laid out
     QTimer *reflowTimer_ = nullptr;
     VirtualOutput *nextOutput_ = nullptr;
     PipeWireCapture *nextCapture_ = nullptr;

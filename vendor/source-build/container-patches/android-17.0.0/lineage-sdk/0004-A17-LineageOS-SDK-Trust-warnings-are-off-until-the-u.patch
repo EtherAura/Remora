@@ -1,0 +1,48 @@
+From a0851fd3bb0226200822220738713005106f1ce7 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Tue, 24 Nov 2026 09:55:23 -0500
+Subject: [PATCH] A17 LineageOS SDK: Trust warnings are off until the user
+ turns them on
+
+TrustInterfaceService checks two things at every boot once the user has
+been through the Trust onboarding: that SELinux is enforcing and that
+the build is not signed with test keys. Each failure posts a
+high-importance notification. In a container both fail by construction:
+there is no SELinux (Trust reports it Disabled), and the image is a
+test-keys build. With trust_warnings unset, which the upstream code
+treats as every warning on, each boot would post two security warnings
+that nothing on the device can resolve.
+
+Unset now means no warnings. The Trust screen still shows the SELinux,
+security patch and encryption status, and its Alerts switches still
+turn either warning on. LineageParts' TrustPreferences reads the same
+default (its own patch), so those switches show what the service does.
+
+Change-Id: I946d99e4ca6e750257f20093daa2bef8d528a49b
+---
+ .../lineageos/platform/internal/TrustInterfaceService.java | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/lineage/lib/main/java/org/lineageos/platform/internal/TrustInterfaceService.java b/lineage/lib/main/java/org/lineageos/platform/internal/TrustInterfaceService.java
+index 97d684ac..3f1363fd 100644
+--- a/lineage/lib/main/java/org/lineageos/platform/internal/TrustInterfaceService.java
++++ b/lineage/lib/main/java/org/lineageos/platform/internal/TrustInterfaceService.java
+@@ -217,10 +217,13 @@ public class TrustInterfaceService extends LineageSystemService {
+         return mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+     }
+ 
++    // Remora: off until the user turns a warning on. Both checks fail by construction in a
++    // container (there is no SELinux, and the image is signed with test keys), so the upstream
++    // default posted two warnings on every boot that nothing could resolve. LineageParts'
++    // TrustPreferences reads the same default.
+     private boolean isWarningAllowed(int warning) {
+         return (LineageSettings.Secure.getInt(mContext.getContentResolver(),
+-                LineageSettings.Secure.TRUST_WARNINGS,
+-                TrustInterface.TRUST_WARN_MAX_VALUE) & warning) != 0;
++                LineageSettings.Secure.TRUST_WARNINGS, 0) & warning) != 0;
+     }
+ 
+     private Pair<Integer, Integer> getNotificationStringsForFeature(int feature) {
+-- 
+2.56.1
+

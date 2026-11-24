@@ -25,9 +25,10 @@ final class Proto {
     static final int START = 1, FORMAT = 2, CONFIG = 3, FRAME = 4, END = 5;
     static final int CODEC_H264 = 0x01, CODEC_H265 = 0x02, CODEC_AV1 = 0x03, CODEC_OPUS = 0x81;
     // Control messages, phone → agent (§3).
-    static final int KEY = 1, TEXT = 2, POINTER = 3, SCROLL = 4, BACK = 5, CLIPBOARD = 7, RESIZE = 8;
+    static final int KEY = 1, TEXT = 2, POINTER = 3, SCROLL = 4, BACK = 5, CLIPBOARD = 7, RESIZE = 8,
+            WINDOW = 9, DESK = 10;
     // Device messages, agent → phone (§4).
-    static final int DEVICE_CLIPBOARD = 1;
+    static final int DEVICE_CLIPBOARD = 1, DEVICE_NOTICE = 3;
 
     static final int CONTROL_LIMIT = 1 << 20, STREAM_LIMIT = 32 << 20;
 
@@ -170,6 +171,19 @@ final class Proto {
     static byte[] resize(int width, int height, int dpi) {
         return record(RESIZE, ByteBuffer.allocate(6).putShort((short) width).putShort((short) height)
                 .putShort((short) dpi).array());
+    }
+
+    /**
+     * The app's window, as a percentage of each side of the remote display; 100 fills it.
+     * `desktop`: a window of the computer's desk like any other, which its tiling scripts arrange.
+     */
+    static byte[] window(int percent, boolean desktop) {
+        return record(WINDOW, new byte[] {(byte) percent, (byte) (desktop ? 1 : 0)});
+    }
+
+    /** Whether the remote display extends the computer's desk or stands apart from it. */
+    static byte[] desk(boolean extend) {
+        return record(DESK, new byte[] {(byte) (extend ? 1 : 0)});
     }
 
     static byte[] clipboard(String text, boolean paste) {

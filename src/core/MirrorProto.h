@@ -134,7 +134,7 @@ private:
 
 enum class ControlRecord : quint8 {
     Key = 0x01, Text = 0x02, Pointer = 0x03, Scroll = 0x04,
-    Back = 0x05, Panel = 0x06, Clipboard = 0x07, Resize = 0x08,
+    Back = 0x05, Panel = 0x06, Clipboard = 0x07, Resize = 0x08, Window = 0x09, Desk = 0x0A,
 };
 
 enum class PointerTool : quint8 { Finger = 0, Mouse = 1 };
@@ -159,6 +159,12 @@ QByteArray panelMessage(Panel panel);
 QByteArray clipboardMessage(quint64 sequence, bool paste, const QString &text);
 // dpi 0 leaves the density to follow the long side; any other value is the display's new density.
 QByteArray resizeMessage(quint16 width, quint16 height, quint16 dpi = 0);
+// The session window's size, as a percentage of each side of its display; 100 fills it.
+// `desktop`: the window is the desk's like any other — a title bar, never maximized, arranged by
+// the desk's tiling scripts if it has any — rather than filling its display untouched.
+QByteArray windowMessage(quint8 percent, bool desktop = false);
+// Whether the session's display extends the desk (true) or stands apart from it.
+QByteArray deskMessage(bool extend);
 
 // Session launch ---------------------------------------------------------------------------------
 
@@ -267,11 +273,12 @@ QStringList adbAgentTunnelArgv(const QString &adb, const QString &serial, quint1
 
 // Device messages, agent → client ----------------------------------------------------------------
 
-enum class DeviceRecord : quint8 { Clipboard = 0x01, ClipboardAck = 0x02 };
+enum class DeviceRecord : quint8 { Clipboard = 0x01, ClipboardAck = 0x02, Notice = 0x03 };
 
 struct DeviceMessage {
     DeviceRecord type = DeviceRecord::Clipboard;
     QString clipboardText;  // Clipboard
+    QString notice;         // Notice
     quint64 sequence = 0;   // ClipboardAck
 };
 
@@ -331,6 +338,8 @@ QByteArray streamEndRecord(quint8 reason, const QString &detail);
 QByteArray deviceClipboardRecord(const QString &text);
 // Device → client CLIPBOARD_ACK: the client's CLIPBOARD with this sequence is applied.
 QByteArray clipboardAckRecord(quint64 sequence);
+// Device → client NOTICE: something the client's user should be told, in a sentence.
+QByteArray deviceNoticeRecord(const QString &text);
 
 struct ControlMessage {
     ControlRecord type = ControlRecord::Key;
@@ -348,6 +357,9 @@ struct ControlMessage {
     bool paste = false;
     quint16 width = 0, height = 0;     // Resize
     quint16 dpi = 0;                   // Resize: 0, or absent, follows the long side
+    quint8 windowPercent = 100;        // Window
+    bool windowDesktop = false;        // Window: a desk window like any other
+    bool extendDesk = true;            // Desk
 };
 
 // Incremental parser for the control connection's client→agent direction. Unknown types are

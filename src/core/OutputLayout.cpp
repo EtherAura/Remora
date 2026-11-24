@@ -100,10 +100,16 @@ QStringList repairArgs(const QList<OutputState> &before, const QList<OutputState
     }
     int x = right;
     int priority = lastPriority;
-    for (const VirtualPlacement &v : ours) {
+    QList<VirtualPlacement> ordered;
+    for (const VirtualPlacement &v : ours)
+        if (!v.apart) ordered << v;
+    for (const VirtualPlacement &v : ours)
+        if (v.apart) ordered << v;
+    for (const VirtualPlacement &v : std::as_const(ordered)) {
         const OutputState *n = find(now, v.name);
         if (!n) continue;  // KWin has not listed it yet; the caller retries
         ++priority;
+        if (v.apart) x += kApartGap;
         const QPoint want(x, top);
         if (n->pos != want)
             args << QStringLiteral("output.%1.position.%2,%3").arg(v.name).arg(want.x()).arg(want.y());

@@ -13,9 +13,27 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   it goes where the finger is, a tap clicks, a long press is the secondary click, one finger
   dragged holds the button (selecting text, moving a slider), and two fingers scroll. Android's
   apps keep touch. *Input* in a session's controls switches between the two, kept per source.
+- In the phone app preview, *Window* in a session's controls sizes this computer's app on the
+  phone: full screen, or 90, 75, 60 or 50% of each side, centred. Kept per app.
+- In the phone app preview, *Bypass desktop* in a session's controls, on by default, keeps this
+  computer's desktop out of the phone's screen: the app fills a screen of its own, maximized, with
+  no wallpaper around it, and tiling scripts such as Krohnkite leave it alone, so *Window* sizes
+  it even where one runs. Off, the phone's screen is a desktop like the computer's own: the app
+  has its title bar, the wallpaper shows around it, and the tiling scripts arrange it. Kept per
+  computer.
+- In the phone app preview, *Desk* in a session's controls sets whether the phone's screen
+  extends this computer's desk, as it always has, or stands apart from it, where the desk's
+  pointer and windows cannot cross onto it. When the phone's pointer has taken the desk's pointer
+  there, it goes back to where it was once the phone stops pointing. Kept per computer.
 - In the phone app preview, a profile's Android apps are listed with their own icons. The image's
   agent draws an app's launcher icon for the phone, as `remora-host-agent` does for this
   computer's apps; an image from before this release still shows each app's initial.
+- On the Android 17 image, LineageOS's System profiles, Trust and LiveDisplay settings work.
+  Settings already listed them, but nothing ran behind them, so System profiles and Trust stopped
+  LineageParts and LiveDisplay offered nothing. Trust shows the SELinux, security patch and
+  encryption status. Its warnings start off, since a container fails its SELinux and
+  signing-key checks by design. LiveDisplay offers reading mode and color calibration. Charging
+  control stays out: a container has no charger for it to control.
 
 ### Changed
 
@@ -33,6 +51,11 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- **Keys typed on the phone no longer land in the computer's own windows.** When someone at the
+  computer clicked into another window, `remora-host-agent` took focus back for the phone's app at
+  the phone's next key, taking it from the person working there, and the keys sent in that moment
+  were typed into their window. Now the phone's keys go only to a window on the phone's screen;
+  otherwise they are not typed, and the phone says so. Tapping the app gives it the keyboard back.
 - In the phone app preview, a session's controls open as a card beside their handle. The panel
   stretched across the whole screen and covered the handle, worst with the phone sideways.
 - **A release update no longer keeps every release before it.** Each update through `remora
@@ -54,6 +77,9 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 - Opening Settings > Display on the Android 17 image no longer crashes LineageParts. Settings
   asks it for the LiveDisplay color profile's summary there, and the image has no LiveDisplay, so
   each visit stopped the app in the background.
+- Color settings show in the mirror: Night Light, Accessibility's color inversion and color
+  correction, and LiveDisplay's reading mode and color calibration. Android drew them only on the
+  container's own screen, which nobody sees, and left the mirror unchanged.
 
 ## [2026.11.9] - 2026-11-22
 

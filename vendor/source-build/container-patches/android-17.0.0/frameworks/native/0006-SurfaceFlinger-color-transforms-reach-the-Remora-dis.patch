@@ -1,0 +1,50 @@
+From 48ea35cc90010c4f08a00cc11d8c67f1c2dafdab Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Tue, 24 Nov 2026 09:55:08 -0500
+Subject: [PATCH] SurfaceFlinger: color transforms reach the Remora displays
+
+The global color transform (Night Light, the bedtime grayscale,
+accessibility color correction and inversion, LiveDisplay's reading mode
+and color calibration) was set on every display but drawn only on the
+primary one. Output::getSkipColorTransform() returns true for any
+display without a HAL id, on purpose, so that screen recordings stay
+untinted. Remora's mirror is such a virtual display, and in a container
+it is the only screen anyone sees, so each of those settings changed
+nothing the user could see. Measured on a container with green
+calibrated to 52%: SurfaceFlinger listed the 0.518 matrix on the primary
+display and on a mirroring virtual display, and frames captured from
+the virtual display stayed full white.
+
+Display::getSkipColorTransform() now returns false for the agent's two
+displays, "remora-mirror" and "remora-display" (the names the secure
+patch already keys on), so client composition draws the transform into
+what the agent encodes. Other virtual displays keep the upstream
+behaviour, so a screen recording made inside Android stays untinted.
+The primary display is unchanged: it is a HAL display, which takes the
+HAL capability path above.
+
+Change-Id: Ic907ed64651d91d411221982a8e3f66700ec1252
+---
+ services/surfaceflinger/CompositionEngine/src/Display.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/services/surfaceflinger/CompositionEngine/src/Display.cpp b/services/surfaceflinger/CompositionEngine/src/Display.cpp
+index 6068e72edb..a0d19ddee0 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Display.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Display.cpp
+@@ -314,6 +314,12 @@ bool Display::getSkipColorTransform() const {
+                                         DisplayCapability::SKIP_CLIENT_COLOR_TRANSFORM);
+     }
+ 
++    // Remora: the agent's mirror and new-display surfaces are the container's screen, so they take
++    // the global color transform (Night Light, grayscale, color correction and inversion, the
++    // LiveDisplay controls) that the base class leaves off virtual displays for screen recording.
++    if (getName() == "remora-mirror" || getName() == "remora-display") {
++        return false;
++    }
+     return Output::getSkipColorTransform();
+ }
+ 
+-- 
+2.56.1
+

@@ -76,7 +76,16 @@ a restore token granted once at the desk.
 - **The physical monitors stay where they are.** KWin lays out a set of outputs it has never seen
   from scratch, which moves the physical ones. The agent records their positions and priorities
   first, puts them back, and parks the virtual output outside their bounding box with the lowest
-  priority, so no desk panel moves onto the phone's screen. A monitor that mirrors another is never
+  priority, so no desk panel moves onto the phone's screen. By default it touches their right
+  edge, so the phone's screen extends the desk: the desk's pointer and windows can cross onto it.
+  A session can ask for it to stand apart instead (the phone app's *Desk: Separate*, the
+  `extend_desk=false` option or a DESK message): it is then placed 2000 logical pixels beyond the
+  rest. KWin moves the pointer to whichever output is nearest where a motion would take it, so a
+  gap holds only if no motion can land nearer its far side; a pixel's gap would not. The phone's
+  pointer mode still takes the desk's one pointer there, and nothing at the desk can bring it back
+  across the gap, so the session's script reports where the pointer was when it came onto the
+  phone's screen, and the agent puts it back there once the phone's pointer has rested for 1.5 s
+  with no button held. A monitor that mirrors another is never
   named in that repair: it is shown at its source's geometry, and setting its own position would
   stop the mirroring.
 - **Each session has its own stream.** A second consumer on an existing stream receives no
@@ -104,7 +113,24 @@ with a new window of the process already running, and an app that was already op
 its existing window to be activated, which KWin's focus-stealing prevention usually turns into a
 request for attention. The script watches for both. The phone's windows are borderless,
 maximized and on every virtual desktop and every activity, because both are global across outputs
-and switching either at the desk must not take the app off the phone. When the session ends, a
+and switching either at the desk must not take the app off the phone. Maximized is also what
+keeps a tiling script off it: Krohnkite, like the others, leaves a maximized or full-screen window
+where it is and arranges every other one. The window is sent to the output through KWin before
+it is maximized: a geometry set from a script takes effect only once the app answers it, so a
+maximize asked for meanwhile was done on the output the window opened on, where Krohnkite then
+sized it as a tile. Krohnkite also handles a new window before the session's script does and
+arranges it a moment later, on the output it opened on, so a window taken off the phone's output
+right after it was placed is placed again, three times at most.
+
+The phone's *Window* setting makes the app smaller than the phone's screen, in one of two ways.
+With *Bypass desktop* on, the default, the phone's view of the session shrinks to that share of
+the screen, centred on black; the session's screen follows the view's size, as it follows a
+rotation, so the app's window, still maximized, fills a smaller screen at the same density. No
+desktop shows and no tiling script touches it. With it off, the session's screen stays the phone's
+size and the window is a desk window like any other at that share of it (`window=<percent>` and
+`desktop=true` when the session opens, or a WINDOW message): centred, never below its minimum
+size, with its title bar, so the phone's pointer can move it and resize it from an edge, the
+desktop behind it, and the desk's tiling scripts arranging it as they would any window. When the session ends, a
 window that was already on the desk goes back exactly as it was — where it was, and maximized or
 minimized again if it had been, as recorded before the launch, since a launch that activates a
 window unminimizes it — and one opened for the phone is minimized, not closed.
@@ -138,13 +164,17 @@ the client's to set, and the named density is the anchor for later ones.
 Fake input drives pointer, touch, keys and keysyms. A pointer or a touch lands on the virtual
 output by position, and it moves the desk's one real pointer there: the shared seat, in practice.
 Keys go to whichever window has keyboard focus, so the agent tracks it: the session's KWin script
-reports whether focus is on one of the phone's windows, and while it is not, the phone's keys
-wait, the phone's window is given focus again, and the keys follow once it has it. If it does not
-get focus, they are dropped rather than typed into a window on the desk. Desktop apps are
-pointer-first, so the phone has a pointer mode, on for this computer's apps (the source's `kind`
-is `computer`) and off for Android's, and switched per source in the session's controls: the
-pointer goes where the finger is, a tap clicks there, a long press clicks the secondary button,
-one finger dragged holds the primary button, and two fingers scroll, the content following them.
+reports whether focus is on a window on the phone's screen (one it placed, or a dialog over it; not
+the desktop there, where typing starts a search on the desk). While it is not, the phone's keys are
+dropped, not typed into a window on the desk, and the phone is told why (a NOTICE): tap the app,
+then type. The agent once gave the phone's window focus back and typed the held keys after it; with
+someone working at the desk, that took focus from them at every key the phone sent, and the keys
+sent in the moment before KWin's report arrived landed in their windows. The desk and the phone
+share one seat — one keyboard focus, one pointer — so using both at once takes turns. Desktop apps
+are pointer-first, so the phone has a pointer mode, on for this computer's apps (the source's
+`kind` is `computer`) and off for Android's, and switched per source in the session's controls: the
+pointer goes where the finger is, a tap clicks there, a long press clicks the secondary button, one
+finger dragged holds the primary button, and two fingers scroll, the content following them.
 
 Typed text has no simple path on Wayland: it goes as keysyms, and a paste goes through the
 clipboard (the agent sets the desk's clipboard and presses Ctrl+V in the app). KWin types a keysym

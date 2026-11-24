@@ -1,6 +1,7 @@
 #pragma once
 #include <QHash>
 #include <QObject>
+#include <QPointF>
 #include <QPair>
 #include <QRect>
 #include <QSet>
@@ -30,17 +31,26 @@ public:
     // agent is running — or there is no session bus.
     bool exportOnBus(QString *error);
 
+    // How the session's windows sit on its output: filling it, maximized and borderless, where
+    // tiling scripts leave a window alone and nothing of the desktop shows; or `percent` of each
+    // side of it, centred, with a title bar; or, `desktop`, as any window of the desk's at that
+    // size, never maximized, which the desk's tiling scripts arrange as they would any other.
+    struct Window {
+        int percent = 100;
+        bool desktop = false;
+    };
     // Starts placing `appId`'s next window on `output` for `session`; call before launching the
     // app, so its first window cannot arrive before the script is listening.
-    bool watch(quint32 session, const QString &appId, const QString &output, QString *error);
+    bool watch(quint32 session, const QString &appId, const QString &output, Window window,
+               QString *error);
     // For a launch nothing answered: take the app's window if it is the active one. A
     // single-instance app that is already active raises nothing, so no other signal comes.
     void adoptIfUnplaced(quint32 session);
     // The session's output changed (a reflow): its windows move to `output`, and later ones go
     // there too.
     void moveTo(quint32 session, const QString &output);
-    // Gives the session's window keyboard focus (the one that had it last); focusChanged follows.
-    void activate(quint32 session);
+    // The session's windows are placed again as `window` says.
+    void setWindow(quint32 session, Window window);
     // Stops placing for `session` and gives its windows back to the desk: one that was already
     // there goes back where it was; one opened for the phone is minimized, never closed.
     void release(quint32 session);
@@ -50,6 +60,7 @@ public slots:
     Q_SCRIPTABLE void placed(const QString &json);
     Q_SCRIPTABLE void windowClosed(const QString &json);
     Q_SCRIPTABLE void focus(const QString &json);
+    Q_SCRIPTABLE void pointerEntered(const QString &json);
 
 signals:
     void windowPlaced(quint32 session, const QString &windowId, int pid, bool isNew);
@@ -58,9 +69,12 @@ signals:
     void allWindowsClosed(quint32 session);
     // Keyboard focus went to one of the session's windows (true) or to any other (false).
     void focusChanged(quint32 session, bool ours);
+    // The pointer came onto the session's output from `deskPos` (global, logical).
+    void deskPointer(quint32 session, QPointF deskPos);
 
 private:
     QString placeScript(quint32 session, bool adopt, const QStringList &move = {}) const;
+    void replace(quint32 session);  // the session's script again, for every window it placed
     bool runScript(const QString &name, const QString &source, QString *error);
     void runOnce(const QString &name, const QString &source);  // a script that only acts once
     void unloadScript(const QString &name);
@@ -75,8 +89,11 @@ private:
         QStringList activities;  // empty: every activity
     };
     QHash<quint32, QHash<QString, Placed>> windows_;
-    QHash<quint32, QPair<QString, QString>> watched_;  // session → (app id, output)
-    QHash<quint32, QString> lastFocused_;              // session → its window focused last
+    struct Watched {
+        QString appId, output;
+        Window window;
+    };
+    QHash<quint32, Watched> watched_;
     QString scriptDir_;
 };
 

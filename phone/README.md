@@ -18,8 +18,8 @@ at the phone's own size and density ([docs/PHONE_APP.md](../docs/PHONE_APP.md)).
 - **Session controls** — a small handle on the edge of the screen, which can be dragged anywhere
   along either side and stays where it was left. It opens a panel: *Keyboard*; *Paste from phone*,
   which types what the phone copied into the app's focused field; *Input*; *Size* and *Scale*, both
-  changed in place; and *End session*, which closes the app's screen on the computer and goes back
-  to the list. Back goes to the remote app, and closes the panel first when it is open.
+  changed in place; for a computer's app, *Window* and *Desk*; and *End session*, which closes the
+  app's screen on the computer and goes back to the list. Back goes to the remote app, and closes the panel first when it is open.
 - **Input** — *Pointer* or *Touch*, per source. This computer's apps start with the pointer, since
   desktop apps are made for a mouse: the pointer goes where the finger is, a tap clicks, a long
   press is the secondary click, one finger dragged holds the button (selecting text, moving a
@@ -39,6 +39,22 @@ at the phone's own size and density ([docs/PHONE_APP.md](../docs/PHONE_APP.md)).
   density: smaller fits more of a desktop app on the phone. A desktop app that cannot be as small
   as the phone's screen at that scale (Elisa's window is at least 612x459) is shown at the largest
   scale it fits instead.
+- **Window** — a computer's app fills the phone's screen, or, stepped down, takes 90, 75, 60 or
+  50% of each side of it, centred. Per app. Never smaller than the app's own minimum.
+- **Bypass desktop** — *On*, the default: the app fills a screen of its own on the computer,
+  maximized, so no desktop shows around it and the computer's tiling scripts (Krohnkite and the
+  like) leave it alone; a smaller *Window* is a smaller screen, shown at the same size on black.
+  *Off*: the phone's screen is a desktop of the computer's, and the app a window on it like any
+  other — its title bar, which the pointer can move it by and resize it from, the desktop behind
+  it, and the tiling scripts arranging it. Per computer.
+- **Desk** — *Extended*: the phone's screen extends the computer's desk, so the desk's pointer and
+  windows can cross onto it. *Separate*: it stands apart, where the desk's pointer cannot reach;
+  when the phone's pointer has taken the desk's pointer there, it goes back to where it was once
+  the phone stops pointing. Per computer.
+- **Keys** — go only to a window on the phone's screen. When a window on the computer's own
+  screens has the keyboard (someone at the desk clicked into it), the phone's keys are not typed,
+  and the phone says so: tap the app, then type. The computer has one keyboard focus and one
+  pointer, so using the desk and the phone at the same time takes turns.
 
 ## Building
 

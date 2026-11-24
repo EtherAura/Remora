@@ -156,7 +156,7 @@ QList<InputOp> Translator::translate(const mirror::ControlMessage &m) {
             return ops;
         }
         default:
-            return ops;  // panels, clipboard and resize are the session's, not input
+            return ops;  // panels, clipboard, resize, window and desk are the session's, not input
     }
 }
 
