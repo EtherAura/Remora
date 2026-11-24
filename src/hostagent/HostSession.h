@@ -41,7 +41,8 @@ struct SessionParams {
     bool audio = true;             // false (audio=false): no client takes the sound; it stays here
     QString startApp;              // desktop-file id; empty shows the bare output
     bool closeOnAppExit = false;
-    int windowPercent = 100;       // window=: the app's window, a share of each side; 100 fills
+    // window=<percent> or <width>x<height>: the app's window, percentages of the output's sides.
+    int windowWidth = 100, windowHeight = 100;
     bool windowDesktop = false;    // desktop=true: a desk window like any other (see WINDOW)
     bool extendDesk = true;        // extend_desk=false: the output stands apart from the desk
 

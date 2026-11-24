@@ -23,7 +23,7 @@ final class SessionView extends SurfaceView {
 
     private Input input;
     private boolean pointerMode;
-    private int sharePercent = 100;
+    private int shareWidth = 100, shareHeight = 100;
     private final int slop;
     private final float pxPerNotch;
 
@@ -45,23 +45,25 @@ final class SessionView extends SurfaceView {
     }
 
     /**
-     * The share of each side of the space it is given that the view takes, centred by its parent.
-     * The remote display follows the view's size, so a smaller view is a smaller screen for the
-     * app on the computer, at the same density: its window, filling that screen, comes out smaller.
+     * The share of the width and of the height of the space it is given that the view takes,
+     * centred by its parent. The remote display follows the view's size, so a smaller view is a
+     * smaller screen for the app on the computer, at the same density: its window, filling that
+     * screen, comes out smaller.
      */
-    void setShare(int percent) {
-        if (percent == sharePercent) return;
-        sharePercent = percent;
+    void setShare(int width, int height) {
+        if (width == shareWidth && height == shareHeight) return;
+        shareWidth = width;
+        shareHeight = height;
         requestLayout();
     }
 
     @Override
     protected void onMeasure(int widthSpec, int heightSpec) {
         super.onMeasure(widthSpec, heightSpec);
-        if (sharePercent >= 100) return;
+        if (shareWidth >= 100 && shareHeight >= 100) return;
         // Even sizes: video encoders work in 2×2 blocks.
-        setMeasuredDimension(getMeasuredWidth() * sharePercent / 100 & ~1,
-                             getMeasuredHeight() * sharePercent / 100 & ~1);
+        setMeasuredDimension(getMeasuredWidth() * shareWidth / 100 & ~1,
+                             getMeasuredHeight() * shareHeight / 100 & ~1);
     }
 
     private void send(byte[] m) {

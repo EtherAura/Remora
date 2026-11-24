@@ -159,10 +159,10 @@ QByteArray panelMessage(Panel panel);
 QByteArray clipboardMessage(quint64 sequence, bool paste, const QString &text);
 // dpi 0 leaves the density to follow the long side; any other value is the display's new density.
 QByteArray resizeMessage(quint16 width, quint16 height, quint16 dpi = 0);
-// The session window's size, as a percentage of each side of its display; 100 fills it.
-// `desktop`: the window is the desk's like any other — a title bar, never maximized, arranged by
-// the desk's tiling scripts if it has any — rather than filling its display untouched.
-QByteArray windowMessage(quint8 percent, bool desktop = false);
+// The session window's size: its width and its height as percentages of its display's; 100 and
+// 100 fill it. `desktop`: the window is the desk's like any other — a title bar, never maximized,
+// arranged by the desk's tiling scripts if it has any — rather than filling its display untouched.
+QByteArray windowMessage(quint8 width, quint8 height, bool desktop = false);
 // Whether the session's display extends the desk (true) or stands apart from it.
 QByteArray deskMessage(bool extend);
 
@@ -357,7 +357,7 @@ struct ControlMessage {
     bool paste = false;
     quint16 width = 0, height = 0;     // Resize
     quint16 dpi = 0;                   // Resize: 0, or absent, follows the long side
-    quint8 windowPercent = 100;        // Window
+    quint8 windowWidth = 100, windowHeight = 100;  // Window: percentages of the display's
     bool windowDesktop = false;        // Window: a desk window like any other
     bool extendDesk = true;            // Desk
 };

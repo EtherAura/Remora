@@ -71,9 +71,13 @@ std::optional<SessionParams> SessionParams::fromOptions(const QHash<QString, QSt
     // The in-image agent's "+pkg" (force-stop first) and "?label" forms have no meaning here.
     if (p.startApp.startsWith(QLatin1Char('+'))) p.startApp.remove(0, 1);
     p.closeOnAppExit = o.value(QStringLiteral("close_on_app_exit")) == QLatin1String("true");
-    bool ok = false;
-    const int window = o.value(QStringLiteral("window")).toInt(&ok);
-    if (ok) p.windowPercent = qBound(kMinWindowPercent, window, 100);
+    const QStringList window = o.value(QStringLiteral("window")).split(QLatin1Char('x'));
+    bool okW = false, okH = false;
+    const int w = window.value(0).toInt(&okW), h = window.value(window.size() - 1).toInt(&okH);
+    if (okW && okH && window.size() <= 2) {
+        p.windowWidth = qBound(kMinWindowPercent, w, 100);
+        p.windowHeight = qBound(kMinWindowPercent, h, 100);
+    }
     p.windowDesktop = o.value(QStringLiteral("desktop")) == QLatin1String("true");
     p.extendDesk = o.value(QStringLiteral("extend_desk")) != QLatin1String("false");
     return p;
@@ -244,7 +248,8 @@ void HostSession::launchApp() {
     if (!params_.startApp.isEmpty()) {
         QString error;
         if (!s_.placer->watch(id_, params_.startApp, outputName(),
-                              {params_.windowPercent, params_.windowDesktop}, &error))
+                              {params_.windowWidth, params_.windowHeight, params_.windowDesktop},
+                              &error))
             return fail(error);
         if (params_.closeOnAppExit) {
             connect(s_.placer, &WindowPlacer::allWindowsClosed, this, [this](quint32 session) {
@@ -297,9 +302,11 @@ void HostSession::onControlData() {
             continue;
         }
         if (m->type == ControlRecord::Window) {
-            params_.windowPercent = qBound(kMinWindowPercent, int(m->windowPercent), 100);
+            params_.windowWidth = qBound(kMinWindowPercent, int(m->windowWidth), 100);
+            params_.windowHeight = qBound(kMinWindowPercent, int(m->windowHeight), 100);
             params_.windowDesktop = m->windowDesktop;
-            s_.placer->setWindow(id_, {params_.windowPercent, params_.windowDesktop});
+            s_.placer->setWindow(id_, {params_.windowWidth, params_.windowHeight,
+                                       params_.windowDesktop});
             continue;
         }
         if (m->type == ControlRecord::Desk) {

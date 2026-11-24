@@ -30,17 +30,18 @@ QString scriptName(quint32 session) { return QStringLiteral("remora-session-%1")
 // windows until the session ends — a dialog or a second window opened from the phone belongs on
 // the phone. Borderless and maximized, because the output IS the phone's screen and a title bar
 // there is pixels the phone pays for, and because a tiling script leaves a maximized window alone —
-// unless the phone asked for a smaller window (WINDOW, a percentage of each side) or a desktop one
-// (DESKTOP): then centred at that size, with its title bar, which the phone's pointer can move it
-// by and resize it from, and which a tiling script arranges as it would any window of the desk's;
-// on every virtual desktop and every activity, because both
+// unless the phone asked for a smaller window (WIDTH and HEIGHT, percentages of the output's
+// sides) or a desktop one (DESKTOP): then centred at that size, with its title bar, which the
+// phone's pointer can move it by and resize it from, and which a tiling script arranges as it
+// would any window of the desk's; on every virtual desktop and every activity, because both
 // are global across outputs and switching either at the desk must not take the app off the phone
 // (a window left on one activity vanished from the phone when the desk switched to another, and
 // the phone showed the empty desktop).
 //
 // Which window answered the launch:
-//  - a new one — windowAdded, or windowActivated for a Wayland window that is added before it
-//    names itself;
+//  - a new one — windowAdded, or desktopFileNameChanged for a Wayland window that is added
+//    before it names its app; never at its activation, which comes before windowAdded;
+//  - an existing one the launch activated — windowActivated;
 //  - an existing one of a single-instance app — the launch asks it to activate, and KWin's
 //    focus-stealing prevention usually refuses (the desk is busy with something else), marking it
 //    demandsAttention instead, which is what is watched;
@@ -53,7 +54,8 @@ QString scriptName(quint32 session) { return QStringLiteral("remora-session-%1")
 // smallest it can be: KWin keeps a window that cannot fit on an output off it, so the agent
 // lowers the output's scale until it does.
 const char kPlaceScript[] = R"JS(
-var SESSION = %1, APP = %2, OUTPUT = %3, ADOPT = %4, MOVE = %5, WINDOW = %6, DESKTOP = %7;
+var SESSION = %1, APP = %2, OUTPUT = %3, ADOPT = %4, MOVE = %5, WIDTH = %6, HEIGHT = %7,
+    DESKTOP = %8;
 var placed = {}, before = {};
 function output() {
     var s = workspace.screens;
@@ -62,39 +64,58 @@ function output() {
 }
 function ours(w) { return w && w.desktopFileName == APP && w.normalWindow; }
 function nothingPlaced() { for (var k in placed) return false; return true; }
-// The output filled, maximized and borderless, or WINDOW percent of each side of it, centred: never
-// below the window's own minimum, never past the output. Sent to the output through KWin first: a
-// geometry set from a script is applied only once the app answers it, so a maximize asked for
-// meanwhile was done on the output the window was still on (seen: maximized on the desk, where a
-// tiling script then sized it as a tile).
+// The output filled, maximized and borderless, or WIDTH and HEIGHT percent of its sides, centred:
+// never below the window's own minimum, never past the output. Sent to the output through KWin
+// first: a geometry set from a script is applied only once the app answers it, so a maximize asked
+// for meanwhile was done on the output the window was still on (seen: maximized on the desk, where
+// a tiling script then sized it as a tile).
+function filled() { return WIDTH >= 100 && HEIGHT >= 100 && !DESKTOP; }
 function fit(w, out) {
     var g = out.geometry;
     if (!w.output || w.output.name != out.name) workspace.sendClientToScreen(w, out);
-    if (WINDOW >= 100 && !DESKTOP) {
+    if (filled()) {
         w.noBorder = true;
+        // Maximized already, and sized since by a tiling script that did not hear of it (below):
+        // asking again is no change to KWin, so it is said again by way of maximized vertically,
+        // never unmaximized, which would put the window back where it opened.
+        if (w.maximizeMode == 3) w.setMaximize(true, false);
         w.setMaximize(true, true);
         return;
     }
     w.noBorder = false;
-    var width = Math.min(g.width, Math.max(Math.round(g.width * WINDOW / 100), w.minSize.width));
-    var height = Math.min(g.height, Math.max(Math.round(g.height * WINDOW / 100), w.minSize.height));
+    var width = Math.min(g.width, Math.max(Math.round(g.width * WIDTH / 100), w.minSize.width));
+    var height = Math.min(g.height, Math.max(Math.round(g.height * HEIGHT / 100), w.minSize.height));
     w.frameGeometry = {x: g.x + Math.round((g.width - width) / 2),
                        y: g.y + Math.round((g.height - height) / 2), width: width, height: height};
 }
-// A tiling script that saw the window first can arrange it after this one placed it, on the
-// output it opened on: Krohnkite's handler for a new window runs before this one's and tiles it a
-// moment later. While the session holds it, a window taken off the output is placed again — three
-// times at most, so a script that keeps taking it back is not fought forever.
+// Whether the window is as fit() left it: on the output, and filling it when it is to.
+function settled(w, out) {
+    if (!w.output || w.output.name != OUTPUT) return false;
+    if (!filled()) return true;
+    var f = w.frameGeometry, g = workspace.clientArea(KWin.MaximizeArea, out, workspace.currentDesktop);
+    return Math.abs(f.x - g.x) < 1 && Math.abs(f.y - g.y) < 1 && Math.abs(f.width - g.width) < 1 &&
+           Math.abs(f.height - g.height) < 1;
+}
+// A tiling script arranges a new window after this one placed it. KWin tells a script like this
+// one of the window before a declarative one like Krohnkite, which then finds it unmaximized (KWin
+// reports a maximize once the app has answered it) and has missed the maximize; it tiles the
+// window, and holds it to the tile. Its geometry, set before the app answered the one asked here,
+// is the one applied — on the desk, where the window opened (it never left), or as a tile on this
+// output, maximized but with the desktop around it (seen both). While the session holds it, a
+// window found otherwise once its maximize has landed is placed again — three times at most, so
+// a script that keeps taking it back is not fought forever.
 function keep(w) {
     var tries = 0;
-    w.outputChanged.connect(function () {
+    function check() {
         var out = output();
-        if (!out || !placed[w.internalId.toString()] || (w.output && w.output.name == OUTPUT) ||
-            tries >= 3)
-            return;
+        if (!out || !placed[w.internalId.toString()] || tries >= 3 || settled(w, out)) return;
+        if (filled() && w.output && w.output.name == OUTPUT && w.maximizeMode != 3) return;
         tries++;
         fit(w, out);
-    });
+    }
+    w.outputChanged.connect(check);
+    w.frameGeometryChanged.connect(check);
+    w.maximizedChanged.connect(check);
 }
 function place(w) {
     var out = output();
@@ -148,8 +169,24 @@ function place(w) {
     for (var i = 0; i < ws.length; i++)
         if (MOVE.indexOf(ws[i].internalId.toString()) >= 0) place(ws[i]);
 })();
-workspace.windowAdded.connect(function (w) { if (ours(w)) place(w); });
-workspace.windowActivated.connect(function (w) { if (nothingPlaced() && ours(w)) place(w); });
+// Windows KWin has announced. It activates a new Wayland window before it announces it, and one
+// placed then was placed too early: KWin's own placement and a tiling script, told of it only
+// afterwards, take it as they find it (seen: sent nowhere, and tiled on the desk by Krohnkite,
+// which read it as unmaximized and missed the maximize).
+var known = {};
+(function () {
+    var ws = workspace.windowList();
+    for (var i = 0; i < ws.length; i++) known[ws[i].internalId.toString()] = true;
+})();
+workspace.windowAdded.connect(function (w) {
+    known[w.internalId.toString()] = true;
+    if (ours(w)) return place(w);
+    // A Wayland window can be announced before it names its app.
+    if (w.normalWindow) w.desktopFileNameChanged.connect(function () { if (ours(w)) place(w); });
+});
+workspace.windowActivated.connect(function (w) {
+    if (w && known[w.internalId.toString()] && nothingPlaced() && ours(w)) place(w);
+});
 if (ADOPT) {
     var ws = workspace.windowList(), pick = null;
     for (var i = 0; i < ws.length && !pick; i++) if (ours(ws[i]) && ws[i].demandsAttention) pick = ws[i];
@@ -308,7 +345,7 @@ QString WindowPlacer::placeScript(quint32 session, bool adopt, const QStringList
         .arg(session)
         .arg(jsString(w.appId), jsString(w.output),
              adopt ? QStringLiteral("true") : QStringLiteral("false"), moveJs,
-             QString::number(w.window.percent),
+             QString::number(w.window.width), QString::number(w.window.height),
              w.window.desktop ? QStringLiteral("true") : QStringLiteral("false"));
 }
 
@@ -322,7 +359,8 @@ void WindowPlacer::moveTo(quint32 session, const QString &output) {
 void WindowPlacer::setWindow(quint32 session, Window window) {
     auto it = watched_.find(session);
     if (it == watched_.end() ||
-        (it->window.percent == window.percent && it->window.desktop == window.desktop))
+        (it->window.width == window.width && it->window.height == window.height &&
+         it->window.desktop == window.desktop))
         return;
     it->window = window;
     replace(session);

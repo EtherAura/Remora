@@ -227,9 +227,10 @@ QByteArray resizeMessage(quint16 width, quint16 height, quint16 dpi) {
     return control(ControlRecord::Resize, b);
 }
 
-QByteArray windowMessage(quint8 percent, bool desktop) {
+QByteArray windowMessage(quint8 width, quint8 height, bool desktop) {
     QByteArray b;
-    putU8(b, percent);
+    putU8(b, width);
+    putU8(b, height);
     putU8(b, desktop ? 1 : 0);
     return control(ControlRecord::Window, b);
 }
@@ -533,7 +534,7 @@ std::optional<ControlMessage> ControlMessageParser::next() {
         {quint8(ControlRecord::Pointer), 26}, {quint8(ControlRecord::Scroll), 20},
         {quint8(ControlRecord::Back), 1},     {quint8(ControlRecord::Panel), 1},
         {quint8(ControlRecord::Clipboard), 9}, {quint8(ControlRecord::Resize), 4},
-        {quint8(ControlRecord::Window), 1},   {quint8(ControlRecord::Desk), 1},
+        {quint8(ControlRecord::Window), 3},   {quint8(ControlRecord::Desk), 1},
     };
     while (!error_) {
         const std::optional<Record> r = records_.next();
@@ -589,8 +590,9 @@ std::optional<ControlMessage> ControlMessageParser::next() {
             if (b.size() >= 6) m.dpi = qFromBigEndian<quint16>(b.constData() + 4);
             break;
         case ControlRecord::Window:
-            m.windowPercent = quint8(b[0]);
-            m.windowDesktop = b.size() >= 2 && b[1] != 0;
+            m.windowWidth = quint8(b[0]);
+            m.windowHeight = quint8(b[1]);
+            m.windowDesktop = b[2] != 0;
             break;
         case ControlRecord::Desk:
             m.extendDesk = b[0] != 0;

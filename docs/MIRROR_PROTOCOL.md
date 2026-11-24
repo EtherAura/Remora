@@ -90,7 +90,7 @@ On the session's control connection. Every type here is one the agent acts on.
 | 0x06 | PANEL | `u8 panel` — 0 collapse, 1 notifications, 2 quick settings |
 | 0x07 | CLIPBOARD | `u64 sequence, u8 paste, UTF-8 text` — sequence 0 asks for no acknowledgement |
 | 0x08 | RESIZE | `u16 width, u16 height[, u16 dpi]` — reflows a new-display session; a mirror ignores it |
-| 0x09 | WINDOW | `u8 percent[, u8 desktop]` — the app's window as that share of each side of the display, centred; 100 fills it |
+| 0x09 | WINDOW | `u8 width, u8 height, u8 desktop` — the app's window's sides as percentages of the display's, centred; 100 and 100 fill it |
 | 0x0A | DESK | `u8 extend` — 1: the display extends the computer's desk; 0: it stands apart from it |
 
 - **x, y** are **fractions of the frame the client is showing**: 0 is the left or top edge, 1 the
@@ -109,10 +109,10 @@ On the session's control connection. Every type here is one the agent acts on.
 - **WINDOW and DESK** are the host agent's, for a computer's apps (docs/PHONE_APP.md): an
   Android app always fills its display, and the in-image agent skips both, as it does any type it
   does not know. WINDOW's `desktop` byte, 1, makes the window a desk window like any other — a
-  title bar, never maximized, arranged by the desk's tiling scripts — and 0, or leaving it out,
-  keeps it filling its display untouched. The host agent takes the same as the session's
-  `window=<percent>`, `desktop=true|false` and `extend_desk=true|false` options, and keeps a
-  window no smaller than 25% or the app's minimum.
+  title bar, never maximized, arranged by the desk's tiling scripts — and 0 keeps it filling its
+  display untouched when both sides are 100. The host agent takes the same as the session's
+  `window=<percent>` or `window=<width>x<height>`, `desktop=true|false` and
+  `extend_desk=true|false` options, and keeps a side no smaller than 25% or the app's minimum.
 
 ## 4. Device messages, agent → client
 

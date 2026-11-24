@@ -118,22 +118,29 @@ keeps a tiling script off it: Krohnkite, like the others, leaves a maximized or 
 where it is and arranges every other one. The window is sent to the output through KWin before
 it is maximized: a geometry set from a script takes effect only once the app answers it, so a
 maximize asked for meanwhile was done on the output the window opened on, where Krohnkite then
-sized it as a tile. Krohnkite also handles a new window before the session's script does and
-arranges it a moment later, on the output it opened on, so a window taken off the phone's output
-right after it was placed is placed again, three times at most.
+sized it as a tile. A new window is placed once KWin has announced it, never when it is first
+activated: KWin activates it a moment before, and a move made then did not take. KWin announces a
+window to a plain script such as the session's before a declarative one such as Krohnkite, which
+then finds the window unmaximized (KWin reports a maximize once the app has answered it), tiles
+it and holds it to the tile. So a placed window found off the phone's output, or there but not
+filling it once its maximize has landed, is placed again, three times at most; a window already
+maximized is maximized again by way of maximized vertically, which every script listening by
+then hears of.
 
-The phone's *Window* setting makes the app smaller than the phone's screen, in one of two ways.
-With *Bypass desktop* on, the default, the phone's view of the session shrinks to that share of
-the screen, centred on black; the session's screen follows the view's size, as it follows a
-rotation, so the app's window, still maximized, fills a smaller screen at the same density. No
-desktop shows and no tiling script touches it. With it off, the session's screen stays the phone's
-size and the window is a desk window like any other at that share of it (`window=<percent>` and
-`desktop=true` when the session opens, or a WINDOW message): centred, never below its minimum
-size, with its title bar, so the phone's pointer can move it and resize it from an edge, the
-desktop behind it, and the desk's tiling scripts arranging it as they would any window. When the session ends, a
-window that was already on the desk goes back exactly as it was — where it was, and maximized or
-minimized again if it had been, as recorded before the launch, since a launch that activates a
-window unminimizes it — and one opened for the phone is minimized, not closed.
+The phone's *Window* setting makes the app smaller than the phone's screen, and *Fit* says which
+sides: *Stretch* both, *Width* only the height (the app keeps the screen's full width), *Height*
+only the width. It does so in one of two ways. With *Bypass desktop* on, the default, the phone's
+view of the session shrinks to that share of the screen, centred on black; the session's screen
+follows the view's size, as it follows a rotation, so the app's window, still maximized, fills a
+smaller screen at the same density. No desktop shows and no tiling script touches it. With it off,
+the session's screen stays the phone's size and the window is a desk window like any other at that
+share of it (`window=<width>x<height>` and `desktop=true` when the session opens, or a WINDOW
+message): centred, never below its minimum size, with its title bar, so the phone's pointer can
+move it and resize it from an edge, the desktop behind it, and the desk's tiling scripts arranging
+it as they would any window. When the session ends, a window that was already on the desk goes back
+exactly as it was — where it was, and maximized or minimized again if it had been, as recorded
+before the launch, since a launch that activates a window unminimizes it — and one opened for the
+phone is minimized, not closed.
 
 ### Frames
 

@@ -40,7 +40,10 @@ at the phone's own size and density ([docs/PHONE_APP.md](../docs/PHONE_APP.md)).
   as the phone's screen at that scale (Elisa's window is at least 612x459) is shown at the largest
   scale it fits instead.
 - **Window** — a computer's app fills the phone's screen, or, stepped down, takes 90, 75, 60 or
-  50% of each side of it, centred. Per app. Never smaller than the app's own minimum.
+  50% of it, centred. Per app. Never smaller than the app's own minimum.
+- **Fit** — which sides *Window* takes from: *Stretch*, both; *Width*, the app keeps the screen's
+  full width and *Window* sets its height; *Height*, the app keeps the full height and *Window*
+  sets its width. Per app.
 - **Bypass desktop** — *On*, the default: the app fills a screen of its own on the computer,
   maximized, so no desktop shows around it and the computer's tiling scripts (Krohnkite and the
   like) leave it alone; a smaller *Window* is a smaller screen, shown at the same size on black.

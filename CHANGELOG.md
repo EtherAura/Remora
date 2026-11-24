@@ -14,7 +14,9 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   dragged holds the button (selecting text, moving a slider), and two fingers scroll. Android's
   apps keep touch. *Input* in a session's controls switches between the two, kept per source.
 - In the phone app preview, *Window* in a session's controls sizes this computer's app on the
-  phone: full screen, or 90, 75, 60 or 50% of each side, centred. Kept per app.
+  phone: full screen, or 90, 75, 60 or 50% of it, centred. *Fit* says which sides: *Stretch*
+  shrinks both, *Width* keeps the screen's full width and shrinks the height, *Height* the other
+  way about. Both are kept per app.
 - In the phone app preview, *Bypass desktop* in a session's controls, on by default, keeps this
   computer's desktop out of the phone's screen: the app fills a screen of its own, maximized, with
   no wallpaper around it, and tiling scripts such as Krohnkite leave it alone, so *Window* sizes
@@ -57,6 +59,13 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   the phone's next key, taking it from the person working there, and the keys sent in that moment
   were typed into their window. Now the phone's keys go only to a window on the phone's screen;
   otherwise they are not typed, and the phone says so. Tapping the app gives it the keyboard back.
+- In the phone app preview, an app opened from the phone stays on the phone's screen when a
+  tiling script such as Krohnkite runs. Its window could stay on the computer's own screen,
+  tiled there among the windows of whoever was working at it: `remora-host-agent` placed the
+  window when KWin first focused it, a moment before KWin announced it, and the move did not
+  take. When it did reach the phone, the tiling script, told of the window only after it was
+  maximized, held it to a tile, with the desktop showing around it. Now the window is placed once
+  KWin has announced it, and maximized again when a tiling script has tiled it.
 - In the phone app preview, a session's controls open as a card beside their handle. The panel
   stretched across the whole screen and covered the handle, worst with the phone sideways.
 - **A release update no longer keeps every release before it.** Each update through `remora

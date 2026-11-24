@@ -174,11 +174,12 @@ final class Proto {
     }
 
     /**
-     * The app's window, as a percentage of each side of the remote display; 100 fills it.
-     * `desktop`: a window of the computer's desk like any other, which its tiling scripts arrange.
+     * The app's window: its width and height as percentages of the remote display's; 100 and 100
+     * fill it. `desktop`: a window of the computer's desk like any other, which its tiling
+     * scripts arrange.
      */
-    static byte[] window(int percent, boolean desktop) {
-        return record(WINDOW, new byte[] {(byte) percent, (byte) (desktop ? 1 : 0)});
+    static byte[] window(int width, int height, boolean desktop) {
+        return record(WINDOW, new byte[] {(byte) width, (byte) height, (byte) (desktop ? 1 : 0)});
     }
 
     /** Whether the remote display extends the computer's desk or stands apart from it. */

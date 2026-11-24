@@ -497,26 +497,24 @@ private slots:
         QVERIFY(!hostinput::evdevKey(3));  // HOME: the phone's, not the app's
     }
 
-    // The phone's window size and whether its screen extends the desk: one byte each, and a
-    // NOTICE back for what the phone's user must be told.
+    // The phone's window size and whether its screen extends the desk, and a NOTICE back for what
+    // the phone's user must be told.
     void windowAndDeskRoundTrip() {
-        QCOMPARE(mirror::windowMessage(75), QByteArray::fromHex("00000003094b00"));
+        QCOMPARE(mirror::windowMessage(75, 100), QByteArray::fromHex("00000004094b6400"));
         mirror::ControlMessageParser p;
-        p.feed(mirror::windowMessage(75));
-        p.feed(mirror::windowMessage(100, true));
-        p.feed(mirror::record(quint8(mirror::ControlRecord::Window), QByteArray(1, char(60))));
+        p.feed(mirror::windowMessage(75, 100));
+        p.feed(mirror::windowMessage(100, 60, true));
         p.feed(mirror::deskMessage(false));
         p.feed(mirror::deskMessage(true));
         auto m = p.next();
         QCOMPARE(m->type, mirror::ControlRecord::Window);
-        QCOMPARE(m->windowPercent, quint8(75));
+        QCOMPARE(m->windowWidth, quint8(75));
+        QCOMPARE(m->windowHeight, quint8(100));
         QVERIFY(!m->windowDesktop);
         m = p.next();
-        QCOMPARE(m->windowPercent, quint8(100));
+        QCOMPARE(m->windowWidth, quint8(100));
+        QCOMPARE(m->windowHeight, quint8(60));
         QVERIFY(m->windowDesktop);
-        m = p.next();  // the one-byte form: not a desktop window
-        QCOMPARE(m->windowPercent, quint8(60));
-        QVERIFY(!m->windowDesktop);
         m = p.next();
         QCOMPARE(m->type, mirror::ControlRecord::Desk);
         QVERIFY(!m->extendDesk);

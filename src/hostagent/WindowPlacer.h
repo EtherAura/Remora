@@ -32,11 +32,12 @@ public:
     bool exportOnBus(QString *error);
 
     // How the session's windows sit on its output: filling it, maximized and borderless, where
-    // tiling scripts leave a window alone and nothing of the desktop shows; or `percent` of each
-    // side of it, centred, with a title bar; or, `desktop`, as any window of the desk's at that
-    // size, never maximized, which the desk's tiling scripts arrange as they would any other.
+    // tiling scripts leave a window alone and nothing of the desktop shows; or `width` and
+    // `height` percent of its sides, centred, with a title bar; or, `desktop`, as any window of
+    // the desk's at that size, never maximized, which the desk's tiling scripts arrange as they
+    // would any other.
     struct Window {
-        int percent = 100;
+        int width = 100, height = 100;
         bool desktop = false;
     };
     // Starts placing `appId`'s next window on `output` for `session`; call before launching the

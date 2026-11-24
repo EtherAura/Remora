@@ -61,7 +61,7 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
     private final ExecutorService writer = Executors.newSingleThreadExecutor();
     private SessionView view;
     private SessionControls controls;
-    private TextView inputItem, sizeItem, scaleValue, windowValue, deskItem, bypassItem;
+    private TextView inputItem, sizeItem, scaleValue, windowValue, fitItem, deskItem, bypassItem;
     private volatile SSLSocket control, video, audio;
     private volatile boolean ending;
     private boolean started;
@@ -111,6 +111,10 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
     // shown at the same size on black. Not bypassing it, the app is a window of the desk's like
     // any other at that size, with the desktop behind it and tiling scripts arranging it.
     private static final int[] WINDOWS = {50, 60, 75, 90, 100};
+    // Which of its sides a smaller window keeps whole: Stretch, neither (Window shrinks both);
+    // Width, the screen's full width, Window setting the height; Height, the other way about.
+    private static final String[] FITS = {"Stretch", "Width", "Height"};
+    private static final int FIT_STRETCH = 0, FIT_WIDTH = 1, FIT_HEIGHT = 2;
 
     private boolean computer() {
         return "computer".equals(getIntent().getStringExtra(KIND));
@@ -124,6 +128,21 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
 
     private int windowPercent() {
         return prefs().getInt(windowKey(), 100);
+    }
+
+    private String fitKey() {
+        return windowKey().replaceFirst("^window:", "fit:");
+    }
+
+    private int fit() {
+        int f = prefs().getInt(fitKey(), FIT_STRETCH);
+        return f >= 0 && f < FITS.length ? f : FIT_STRETCH;
+    }
+
+    /** {width, height}: the window's sides as percentages of the screen's, by Window and Fit. */
+    private int[] windowShare() {
+        int p = windowPercent(), f = fit();
+        return new int[] {f == FIT_WIDTH ? 100 : p, f == FIT_HEIGHT ? 100 : p};
     }
 
     private String deskKey() {
@@ -142,11 +161,14 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
         return prefs().getBoolean(bypassKey(), true);
     }
 
-    /** The Window setting, as Bypass desktop says to carry it out; `tell`: the computer too. */
+    /** Window and Fit, as Bypass desktop says to carry them out; `tell`: the computer too. */
     private void applyWindow(boolean tell) {
         boolean bypass = bypassDesktop();
-        view.setShare(bypass ? windowPercent() : 100);
-        if (tell) send(Proto.window(bypass ? 100 : windowPercent(), !bypass));
+        int[] share = windowShare();
+        if (bypass) view.setShare(share[0], share[1]);
+        else view.setShare(100, 100);
+        if (tell) send(bypass ? Proto.window(100, 100, false)
+                              : Proto.window(share[0], share[1], true));
     }
 
     private SharedPreferences prefs() {
@@ -239,6 +261,7 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
             windowValue = controls.addStepper("Smaller window", "Larger window",
                                               () -> stepWindow(-1), () -> stepWindow(1));
             windowValue.setText(windowLabel());
+            fitItem = controls.addItem(fitLabel(), this::nextFit);
             deskItem = controls.addItem(deskLabel(), this::toggleDesk);
             bypassItem = controls.addItem(bypassLabel(), this::toggleBypass);
         }
@@ -343,6 +366,17 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
         int next = WINDOWS[Math.max(0, Math.min(WINDOWS.length - 1, i + by))];
         prefs().edit().putInt(windowKey(), next).apply();
         windowValue.setText(windowLabel());
+        applyWindow(true);
+    }
+
+    private String fitLabel() {
+        return "Fit: " + FITS[fit()];
+    }
+
+    /** Stretch → Width → Height → Stretch. */
+    private void nextFit() {
+        prefs().edit().putInt(fitKey(), (fit() + 1) % FITS.length).apply();
+        fitItem.setText(fitLabel());
         applyWindow(true);
     }
 
@@ -523,7 +557,8 @@ public final class SessionActivity extends Activity implements SurfaceHolder.Cal
                 opts.put("close_on_app_exit", "true");
                 if (computer()) {
                     boolean bypass = bypassDesktop();
-                    opts.put("window", String.valueOf(bypass ? 100 : windowPercent()));
+                    int[] share = bypass ? new int[] {100, 100} : windowShare();
+                    opts.put("window", share[0] + "x" + share[1]);
                     opts.put("desktop", String.valueOf(!bypass));
                     opts.put("extend_desk", String.valueOf(extendDesk()));
                 }
