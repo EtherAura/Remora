@@ -229,7 +229,7 @@ default it leaves out.
 | `lineage_platform_res` | Load the LineageOS SDK resources | on for 17 |
 | `surfaceview_secure` | SurfaceView secure capture | on |
 | `shell_update_owner` | Shell can claim app update ownership | on |
-| `statusbar_hide_list` | Status bar icon hide list (clock, battery, tuner entry) | on for 17 |
+| `statusbar_hide_list` | Status bar icon hide list (clock, battery) | on for 17 |
 | `cursor_on_motion` | Mouse cursor only on motion | on |
 | `submix_all_output` | Route all audio to the remote submix | on for 17 |
 | `usb_audio_policy` | Declare the USB audio module in the audio policy | off — only with `usb_audio` |

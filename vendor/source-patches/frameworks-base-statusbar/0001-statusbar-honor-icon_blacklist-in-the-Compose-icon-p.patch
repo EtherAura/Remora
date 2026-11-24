@@ -1,7 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Remora <remora@localhost>
 Date: Sat, 25 Jul 2026 08:45:00 -0400
-Subject: [PATCH] statusbar: honor icon_blacklist in the Compose icon pipeline
+Subject: [PATCH 1/4] statusbar: honor icon_blacklist in the Compose icon
+ pipeline
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -29,6 +30,9 @@ key rather than a private one keeps `settings put secure icon_blacklist`
 and third-party tuner apps working, and matches ConnectivityRepository,
 which already reads the same key for the connectivity slots.
 ---
+ .../HomeStatusBarIconBlockListInteractor.kt   | 29 +++++++++++++++++--
+ 1 file changed, 26 insertions(+), 3 deletions(-)
+
 diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/domain/interactor/HomeStatusBarIconBlockListInteractor.kt b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/domain/interactor/HomeStatusBarIconBlockListInteractor.kt
 index b1700a4f99b3..3618e16f1309 100644
 --- a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/domain/interactor/HomeStatusBarIconBlockListInteractor.kt
@@ -88,3 +92,6 @@ index b1700a4f99b3..3618e16f1309 100644
          }
  
      val iconBlockList: Flow<List<String>> = blockedIconSlots.map { it.toList() }
+-- 
+2.56.1
+

@@ -1,0 +1,12 @@
+Retired on A17 (bd remora-q6t5). LineageOS forward-ported its own Settings work into lineage-24.0
+during October and November 2026, which is the condition this backport was written to wait for.
+Measured on packages/apps/Settings 880d6688 (lineage-24.0, 2026-11-21): 45 of the series' 77 patch
+subjects are upstream commits, the conflicting rest add identifiers upstream already has, and a
+replay of the series there conflicts on 30 patches.
+
+What this drops until upstream forward-ports it, which the weekly refresh then picks up on its
+own: about 20 small patches, mostly for hardware a container has no use for (A2DP and tether
+offload, fingerprint enrolment, battery cycle count, gesture navigation), plus the LiveDisplay
+profile preference and the pre-O full-screen option.
+
+Delete this marker only for a tree pinned before that forward-port.

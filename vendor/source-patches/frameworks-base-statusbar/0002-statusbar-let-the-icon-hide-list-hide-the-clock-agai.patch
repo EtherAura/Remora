@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Remora <remora@localhost>
 Date: Sat, 25 Jul 2026 08:50:00 -0400
-Subject: [PATCH] statusbar: let the icon hide list hide the clock again
+Subject: [PATCH 2/4] statusbar: let the icon hide list hide the clock again
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -25,11 +25,14 @@ but must not be able to resurrect it while the user wants it gone, so
 setVisibility is overridden to swallow VISIBLE while hidden by the user,
 and the tunable path goes through super to bypass that guard.
 ---
+ .../systemui/statusbar/policy/Clock.java      | 34 +++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
 diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/policy/Clock.java b/packages/SystemUI/src/com/android/systemui/statusbar/policy/Clock.java
-index 5395d08eef87..c106d5ddcb01 100644
+index 0922292e6fe5..cf60108b0554 100644
 --- a/packages/SystemUI/src/com/android/systemui/statusbar/policy/Clock.java
 +++ b/packages/SystemUI/src/com/android/systemui/statusbar/policy/Clock.java
-@@ -41,6 +41,7 @@ import android.text.style.RelativeSizeSpan;
+@@ -42,6 +42,7 @@ import android.text.style.RelativeSizeSpan;
  import android.util.AttributeSet;
  import android.view.ContextThemeWrapper;
  import android.view.Display;
@@ -37,7 +40,7 @@ index 5395d08eef87..c106d5ddcb01 100644
  import android.widget.TextView;
  
  import com.android.settingslib.Utils;
-@@ -77,6 +78,16 @@ public class Clock extends TextView implements
+@@ -80,6 +81,16 @@ public class Clock extends TextView implements
      private static final String SHOW_SECONDS = "show_seconds";
      private static final String VISIBILITY = "visibility";
  
@@ -54,7 +57,7 @@ index 5395d08eef87..c106d5ddcb01 100644
      private final UserTracker mUserTracker;
      private int mCurrentUserId;
  
-@@ -278,7 +289,30 @@ public class Clock extends TextView implements
+@@ -302,7 +313,30 @@ public class Clock extends TextView implements
          if (CLOCK_SECONDS.equals(key)) {
              mShowSeconds = TunerService.parseIntegerSwitch(newValue, false);
              updateShowSeconds();
@@ -85,3 +88,6 @@ index 5395d08eef87..c106d5ddcb01 100644
      }
  
      @Override
+-- 
+2.56.1
+

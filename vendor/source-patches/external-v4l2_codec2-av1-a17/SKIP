@@ -1,0 +1,3 @@
+Retired on A17 (bd remora-q6t5). Upstream external/v4l2_codec2 declares VideoCodec::AV1 itself, in
+common/include/v4l2_codec2/common/VideoTypes.h. Measured on 6685af1c (lineage-24.0, 2026-11-21),
+where replaying 0005 conflicts with it. Other versions still apply the shared directory.

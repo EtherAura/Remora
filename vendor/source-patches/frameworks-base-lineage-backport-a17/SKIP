@@ -1,0 +1,5 @@
+Retired on A17 (bd remora-q6t5). Both patches existed for the Settings backport, which is retired
+on A17 too, and upstream lineage-24.0 now carries both halves itself. Measured on frameworks/base
+c467c364: services/Android.bp grants //lineage-sdk:__subpackages__, and
+LockPatternUtils has isVisibleDotsEnabled and isShowErrorPath. Replaying 0001 and 0002 there
+conflicts with that upstream code.

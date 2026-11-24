@@ -19,6 +19,12 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Changed
 
+- The Android 17 image is built on LineageOS 24.0 as LineageOS now ships it, since LineageOS has
+  brought its own work over to 24.0. Settings, the launcher, LineageParts and the Lineage apps are
+  LineageOS's own 24.0 versions, where the image used to carry Remora's copies of the 23.2 ones.
+  A few Settings options that LineageOS has not brought to 24.0 yet are missing until it does,
+  among them the LiveDisplay profile choice and the full-screen option for apps made before
+  Android 8. The weekly image picks them up as they arrive.
 - `remora-host-agent` counts a session at what it was measured to take from the GPU, not a 4K
   encoder's worth, and keeps 1.3 GiB free for the computer's monitors instead of 1 GiB: a mode set
   failed with about that much free and left a monitor dark. A Light session from the phone needs

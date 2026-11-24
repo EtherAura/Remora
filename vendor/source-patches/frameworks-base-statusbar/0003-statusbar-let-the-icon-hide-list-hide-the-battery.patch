@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Remora <remora@localhost>
 Date: Sat, 25 Jul 2026 10:05:00 -0400
-Subject: [PATCH] statusbar: let the icon hide list hide the battery
+Subject: [PATCH 3/4] statusbar: let the icon hide list hide the battery
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -28,8 +28,11 @@ padding — SystemStatusIconsLayoutHelper.configurePaddingForNewStatusBarIcons
 runs right after addBatteryComposable. Verify padding visually before
 enabling it by default.
 ---
+ .../shared/ui/composable/StatusBarRoot.kt     | 59 ++++++++++++-------
+ 1 file changed, 39 insertions(+), 20 deletions(-)
+
 diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt
-index 013eae5ed025..45ca88e8e8d8 100644
+index ee62df9d3cf1..c975db98de0f 100644
 --- a/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt
 +++ b/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt
 @@ -65,6 +65,7 @@ import androidx.compose.ui.unit.LayoutDirection
@@ -55,81 +58,70 @@ index 013eae5ed025..45ca88e8e8d8 100644
  /** Factory to simplify the dependency management for [StatusBarRoot] */
  @PerDisplaySingleton
  class StatusBarRootFactory
-@@ -591,19 +600,25 @@ private fun addBatteryComposable(
+@@ -591,16 +600,21 @@ private fun addBatteryComposable(
      val batteryComposeView =
          ComposeView(phoneStatusBarView.context).apply {
              setContent {
--                val height =
--                    with(LocalDensity.current) {
--                        BatteryViewModel.getStatusBarBatteryHeight(LocalContext.current).toDp()
--                    }
 -                val viewModel =
 -                    rememberViewModel(traceName = "UnifiedBattery") {
 -                        statusBarViewModel.unifiedBatteryViewModel.create()
 -                    }
--                UnifiedBattery(
--                    modifier = Modifier.sysUiResTagContainer().height(height).wrapContentWidth(),
+-                BatteryWithPercent(
+-                    modifier = Modifier.sysUiResTagContainer().wrapContentSize(),
 -                    viewModel = viewModel,
 -                    isDarkProvider = { statusBarViewModel.areaDark },
+-                    showPercent = viewModel.isBatteryPercentSettingEnabled,
 -                )
 +                val blockedSlots by
 +                    statusBarViewModel.systemStatusIconBlockListInteractor.blockedIconSlots
 +                        .collectAsStateWithLifecycle(initialValue = emptySet())
 +                if (BATTERY_SLOT !in blockedSlots) {
-+                    val height =
-+                        with(LocalDensity.current) {
-+                            BatteryViewModel.getStatusBarBatteryHeight(LocalContext.current).toDp()
-+                        }
 +                    val viewModel =
 +                        rememberViewModel(traceName = "UnifiedBattery") {
 +                            statusBarViewModel.unifiedBatteryViewModel.create()
 +                        }
-+                    UnifiedBattery(
-+                        modifier =
-+                            Modifier.sysUiResTagContainer().height(height).wrapContentWidth(),
++                    BatteryWithPercent(
++                        modifier = Modifier.sysUiResTagContainer().wrapContentSize(),
 +                        viewModel = viewModel,
 +                        isDarkProvider = { statusBarViewModel.areaDark },
++                        showPercent = viewModel.isBatteryPercentSettingEnabled,
 +                    )
 +                }
              }
+             setId(R.id.battery_composable_view)
          }
-     phoneStatusBarView.findViewById<ViewGroup>(R.id.system_icons).apply {
-@@ -641,19 +656,25 @@ private fun addEndSideComposable(
+@@ -639,16 +653,21 @@ private fun addEndSideComposable(
                              statusBarViewModel.systemStatusIconBlockListInteractor,
                      )
  
--                    val height =
--                        with(LocalDensity.current) {
--                            BatteryViewModel.getStatusBarBatteryHeight(LocalContext.current).toDp()
--                        }
 -                    val viewModel =
 -                        rememberViewModel(traceName = "UnifiedBattery") {
 -                            statusBarViewModel.unifiedBatteryViewModel.create()
 -                        }
--                    UnifiedBattery(
+-                    BatteryWithPercent(
 -                        viewModel = viewModel,
 -                        isDarkProvider = { statusBarViewModel.areaDark },
--                        modifier = Modifier.height(height).wrapContentWidth(),
+-                        modifier = Modifier.wrapContentSize(),
+-                        showPercent = viewModel.isBatteryPercentSettingEnabled,
 -                    )
 +                    val blockedSlots by
 +                        statusBarViewModel.systemStatusIconBlockListInteractor.blockedIconSlots
 +                            .collectAsStateWithLifecycle(initialValue = emptySet())
 +                    if (BATTERY_SLOT !in blockedSlots) {
-+                        val height =
-+                            with(LocalDensity.current) {
-+                                BatteryViewModel.getStatusBarBatteryHeight(LocalContext.current)
-+                                    .toDp()
-+                            }
 +                        val viewModel =
 +                            rememberViewModel(traceName = "UnifiedBattery") {
 +                                statusBarViewModel.unifiedBatteryViewModel.create()
 +                            }
-+                        UnifiedBattery(
++                        BatteryWithPercent(
 +                            viewModel = viewModel,
 +                            isDarkProvider = { statusBarViewModel.areaDark },
-+                            modifier = Modifier.height(height).wrapContentWidth(),
++                            modifier = Modifier.wrapContentSize(),
++                            showPercent = viewModel.isBatteryPercentSettingEnabled,
 +                        )
 +                    }
                  }
              }
          }
+-- 
+2.56.1
+

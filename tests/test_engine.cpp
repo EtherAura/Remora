@@ -4189,7 +4189,9 @@ private slots:
     // open patch" lines for the files the registry still named, exactly the noise that hid the
     // original failure. The resolution is structural: v4l2_encoder is the series upstream
     // subsumes on 17 (its -a17 SKIP is back, and correct), and v4l2_av1_enum carries the enum
-    // patch on EVERY version in its own dir, out of the SKIP's reach.
+    // patch in its own dir, out of that SKIP's reach. Since LineageOS forward-ported to 24.0
+    // (bd remora-q6t5) upstream declares VideoCodec::AV1 itself, so the enum patch is withheld on
+    // 17 as well, by an -a17 SKIP of its own: re-applying it there conflicts.
     void patchApplicabilityAgainstTheRealVendorTree() {
         const SourcePatch *v4l2 = nullptr, *av1 = nullptr;
         for (const SourcePatch &p : sourcePatches()) {
@@ -4203,16 +4205,17 @@ private slots:
         QVERIFY2(!patchAppliesTo(*v4l2, 17, readVendorPath),
                  "the -a17 SKIP is gone — A17 would re-apply a series upstream subsumes, with "
                  "'patch does not apply' noise for all four files");
-        // The enum patch: every version. Losing it on 17 is the build breaker.
+        // The enum patch: offered on 16, withheld on 17, where upstream carries the member.
         QVERIFY(patchAppliesTo(*av1, 16, readVendorPath));
-        QVERIFY2(patchAppliesTo(*av1, 17, readVendorPath),
-                 "A17 lost the VideoCodec::AV1 patch — c2-va will not compile");
+        QVERIFY2(!patchAppliesTo(*av1, 17, readVendorPath),
+                 "the av1 -a17 SKIP is gone — A17 would re-apply an enum member lineage-24.0 "
+                 "already declares, and the patch conflicts there");
         const QStringList a16 = applicableSourcePatchKeys(16, readVendorPath);
         const QStringList a17 = applicableSourcePatchKeys(17, readVendorPath);
         QVERIFY(a16.contains(QStringLiteral("v4l2_encoder")));
         QVERIFY(!a17.contains(QStringLiteral("v4l2_encoder")));
         QVERIFY(a16.contains(QStringLiteral("v4l2_av1_enum")));
-        QVERIFY(a17.contains(QStringLiteral("v4l2_av1_enum")));
+        QVERIFY(!a17.contains(QStringLiteral("v4l2_av1_enum")));
         QVERIFY(!a16.isEmpty() && !a17.isEmpty());
 
         // The av1 dir must carry the enum patch under the exact name the registry lists — an

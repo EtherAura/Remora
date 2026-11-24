@@ -2,11 +2,10 @@
 # reimplementation (bd remora-28ix.4) with the lineage_legal_url and lineage_version_props
 # patch content native here — those two registry entries are SKIPped on A17.
 #
-# The Lineage apps are backported from their newest upstream branches (lineage-23.2, and
-# lineage-22.2 for Trebuchet) because lineage-24.0 apps are not branched yet. This makes the
-# remora_x86_64 (aosp_base) product present as LineageOS: Trebuchet launcher, LineageParts
-# settings, the Lineage app suite, and ro.lineage.* branding. Pairs with the local_manifest
-# remora-a17-lineage-apps.xml that adds these projects to the tree.
+# The Lineage apps come from lineage-24.0 with the rest of the tree, since LineageOS forward-ported
+# to it in late 2026 (bd remora-q6t5). This makes the remora_x86_64 (aosp_base) product present as
+# LineageOS: the LineageOS launcher (its fork of packages/apps/Launcher3), LineageParts settings,
+# the Lineage app suite, and ro.lineage.* branding.
 
 # LineageOS appearance: a static framework-res overlay giving the circular adaptive-icon mask (the
 # LineageOS "look" — AOSP A17 defaults to a rounded square) and the LineageOS default wallpaper.
@@ -15,15 +14,11 @@
 PRODUCT_PACKAGE_OVERLAYS += $(LOCAL_PATH)/lineage-overlay
 
 # NOTE: LineageParts and Profiles are deliberately NOT listed here. LineageParts ships all the
-# same: vendor/lineage/config/common.mk, which remora_x86_64.mk inherits, adds it, and it builds
-# on this base only with container patch packages/apps/LineageParts/0001.
-# HALF the SDK wiring now exists:
-# the frameworks/base lineage_platform_res patch loads the 0x3f org.lineageos.platform-res into
-# every process, so SDK resources resolve and the preference widgets self-remove instead of
-# throwing. Still absent is the SystemServer LineageSystemServer hook that starts the
-# LineageHardware/LiveDisplay/Profile services those two apps are built around — without it they
-# would run with every feature tombstoned. That half is the remaining frameworks/base follow-up.
-# The standalone apps below need no SDK services and work as-is.
+# same: vendor/lineage/config/common.mk, which remora_x86_64.mk inherits, adds it. lineage-24.0's
+# frameworks/base carries the LineageOS platform itself: it loads the 0x3f
+# org.lineageos.platform-res into every process, and SystemServer starts the external system
+# server named by config_externalSystemServer, which runs the LineageHardware/LiveDisplay/Profile
+# services. The standalone apps below need no SDK services and work as-is.
 PRODUCT_PACKAGES += \
     Jelly \
     Etar \
@@ -43,7 +38,8 @@ PRODUCT_PACKAGES += \
 #               .fishfood and duplicates the STILL_IMAGE_CAMERA handler)
 #   Gallery2 -> replaced by Glimpse (removed from the list above)
 #   QuickSearchBox -> the AOSP search app behind the hotseat "Google" bar; nothing to search without
-#               a Google provider, so it and the bar (see the QsbWidgetFactory patch) are dropped.
+#               a Google provider, so it and the bar (container patch packages/apps/Launcher3/0001)
+#               are dropped.
 PRODUCT_PACKAGES_REMOVE += \
     Camera2 \
     Gallery2 \
@@ -51,10 +47,8 @@ PRODUCT_PACKAGES_REMOVE += \
 
 # LineageOS platform SDK packages (org.lineageos.platform{,-res} + feature permission XMLs). The
 # kept apps were compiled against the SDK (static-linked internal classes), so the SDK jar/res are
-# shipped for their symbol/0x3f references. The resource half IS wired now — the frameworks/base
-# lineage_platform_res patch puts org.lineageos.platform-res.apk in the zygote's system asset set,
-# which is what makes those 0x3f references resolvable at runtime (see the LineageParts note above).
-# No LineageSystemServer runs; the kept apps do not need one, and the SDK tolerates its absence.
+# shipped for their symbol/0x3f references. lineage-24.0's frameworks/base resolves those 0x3f
+# references and starts LineageSystemServer (see the LineageParts note above).
 $(call inherit-product, vendor/lineage/config/lineage_sdk_common.mk)
 
 PRODUCT_PACKAGES += \

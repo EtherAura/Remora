@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Sun, 22 Nov 2026 14:13:39 -0500
+Subject: [PATCH] A17 Launcher3: no hotseat search box without a search
+ provider
+
+The image ships no GApps, so there is no search-widget provider, and
+the hotseat "Google" search box is a permanent dead pill that cannot be
+removed. QsbWidgetFactory now returns an empty 0x0 stand-in carrying
+the id the Hotseat looks for, so the slot collapses to nothing.
+QuickSearchBox, the app behind the box, is dropped in the device tree's
+lineage.mk.
+
+This is the one part of the Trebuchet graft that lineage-24.0's
+Launcher3 does not have. The LineageOS fork carries the rest itself:
+the Trust feature (hidden and protected apps) under lineage/trust, and
+LineageUtils (bd remora-q6t5).
+---
+ src/com/android/launcher3/qsb/QsbWidgetFactory.kt | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/src/com/android/launcher3/qsb/QsbWidgetFactory.kt b/src/com/android/launcher3/qsb/QsbWidgetFactory.kt
+index 1137dd255f..0c79465b83 100644
+--- a/src/com/android/launcher3/qsb/QsbWidgetFactory.kt
++++ b/src/com/android/launcher3/qsb/QsbWidgetFactory.kt
+@@ -16,7 +16,6 @@
+ 
+ package com.android.launcher3.qsb
+ 
+-import android.view.LayoutInflater
+ import android.view.View
+ import android.view.ViewGroup
+ import com.android.launcher3.R
+@@ -26,7 +25,14 @@ import javax.inject.Inject
+ open class QsbWidgetFactory @Inject constructor() {
+ 
+     open fun createView(container: ViewGroup): View {
+-        return LayoutInflater.from(container.context)
+-            .inflate(R.layout.qsb_container_hotseat, container, false)
++        // No GApps means no search-widget provider, so the hotseat "Google" search box is a
++        // permanent dead pill that cannot be removed. Return an empty 0x0 stand-in carrying the
++        // expected id: the Hotseat's QSB slot then collapses to nothing (a 0-size view renders
++        // nothing regardless of the alpha channel that would otherwise re-show a GONE view).
++        return View(container.context).apply {
++            id = R.id.search_container_hotseat
++            layoutParams = ViewGroup.LayoutParams(0, 0)
++            visibility = View.GONE
++        }
+     }
+ }
+-- 
+2.56.1
+

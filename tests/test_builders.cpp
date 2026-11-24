@@ -3190,10 +3190,12 @@ private slots:
         // RENUMBERED (bd remora-31sq): the series moved out of the shared frameworks-base
         // directory into frameworks-base-statusbar and restarted at 0001, so a version override can
         // skip it on A16 without also skipping the two keys that share the old directory and apply
-        // there fine. The property under test is unchanged — all four files, in apply order.
-        QCOMPARE(sb->patches.size(), 4);
+        // there fine. The property under test is unchanged — every file, in apply order.
+        // THREE (bd remora-q6t5): 0004, the tuner entry's activity-alias, is
+        // declared by lineage-24.0 itself, so carrying it too failed the manifest merger.
+        QCOMPARE(sb->patches.size(), 3);
         QCOMPARE(sb->dir, QStringLiteral("frameworks-base-statusbar"));
-        for (const char *n : {"0001-statusbar", "0002-statusbar", "0003-statusbar", "0004-statusbar"})
+        for (const char *n : {"0001-statusbar", "0002-statusbar", "0003-statusbar"})
             QVERIFY2(!sb->patches.filter(QLatin1String(n)).isEmpty(),
                      qPrintable(QStringLiteral("merged entry lost %1").arg(QLatin1String(n))));
         // and in apply order, since the icon_blacklist patch is what the other three build on

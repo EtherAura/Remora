@@ -456,7 +456,7 @@ const QVector<SourcePatch> &sourcePatches() {
         // is INERT until icon_blacklist is set. So no combination of three-of-four was ever a
         // thing to want: the hide list either works or it does not. The four retired keys are
         // mapped onto this one by canonicalPatchKeys(), so existing profiles keep the capability.
-        {"statusbar_hide_list", "Status bar icon hide list (clock, battery, tuner entry)",
+        {"statusbar_hide_list", "Status bar icon hide list (clock, battery)",
          "Make the icon_blacklist secure setting real again on the A17 status bar, end to end. "
          "Inert until icon_blacklist is set; setting it is what turns any of this on.\n\n"
          "• Icons: A17 ships new_status_bar_icons=enabled, and the new Compose pipeline's "
@@ -471,21 +471,20 @@ const QVector<SourcePatch> &sourcePatches() {
          "screenshot on the live 3760x1992 instance — all icons 48px right margin, battery "
          "hidden 60px, hiding ETHERNET instead leaves it at 48px. The 12px is the right-bearing "
          "of whichever icon ends up last, not a padding defect.\n"
-         "• Tuner entry: LineageParts' Settings > System > Status bar > \"System icons\" fires "
-         "com.android.settings.action.STATUS_BAR_TUNER, a LineageOS SystemUI action lineage-24.0 "
-         "never forward-ported, and androidx Preference.performClick calls startActivity with no "
-         "try/catch — so that row was a fatal ActivityNotFoundException. Routed through an "
-         "activity-alias rather than by enabling TunerActivity, so the activity stays disabled "
-         "and adds no \"System UI Tuner\" tile. It is the screen that WRITES icon_blacklist, "
-         "which the three above are what make real.",
+         "• Tuner entry: LineageParts' Settings > System > Status bar > \"System icons\" opens "
+         "the tuner's icon list, the screen that WRITES icon_blacklist, which the three above "
+         "are what make real. LineageOS 24.0 declares that entry itself, as an activity-alias in "
+         "SystemUI's LineageManifest.xml, so this series no longer carries one.",
+         // 0004 (the tuner entry's activity-alias) RETIRED (bd remora-q6t5): lineage-24.0
+         // declares the same .tuner.StatusBarTuner alias in LineageManifest.xml, and two
+         // declarations are a hard manifest-merger error (conflicting android:label).
          // OWN DIRECTORY SINCE (bd remora-31sq). This shared frameworks-base with three
          // other keys, and a version override is per-DIRECTORY: skipping this series on A16 would
          // have skipped surfaceview_secure and shell_update_owner with it, which apply there fine.
          "frameworks/base", "frameworks-base-statusbar",
          {"0001-statusbar-honor-icon_blacklist-in-the-Compose-icon-p.patch",
           "0002-statusbar-let-the-icon-hide-list-hide-the-clock-agai.patch",
-          "0003-statusbar-let-the-icon-hide-list-hide-the-battery.patch",
-          "0004-statusbar-give-the-tuner-s-icon-list-an-entry-point-.patch"},
+          "0003-statusbar-let-the-icon-hide-list-hide-the-battery.patch"},
          true, true, "container", {17}},
         {"lineage_platform_res", "Load the LineageOS SDK resources",
          "Put org.lineageos.platform-res.apk (reserved package id 0x3f) into the zygote's shared "

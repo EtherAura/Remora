@@ -1,0 +1,4 @@
+Retired on A17 (bd remora-q6t5). Upstream lineage-24.0 frameworks/base loads the LineageOS platform
+resources itself, in AssetManager and OverlayConfig, which is LineageOS's own form of what 0001
+did. Measured on frameworks/base c467c364 (2026-11-21), where replaying 0001 conflicts with it.
+A16 keeps its own series in frameworks-base-lineage-res-a16.

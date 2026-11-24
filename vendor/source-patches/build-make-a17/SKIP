@@ -1,0 +1,3 @@
+Retired on A17 (bd remora-q6t5). Upstream build/make emits RecoveryDefaultTouchRotation itself, in
+core/soong_extra_config.mk, which is the key gen_build_prop.py reads. Measured on 90d00638
+(lineage-24.0, 2026-11-21), where replaying 0001 conflicts with it.
