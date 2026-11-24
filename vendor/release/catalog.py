@@ -291,7 +291,16 @@ def fetch(base, image, catalog_state, cache, progress=None):
     except OSError as e:
         print('Could not remove the imported archive ' + image['archive']['file'] + ': ' + str(e),
               file=sys.stderr, flush=True)
-    return receipt | {'receipt':str(receipt_path)}
+    # Then what earlier updates left (release_prune). Every path that imports a release ends here,
+    # so none of them leaves 3.5 GB behind per release; and a cleanup that cannot decide, as after
+    # a first install or a rollback, or that fails, leaves everything and fails nothing.
+    try:
+        cleanup = release_cleanup(image['tag'], cache)
+    except (VerificationError, OSError, ValueError, KeyError) as e:
+        cleanup = {'removed': [], 'stopped': str(e)}
+    if cleanup['removed']:
+        print('Removed what an earlier update left: ' + ', '.join(cleanup['removed']), flush=True)
+    return receipt | {'receipt':str(receipt_path), 'cleanup':cleanup}
 
 
 def installed_version(image, installed):
@@ -497,6 +506,75 @@ def obsolete_release_tags(tag, receipts, images, containers):
             'retain': tuple(sorted(retain))}
 
 
+# The labels that name what an image was built on, besides its Parent: a Google Play layer's base
+# (vendor/play/install.py) and the release under a stack of local add-on layers.
+LINEAGE_LABELS = ('org.remora.play.base', 'org.remora.addons.root')
+
+
+def release_prune(tag, receipts, images, containers, configs):
+    """What a prune after an update removes, in the order to remove it: the Google Play layers built
+    on a release obsolete_release_tags selects, then that release's own tags. Pure, like the
+    selector it builds on.
+
+    `configs` gives every image in `images` as image inspect does ({'Id', 'Parent', 'Labels'}).
+    What an image is built on is its Parent and the images its LINEAGE_LABELS name, and whatever a
+    kept image is built on is kept, transitively: an add-on layer still on an old release keeps it
+    and the Play layer between them, as a container's image does (the selector counts only the
+    image a container names). A Play layer goes only with its release, unused, and carrying no tag
+    but its own remora-local:play- ones. An untagged image holds nothing: removing the image it was
+    built toward prunes it too.
+
+    Returns the selector's result with 'remove': ((tag, image ID), ...), Play layers first, its
+    'tags' cut to the releases still removed and its 'retain' grown by those lineage keeps; or the
+    selector's incomplete answer with 'remove': ()."""
+    def incomplete(reason):
+        return {'complete': False, 'reason': reason, 'tags': (), 'retain': None, 'remove': ()}
+    decision = obsolete_release_tags(tag, receipts, images, containers)
+    if not decision['complete']:
+        return decision | {'remove': ()}
+    if type(configs) not in (list, tuple):
+        return incomplete('No image lineage')
+    tags_of = {im['Id']: set(im['RepoTags']) for im in images}
+    base_of, play_base = {}, {}
+    for cfg in configs:
+        labels = cfg.get('Labels') if type(cfg) is dict else None
+        if type(cfg) is not dict or cfg.get('Id') not in tags_of or cfg['Id'] in base_of \
+                or type(cfg.get('Parent')) is not str or type(labels or {}) is not dict \
+                or not all(type(v) is str for v in (labels or {}).values()):
+            return incomplete('An image lineage entry is malformed')
+        labels = labels or {}
+        base_of[cfg['Id']] = ({cfg['Parent']} if cfg['Parent'] else set()) \
+            | {labels[k] for k in LINEAGE_LABELS if labels.get(k)}
+        if labels.get('org.remora.play.local_only') == 'true' and labels.get('org.remora.play.base'):
+            play_base[cfg['Id']] = labels['org.remora.play.base']
+    if set(base_of) != set(tags_of):
+        return incomplete('The image lineage does not cover the image inventory')
+    used = {c['Image'] for c in containers}
+    selected = set(decision['tags'])
+    releases = {iid for iid, tags in tags_of.items() if tags and tags <= selected}
+    layers = {iid for iid, base in play_base.items()
+              if base in releases and iid not in used and tags_of[iid]
+              and all(t.startswith('remora-local:play-') for t in tags_of[iid])}
+    drop = releases | layers
+    while True:
+        holders = {iid for iid, tags in tags_of.items() if tags and iid not in drop} | used
+        held, todo = set(), list(holders)
+        while todo:
+            for b in base_of.get(todo.pop(), ()):
+                if b not in held:
+                    held.add(b)
+                    todo.append(b)
+        kept = drop & (held | holders)
+        if not kept:
+            break
+        drop -= kept
+    remove = [(t, iid) for group in (layers, releases) for iid in sorted(drop & group)
+              for t in sorted(tags_of[iid])]
+    return decision | {'tags': tuple(sorted(t for iid in drop & releases for t in tags_of[iid])),
+                       'retain': tuple(sorted(set(decision['retain']) | (releases - drop))),
+                       'remove': tuple(remove)}
+
+
 def read_release_receipts(cache):
     if not cache.exists():
         return []
@@ -543,6 +621,24 @@ def cleanup_inventory(kind):
     return records
 
 
+def image_lineage(ids):
+    """What release_prune reads of each image: its Parent and its labels, both part of the image's
+    configuration, so they never change under the same ID. From the whole inspect record, not a
+    --format template: Docker leaves Parent out of some images and Labels out of their Config, and
+    a template stops at the first key a map lacks."""
+    records = []
+    for start in range(0, len(ids), 100):
+        batch = ids[start:start + 100]
+        rows = json.loads(run('docker', 'image', 'inspect', *batch))
+        require(type(rows) is list and len(rows) == len(batch)
+                and all(type(row) is dict and type(row.get('Config') or {}) is dict for row in rows)
+                and sorted(row.get('Id') for row in rows) == sorted(batch),
+                'Incomplete Docker image lineage')
+        records.extend({'Id': row['Id'], 'Parent': row.get('Parent') or '',
+                        'Labels': (row.get('Config') or {}).get('Labels')} for row in rows)
+    return records
+
+
 def release_cleanup_plan(tag, cache):
     receipts = read_release_receipts(cache)
     preflight = release_retention_receipts(tag, receipts)
@@ -550,7 +646,8 @@ def release_cleanup_plan(tag, cache):
     endpoint = check_local_docker()
     images = cleanup_inventory('image')
     containers = cleanup_inventory('container')
-    decision = obsolete_release_tags(tag, receipts, images, containers)
+    decision = release_prune(tag, receipts, images, containers,
+                             image_lineage([record['Id'] for record in images]))
     require(decision['complete'], decision['reason'])
     image_ids = {record['Id'] for record in images}
     require(all(record['Image'] in image_ids for record in containers),
@@ -559,6 +656,23 @@ def release_cleanup_plan(tag, cache):
             and read_release_receipts(cache) == receipts and check_local_docker() == endpoint,
             'Docker inventory, context or release receipts changed during the cleanup plan')
     return decision | {'tag': tag, 'dry_run': True}
+
+
+def release_cleanup(tag, cache):
+    """Removes what the plan names (release_prune): each tag only while it still names the image
+    the plan saw, and none after one does not. Docker deletes an image with its last tag, and with
+    a Play layer the untagged build steps under it. Returns what was removed, and why it stopped
+    if it did."""
+    plan = release_cleanup_plan(tag, cache)
+    removed = []
+    try:
+        for t, iid in plan['remove']:
+            require(image_id(t) == iid, t + ' changed during the cleanup')
+            run('docker', 'image', 'rm', t)
+            removed.append(t)
+    except VerificationError as e:
+        return {'removed': removed, 'stopped': str(e)}
+    return {'removed': removed, 'stopped': None}
 
 
 def main(argv=None):

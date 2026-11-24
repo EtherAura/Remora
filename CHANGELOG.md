@@ -35,6 +35,13 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 - In the phone app preview, a session's controls open as a card beside their handle. The panel
   stretched across the whole screen and covered the handle, worst with the phone sideways.
+- **A release update no longer keeps every release before it.** Each update through `remora
+  images fetch`, the workspace's Official downloads or Android's *Download and apply* kept the
+  image it replaced, its rollback tag and the Google Play layer installed over it, about 3 GB a
+  release that nothing removed. Now an update removes the release before the one it replaced,
+  with that Play layer, so two stay: the current release and the one `images rollback`
+  restores. An image a container uses, an image another kept image is built on, and an image
+  with a tag of yours are never removed, and when an update cannot tell, it removes nothing.
 - `remora-host-agent` keeps an app on the phone when the computer switches to another KDE
   activity. The app's window stayed on the activity it opened on, so the switch took it off the
   phone, which showed the empty desktop until a key from the phone brought the window back and,

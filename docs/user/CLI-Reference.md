@@ -99,18 +99,23 @@ and the archive's SHA-256, Docker identity and tag. Anything that fails a check 
 Docker sees it. The image is imported under an immutable version tag and then tagged
 `remora24:x86_64-public`. The downloaded archive is removed once that succeeds; an import that
 fails keeps it, so trying again does not download it again. A previous image with that name is
-kept as `remora-rollback:public-…`.
+kept as `remora-rollback:public-…`. The release before that one then goes, with its tags and the
+Google Play layer installed over it, so updates keep two releases on disk, not every one: the
+current one and the one `images rollback` restores. Anything a container or another kept image is
+built on stays, and so does an image with a tag of yours; when a fetch cannot tell (after a first
+install or a rollback), it removes nothing.
 `images rollback` restores it; Android data is never touched. Add `--host user@host` to run on that
 Docker host. On Windows, which has no local Docker, a command without `--host` runs on the active
 profile's `ssh_host`, and is refused when the profile has none. `--source` names another signed
 catalog location. The workspace's **Official downloads** button adds the same source to the Image
 library.
 
-`images cleanup-plan` previews obsolete official release tags using local import receipts for the
-current user and the Docker inventory on the selected host. The JSON result lists candidate `tags`
-and retained image IDs. It protects current and rollback images, images used by running or stopped
-containers, and images with other tags or without a Remora rollback alias. Incomplete or changed
-observations fail the command. The plan is a read-only snapshot of tag names and image IDs.
+`images cleanup-plan` previews what the next fetch would remove, using local import receipts for the
+current user and the Docker inventory on the selected host. The JSON result lists candidate `tags`,
+retained image IDs and `remove`, every tag the cleanup would drop (Play layers first) with its
+image. It protects current and rollback images, images used by running or stopped containers,
+whatever a kept image is built on, and images with other tags or without a Remora rollback alias.
+Incomplete or changed observations fail the command. The plan itself changes nothing.
 
 The public image is x86_64 only. It has no Google apps and no ARM translation, so apps that ship
 only ARM native code refuse to install on it. Add Google Play locally with `play-install` below.

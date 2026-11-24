@@ -1106,6 +1106,7 @@ class CleanupPlan(unittest.TestCase):
                        self.b: {'Id': self.b, 'RepoTags': [rollback_alias(self.b)]},
                        self.c: {'Id': self.c, 'RepoTags': [TAG]}}
         self.containers = {}
+        self.lineage = {}  # image ID -> {'Parent', 'Labels'}; none: loaded, no labels
         self.calls = []
 
     def docker(self, args, **kwargs):
@@ -1123,6 +1124,18 @@ class CleanupPlan(unittest.TestCase):
                 out = '\n'.join(records)
                 if images:
                     out += '\n' + self.a  # Docker may list the same image for each tag.
+            elif images and args[3] != '--format':  # the whole record, as image_lineage reads it
+                rows = []
+                for iid in args[3:]:
+                    if iid in records:
+                        seen = self.lineage.get(iid, {})
+                        row = {'Id': iid, 'Config': {}}  # Docker may leave out Parent and Labels
+                        if seen.get('Parent'):
+                            row['Parent'] = seen['Parent']
+                        if seen.get('Labels'):
+                            row['Config']['Labels'] = seen['Labels']
+                        rows.append(row)
+                out = json.dumps(rows)
             else:
                 field = 'RepoTags' if images else 'Image'
                 self.assertEqual(args[3:5], ('--format', '{"Id":{{json .Id}},"' + field
@@ -1150,7 +1163,8 @@ class CleanupPlan(unittest.TestCase):
         original = self.receipt.read_bytes()
         self.assertEqual(self.command(), {'tag': TAG, 'dry_run': True, 'complete': True,
                                          'reason': None, 'tags': sorted(self.a_tags),
-                                         'retain': [self.b, self.c]})
+                                         'retain': [self.b, self.c],
+                                         'remove': [[t, self.a] for t in sorted(self.a_tags)]})
         self.assertEqual(list(self.cache.iterdir()), [self.receipt])
         self.assertEqual(self.receipt.read_bytes(), original)
         self.assertEqual(self.images[self.a]['RepoTags'], self.a_tags)
@@ -1214,6 +1228,256 @@ class CleanupPlan(unittest.TestCase):
         self.command(failure=(catalog.VerificationError, 'No verified-import receipt'))
         self.assertFalse(self.xdg.exists())
         self.assertEqual(self.calls, [])
+
+
+class ReleasePrune(unittest.TestCase):
+    """What a prune removes beyond the selector's tags: the Google Play layers built on the release
+    it drops, first; and nothing a kept image (an add-on layer, a container's image, someone's tag)
+    is built on, through its Parent or the lineage labels. Over the three fetches' fixtures."""
+    VERSIONS = ReleaseRetention.VERSIONS
+
+    @classmethod
+    def setUpClass(cls):
+        ReleaseRetention.setUpClass.__func__(cls)
+
+    def setUp(self):
+        self.a, self.b, self.c = (self.ids[n] for n in 'ABC')
+        self.a_tags = sorted((rollback_alias(self.a), ReleaseRetention.VERSIONS['A']))
+        self.extra, self.lineage = [], {}
+
+    def layer(self, n, tags, base=None, parent='', labels=None):
+        iid = 'sha256:' + n * 64
+        self.extra.append({'Id': iid, 'RepoTags': list(tags)})
+        labels = dict(labels or {})
+        if base:
+            labels |= {'org.remora.play.local_only': 'true', 'org.remora.play.base': base}
+        self.lineage[iid] = {'Parent': parent, 'Labels': labels or None}
+        return iid
+
+    def play_tag(self, base):
+        return 'remora-local:play-' + base[7:19] + '-0123456789ab'
+
+    def prune(self, containers=(), configs=None):
+        images = ReleaseRetention.inventory(self, extra=self.extra)
+        if configs is None:
+            configs = [{'Id': im['Id'], 'Parent': '', 'Labels': None} | self.lineage.get(im['Id'], {})
+                       for im in images]
+        return catalog.release_prune(TAG, [self.receipts['C']], images, list(containers), configs)
+
+    def test_without_layers_the_selected_release_is_removed(self):
+        result = self.prune()
+        self.assertTrue(result['complete'], result)
+        self.assertEqual(result['remove'], tuple((t, self.a) for t in self.a_tags))
+        self.assertEqual(result['tags'], tuple(self.a_tags))
+
+    def test_a_play_layer_on_the_dropped_release_goes_first(self):
+        step = self.layer('1', [], parent=self.a)  # an untagged build step holds nothing
+        play = self.layer('2', [self.play_tag(self.a)], base=self.a, parent=step)
+        self.assertEqual(self.prune()['remove'],
+                         ((self.play_tag(self.a), play),) + tuple((t, self.a) for t in self.a_tags))
+
+    def test_an_add_on_layer_keeps_its_play_layer_and_release(self):
+        play = self.layer('2', [self.play_tag(self.a)], base=self.a, parent=self.a)
+        self.layer('3', ['remora-local:addons-' + play[7:19] + '-0123456789ab'], parent=play,
+                   labels={'org.remora.addons.root': self.a})
+        result = self.prune()
+        self.assertEqual((result['remove'], result['tags']), ((), ()))
+        self.assertIn(self.a, result['retain'])
+
+    def test_a_container_on_a_derived_layer_keeps_the_release(self):
+        for store, parent in (('classic', True), ('containerd', False)):
+            with self.subTest(store=store):
+                self.setUp()
+                play = self.layer('2', [self.play_tag(self.a)], base=self.a,
+                                  parent=self.a if parent else '')
+                derived = self.layer('3', [], parent=play if parent else '',
+                                     labels={'org.remora.addons.root': self.a})
+                result = self.prune(containers=[{'Id': '9' * 64, 'Image': derived}])
+                self.assertNotIn(self.a, [iid for _, iid in result['remove']])
+                self.assertIn(self.a, result['retain'])
+
+    def test_a_foreign_tag_on_a_play_layer_holds_it_and_its_release(self):
+        self.layer('2', [self.play_tag(self.a), 'user/mine:1'], base=self.a, parent=self.a)
+        self.assertEqual(self.prune()['remove'], ())
+
+    def test_the_play_layer_of_the_rollback_release_stays(self):
+        play = self.layer('2', [self.play_tag(self.b)], base=self.b, parent=self.b)
+        remove = self.prune()['remove']
+        self.assertEqual(remove, tuple((t, self.a) for t in self.a_tags))
+        self.assertNotIn(play, [iid for _, iid in remove])
+
+    def test_lineage_must_cover_the_inventory_and_be_well_formed(self):
+        images = ReleaseRetention.inventory(self)
+        whole = [{'Id': im['Id'], 'Parent': '', 'Labels': None} for im in images]
+        for configs in (None, whole[1:], whole + [whole[0]],
+                        [dict(whole[0], Parent=7)] + whole[1:],
+                        [dict(whole[0], Labels={'org.remora.play.base': 3})] + whole[1:]):
+            with self.subTest(configs=configs):
+                result = catalog.release_prune(TAG, [self.receipts['C']], images, [], configs)
+                self.assertFalse(result['complete'], result)
+                self.assertEqual(result['remove'], ())
+
+    def test_an_undecidable_selection_removes_nothing(self):
+        result = catalog.release_prune(TAG, [], ReleaseRetention.inventory(self), [], [])
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['remove'], ())
+
+
+class StoreDocker:
+    """A Docker image store for fetch and its cleanup: images with tags, a Parent and labels, and
+    containers. rm drops a tag and deletes the image with its last one, unless a container uses it
+    or another image is built on it, then the untagged images under it nothing else is built on."""
+    def __init__(self):
+        self.images, self.containers, self.fail = {}, {}, set()
+        self.load_as = None  # (image ID, version tag) the next load brings
+
+    def image_id(self, ref):
+        if ref in self.images:
+            return ref
+        return next((iid for iid, im in self.images.items() if ref in im['tags']), None)
+
+    def add(self, iid, tags=(), parent='', labels=None):
+        self.images[iid] = {'tags': set(tags), 'Parent': parent, 'Labels': labels}
+        return iid
+
+    def delete(self, iid, prune):
+        im = self.images.get(iid)
+        if im is None or im['tags'] or iid in self.containers.values() \
+                or any(o['Parent'] == iid for o in self.images.values()):
+            return
+        del self.images[iid]
+        if prune and im['Parent']:
+            self.delete(im['Parent'], prune)
+
+    def run(self, *a):
+        if a[1] == 'load':
+            iid, vtag = self.load_as
+            self.images.setdefault(iid, {'tags': set(), 'Parent': '', 'Labels': None})
+            self.images[iid]['tags'].add(vtag)
+        elif a[1] == 'tag':
+            src = self.image_id(a[2])
+            for im in self.images.values():
+                im['tags'].discard(a[3])
+            self.images[src]['tags'].add(a[3])
+        elif a[1:3] == ('image', 'rm'):
+            if 'rm' in self.fail:
+                raise catalog.VerificationError('docker image rm failed')
+            iid = self.image_id(a[-1])
+            self.images[iid]['tags'].discard(a[-1])
+            self.delete(iid, '--no-prune' not in a)
+        elif a[2] == 'ls':
+            return '\n'.join(self.images if a[1] == 'image' else self.containers)
+        elif a[1:3] == ('image', 'inspect') and a[3] != '--format':
+            return json.dumps([{'Id': i, 'Parent': self.images[i]['Parent'],
+                                'Config': {'Labels': self.images[i]['Labels']}} for i in a[3:]])
+        elif a[1:3] == ('image', 'inspect'):
+            return '\n'.join(json.dumps({'Id': i, 'RepoTags': sorted(self.images[i]['tags'])})
+                             for i in a[5:])
+        elif a[1:3] == ('container', 'inspect'):
+            return '\n'.join(json.dumps({'Id': c, 'Image': self.containers[c]}) for c in a[5:])
+        else:
+            raise AssertionError('unexpected docker call ' + repr(a))
+        return ''
+
+
+class PruneAfterFetch(unittest.TestCase):
+    """Every fetch ends with the prune, so release updates stop accumulating: the release two
+    updates back goes, with the Play layer built on it, while what rollback restores, what a
+    container runs on and the new release stay; and a prune that fails fails no import."""
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.dir = Path(d.name)
+        self.cache = self.dir / 'images'
+        self.cache.mkdir()
+        self.docker = StoreDocker()
+        self.ids = {}
+
+    def fetch(self, name, stamp):
+        """Release `name`, fetched as fetch does it; every archive here loads under the fixtures'
+        one version tag, which then becomes the release's own, as the real ones carry."""
+        src = self.dir / (name + '.tar')
+        iid = docker_archive(src, labels={'remora.public_release': 'true', 'n': name})
+        body = src.read_bytes()
+        self.ids[name], self.docker.load_as = iid, (iid, VTAG)
+        image = image_entry(iid, ref(name + '.tar', body))
+
+        class Opener:
+            def open(_, url, timeout):
+                return io.BytesIO(body)
+        with patch.object(catalog.urllib.request, 'build_opener', lambda *a: Opener()), \
+                patch.object(catalog, 'check_local_docker', lambda: None), \
+                patch.object(catalog, 'image_id', self.docker.image_id), \
+                patch.object(catalog, 'run', self.docker.run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = catalog.fetch('https://h/x', image, {'sequence': 1}, self.cache)
+        tags = self.docker.images[iid]['tags']
+        tags.discard(VTAG)
+        tags.add(TAG + '-' + stamp)
+        return result
+
+    def play(self, name, n):
+        """Google Play installed over release `name`, as vendor/play/install.py builds it: an
+        untagged build step on the release, and the layer, labelled with its base."""
+        base = self.ids[name]
+        step = self.docker.add('sha256:' + n * 64, parent=base)
+        return self.docker.add('sha256:' + chr(ord(n) + 1) * 64,
+                               {'remora-local:play-' + base[7:19] + '-0123456789ab'}, parent=step,
+                               labels={'org.remora.play.local_only': 'true',
+                                       'org.remora.play.base': base})
+
+    def test_two_updates_leave_what_one_does_and_rollback_still_works(self):
+        self.fetch('A', '20261101.000000')
+        self.assertEqual(self.fetch('B', '20261108.000000')['cleanup']['removed'], [])
+        after_one = len(self.docker.images)
+        result = self.fetch('C', '20261115.000000')
+        self.assertEqual(len(self.docker.images), after_one)
+        self.assertNotIn(self.ids['A'], self.docker.images)
+        self.assertEqual(result['cleanup'], {'removed': sorted([rollback_alias(self.ids['A']),
+                                                                TAG + '-20261101.000000']),
+                                             'stopped': None})
+        with patch.object(catalog, 'check_local_docker', lambda: None), \
+                patch.object(catalog, 'image_id', self.docker.image_id), \
+                patch.object(catalog, 'run', self.docker.run):
+            self.assertEqual(catalog.rollback(TAG, self.cache)['image'], self.ids['B'])
+        self.assertEqual(self.docker.image_id(TAG), self.ids['B'])
+
+    def test_play_layers_follow_their_release(self):
+        cid = '9' * 64
+        self.fetch('A', '20261101.000000')
+        self.docker.containers[cid] = self.play('A', '1')
+        self.fetch('B', '20261108.000000')
+        self.docker.containers[cid] = self.play('B', '3')  # the device moved to the new release
+        after_one = len(self.docker.images)
+        removed = self.fetch('C', '20261115.000000')['cleanup']['removed']
+        self.docker.containers[cid] = self.play('C', '5')
+        self.assertEqual(len(self.docker.images), after_one)
+        self.assertEqual(removed[0], 'remora-local:play-' + self.ids['A'][7:19] + '-0123456789ab')
+        self.assertNotIn(self.ids['A'], self.docker.images)
+        self.assertNotIn('sha256:' + '1' * 64, self.docker.images)  # the build step went with it
+        self.assertIn('sha256:' + '4' * 64, self.docker.images)  # B's Play layer: rollback's
+
+    def test_a_device_still_on_an_old_release_keeps_it(self):
+        self.fetch('A', '20261101.000000')
+        self.docker.containers['9' * 64] = self.play('A', '1')
+        self.fetch('B', '20261108.000000')
+        self.assertEqual(self.fetch('C', '20261115.000000')['cleanup']['removed'], [])
+        self.assertIn(self.ids['A'], self.docker.images)
+
+    def test_a_first_install_prunes_nothing_and_says_why(self):
+        cleanup = self.fetch('A', '20261101.000000')['cleanup']
+        self.assertEqual(cleanup['removed'], [])
+        self.assertIn('records no replaced image', cleanup['stopped'])
+
+    def test_a_failed_prune_fails_no_import(self):
+        self.fetch('A', '20261101.000000')
+        self.fetch('B', '20261108.000000')
+        self.docker.fail.add('rm')
+        result = self.fetch('C', '20261115.000000')
+        self.assertEqual(self.docker.image_id(TAG), self.ids['C'])
+        self.assertEqual(result['cleanup']['removed'], [])
+        self.assertIn('rm failed', result['cleanup']['stopped'])
+        self.assertIn(self.ids['A'], self.docker.images)
 
 
 if __name__ == '__main__':
