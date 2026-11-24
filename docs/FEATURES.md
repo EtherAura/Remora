@@ -71,7 +71,7 @@ passes; the others are informational.
 
 | row | applies to | severity | remedy |
 |---|---|---|---|
-| `adb` present | all | required | install android-tools |
+| `adb` present | all | required | install android-tools on Linux and FreeBSD; on Windows, install Android SDK Platform-Tools and put `adb.exe` on `PATH` |
 | user in the `docker` group | bare | required | `usermod -aG docker $USER`, re-login |
 | docker daemon reachable | bare | required | start docker, or unset a stale `DOCKER_HOST` |
 | IBT-fixed `ashmem_linux.ko` loaded | bare, Android 16 only | required | load the module — Android 17 runs on memfd and needs none |

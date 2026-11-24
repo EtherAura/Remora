@@ -53,8 +53,9 @@ Tick features on the **Image** page, or list them in the profile's `features=` k
    recipe` prints the Dockerfile and `remora build` builds it. Anything else needs a source build.
 
 The registered tags are `remora23:x86_64` (Android 16) and `remora24:x86_64` (Android 17), each
-with `-gapps`, `-gapps-wv` and `-gapps-wv-hwc2` variants. [FEATURES.md](../FEATURES.md) lists what
-each provides. They are names the resolver looks for, not downloads.
+with `-gapps`, `-gapps-wv` and `-gapps-wv-hwc2` variants, and `remora24:x86_64-public`, the
+Android 17 image an official download imports. [FEATURES.md](../FEATURES.md) lists what each
+provides. Apart from that last one, they are names the resolver looks for, not downloads.
 
 ## Build the Mesa payload
 

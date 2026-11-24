@@ -205,6 +205,12 @@ private slots:
         QCOMPARE(gaps.at(1).missingPatches, QStringList({"usb_audio_policy"}));
         QCOMPARE(gaps.at(2).feature, QString("sensors"));
         QCOMPARE(gaps.at(2).missingPatches, QStringList({"sensors_hal", "sensors_product"}));
+        // all four patches on: no feature has a gap
+        QVERIFY(featurePatchGaps({"sensors", "usb_audio", "system_updater"},
+                                 {"sensors_hal", "sensors_product", "usb_audio_policy",
+                                  "settings_hide_stock_updater"},
+                                 17)
+                    .isEmpty());
     }
 
     // THE CASE MOST LIKELY TO HIT THIS, and the one where the sibling warning's convention is
@@ -524,6 +530,13 @@ private slots:
         QVERIFY2(stale.unbuildable.isEmpty(), qPrintable(stale.unbuildable.join(',')));
         QVERIFY(!clean.baseTag.isEmpty());
         QCOMPARE(stale.baseTag, clean.baseTag);
+
+        // and over a named base, the A17 path a layered build takes: only the known key is layered
+        const ImageRecipe named = buildRecipe({"gapps", "native_vulkan"}, 17, QString(), QString(),
+                                              QString(), QStringLiteral("remora24:x86_64"));
+        QCOMPARE(named.overlays, QStringList({"gapps"}));
+        QVERIFY2(named.unbuildable.isEmpty(), qPrintable(named.unbuildable.join(',')));
+        QVERIFY(!named.needsSourceBuild);
     }
 
     void gatesUnmetRequires() {
