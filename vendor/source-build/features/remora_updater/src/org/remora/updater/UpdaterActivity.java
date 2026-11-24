@@ -42,6 +42,11 @@ import java.time.format.DateTimeFormatter;
 public class UpdaterActivity extends Activity {
     private static final String STATE = "/rezmods/updater/state.json";
     private static final String APPLY = "/rezmods/updater/apply";
+    // Written by the host's fetch of an official release while an Apply downloads, checks and
+    // imports it (bd remora-992z): {"phase": "download", "done": bytes, "total": bytes},
+    // {"phase": "cached", "total": bytes}, {"phase": "check"}, {"phase": "import"}, and
+    // {"phase": "ready"} once the image is on the host and the device's restart comes next.
+    private static final String PROGRESS = "/rezmods/updater/progress.json";
 
     private static final int FG = 0xFFECECEC;        // primary text
     private static final int FG_DIM = 0xFFB0B0B0;    // secondary text
@@ -70,11 +75,14 @@ public class UpdaterActivity extends Activity {
     // Re-read state while visible: after Apply, the host may just reconnect (no container restart,
     // e.g. a no-op re-apply) so there is no onResume to refresh us — poll so "Applying" always
     // resolves back to Up-to-date / Update-available on its own.
+    // Every second while an Apply runs, so a phase or a count shows within about a second of the
+    // host writing it.
     private final Handler poll_ = new Handler(Looper.getMainLooper());
+    private boolean applyingNow_;
     private final Runnable tick_ = new Runnable() {
         @Override public void run() {
             refresh();
-            poll_.postDelayed(this, 3000);
+            poll_.postDelayed(this, applyingNow_ ? 1000 : 3000);
         }
     };
 
@@ -287,6 +295,7 @@ public class UpdaterActivity extends Activity {
         String current = "";
         String tag = "";
         String summary = "";
+        boolean download = false;
         try {
             String raw = new String(Files.readAllBytes(Paths.get(STATE)));
             JSONObject o = new JSONObject(raw);
@@ -295,6 +304,7 @@ public class UpdaterActivity extends Activity {
             current = o.optString("current", "");
             tag = o.optString("tag", "");
             summary = o.optString("summary", "");
+            download = o.optBoolean("download", false);
         } catch (Exception ignored) {
             // no state file yet: the host has never written one — treat as up to date
         }
@@ -306,7 +316,9 @@ public class UpdaterActivity extends Activity {
         currentTag_.setVisibility(tag.isEmpty() ? View.GONE : View.VISIBLE);
         currentTag_.setText(tag);
 
-        final boolean applying = new File(APPLY).exists();
+        final File applyFile = new File(APPLY);
+        final boolean applying = applyFile.exists();
+        applyingNow_ = applying;
         if (applying || pending) {
             updateCard_.setVisibility(View.VISIBLE);
             upToDateRow_.setVisibility(View.GONE);
@@ -318,11 +330,69 @@ public class UpdaterActivity extends Activity {
                     : summary);
             apply_.setVisibility(applying ? View.GONE : View.VISIBLE);
             progress_.setVisibility(applying ? View.VISIBLE : View.GONE);
-            applying_.setVisibility(applying ? View.VISIBLE : View.GONE);
+            progress_.setIndeterminate(true);
+            // The restart line shows only once the restart is next: for an image already on the
+            // host (no download), or once the fetch of an official release has finished.
+            boolean restartNext = true;
+            if (applying) {
+                String phase = phase(progress(applyFile));
+                if (phase != null) {
+                    updateSummary_.setText(phase);
+                    restartNext = phase.equals(READY);
+                } else if (download) {
+                    updateSummary_.setText("Waiting for the Remora host to start the download.");
+                    restartNext = false;
+                }
+            }
+            applying_.setVisibility(applying && restartNext ? View.VISIBLE : View.GONE);
         } else {
             updateCard_.setVisibility(View.GONE);
             upToDateRow_.setVisibility(View.VISIBLE);
             upToDateDetail_.setText(built.isEmpty() ? "" : "Latest image built " + fmt(built));
+        }
+    }
+
+    private static final String READY = "Downloaded and checked.";
+
+    // This Apply's progress, or null: a file written before the Apply was asked for is a leftover
+    // of an earlier one, so it is not shown.
+    private static JSONObject progress(File apply) {
+        File f = new File(PROGRESS);
+        try {
+            if (f.lastModified() < apply.lastModified()) return null;
+            return new JSONObject(new String(Files.readAllBytes(f.toPath())));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // The line for a progress phase, moving the bar to the downloaded share; null for no phase or
+    // one this screen does not know. Sizes in MB of 1000000 bytes, as the host's offer counts them.
+    private String phase(JSONObject p) {
+        if (p == null) return null;
+        long done = p.optLong("done", -1);
+        long total = p.optLong("total", -1);
+        switch (p.optString("phase", "")) {
+            case "download":
+                if (done < 0 || total <= 0 || done > total) return null;
+                progress_.setIndeterminate(false);
+                progress_.setMax(1000);
+                progress_.setProgress((int) (done * 1000 / total));
+                return "Downloading the new image: " + done / 1000000 + " of " + total / 1000000
+                        + " MB.";
+            case "cached":
+                return total > 0
+                        ? "Checking the copy of the new image the Remora host already has ("
+                                + total / 1000000 + " MB)."
+                        : null;
+            case "check":
+                return "Checking the download against Remora's signed release catalog.";
+            case "import":
+                return "Adding the new image to the Remora host.";
+            case "ready":
+                return READY;
+            default:
+                return null;
         }
     }
 

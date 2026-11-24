@@ -9,10 +9,12 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -712,6 +714,183 @@ class FetchProgress(unittest.TestCase):
                 with self.subTest(action=action), self.assertRaisesRegex(
                         catalog.VerificationError, '--progress'):
                     catalog.main([action, '--tag', TAG, '--progress'])
+
+
+class Recorder(catalog.ProgressFile):
+    """A ProgressFile that also keeps every event it wrote, in order."""
+    def __init__(self, *a, **kw):
+        self.written = []
+        super().__init__(*a, **kw)
+
+    def write(self, event):
+        super().write(event)
+        self.written.append(event)
+
+
+class UpdaterProgressFile(unittest.TestCase):
+    """`fetch --progress-dir`: the progress events as progress.json in the device's updater
+    directory (bd remora-992z). The directory is writable from inside the device, so the writer
+    never follows or reuses what it finds there, and no write it skips fails the fetch."""
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory()
+        self.dir = Path(self.d.name) / 'updater'
+        self.dir.mkdir()
+        self.cache = Path(self.d.name) / 'images'
+        self.cache.mkdir()
+        src = Path(self.d.name) / 'src.tar'
+        self.iid = docker_archive(src)
+        self.body = src.read_bytes()
+        self.image = image_entry(self.iid, ref('a.tar', self.body))
+        self.size = len(self.body)
+
+    def tearDown(self):
+        self.d.cleanup()
+
+    def state(self):
+        try:
+            return json.loads((self.dir / 'progress.json').read_text())
+        except FileNotFoundError:
+            return None
+
+    def fetch(self, sink, body, docker=None):
+        docker = docker or FakeDocker(self.iid)
+        with patch.object(catalog.urllib.request, 'build_opener',
+                          lambda *a: type('O', (), {'open': lambda _, u, timeout: body})()), \
+                patch.object(catalog, 'check_local_docker', lambda: None), \
+                patch.object(catalog, 'image_id', docker.image_id), \
+                patch.object(catalog, 'run', docker.run), \
+                patch.object(catalog.sys, 'stdout', io.StringIO()):
+            return catalog.fetch('https://h/x', self.image, {'sequence': 1}, self.cache, sink)
+
+    def test_a_fetch_is_written_phase_by_phase_and_ends_ready(self):
+        sink = Recorder(str(self.dir), interval=0)
+        half = self.size // 2
+        try:
+            self.fetch(sink, Body([self.body[:half], self.body[half:]], Stdout()))
+        finally:
+            sink.close(ready=True)
+        self.assertEqual(self.state(), {'phase': 'ready'})
+        # Coalescing may skip an event that a later one replaced, never reorder them.
+        order = ['download', 'check', 'import', 'ready']
+        phases = [order.index(e['phase']) for e in sink.written]
+        self.assertEqual(phases, sorted(phases))
+        counts = [e['done'] for e in sink.written if e['phase'] == 'download']
+        self.assertEqual(counts, sorted(counts))
+        self.assertTrue(all(e['total'] == self.size for e in sink.written if 'total' in e))
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ['progress.json'])
+
+    def test_the_latest_count_is_written_while_the_next_read_stalls(self):
+        sink = Recorder(str(self.dir), interval=0.3)
+        try:
+            sink('download', 0, 1000)
+            deadline = time.monotonic() + 2
+            while not sink.written and time.monotonic() < deadline:
+                time.sleep(0.01)
+            # Three counts inside one interval, then nothing: the read after them has stalled.
+            for n in (100, 300, 301):
+                sink('download', n, 1000)
+            posted = time.monotonic()
+            while (self.state() or {}).get('done') != 301 and time.monotonic() < posted + 2:
+                time.sleep(0.01)
+            self.assertEqual(self.state(), {'phase': 'download', 'done': 301, 'total': 1000})
+            self.assertLess(time.monotonic() - posted, 1)
+            self.assertEqual([e['done'] for e in sink.written], [0, 301])
+        finally:
+            sink.close()
+
+    def test_a_burst_is_coalesced_and_its_last_event_still_lands(self):
+        sink = Recorder(str(self.dir), interval=0.5)
+        for n in range(1001):
+            sink('download', n, 1000 if n <= 1000 else n)
+        sink.close()
+        self.assertLessEqual(len(sink.written), 3)
+        self.assertEqual(self.state(), {'phase': 'download', 'done': 1000, 'total': 1000})
+
+    def test_a_failed_fetch_is_not_reported_ready(self):
+        sink = catalog.ProgressFile(str(self.dir), interval=0)
+        try:
+            with self.assertRaises(catalog.VerificationError):
+                self.fetch(sink, Body([self.body], Stdout()), FakeDocker(self.iid, fail={'load'}))
+        finally:
+            sink.close(ready=False)
+        self.assertEqual(self.state(), {'phase': 'import'})
+
+    def test_a_planted_link_is_replaced_not_followed(self):
+        outside = Path(self.d.name) / 'host-file'
+        outside.write_text('host data')
+        (self.dir / 'progress.json').symlink_to(outside)
+        catalog.ProgressFile(str(self.dir)).write({'phase': 'check'})
+        self.assertEqual(outside.read_text(), 'host data')
+        self.assertFalse((self.dir / 'progress.json').is_symlink())
+        self.assertEqual(self.state(), {'phase': 'check'})
+
+    def test_what_cannot_be_written_is_skipped_and_touches_nothing_else(self):
+        elsewhere = Path(self.d.name) / 'elsewhere'
+        elsewhere.mkdir()
+        linked = Path(self.d.name) / 'linked'
+        linked.symlink_to(elsewhere)
+        (self.dir / 'progress.json').mkdir()
+        for where in (self.dir, linked, Path(self.d.name) / 'missing'):
+            with self.subTest(dir=where.name):
+                catalog.ProgressFile(str(where)).write({'phase': 'check'})
+        # A directory in its place stays a directory, and nothing is left beside it.
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ['progress.json'])
+        self.assertTrue((self.dir / 'progress.json').is_dir())
+        # The directory itself is never reached through a link.
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertFalse((Path(self.d.name) / 'missing').exists())
+
+    def test_the_device_can_read_it_whatever_the_umask(self):
+        old = os.umask(0o077)
+        try:
+            catalog.ProgressFile(str(self.dir)).write({'phase': 'check'})
+        finally:
+            os.umask(old)
+        self.assertEqual((self.dir / 'progress.json').stat().st_mode & 0o777, 0o644)
+
+    def test_a_remote_profiles_home_relative_directory_lands_in_this_hosts_home(self):
+        home = Path(self.d.name) / 'remote-home'
+        target = home / '.local/share/remora/updater/remora-a17'
+        target.mkdir(parents=True)
+        with patch.dict('os.environ', {'HOME': str(home)}):
+            # The resolver's remote default, as the watcher hands it over: quoted, unexpanded.
+            catalog.ProgressFile('$HOME/.local/share/remora/updater/remora-a17').write({'phase': 'check'})
+            for literal in ('/srv/$HOME/x', '~/x', '$HOMEDIR/x', 'updater'):
+                self.assertEqual(catalog.updater_dir(literal), literal)
+        self.assertEqual(json.loads((target / 'progress.json').read_text()), {'phase': 'check'})
+
+    def test_the_flag_reaches_fetch_through_the_command_line(self):
+        key = Path(self.d.name) / 'key.pem'
+        key.write_bytes(b'not a real key; the catalog check is replaced')
+        m = {'images': [self.image]}
+        state = {'sequence': 1, 'sha256': '0' * 64}
+        for ok in (True, False):
+            with self.subTest(succeeds=ok):
+                (self.dir / 'progress.json').unlink(missing_ok=True)
+                docker = FakeDocker(self.iid, fail=() if ok else {'load'})
+                with patch.dict('os.environ', {'XDG_CACHE_HOME': str(Path(self.d.name) / ('x%s' % ok))}), \
+                        patch.object(catalog, 'get', lambda url, limit: b''), \
+                        patch.object(catalog, 'verify_catalog', lambda *a: (m, state)), \
+                        patch.object(catalog.urllib.request, 'build_opener',
+                                     lambda *a: type('O', (), {'open': lambda _, u, timeout: Body([self.body], Stdout())})()), \
+                        patch.object(catalog, 'check_local_docker', lambda: None), \
+                        patch.object(catalog, 'image_id', docker.image_id), \
+                        patch.object(catalog, 'run', docker.run), \
+                        patch.object(catalog.sys, 'stdout', io.StringIO()):
+                    argv = ['fetch', '--tag', TAG, '--key', str(key), '--progress-dir', str(self.dir)]
+                    if ok:
+                        self.assertEqual(catalog.main(argv), 0)
+                    else:
+                        self.assertRaises(catalog.VerificationError, catalog.main, argv)
+                self.assertEqual(self.state(), {'phase': 'ready' if ok else 'import'})
+
+    def test_the_flag_is_refused_outside_fetch(self):
+        with tempfile.TemporaryDirectory() as d, patch.dict('os.environ', {'XDG_CACHE_HOME': d}), \
+                patch.object(catalog, 'get', lambda *a: self.fail('the catalog was fetched')):
+            for action in ('list', 'check', 'rollback'):
+                with self.subTest(action=action), self.assertRaisesRegex(
+                        catalog.VerificationError, '--progress-dir'):
+                    catalog.main([action, '--tag', TAG, '--progress-dir', d])
 
 
 class ReleaseReceiptRetention(unittest.TestCase):

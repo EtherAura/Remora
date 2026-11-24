@@ -1,0 +1,35 @@
+From ce216f173302283e7f25a039f67f34b7d1b78131 Mon Sep 17 00:00:00 2001
+From: Remora <remora@localhost>
+Date: Tue, 24 Nov 2026 15:12:59 -0500
+Subject: [PATCH] A17 LineageParts: Buttons shows the power key in a container
+
+DeviceUtils.hasPowerKey() asked the input devices for KEYCODE_POWER.
+A container has none, so Buttons dropped its power key category, and
+with it the only entry to the power menu editor, although the Remora
+agent injects the power key and a long press opens that menu. Answer
+true. The category's other rows keep their own checks: End call shows
+where the volume keys' Answer call already does, and the torch rows
+stay hidden without a flashlight.
+---
+ src/org/lineageos/lineageparts/utils/DeviceUtils.java | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/org/lineageos/lineageparts/utils/DeviceUtils.java b/src/org/lineageos/lineageparts/utils/DeviceUtils.java
+index 20a32ee..4c8d9d8 100644
+--- a/src/org/lineageos/lineageparts/utils/DeviceUtils.java
++++ b/src/org/lineageos/lineageparts/utils/DeviceUtils.java
+@@ -79,7 +79,10 @@ public class DeviceUtils {
+ 
+     /* returns whether the device has power key or not. */
+     public static boolean hasPowerKey() {
+-        return KeyCharacterMap.deviceHasKey(KeyEvent.KEYCODE_POWER);
++        // Remora: a container has no input device with a power key, but the Remora agent injects
++        // KEYCODE_POWER, and a long press opens the power menu. Without this, Buttons hides the
++        // power key category and with it the only way into the power menu editor.
++        return true;
+     }
+ 
+     /* returns whether the device has home key or not. */
+-- 
+2.56.1
+

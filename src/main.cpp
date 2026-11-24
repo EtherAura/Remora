@@ -791,7 +791,10 @@ static int cmdUpdateWatch(const QStringList &a) {
         // on "Applying" through a download and a reboot. The state carries what the
         // RemoraUpdater card renders: the tag, the update's build time, the running image's, and
         // a one-line summary (an official release's own, else the summary.txt sidecar whoever
-        // ships an image may write; quotes/newlines stripped to keep the JSON valid).
+        // ships an image may write; quotes/newlines stripped to keep the JSON valid). "download"
+        // says the update is an official release that Apply downloads first, so until the fetch
+        // writes progress.json beside it the card says the download is starting, not that the
+        // device is restarting (bd remora-992z).
         const QString probe =
             QStringLiteral("U=\"%3\"; XP=%5; XB=%6; XS=%7; "
                            "A=0; [ -e \"$U/apply\" ] && A=1; "
@@ -804,20 +807,26 @@ static int cmdUpdateWatch(const QStringList &a) {
                            "S=''; [ -f \"$U/summary.txt\" ] && "
                            "S=$(head -c 300 \"$U/summary.txt\" | tr -d '\"\\\\' | tr '\\n' ' '); "
                            "if [ -n \"$T\" ] && [ \"$C\" != \"$T\" ]; then P=true; else P=false; fi; "
-                           "[ -n \"$XP\" ] && { P=true; TB=$XB; }; [ -n \"$XS\" ] && S=$XS; "
+                           "D=false; [ -n \"$XP\" ] && { P=true; TB=$XB; D=true; }; "
+                           "[ -n \"$XS\" ] && S=$XS; "
                            "mkdir -p \"$U\"; "
                            "printf '{\"pending\": %s, \"tag\": \"%s\", \"built\": \"%s\", "
-                           "\"current\": \"%s\", \"summary\": \"%s\"}' "
-                           "\"$P\" '%2' \"$TB\" \"$CB\" \"$S\" > \"$U/state.json\"; "
+                           "\"current\": \"%s\", \"summary\": \"%s\", \"download\": %s}' "
+                           "\"$P\" '%2' \"$TB\" \"$CB\" \"$S\" \"$D\" > \"$U/state.json\"; "
                            "echo APPLY=$A")
                 .arg(rc.containerName, rc.imageTag, rc.updaterDir, playBase,
                      offer.isEmpty() ? QStringLiteral("''") : QStringLiteral("1"),
                      shellQuote(offerBuilt), shellQuote(summary));
         return onHost(probe).out.contains(QLatin1String("APPLY=1"));
     };
+    // The fetch writes its progress into the updater directory for the device's screen, on the
+    // docker host it runs on, so no count waits on a round trip from here (catalog.py
+    // ProgressFile). A remote profile's directory is "$HOME/..." and is passed quoted: the helper
+    // expands that prefix itself.
     ops.fetchRelease = [&] {
-        return runPublicImages(sp, {"fetch", "--tag", kPublicImageTag}, remote ? guest : QString(),
-                               say);
+        return runPublicImages(sp, {"fetch", "--tag", kPublicImageTag, "--progress-dir",
+                                    rc.updaterDir},
+                               remote ? guest : QString(), say);
     };
     // With the same live capability probe `up` takes: without one, host GPU mode cannot name its
     // render node or the Venus stack, and the redeploy failed its host prerequisites on every
@@ -826,7 +835,10 @@ static int cmdUpdateWatch(const QStringList &a) {
         return smartRun(b, cfg, sink, sp, deployCapabilities(b, cfg, sp), inst,
                         [](const Conflict &) { return true; });
     };
-    ops.clearApply = [&] { onHost(QStringLiteral("rm -f \"%1/apply\"").arg(rc.updaterDir)); };
+    // The finished Apply's progress goes with its signal, so the next Apply starts without it.
+    ops.clearApply = [&] {
+        onHost(QStringLiteral("rm -f \"%1/apply\" \"%1/progress.json\"").arg(rc.updaterDir));
+    };
     ops.now = [] { return QDateTime::currentDateTimeUtc(); };
     ops.say = [](const QString &line) { QTextStream(stderr) << line << Qt::endl; };
     UpdateWatchState state;

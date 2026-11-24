@@ -32,8 +32,9 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   Settings already listed them, but nothing ran behind them, so System profiles and Trust stopped
   LineageParts and LiveDisplay offered nothing. Trust shows the SELinux, security patch and
   encryption status. Its warnings start off, since a container fails its SELinux and
-  signing-key checks by design. LiveDisplay offers reading mode and color calibration. Charging
-  control stays out: a container has no charger for it to control.
+  signing-key checks by design. LiveDisplay offers reading mode and color calibration. *System,
+  Buttons* has the power menu editor, which picks what the power menu offers. Charging control
+  stays out: a container has no charger for it to control.
 
 ### Changed
 
@@ -75,11 +76,16 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   of Android's, and `remora-host-agent` reversed it back, so only this computer's own apps were
   right.
 - Opening Settings > Display on the Android 17 image no longer crashes LineageParts. Settings
-  asks it for the LiveDisplay color profile's summary there, and the image has no LiveDisplay, so
+  asks it for the LiveDisplay color profile's summary there, and while LiveDisplay did not run,
   each visit stopped the app in the background.
 - Color settings show in the mirror: Night Light, Accessibility's color inversion and color
   correction, and LiveDisplay's reading mode and color calibration. Android drew them only on the
   container's own screen, which nobody sees, and left the mirror unchanged.
+- *System updates* on the device shows how a new public release is coming along: how much has
+  downloaded, then the check and the import. It says the device is restarting only once the new
+  image is on the host. Before, it kept the offer on screen and said the host was recreating the
+  device for the whole download, so a slow download looked like a hang. Images from this release
+  on show the steps when the host runs this Remora.
 
 ## [2026.11.9] - 2026-11-22
 

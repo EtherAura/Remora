@@ -176,7 +176,9 @@ The screen offers two kinds of update:
   you press the button. The host then downloads it, checks it against Remora's signing key,
   imports it, and keeps the previous image for `remora images rollback`. If the profile has Google
   Play, the Play layer is built again over the new image. Your apps and data are kept, and the
-  device restarts once.
+  device restarts once. While the host works, the screen shows each step: how much of the
+  download has arrived, the check and the import. It says the device is restarting only once the
+  new image is on the host.
 - **A newer image already on the host**, such as a source build you promoted or an image you
   fetched in the workspace. Applying it restarts the device on that image.
 

@@ -8,10 +8,13 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import secrets
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
+import time
 import urllib.parse
 import urllib.request
 
@@ -142,12 +145,105 @@ def check_local_docker():
 PROGRESS_COUNTS = {'download': 2, 'cached': 1, 'check': 0, 'import': 0}
 
 
-def report_progress(phase, *counts):
+def check_progress(phase, counts):
     require(PROGRESS_COUNTS.get(phase) == len(counts)
             and all(type(n) is int and n >= 0 for n in counts)
             and (not counts or (counts[-1] > 0 and counts[0] <= counts[-1])),
             'Invalid progress event')
+
+
+def report_progress(phase, *counts):
+    check_progress(phase, counts)
     print(' '.join(['REMORA_FETCH_PROGRESS=' + phase] + [str(n) for n in counts]), flush=True)
+
+
+def updater_dir(path):
+    """The resolver names a remote profile's updater directory under "$HOME" for the remote shell
+    to expand, and this helper is handed it quoted, so that one prefix is expanded here."""
+    return str(Path.home()) + path[5:] if path == '$HOME' or path.startswith('$HOME/') else path
+
+
+class ProgressFile:
+    """`fetch --progress-dir DIR`: the same events as DIR/progress.json, which the device's System
+    updates screen shows while an Apply runs (bd remora-992z): {"phase": "download", "done": n,
+    "total": n}, {"phase": "cached", "total": n}, {"phase": "check"}, {"phase": "import"}, and
+    {"phase": "ready"} once the fetch has succeeded.
+
+    DIR is the device's updater channel, which the device can write to, so nothing in it is read,
+    followed or reused. DIR itself is opened without following a link. Each write goes to a new
+    file with a random name, created only where no entry has that name, and is renamed over
+    progress.json, which replaces any entry of that name rather than following it (a directory
+    there makes the rename fail, and that write is skipped). A write that fails is skipped:
+    progress is never a reason for a fetch to fail.
+
+    One thread does the writing, at most once per `interval` seconds, and always writes the latest
+    event within that time, so a count is never held back behind a read that stalls."""
+    def __init__(self, directory, interval=0.5):
+        self.dir, self.interval = updater_dir(directory), interval
+        self.cv = threading.Condition()
+        self.pending, self.closed = None, False
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def __call__(self, phase, *counts):
+        check_progress(phase, counts)
+        event = {'phase': phase}
+        if phase == 'download': event.update(done=counts[0], total=counts[1])
+        elif phase == 'cached': event.update(total=counts[0])
+        self._post(event)
+
+    def close(self, ready=False):
+        """Write what is pending (then the ready phase, after a fetch that succeeded) and stop."""
+        if ready: self._post({'phase': 'ready'})
+        with self.cv:
+            self.closed = True
+            self.cv.notify()
+        self.thread.join(timeout=10)
+
+    def _post(self, event):
+        with self.cv:
+            self.pending = event
+            self.cv.notify()
+
+    def _run(self):
+        last = None
+        while True:
+            with self.cv:
+                while self.pending is None and not self.closed:
+                    self.cv.wait()
+                if self.pending is None:
+                    return
+                left = 0 if last is None or self.closed else last + self.interval - time.monotonic()
+                if left > 0:
+                    self.cv.wait(left)
+                    continue
+                event, self.pending = self.pending, None
+            self.write(event)
+            last = time.monotonic()
+
+    def write(self, event):
+        data = (json.dumps(event, separators=(',', ':')) + '\n').encode()
+        try:
+            d = os.open(self.dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError:
+            return
+        name = '.progress-' + secrets.token_hex(8) + '.tmp'
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o644, dir_fd=d)
+            try:
+                os.fchmod(fd, 0o644)  # whatever the umask: the device reads it as another user
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+            os.rename(name, 'progress.json', src_dir_fd=d, dst_dir_fd=d)
+        except OSError:
+            try:
+                os.unlink(name, dir_fd=d)
+            except OSError:
+                pass
+        finally:
+            os.close(d)
 
 
 def download(base, item, cache, progress=None):
@@ -682,11 +778,13 @@ def main(argv=None):
     p.add_argument('--tag')
     p.add_argument('--key',default=str(Path(__file__).with_name('image-signing-key.pem')))
     p.add_argument('--progress',action='store_true',help='fetch: print REMORA_FETCH_PROGRESS= lines')
+    p.add_argument('--progress-dir',help='fetch: also write the progress to DIR/progress.json, for the device')
     a = p.parse_args(argv)
     # Before the catalog is fetched: with no tag, check and fetch otherwise failed on the lookup
     # and blamed the catalog for lacking a tag nobody asked for.
     require(a.action == 'list' or a.tag, a.action.capitalize() + ' needs --tag')
     require(not a.progress or a.action == 'fetch', '--progress is only for fetch')
+    require(not a.progress_dir or a.action == 'fetch', '--progress-dir is only for fetch')
     cache = Path(os.environ.get('XDG_CACHE_HOME',str(Path.home()/'.cache')))/'remora'/'images'
     if a.action == 'cleanup-plan':
         result = release_cleanup_plan(a.tag, cache)
@@ -711,9 +809,20 @@ def main(argv=None):
             else:
                 selected = [im for im in m['images'] if im['tag'] == a.tag]
                 require(len(selected) == 1,'Requested tag is absent from the authenticated catalog')
-                result = (check(selected[0]) if a.action == 'check'
-                          else fetch(base,selected[0],state,cache,
-                                     report_progress if a.progress else None))
+                if a.action == 'check':
+                    result = check(selected[0])
+                else:
+                    sinks = ([report_progress] if a.progress else []) + \
+                            ([ProgressFile(a.progress_dir)] if a.progress_dir else [])
+                    def progress(phase, *counts):
+                        for sink in sinks: sink(phase, *counts)
+                    done = False
+                    try:
+                        result = fetch(base,selected[0],state,cache,progress if sinks else None)
+                        done = True
+                    finally:
+                        for sink in sinks:
+                            if isinstance(sink, ProgressFile): sink.close(ready=done)
     print('REMORA_IMAGES_RESULT='+json.dumps(result,separators=(',',':')),flush=True)
     return 0
 
