@@ -37,13 +37,13 @@ jobs:
       # release.yml installs the same list for the .deb, and the sanitizers job below, codeql.yml
       # and coverage.yml install it to build the same tree; keep them in step.
       - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build extra-cmake-modules \
-            qt6-base-dev libqt6sql6-sqlite qt6-multimedia-dev qt6-webengine-dev \
-            libgl1-mesa-dev libffmpeg-nvenc-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            build-essential cmake ninja-build extra-cmake-modules
+            qt6-base-dev libqt6sql6-sqlite qt6-multimedia-dev qt6-webengine-dev
+            libgl1-mesa-dev libffmpeg-nvenc-dev
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
             libva-dev
       # Test-only, and this job only: phone_qr checks the phone app's QR decoder against
       # qrencode's codes (the runner's own JDK compiles it). Elsewhere it reports itself skipped.
@@ -84,13 +84,13 @@ jobs:
 
       # The build job's list; keep the two in step.
       - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build extra-cmake-modules \
-            qt6-base-dev libqt6sql6-sqlite qt6-multimedia-dev qt6-webengine-dev \
-            libgl1-mesa-dev libffmpeg-nvenc-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            build-essential cmake ninja-build extra-cmake-modules
+            qt6-base-dev libqt6sql6-sqlite qt6-multimedia-dev qt6-webengine-dev
+            libgl1-mesa-dev libffmpeg-nvenc-dev
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
             libva-dev
 
       - name: Configure

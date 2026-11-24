@@ -1,0 +1,59 @@
+name: apt-install
+description: >-
+  apt-get install, with the downloaded packages kept between runs. A slow Ubuntu mirror stalled
+  Coverage's install past the job's 30 minutes twice in a row (2026-11-24, the runner's EC2 mirror:
+  14 MB in three minutes), so the mirror is asked only for what the cache lacks. A cached package
+  is still checked against the hashes in the signed index before apt installs it.
+inputs:
+  packages:
+    description: The packages, separated by spaces or newlines.
+    required: true
+runs:
+  using: composite
+  steps:
+    # The key: the release, the package list and the ISO week. A new week starts from the newest
+    # older cache and saves its own, so the cache follows Ubuntu's updates instead of going stale;
+    # with none for this list, another list's (CI's, for Coverage's) saves most of the download.
+    - id: key
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        list=$(printf '%s\n' $PACKAGES | sort -u)
+        release="apt-$(lsb_release -rs)-"
+        prefix="${release}$(printf '%s' "$list" | sha256sum | cut -c1-12)-"
+        {
+          echo "list=$(printf '%s ' $list)"
+          echo "release=$release"
+          echo "prefix=$prefix"
+          echo "key=${prefix}$(date -u +%G-W%V)"
+        } >> "$GITHUB_OUTPUT"
+        mkdir -p "$HOME/apt-archives/partial"
+
+    - id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/apt-archives
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: |
+          ${{ steps.key.outputs.prefix }}
+          ${{ steps.key.outputs.release }}
+
+    # The archives directory is the runner's, so the cache can hold it; apt downloads as root
+    # (its _apt sandbox user cannot reach a home directory), and the files are handed back to the
+    # runner for the save, without apt's lock and partial downloads.
+    - shell: bash
+      env:
+        PACKAGES: ${{ steps.key.outputs.list }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          -o Dir::Cache::archives="$HOME/apt-archives" -o APT::Sandbox::User=root $PACKAGES
+        sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives"
+        rm -rf "$HOME/apt-archives/lock" "$HOME/apt-archives/partial/"*
+
+    - if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/apt-archives
+        key: ${{ steps.key.outputs.key }}

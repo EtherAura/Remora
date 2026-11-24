@@ -46,13 +46,13 @@ jobs:
 
       # ci.yml's list, plus lcov; keep the two in step.
       - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build extra-cmake-modules \
-            qt6-base-dev libqt6sql6-sqlite qt6-multimedia-dev qt6-webengine-dev \
-            libgl1-mesa-dev libffmpeg-nvenc-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            build-essential cmake ninja-build extra-cmake-modules
+            qt6-base-dev libqt6sql6-sqlite qt6-multimedia-dev qt6-webengine-dev
+            libgl1-mesa-dev libffmpeg-nvenc-dev
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
             libva-dev lcov
 
       # Debug, so lines map to the source as written, and instrumented through the compiler flags
