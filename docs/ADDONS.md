@@ -458,6 +458,23 @@ DenyList cleanup now hides the Magisk filesystem: `magisk-setup.sh` names the tm
 remains unsupported; the observed mount cleanup is not proof of complete root hiding
 (remora-6laf.12).
 
+A wider probe, on a fresh device with the default `magisk_root` and `play_spoof`
+layer, read as the app's own UID:
+- root files under `/debug_ramdisk`, `/system/xbin`, `/system/bin` and `/sbin`;
+- the `mountinfo` and `maps` lines naming Magisk, Zygisk, `/data/adb` or a root manager;
+- anonymous executable regions, `TracerPid`, and `su` or `magisk` on `PATH`;
+- the verified-boot properties.
+
+On the DenyList it saw none of them. The properties read locked, green and release-keys, from
+`remora_devicespoof`. What stayed visible was `/data/adb` existing, and 164 mounts against an
+unlisted app's 169.
+
+NoHello 0.0.7 (MIT) loaded under ReZygisk 537 and left adb, the mirror and the Play spoof working.
+It was installed without its `service.sh`, which sets `ro.adb.secure=1` and `ro.debuggable=0` and
+would take adb down. Its denylisted result was byte-identical to the result without it. So Remora
+ships neither Shamiko nor NoHello by default: on this stack a hider adds nothing an app can read.
+Traces this probe does not read, such as ptrace side effects, would need a real detector app.
+
 A further live compatibility trial used the original Zygisk Next 1.5.3 and 1.4.5 installers. Both
 injected on this container but deliberately skipped standalone Shamiko, as documented by Zygisk
 Next's [1.3.0 release](https://github.com/Dr-TSNG/ZygiskNext/releases/tag/v1.3.0). The earlier 1.2.8

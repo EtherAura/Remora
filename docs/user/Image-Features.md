@@ -118,8 +118,11 @@ translation it also carries the fixes TikTok and Amazon need under translation. 
 once what it needs is ticked, and unticking Root takes them off too.
 
 On the Android 17 container tested, Shamiko reported **Unsupported environment**.
-The native DenyList cleanup was tested with a real app and hides Magisk's mounted files, but
-complete root hiding and basic integrity remain unverified. See the [live add-on results](../ADDONS.md#the-acceptance-target-which-is-not-a-result).
+Without it, the DenyList already hides root from a listed app. Tested with a probe app
+on the DenyList: it found no Magisk or `su` file, no Magisk mount, no Zygisk in its memory and no
+tracer, and the device read as locked. It could still see that `/data/adb` exists. NoHello, an
+open-source alternative to Shamiko, changed none of these results, so Remora ships no separate
+hider. Basic integrity remains unverified. See the [live add-on results](../ADDONS.md#the-acceptance-target-which-is-not-a-result).
 
 Each add-on needs its payload on the computer running Remora:
 
