@@ -82,6 +82,7 @@ add_library(remora_core STATIC
     src/core/Parsers.cpp
     src/core/Prereqs.cpp
     src/core/RedditSession.cpp
+    src/core/SessionStreams.cpp
     src/core/SourcePatches.cpp
     src/core/SplashFormats.cpp
     src/core/StartMenu.cpp

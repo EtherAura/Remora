@@ -8,10 +8,12 @@
 #include <QLocalSocket>
 
 #include <csignal>
+#include <optional>
 #include <opus/opus.h>
 #include <sys/prctl.h>
 
 #include "core/MirrorProto.h"
+#include "core/SessionStreams.h"
 
 namespace remora::hostagent {
 
@@ -141,6 +143,8 @@ void SessionAudio::claimStreams() {
                QStringLiteral("sink-inputs")},
               &ok);
     if (!ok) return;
+    // A native PipeWire stream names no process; its client does. Asked once, and only then.
+    std::optional<QHash<qint64, int>> clients;
     for (const QJsonValue &v : QJsonDocument::fromJson(json).array()) {
         const QJsonObject in = v.toObject();
         const QString index = QString::number(in.value(QStringLiteral("index")).toInteger());
@@ -152,7 +156,17 @@ void SessionAudio::claimStreams() {
             moved_.insert(index);
             continue;
         }
-        const int pid = props.value(QStringLiteral("application.process.id")).toString().toInt();
+        int pid = sessionaudio::streamProcess(in, {});
+        if (pid <= 0) {
+            if (!clients) {
+                bool listed = false;
+                const QByteArray c = pactl({QStringLiteral("-f"), QStringLiteral("json"),
+                                            QStringLiteral("list"), QStringLiteral("clients")},
+                                           &listed);
+                clients = listed ? sessionaudio::clientProcesses(c) : QHash<qint64, int>();
+            }
+            pid = sessionaudio::streamProcess(in, *clients);
+        }
         if (pid <= 0 || !descendsFrom(pid, pids_)) continue;
         bool moved = false;
         pactl({QStringLiteral("move-sink-input"), index, sinkName_}, &moved);

@@ -10,6 +10,7 @@
 #include "core/HostInput.h"
 #include "core/MirrorProto.h"
 #include "core/OutputLayout.h"
+#include "core/SessionStreams.h"
 #ifdef REMORA_TEST_XKB
 #include "hostagent/DeskKeymap.h"
 #endif
@@ -706,6 +707,47 @@ private slots:
         QCOMPARE(right.size(), 2);
         QVERIFY(right[1].horizontal);
         QCOMPARE(right[1].value, 15.0);
+    }
+
+    // Session audio claims a stream for the phone by the process behind it. pactl's JSON as it
+    // was read with VLC 4 playing: a PulseAudio stream names its process; VLC's
+    // native PipeWire stream names none, and was left on the desk's speakers, so its process comes
+    // from the client it names, the server's pipewire.sec.pid first. A sink input's `client` is a
+    // string where a client's `index` is a number.
+    void sessionStreamsFindTheProcessThroughTheClient() {
+        const QByteArray clients = R"([
+            {"index": 176529, "driver": "PipeWire", "properties": {"pipewire.sec.pid": "369298",
+                "application.process.id": "369298", "application.name": "VLC media player"}},
+            {"index": 185, "driver": "PipeWire", "properties": {"application.process.id": "15552"}},
+            {"index": 33, "driver": "PipeWire", "properties": {"application.name": "nameless"}},
+            {"index": 40, "driver": "PipeWire", "properties": {"pipewire.sec.pid": "4242",
+                "application.process.id": "1"}}
+        ])";
+        const QHash<qint64, int> pids = sessionaudio::clientProcesses(clients);
+        QCOMPARE(pids.value(176529), 369298);
+        QCOMPARE(pids.value(185), 15552);
+        QVERIFY(!pids.contains(33));
+        QCOMPARE(pids.value(40), 4242);  // the server's word over the client's own claim
+        QVERIFY(sessionaudio::clientProcesses("not json").isEmpty());
+
+        const auto input = [](const char *json) { return QJsonDocument::fromJson(json).object(); };
+        // A PulseAudio stream: its own process, whatever its client says.
+        QCOMPARE(sessionaudio::streamProcess(
+                     input(R"({"index": 167227, "client": "185", "properties": {
+                         "application.process.id": "15552", "application.name": "Floorp"}})"),
+                     pids),
+                 15552);
+        // VLC 4's native PipeWire stream: none of its own, its client's.
+        const QJsonObject vlc = input(R"j({"index": 176686, "client": "176529", "properties": {
+            "application.name": "VLC media player (LibVLC 4.0.0-dev)", "node.name": "VLC"}})j");
+        QCOMPARE(sessionaudio::streamProcess(vlc, pids), 369298);
+        // Before the clients are asked, nothing to go on.
+        QCOMPARE(sessionaudio::streamProcess(vlc, {}), 0);
+        // A client that names no process, a client that is gone, no client at all.
+        for (const char *json : {R"({"index": 1, "client": "33", "properties": {}})",
+                                 R"({"index": 2, "client": "999", "properties": {}})",
+                                 R"({"index": 3, "properties": {}})"})
+            QVERIFY2(sessionaudio::streamProcess(input(json), pids) == 0, json);
     }
 };
 

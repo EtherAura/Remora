@@ -7,6 +7,14 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+### Fixed
+
+- In the phone app preview, an app that plays its sound through PipeWire itself, such as VLC 4,
+  plays it on the phone. Its sound stayed on the computer's speakers: such an app ignores the
+  setting that points a launched app at the session's own output, and `remora-host-agent` found
+  the session's other streams by a process id that PipeWire's own streams do not carry. It now
+  finds that process through the stream's client, and moves the stream as it starts.
+
 ## [2026.11.10] - 2026-11-25
 
 ### Added

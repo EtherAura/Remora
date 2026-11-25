@@ -198,10 +198,14 @@ Opus, so it plays on the phone instead of the desk, and nothing else the desk pl
 The sink exists before the app is launched, and the app is launched pointed at it (`PULSE_SINK`),
 so its sound and its children's starts on the phone. An app that was already running (a
 single-instance app's process) or that is started by D-Bus activation did not get that
-environment: its playback streams, matched by the processes behind the session's windows and
-their children, are moved to the sink as they appear, so the first moment of each can still play
-on the desk. When the session ends the sink goes, and an app still pointed at it falls back to the
-desk's own output.
+environment, and an app that talks to PipeWire itself (VLC 4) reads no `PULSE_SINK`: their
+playback streams, matched by the processes behind the session's windows and their children, are
+moved to the sink as they appear, so the first moment of each can still play on the desk. A
+native PipeWire stream names no process of its own; it is matched through its client's
+(`pipewire.sec.pid`, which the server sets). `PIPEWIRE_NODE` would start such an app on the sink,
+but libpipewire takes it as the target of every stream the app opens, recording ones too, so the
+app would record the sink instead of the desk's microphone. When the session ends the sink goes,
+and an app still pointed at it falls back to the desk's own output.
 
 ## 4. A phone is a linked device, not a backend
 

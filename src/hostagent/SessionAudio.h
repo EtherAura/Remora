@@ -18,12 +18,19 @@ namespace remora::hostagent {
 //   pactl load-module module-null-sink   a sink of the session's own, "remora-phone-<pid>-<id>"
 //   PULSE_SINK=<sink>                    in the launched app's environment: its streams, and its
 //                                        children's, START on the sink, so not a moment of them
-//                                        plays on the desk (the session loads the sink first)
+//                                        plays on the desk (the session loads the sink first).
+//                                        An app that talks to PipeWire itself (VLC 4) reads no
+//                                        PULSE_SINK, and is moved like the ones below. Not
+//                                        PIPEWIRE_NODE: libpipewire takes it as the target of
+//                                        every stream, recording ones too, so the app would
+//                                        record the sink instead of the desk's microphone
 //   pactl move-sink-input                the streams of processes it did not launch — a
 //                                        single-instance app's running process, a D-Bus-activated
 //                                        one — matched by the processes behind the session's
 //                                        windows and their children (a browser plays from a
-//                                        child), moved as they appear (pactl subscribe)
+//                                        child), moved as they appear (pactl subscribe). A native
+//                                        PipeWire stream names its process only on its client
+//                                        (core/SessionStreams)
 //   parec <sink>.monitor                 48 kHz stereo s16 from it, encoded here as 20 ms Opus,
 //                                        once a client has attached
 //
