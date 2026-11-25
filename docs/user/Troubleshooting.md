@@ -10,7 +10,7 @@ with its cause and fix.
 |---|---|
 | `remora check [<profile>]` | what the target is missing before a deploy, with a remedy per row. Add `--gpu-host` for the GPU rows |
 | `remora plan [<profile>]` | what the profile resolves to, including notes about anything the deploy would refuse |
-| `remora status [<profile>]` | the live state as JSON, followed by plain-text warnings for known silent failures |
+| `remora status [<profile>]` | the live state as JSON, followed by plain-text warnings for known silent failures. `last_up` says how the device's last `remora up` ended |
 | `remora doctor [<profile>]` | one file with everything needed for a bug report |
 
 `check` marks each row ok or MISSING. Rows marked `[ info  ]` or `[ STALE ]` do not change the
@@ -53,6 +53,7 @@ logcat, which can include things you would rather not publish. Redact freely.
 | `the agent declined the session:` and a reason | the agent answered and refused | act on the reason it gives |
 | the mirror streams H.264 although you expected H.265 | `gpu_mode=guest`, or a host GPU with no VA-API encode | `remora plan` names the reason. On NVIDIA, consider `host_encode` |
 | `reconnect` reports that it is not connected | the instance is not running | use `remora up` |
+| the device did not come up at login, and nothing said why | the login service's `remora up` failed | `remora status` warns about it and names the failed step. The warning gives the `journalctl` command for that run's log |
 | adb and the mirror say the device is dead, but Android is fine | the in-container adb forwarder is down. `remora status` warns about it | run the command the warning prints: `docker exec <container> sh /remora/netfix.sh` |
 | judder with `host_encode`, and `remora status` warns that the mirror is losing frames | frames composed on the device are not reaching the host encoder | kill that profile's `remora-frame-encoder` process and reconnect. A plain reconnect does not fix it |
 

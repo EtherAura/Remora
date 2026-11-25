@@ -1,4 +1,5 @@
 #pragma once
+#include <QDateTime>
 #include <QMap>
 #include <QSet>
 #include <QString>
@@ -709,6 +710,47 @@ QList<RenderNode> probeRenderNodes(Spawner &sp);
 std::optional<HostCapabilities> deployCapabilities(Backend backend, const RemoraConfig &cfg,
                                                    Spawner &sp);
 
+// The last `remora up` of a device, kept where `remora status` can show it (remora-4l8p). The login
+// service runs `up` with nobody watching: once it exited 1 a second after login, nothing said so,
+// and the journal that held why was gone two days later. So every `up` leaves one small record,
+// replaced by the next. It holds nothing a command printed, only the time, the result, the exit
+// code and the step that failed, whose name must be on upStepNames(): no error text, command line
+// or credential can reach it, and a file holding anything else is not read back.
+struct LastUp {
+    enum class Result { Unfinished, Ok, Failed };
+    QDateTime at;  // when it started (Unfinished) or ended, UTC
+    Result result = Result::Unfinished;
+    QString failedStep;  // empty when no step failed, or when the name was not on the list
+    int exitCode = 0;
+};
+// Every step `remora up` can run, and "conflict" for a run refused because another device holds
+// what this one needs. A test pins the list to the chains themselves.
+const QStringList &upStepNames();
+QString lastUpResultName(LastUp::Result r);  // ok, failed, unfinished: the record's and JSON's word
+// <cache>/remora/last-up/<container>, or empty for a name docker would refuse (nothing is written).
+QString lastUpPath(const QString &containerName);
+bool saveLastUp(const QString &path, const LastUp &up);
+std::optional<LastUp> loadLastUp(const QString &path);
+
+// Passes everything on to the sink it wraps, and remembers the first step that failed.
+class FailedStepSink : public LogSink {
+public:
+    explicit FailedStepSink(LogSink &inner) : inner_(inner) {}
+    void line(const QString &step, const QString &stream, const QString &text) override {
+        inner_.line(step, stream, text);
+    }
+    void state(const QString &step, StepState st, const QString &detail,
+               const QString &stderrTail) override {
+        if (st == StepState::Failed && failed_.isEmpty()) failed_ = step;
+        inner_.state(step, st, detail, stderrTail);
+    }
+    QString failedStep() const { return failed_; }
+
+private:
+    LogSink &inner_;
+    QString failed_;
+};
+
 struct StatusReport {
     Backend backend;
     // bare
@@ -738,6 +780,8 @@ struct StatusReport {
     // :5555 — very different repairs, and nothing else in the report can tell them apart.
     ForwarderProbe forwarder;
     HostCapabilities host;
+    // Not probed: cmdStatus reads it from the device's record (remora-4l8p).
+    std::optional<LastUp> lastUp;
 };
 StatusReport probeStatus(Backend backend, Spawner &sp, const QString &sshHost = QString(),
                          const QString &containerName = QString());

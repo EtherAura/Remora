@@ -104,6 +104,7 @@ add_library(remora_engine STATIC
     src/engine/ImageBuilder.cpp
     src/engine/Orchestrator.cpp
     src/engine/Probe.cpp
+    src/engine/LastUp.cpp
     src/engine/AppMenu.cpp
     src/engine/AppTransfer.cpp
     src/engine/RedditLogin.cpp

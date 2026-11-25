@@ -291,9 +291,30 @@ static int cmdStatus(const QStringList &a, QTextStream &out) {
     Backend b;
     const RemoraConfig cfg = configAndBackend(a, inst, b);
     const ResolvedConfig rc = resolve(cfg, b);
-    const StatusReport rep = probeStatus(b, sp, rc.sshHost.value_or(QString()),
-                                         rc.containerName);
+    StatusReport rep = probeStatus(b, sp, rc.sshHost.value_or(QString()), rc.containerName);
+    rep.lastUp = loadLastUp(lastUpPath(rc.containerName));
     out << statusToJson(rep) << "\n";
+    // The failed-login detector (remora-4l8p): the login service's `up` runs with nobody watching,
+    // and once it failed in silence and its journal was gone before anyone looked. Only while the
+    // device is down: a failure that something has since brought up is history, not a fault.
+    const bool deviceUp = b == Backend::Bare ? rep.bareRunning || rep.bareAsleep
+                                             : rep.remoteRunning || rep.remoteAsleep;
+    if (rep.lastUp && rep.lastUp->result != LastUp::Result::Ok && !deviceUp) {
+        const QString when = rep.lastUp->at.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+        if (rep.lastUp->result == LastUp::Result::Failed)
+            out << "WARNING: the device is not up, and its last `remora up` failed"
+                << (rep.lastUp->failedStep.isEmpty()
+                        ? QString()
+                        : QStringLiteral(" at %1").arg(rep.lastUp->failedStep))
+                << " (exit " << rep.lastUp->exitCode << ") on " << when << ".";
+        else
+            out << "WARNING: the device is not up, and its last `remora up`, started " << when
+                << ", never finished: it was stopped, or is still running.";
+        if (kLocalOs != LocalOs::Windows)
+            out << " If that was the login service, `journalctl --user -u remora-"
+                << serviceUnitInstance(inst) << ".service` has its log.";
+        out << " `remora up` tries again.\n";
+    }
     // The SwiftShader-fallback detector (bd remora-4ei.79): a host-mode deploy composited by a
     // software renderer is the silent failure that has cost real diagnosis time twice — say it
     // in plain text under the JSON, where a human eye actually lands.
@@ -648,12 +669,19 @@ static void syncAppMenuDetached(Spawner &sp, const QString &instance) {
 
 static int cmdUp(const QStringList &a) {
     RealSpawner sp;
-    ConsoleSink sink;
+    ConsoleSink console;
+    FailedStepSink sink(console);
     QString inst;
     Backend b;
     // configForArg also handles the menu folder's "Android (mirror)" entry: `remora up "<profile>"`
     const RemoraConfig cfg = configAndBackend(a, inst, b);
     QTextStream(stderr) << "remora up: " << backendToString(b) << " / instance '" << inst << "'\n";
+    // The record `remora status` reads (remora-4l8p). Unfinished first, so a run that is killed —
+    // the login unit's start timeout, a logout mid-boot — still says so rather than leaving the
+    // previous run's result standing.
+    const QString record = lastUpPath(resolve(cfg, b).containerName);
+    saveLastUp(record, {QDateTime::currentDateTimeUtc(), LastUp::Result::Unfinished, {}, 0});
+    bool refused = false;
     // gpu_mode=host on bare/remote can only work with the live render node, and the resolver
     // refuses to bake one — so without a probe the mode half-applies and the guest falls back to
     // SwiftShader (bd remora-4ei.57). Probe only in exactly that case, so a guest-mode profile
@@ -667,11 +695,16 @@ static int cmdUp(const QStringList &a) {
                                      << "! " << c.holder << " is already using " << c.reason
                                      << " — stop it first, or give this profile its own, then "
                                         "retry.\n";
+                                 refused = true;
                                  return false;
                              });
+    const int rc = ok ? 0 : 1;
+    saveLastUp(record, {QDateTime::currentDateTimeUtc(),
+                        ok ? LastUp::Result::Ok : LastUp::Result::Failed,
+                        ok ? QString() : refused ? QStringLiteral("conflict") : sink.failedStep(), rc});
     if (ok && resolve(cfg, b).desktopMenu) syncAppMenuDetached(sp, inst);
     QTextStream(stderr) << (ok ? "\nconnected.\n" : "\nnot connected — see the messages above.\n");
-    return ok ? 0 : 1;
+    return rc;
 }
 
 // The path this process was launched as and its arguments: captured first thing in main() and only

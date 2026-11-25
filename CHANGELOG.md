@@ -37,6 +37,12 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   signing-key checks by design. LiveDisplay offers reading mode and color calibration. *System,
   Buttons* has the power menu editor, which picks what the power menu offers. Charging control
   stays out: a container has no charger for it to control.
+- `remora status` says how the device's last `remora up` ended, so a device that did not come up
+  at login no longer fails in silence. Its new `last_up` field holds the time, the result, the
+  exit code and the step that failed. While the device is down after a failed or unfinished run,
+  a warning under the JSON names that step and gives the `journalctl` command for the login
+  service's log. The record holds nothing `remora up` printed, only those four facts, and
+  survives a reboot.
 
 ### Changed
 

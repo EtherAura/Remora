@@ -768,6 +768,17 @@ QString statusToJson(const StatusReport &r) {
         o["adb_front_door"] = door;
     }
 
+    // The device's last `remora up` (remora-4l8p), absent when there is no record to read. An
+    // unfinished one has no exit code: it was stopped, or is still running.
+    if (r.lastUp) {
+        QJsonObject up;
+        up["at"] = r.lastUp->at.toUTC().toString(Qt::ISODate);
+        up["result"] = lastUpResultName(r.lastUp->result);
+        if (r.lastUp->result != LastUp::Result::Unfinished) up["exit_code"] = r.lastUp->exitCode;
+        if (!r.lastUp->failedStep.isEmpty()) up["failed_step"] = r.lastUp->failedStep;
+        o["last_up"] = up;
+    }
+
     QJsonObject host;
     // The probed host GPU identity, so status/check consumers can NAME the GPU instead of
     // inferring it from which vendor-specific fields happen to be set (bd remora-4ei.79).

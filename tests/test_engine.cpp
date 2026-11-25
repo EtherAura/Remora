@@ -8032,6 +8032,136 @@ private slots:
         }
     }
 
+    // --- the last `remora up` (remora-4l8p) ---
+
+    // The record names a failed step only from a fixed list, so a step `up` gained and the list did
+    // not would be recorded as no step at all. Every step both deployers and a reconnect run is on
+    // it, and nothing is on it that no run has.
+    void upStepNamesCoverEveryStepUpRuns() {
+        SKIP_ON_WINDOWS(kBareDeploy);
+        QStringList seen;
+        FakeSpawner sp;
+        for (const Step &s : makeDeployer(Backend::Bare, sp, 24, 0)
+                                 ->steps(makeContext(RemoraConfig{}, Backend::Bare)))
+            seen << s.name;
+        for (const Step &s : makeDeployer(Backend::Remote, sp, 24, 0)
+                                 ->steps(makeContext(withGuest(), Backend::Remote)))
+            seen << s.name;
+        FakeSpawner running;
+        running.probeGpuMode = QStringLiteral("guest");
+        RecordingSink reconnect;
+        QVERIFY(smartRun(Backend::Remote, withGuest(), reconnect, running));
+        for (const auto &st : reconnect.states) seen << st.first;
+        // named where they run, in smartRun and cmdUp, rather than in a chain built here
+        seen << QStringLiteral("guest") << QStringLiteral("play-overlay")
+             << QStringLiteral("addon-overlay") << QStringLiteral("conflict");
+        for (const QString &n : seen) QVERIFY2(upStepNames().contains(n), qPrintable(n));
+        for (const QString &n : upStepNames()) QVERIFY2(seen.contains(n), qPrintable(n));
+    }
+
+    // The sink cmdUp runs the chain through: everything still reaches the console, and the first
+    // failure is the step the record names.
+    void failedStepSinkNamesTheFirstFailure() {
+        RecordingSink inner;
+        FailedStepSink sink(inner);
+        const auto good = [](LogSink &) { return StepResult::good(); };
+        const QVector<Step> steps{{"preflight", "", good},
+                                  {"boot-wait", "", [](LogSink &) { return StepResult::fail("x"); }},
+                                  {"connect", "", good}};
+        QVERIFY(!runChain(steps, sink));
+        QCOMPARE(sink.failedStep(), QStringLiteral("boot-wait"));
+        QCOMPARE(inner.of("preflight"), StepState::Ok);
+        QCOMPARE(inner.of("boot-wait"), StepState::Failed);
+        QCOMPARE(inner.of("connect"), StepState::Skipped);
+        FailedStepSink none(inner);
+        QVERIFY(runChain({{"connect", "", good}}, none));
+        QVERIFY(none.failedStep().isEmpty());
+    }
+
+    // The record keeps only what saveLastUp wrote: a step name off the list is stored as none, so
+    // no error text or credential a command printed can reach the file, and a file holding
+    // anything else, or disagreeing with itself, is not read back.
+    void lastUpKeepsOnlyWhatItWrote() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath(QStringLiteral("last-up/remora-bm"));
+        const QDateTime at = QDateTime::fromString(QStringLiteral("2026-11-12T19:58:38Z"), Qt::ISODate);
+        QVERIFY(at.isValid());
+
+        QVERIFY(saveLastUp(path, {at, LastUp::Result::Failed, QStringLiteral("boot-wait"), 1}));
+        const std::optional<LastUp> up = loadLastUp(path);
+        QVERIFY(up.has_value());
+        QCOMPARE(up->at, at);
+        QCOMPARE(int(up->result), int(LastUp::Result::Failed));
+        QCOMPARE(up->failedStep, QStringLiteral("boot-wait"));
+        QCOMPARE(up->exitCode, 1);
+
+        QVERIFY(saveLastUp(path, {at, LastUp::Result::Failed,
+                                  QStringLiteral("--password=hunter2 Cookie: sid=abc"), 1}));
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QByteArray raw = f.readAll();
+        f.close();
+        QVERIFY2(!raw.contains("hunter2") && !raw.contains("sid=abc"), raw.constData());
+        QVERIFY(loadLastUp(path).has_value());
+        QVERIFY(loadLastUp(path)->failedStep.isEmpty());
+        QVERIFY(saveLastUp(path, {at, LastUp::Result::Ok, QStringLiteral("boot-wait"), 0}));
+        QVERIFY(loadLastUp(path)->failedStep.isEmpty());  // only a failure names a step
+        QVERIFY(!saveLastUp(path, {at, LastUp::Result::Failed, {}, 300}));
+
+        const auto reads = [&path](const QByteArray &text) {
+            QFile w(path);
+            if (!w.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+            w.write(text);
+            w.close();
+            return loadLastUp(path).has_value();
+        };
+        const QByteArray good = "at=2026-11-12T19:58:38Z\nresult=failed\nstep=boot-wait\nexit=1\n";
+        QVERIFY(reads(good));
+        QVERIFY(!reads(good + "reason=Error: token=abc\n"));  // a key it never writes
+        QVERIFY(!reads(good + "exit=1\n"));                   // a key twice
+        QVERIFY(!reads("at=2026-11-12T19:58:38Z\nresult=failed\nstep=token=abc\nexit=1\n"));
+        QVERIFY(!reads("at=yesterday\nresult=failed\nstep=boot-wait\nexit=1\n"));
+        QVERIFY(!reads("at=2026-11-12T19:58:38Z\nresult=maybe\nstep=\nexit=1\n"));
+        QVERIFY(!reads("at=2026-11-12T19:58:38Z\nresult=failed\nstep=boot-wait\nexit=300\n"));
+        QVERIFY(!reads("at=2026-11-12T19:58:38Z\nresult=failed\nstep=boot-wait\nexit=0\n"));
+        QVERIFY(!reads("at=2026-11-12T19:58:38Z\nresult=ok\nstep=boot-wait\nexit=0\n"));
+        QVERIFY(!reads("at=2026-11-12T19:58:38Z\nresult=unfinished\nstep=\nexit=1\n"));
+        QVERIFY(!reads(good + QByteArray(300, '#')));  // longer than any record
+        QVERIFY(reads("at=2026-11-12T19:58:38Z\nresult=unfinished\nstep=\nexit=0\n"));
+        QVERIFY(!loadLastUp(dir.filePath(QStringLiteral("missing"))).has_value());
+        QVERIFY(!loadLastUp(QString()).has_value());
+
+        // one file per device, named only by a name docker would accept
+        QVERIFY(lastUpPath(QStringLiteral("remora-android-17"))
+                    .endsWith(QStringLiteral("/remora/last-up/remora-android-17")));
+        for (const char *bad : {"", "../remorarc", "a/b", " x", "-x", ".hidden"})
+            QVERIFY2(lastUpPath(QString::fromLatin1(bad)).isEmpty(), bad);
+        QVERIFY(!saveLastUp(QString(), {at, LastUp::Result::Ok, {}, 0}));
+    }
+
+    // And as `remora status` prints it: absent without a record; an unfinished run has no exit code.
+    void statusJsonCarriesTheLastUp() {
+        const auto lastUpOf = [](const StatusReport &r) {
+            return QJsonDocument::fromJson(statusToJson(r).toUtf8()).object().value("last_up");
+        };
+        StatusReport r;
+        r.backend = Backend::Bare;
+        QVERIFY(lastUpOf(r).isUndefined());
+        const QDateTime at = QDateTime::fromString(QStringLiteral("2026-11-12T19:58:38Z"), Qt::ISODate);
+        r.lastUp = LastUp{at, LastUp::Result::Failed, QStringLiteral("boot-wait"), 1};
+        const QJsonObject failed = lastUpOf(r).toObject();
+        QCOMPARE(failed.value("at").toString(), QStringLiteral("2026-11-12T19:58:38Z"));
+        QCOMPARE(failed.value("result").toString(), QStringLiteral("failed"));
+        QCOMPARE(failed.value("exit_code").toInt(-1), 1);
+        QCOMPARE(failed.value("failed_step").toString(), QStringLiteral("boot-wait"));
+        r.lastUp = LastUp{at, LastUp::Result::Unfinished, {}, 0};
+        const QJsonObject unfinished = lastUpOf(r).toObject();
+        QCOMPARE(unfinished.value("result").toString(), QStringLiteral("unfinished"));
+        QVERIFY(!unfinished.contains("exit_code"));
+        QVERIFY(!unfinished.contains("failed_step"));
+    }
+
     void assertAdbEndpointGatesOnDeviceState() {
         FakeSpawner sp;
         QCOMPARE(assertAdbEndpoint(sp, QStringLiteral("10.0.0.5:5555")),

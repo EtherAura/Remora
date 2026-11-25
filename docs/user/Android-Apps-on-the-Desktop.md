@@ -97,6 +97,10 @@ systemctl --user start remora-<profile>.service
 Characters in the profile name other than letters, digits, `_`, `.` and `-` become `-` in the unit
 name. The command prints the exact names it installed.
 
+If the device is not up after a login, run `remora status <profile>`. Its `last_up` field says how
+the last `remora up` ended, and which step failed if one did. Below the JSON, a warning gives the
+`journalctl` command that shows that run's log.
+
 The login service needs systemd, so `remora service` refuses on Windows and writes nothing there.
 `remora auto-sleep` and `remora update-watch` still run in the foreground. Deleting a profile on a
 machine without systemd has no units to disable, and removes only the profile.

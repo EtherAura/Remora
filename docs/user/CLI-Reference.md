@@ -24,7 +24,7 @@ the command line is also the way to drive Remora over ssh.
 | command | what it does |
 |---|---|
 | `remora plan [<profile>] [--backend bare\|remote]` | Dry run. Prints the resolved `docker run` command and the mirror command, with notes on a codec fallback, macvlan networking, the `/data` layout and the image's CPU tuning |
-| `remora status [<profile>] [--backend …]` | Read-only live state of the target and host capabilities, as JSON, followed by plain-text warnings when something is wrong |
+| `remora status [<profile>] [--backend …]` | Read-only live state of the target and host capabilities, as JSON, followed by plain-text warnings when something is wrong. `last_up` is how the device's last `remora up` ended: its time, result, exit code and any failed step |
 | `remora check [<profile>] [--backend …] [--ssh-host user@host] [--gpu-host]` | Readiness of the target: what is missing and how to fix it. `--ssh-host` overrides the profile's ssh host, `--gpu-host` adds the GPU rows. Exits 0 when ready, 1 when not |
 | `remora doctor [<profile>] [--stdout]` | Diagnostics bundle: probes, versions, device properties and recent logcat in one file. Writes a timestamped file in the current directory and prints its path. `--stdout` prints the report instead |
 | `remora certify [<profile>] [--recheck] [--restore]` | Report Play Protect state and the `android_id`. `--recheck` asks for a fresh checkin first. `--restore` writes back the saved checkin identity after a `/data` rebuild. This command does not grant Google licensing or device certification |
