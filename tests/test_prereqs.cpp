@@ -334,8 +334,64 @@ private slots:
                      "reset_module_prop /system/etc/remora-spoof/rez-mod/module.prop \"$MODDIR\"")),
                  1);
         QCOMPARE(lines.value(called + 1),
-                 QStringLiteral("cd \"$MODDIR\" && ./bin/zygisk-ptrace64 monitor >/dev/null 2>&1 &"));
+                 QStringLiteral("cd \"$MODDIR\" && setsid ./bin/zygisk-ptrace64 monitor >/dev/null 2>&1 "
+                                "</dev/null &"));
         QCOMPARE(lines.value(called + 2), QStringLiteral("exit 0"));
+        // and its check for a running tracer comes before the wipe of $TMP_PATH (bd remora-4mba):
+        // Remora's deploy runs this same file, and a second start must not delete the first one's
+        // control socket
+        const qsizetype check =
+            lines.indexOf(QStringLiteral("  [ \"$(cat \"$p/comm\" 2>/dev/null)\" = \"zygisk-ptrace64\" ] && exit 0"));
+        const qsizetype wipe = lines.indexOf(
+            QStringLiteral("rm -rf \"$TMP_PATH\"; mkdir -p \"$TMP_PATH\"; chmod 555 \"$TMP_PATH\""));
+        QVERIFY(check >= 0 && wipe > check);
+    }
+
+    // ReZygisk's own post-fs-data.sh, which Magisk runs once Remora's hook or deploy has started the
+    // tracer, leaves a running tracer alone (bd remora-4mba): it wiped $TMP_PATH under it, deleting
+    // the tracer's control socket, so the status never reached module.prop. The check runs here
+    // under /bin/sh with the script's own `set -e`: it must let the script go on when no tracer is
+    // running, and stop it when one is, which a process named zygisk-ptrace64 stands in for.
+    void rezygiskModuleScriptLeavesARunningTracerAlone() {
+        SKIP_ON_WINDOWS("the module script is POSIX sh run by the guest's Magisk");
+        const QStringList lines = QString::fromUtf8(readAll(sourcePath(QStringLiteral(
+            "vendor/source-build/features/zygisk_pif/rez-mod/post-fs-data.sh")))).split(QLatin1Char('\n'));
+        QVERIFY(lines.contains(QStringLiteral("set -e")));
+        const qsizetype loop = lines.indexOf(QStringLiteral("for p in /proc/[0-9]*; do"));
+        const qsizetype wipe = lines.indexOf(QStringLiteral("rm -rf \"$TMP_PATH\""));
+        QVERIFY(loop >= 0 && wipe > loop);
+        QCOMPARE(lines.value(loop + 2), QStringLiteral("done"));
+        const QString check = lines.mid(loop, 3).join(QLatin1Char('\n'));
+        QVERIFY(check.contains(QLatin1String("then exit 0; fi")));
+
+        const auto run = [&check]() {
+            QProcess sh;
+            sh.start(QStringLiteral("/bin/sh"),
+                     {QStringLiteral("-c"), QStringLiteral("set -e\n%1\necho went-on").arg(check)});
+            sh.waitForFinished(20000);
+            return QString::fromUtf8(sh.readAllStandardOutput()).trimmed();
+        };
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString tracer = dir.filePath(QStringLiteral("zygisk-ptrace64"));
+        QVERIFY(QFile::copy(QStringLiteral("/bin/sleep"), tracer));
+        QVERIFY(QFile::setPermissions(tracer, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        // what the loop itself reads: whether any process here is named zygisk-ptrace64
+        const auto tracerRuns = [] {
+            for (const QString &pid : QDir(QStringLiteral("/proc")).entryList(QDir::Dirs))
+                if (readAll(QStringLiteral("/proc/%1/comm").arg(pid)).trimmed() == "zygisk-ptrace64")
+                    return true;
+            return false;
+        };
+        // a test device on this host runs a real one, so only then is the first half not asked
+        if (!tracerRuns()) QCOMPARE(run(), QStringLiteral("went-on"));
+        QProcess fake;
+        fake.start(tracer, {QStringLiteral("30")});
+        QVERIFY(fake.waitForStarted(5000));
+        QTRY_VERIFY_WITH_TIMEOUT(tracerRuns(), 5000);
+        QCOMPARE(run(), QString());
+        fake.kill();
+        fake.waitForFinished(5000);
     }
 
     // Something that is neither a file nor a link at module.prop is not the reset's to remove.

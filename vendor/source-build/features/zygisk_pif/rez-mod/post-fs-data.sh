@@ -28,6 +28,14 @@ create_sys_perm() {
   chcon u:object_r:system_file:s0 $1 2>/dev/null || true
 }
 
+# Remora: Remora's boot hook (/data/adb/post-fs-data.d/50-rezygisk-pif.sh) or its deploy has
+# already started the tracer, and its control socket is in $TMP_PATH: wiping that directory under
+# it is what kept the monitor's status out of module.prop (bd remora-4mba). Leave a running one
+# alone. An `if`, so `set -e` does not end the loop early.
+for p in /proc/[0-9]*; do
+  if [ "$(cat "$p/comm" 2>/dev/null)" = "zygisk-ptrace64" ]; then exit 0; fi
+done
+
 export TMP_PATH=/data/adb/rezygisk
 rm -rf "$TMP_PATH"
 

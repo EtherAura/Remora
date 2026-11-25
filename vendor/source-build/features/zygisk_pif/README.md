@@ -57,7 +57,9 @@ it refetches, re-applies the source patch, rebuilds and reinstalls the 64-bit se
 REFUSES if the patch no longer applies or if the built binary still carries more than
 the one deliberate `__strcat_chk` call site. Copy the 32-bit binaries from the release
 zip by hand under `customize.sh`'s installed names. Diff the support scripts too —
-`post-fs-data.sh` carries a Remora `chcon` fix that must survive.
+`post-fs-data.sh` carries two Remora changes that must survive: a `chcon` fix, and an exit
+before it wipes `$TMP_PATH` when a tracer is already running, which would delete that
+tracer's control socket (bd remora-4mba).
 
 Current: **537 (`e42886f-release`)**, the `main` tip when it was pinned. This is the
 first build with Android 17 zygote hooks — 515 predated them entirely (added in

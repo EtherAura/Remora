@@ -105,6 +105,11 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   `"running": false`), on this computer and on a remote host. It said running with no boot,
   renderer or adb readings, because docker refuses every command to a frozen container.
   `remora up` or Connect wakes it, as before.
+- With Play spoofing on, ReZygisk's monitor keeps its control socket. At every start, ReZygisk's
+  own boot script or Remora's start of the injector deleted it, so `zygisk-ptrace64 ctl` could not
+  reach the monitor, and the status the monitor writes when its state changes never reached the
+  module's description in Magisk. Remora also no longer starts a second monitor beside a running
+  one.
 
 ## [2026.11.9] - 2026-11-22
 

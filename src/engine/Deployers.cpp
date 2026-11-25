@@ -385,15 +385,20 @@ StepResult shareInputDevices(Spawner &sp, const RunContext &ctx, LogSink &sink) 
 // The command that seeds ReZygisk's temp dir, runs PIF's post-fs-data.sh and launches the injector.
 // Shared by the pre-boot arming step and the post-boot fallback, because getting these three in the
 // wrong order is what makes the spoof silently not apply.
-static QString rezygiskArmCmd() {
-    return QStringLiteral(
-        "export TMP_PATH=/data/adb/rezygisk; rm -rf \"$TMP_PATH\"; mkdir -p \"$TMP_PATH\"; "
-        "chmod 555 \"$TMP_PATH\"; chcon u:object_r:system_file:s0 \"$TMP_PATH\" 2>/dev/null || true; "
-        "[ -f /data/adb/modules/playintegrityfix/post-fs-data.sh ] && "
-        "sh /data/adb/modules/playintegrityfix/post-fs-data.sh >/dev/null 2>&1; "
-        "cd /data/adb/modules/rezygisk && setsid ./bin/zygisk-ptrace64 monitor "
-        ">/dev/null 2>&1 </dev/null &");
+//
+// It is the boot hook itself (bd remora-4mba), the file installSpoofBootHook puts in
+// post-fs-data.d. This used to be a copy of the hook's steps without its first one, the check for a
+// running tracer: whichever of the two started second wiped $TMP_PATH under the first, and with it
+// the tracer's control socket, so ReZygisk's status never reached module.prop, and the second
+// tracer could not claim init and exited. The copy also lacked the hook's module.prop reset. One
+// file now, so the two cannot drift apart again. Empty when the vendored hook cannot be read.
+static QString spoofBootHookBody() {
+    QFile f(vendorScript(QStringLiteral("source-build/features/zygisk_pif"),
+                         QStringLiteral("50-rezygisk-pif.sh")));
+    if (!f.open(QIODevice::ReadOnly)) return {};
+    return QString::fromUtf8(f.readAll());
 }
+static QString rezygiskArmCmd() { return spoofBootHookBody(); }
 
 // An explicitly marked private image may let Magisk own the Zygisk lifecycle.
 // Its modules and boot settings must not be replaced by the ReZygisk installer.
@@ -501,10 +506,7 @@ static bool spoofModulesReady(Spawner &sp, const RunContext &ctx, const LineSink
 // ~0.15 s in). /data persists across container recreates, so post-boot is soon enough — this boot
 // still pays the restart, and every cold deploy after it boots once.
 static bool installSpoofBootHook(Spawner &sp, const RunContext &ctx, const LineSink &log) {
-    QFile f(vendorScript(QStringLiteral("source-build/features/zygisk_pif"),
-                         QStringLiteral("50-rezygisk-pif.sh")));
-    if (!f.open(QIODevice::ReadOnly)) return false;
-    const QString body = QString::fromUtf8(f.readAll());
+    const QString body = spoofBootHookBody();
     // The heredoc terminator must not occur in the payload, or the write truncates silently.
     if (body.isEmpty() || body.contains(QLatin1String("REMORA_EOF"))) return false;
     const QString dst = QStringLiteral("/data/adb/post-fs-data.d/50-rezygisk-pif.sh");
@@ -550,7 +552,8 @@ static bool installAppletHideHook(Spawner &sp, const RunContext &ctx, const Line
 // Budget deliberately shorter than zygote's arrival plus a margin: past that there is nothing left
 // to race, and holding the chain to keep trying would cost more than the restart it is avoiding.
 // The hook stays in place regardless — when it wins, this step finds the tracer already up and the
-// idempotence check inside rezygiskArmCmd makes the second start a no-op.
+// hook's own check for a running tracer, which rezygiskArmCmd runs too, makes the second start a
+// no-op.
 static StepResult playSpoofArm(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     auto log = mkLog(sink, "spoof-arm");
     if (!ctx.rc.playSpoof) return StepResult::good("play_spoof off");
@@ -574,7 +577,11 @@ static StepResult playSpoofArm(Spawner &sp, const RunContext &ctx, LogSink &sink
         return StepResult::good(
             "the spoof modules were not ready before zygote — the boot hook or the framework "
             "restart will cover it");
-    containerExec(sp, ctx, rezygiskArmCmd(), log);
+    const QString arm = rezygiskArmCmd();
+    if (arm.isEmpty())
+        return StepResult::good(QStringLiteral(
+            "not armed: the vendored boot hook (50-rezygisk-pif.sh) cannot be read"));
+    containerExec(sp, ctx, arm, log);
     return StepResult::good(
         QStringLiteral("injector armed %1 ms into the container's life").arg(waited));
 }
@@ -700,11 +707,16 @@ static StepResult playSpoof(Spawner &sp, const RunContext &ctx, LogSink &sink) {
     // The arming step ahead of boot-wait did not take — so fall back to what this always did:
     // bounce the framework and catch the zygote that `start` spawns. Costs a second full boot,
     // which is exactly why it is the fallback now and not the default (bd remora-tdz).
+    const QString arm = rezygiskArmCmd();
+    if (arm.isEmpty())
+        return StepResult::fail(QStringLiteral(
+            "the vendored boot hook (vendor/source-build/features/zygisk_pif/50-rezygisk-pif.sh) "
+            "cannot be read, so nothing can start the Play spoof's injector"));
     log(QStringLiteral("stderr"),
         QStringLiteral("the pre-boot injector did not take — restarting the framework to catch a "
                        "fresh zygote (this costs a second boot)"));
     containerExec(sp, ctx, "stop; sleep 2", log);
-    containerExec(sp, ctx, rezygiskArmCmd(), log);
+    containerExec(sp, ctx, arm, log);
     containerExec(sp, ctx, "start", log);
     // Wait for the framework that `start` spawns — identified by a NEW system_server, not by
     // sys.boot_completed. `stop` does not clear that property, so the obvious poll matched the

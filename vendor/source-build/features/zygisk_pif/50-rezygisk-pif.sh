@@ -5,6 +5,9 @@
 # so the ptrace tracer is up in time to inject zygote. We do NOT rely on Magisk
 # running the module's own post-fs-data.sh — that aborts on this base (set -e + a
 # missing companion), which is exactly why ReZygisk never auto-started ("parked").
+# Remora's deploy runs this same file through `docker exec`, ahead of zygote and in its
+# framework-restart fallback, so whichever start comes first, the other finds the tracer
+# here and leaves it, its control socket in $TMP_PATH included (bd remora-4mba).
 MODDIR=/data/adb/modules/rezygisk
 [ -x "$MODDIR/bin/zygisk-ptrace64" ] || exit 0
 # idempotent: don't start a second tracer
@@ -34,5 +37,5 @@ reset_module_prop() {
   fi
 }
 reset_module_prop /system/etc/remora-spoof/rez-mod/module.prop "$MODDIR"
-cd "$MODDIR" && ./bin/zygisk-ptrace64 monitor >/dev/null 2>&1 &
+cd "$MODDIR" && setsid ./bin/zygisk-ptrace64 monitor >/dev/null 2>&1 </dev/null &
 exit 0

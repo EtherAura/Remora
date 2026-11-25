@@ -2114,6 +2114,32 @@ private slots:
         }
     }
 
+    // The pre-zygote arm is the boot hook itself (bd remora-4mba): it runs the hook's check for a
+    // running tracer before anything else, so whichever of the two starts second leaves the first
+    // one and its control socket alone, and it resets module.prop as the hook does.
+    void spoofArmRunsTheBootHookItself() {
+        SKIP_ON_WINDOWS(kBareDeploy);
+        FakeSpawner sp;
+        RemoraConfig cfg;
+        cfg.advanced.playSpoof = true;
+        RecordingSink sink;
+        QVERIFY(runChain(makeDeployer(Backend::Bare, sp, 24, 0)->steps(makeContext(cfg, Backend::Bare)),
+                         sink));
+        QFile hook(sourcePath(QStringLiteral("vendor/source-build/features/zygisk_pif/50-rezygisk-pif.sh")));
+        QVERIFY(hook.open(QIODevice::ReadOnly));
+        const QString body = QString::fromUtf8(hook.readAll());
+        QString arm;
+        for (const QString &c : sp.calls)
+            if (c.contains(QLatin1String("zygisk-ptrace64 monitor")) && !c.contains(QLatin1String("REMORA_EOF")))
+                arm = c;
+        QVERIFY2(!arm.isEmpty(), "the arm step ran no injector start");
+        QVERIFY(arm.startsWith(QLatin1String("docker exec ")));
+        QVERIFY(arm.endsWith(QStringLiteral(" sh -c ") + body));
+        QVERIFY(arm.indexOf(QLatin1String("= \"zygisk-ptrace64\" ] && exit 0")) <
+                arm.indexOf(QLatin1String("rm -rf \"$TMP_PATH\"")));
+        QVERIFY(arm.contains(QLatin1String("reset_module_prop /system/etc/remora-spoof/rez-mod/module.prop")));
+    }
+
     void markedMagiskImageKeepsItsModulesAndInjector() {
         SKIP_ON_WINDOWS(kBareDeploy);
         FakeSpawner sp;
