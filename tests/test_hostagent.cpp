@@ -8,6 +8,7 @@
 #include "core/DesktopEntries.h"
 #include "core/GpuMemory.h"
 #include "core/HostInput.h"
+#include "core/LaunchUnit.h"
 #include "core/MirrorProto.h"
 #include "core/OutputLayout.h"
 #include "core/SessionStreams.h"
@@ -748,6 +749,34 @@ private slots:
                                  R"({"index": 2, "client": "999", "properties": {}})",
                                  R"({"index": 3, "properties": {}})"})
             QVERIFY2(sessionaudio::streamProcess(input(json), pids) == 0, json);
+    }
+
+    // Which desktop file a window's process was launched from, by the unit KIO started it in. The
+    // unit names as read on the desk: Proton's Wine Notepad, whose window's class
+    // (steam_proton) maps to no desktop file, so it stayed on the desk; Dolphin's; a scope with
+    // its pid for the random part; a launcher's name before the id.
+    void launchUnitNamesTheDesktopFile() {
+        const auto app = [](const char *cgroup) { return launchunit::launchedApp(cgroup); };
+        const QByteArray slice = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/";
+        QCOMPARE(app(slice + "app-wine\\x2dnotepad@dff3397540094d9ab4343e3e40960c81.service\n"),
+                 QStringLiteral("wine-notepad"));
+        QCOMPARE(app(slice + "app-org.kde.dolphin@9649b84b6e89497289c73ebdf7bab60c.service"),
+                 QStringLiteral("org.kde.dolphin"));
+        QCOMPARE(app(slice + "app-org.chromium.Chromium-16798.scope"),
+                 QStringLiteral("org.chromium.Chromium"));
+        QCOMPARE(app(slice + "app-flatpak-org.mozilla.firefox-12345.scope"),
+                 QStringLiteral("org.mozilla.firefox"));
+        // cgroup v1 lines before the v2 one are not the unit.
+        QCOMPARE(app("12:cpuset:/\n0::/user.slice/app.slice/app-org.kde.kclock@1a2b.service\n"),
+                 QStringLiteral("org.kde.kclock"));
+        // No app unit: the root (a process started outside systemd), a service of the desk's,
+        // the agent's own transient unit, a unit name cut short.
+        for (const char *none : {"0::/", "0::/user.slice/user@1000.service/session.slice/"
+                                         "plasma-plasmashell.service",
+                                 "0::/user.slice/user@1000.service/app.slice/"
+                                 "remora-host-agent-serve.service",
+                                 "0::/user.slice/app.slice/app-.scope", "", "garbage"})
+            QVERIFY2(app(none).isEmpty(), none);
     }
 };
 

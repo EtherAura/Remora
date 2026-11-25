@@ -62,6 +62,10 @@ public slots:
     Q_SCRIPTABLE void windowClosed(const QString &json);
     Q_SCRIPTABLE void focus(const QString &json);
     Q_SCRIPTABLE void pointerEntered(const QString &json);
+    // {app, pid}: whether that process runs in the unit KIO launched the app's desktop file in
+    // (core/LaunchUnit), for a window that names no desktop file of its own. The script asks;
+    // this answers.
+    Q_SCRIPTABLE bool launchedFrom(const QString &json);
 
 signals:
     void windowPlaced(quint32 session, const QString &windowId, int pid, bool isNew);

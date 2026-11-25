@@ -11,6 +11,8 @@
 #include <QStandardPaths>
 #include <QTimer>
 
+#include "core/LaunchUnit.h"
+
 namespace remora::hostagent {
 
 namespace {
@@ -40,7 +42,9 @@ QString scriptName(quint32 session) { return QStringLiteral("remora-session-%1")
 //
 // Which window answered the launch:
 //  - a new one — windowAdded, or desktopFileNameChanged for a Wayland window that is added
-//    before it names its app; never at its activation, which comes before windowAdded;
+//    before it names its app; never at its activation, which comes before windowAdded. A new
+//    window that names no desktop file of its own is the app's when its process runs in the
+//    systemd unit KIO launched the app in (claim, answered by the agent);
 //  - an existing one the launch activated — windowActivated;
 //  - an existing one of a single-instance app — the launch asks it to activate, and KWin's
 //    focus-stealing prevention usually refuses (the desk is busy with something else), marking it
@@ -178,11 +182,22 @@ var known = {};
     var ws = workspace.windowList();
     for (var i = 0; i < ws.length; i++) known[ws[i].internalId.toString()] = true;
 })();
+// A window that names another desktop file, or none (an X11 app whose class maps to none, such as
+// Wine's, which stayed on the desk), is still the app's when its process runs in the unit KIO
+// launched the app in: the agent reads that off the process's cgroup and answers.
+function claim(w) {
+    callDBus("org.remora.HostAgent", "/Placement", "org.remora.HostAgent.Placement", "launchedFrom",
+             JSON.stringify({app: APP, pid: w.pid}), function (yes) {
+                 if (yes === true && !w.deleted) place(w);
+             });
+}
 workspace.windowAdded.connect(function (w) {
     known[w.internalId.toString()] = true;
     if (ours(w)) return place(w);
+    if (!w.normalWindow) return;
+    claim(w);
     // A Wayland window can be announced before it names its app.
-    if (w.normalWindow) w.desktopFileNameChanged.connect(function () { if (ours(w)) place(w); });
+    w.desktopFileNameChanged.connect(function () { if (ours(w)) place(w); });
 });
 workspace.windowActivated.connect(function (w) {
     if (w && known[w.internalId.toString()] && nothingPlaced() && ours(w)) place(w);
@@ -444,6 +459,16 @@ void WindowPlacer::placed(const QString &json) {
                     o.value(QStringLiteral("minimized")).toBool(false),
                     o.value(QStringLiteral("maximized")).toInt(), activities});
     emit windowPlaced(session, id, o.value(QStringLiteral("pid")).toInt(), isNew);
+}
+
+bool WindowPlacer::launchedFrom(const QString &json) {
+    const QJsonObject o = QJsonDocument::fromJson(json.toUtf8()).object();
+    const QString app = o.value(QStringLiteral("app")).toString();
+    const int pid = int(o.value(QStringLiteral("pid")).toDouble());
+    if (app.isEmpty() || pid <= 0) return false;
+    QFile f(QStringLiteral("/proc/%1/cgroup").arg(pid));
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    return launchunit::launchedApp(f.readAll()) == app;
 }
 
 void WindowPlacer::focus(const QString &json) {

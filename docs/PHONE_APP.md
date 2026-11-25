@@ -106,26 +106,29 @@ a restore token granted once at the desk.
 
 ### The app on it
 
-The agent launches the app the way the desktop launches it and places its window with a KWin
-script per session, the one place that can move a window onto an output. Which window is the
-app's is decided by desktop-file id, never by process id: a single-instance app answers a launch
-with a new window of the process already running, and an app that was already open only asks for
-its existing window to be activated, which KWin's focus-stealing prevention usually turns into a
-request for attention. The script watches for both. The phone's windows are borderless,
-maximized and on every virtual desktop and every activity, because both are global across outputs
-and switching either at the desk must not take the app off the phone. Maximized is also what
-keeps a tiling script off it: Krohnkite, like the others, leaves a maximized or full-screen window
-where it is and arranges every other one. The window is sent to the output through KWin before
-it is maximized: a geometry set from a script takes effect only once the app answers it, so a
-maximize asked for meanwhile was done on the output the window opened on, where Krohnkite then
-sized it as a tile. A new window is placed once KWin has announced it, never when it is first
-activated: KWin activates it a moment before, and a move made then did not take. KWin announces a
-window to a plain script such as the session's before a declarative one such as Krohnkite, which
-then finds the window unmaximized (KWin reports a maximize once the app has answered it), tiles
-it and holds it to the tile. So a placed window found off the phone's output, or there but not
-filling it once its maximize has landed, is placed again, three times at most; a window already
-maximized is maximized again by way of maximized vertically, which every script listening by
-then hears of.
+The agent launches the app the way the desktop launches it and places its window with a KWin script
+per session, the one place that can move a window onto an output. Which window is the app's is
+decided by desktop-file id, never by process id: a single-instance app answers a launch with a new
+window of the process already running, and an app that was already open only asks for its existing
+window to be activated, which KWin's focus-stealing prevention usually turns into a request for
+attention. The script watches for both. A new window that names another desktop file, or none (an
+X11 program whose class matches no desktop file, such as one Wine runs), is still the app's when
+its process runs in the systemd unit KIO started the app in, `app-<desktop-file id>@….service`: the
+script asks the agent, which reads the process's cgroup (`core/LaunchUnit`). Such a window used to
+open on the desk and stay there. The phone's windows are borderless, maximized and on every virtual
+desktop and every activity, because both are global across outputs and switching either at the desk
+must not take the app off the phone. Maximized is also what keeps a tiling script off it:
+Krohnkite, like the others, leaves a maximized or full-screen window where it is and arranges every
+other one. The window is sent to the output through KWin before it is maximized: a geometry set
+from a script takes effect only once the app answers it, so a maximize asked for meanwhile was done
+on the output the window opened on, where Krohnkite then sized it as a tile. A new window is placed
+once KWin has announced it, never when it is first activated: KWin activates it a moment before,
+and a move made then did not take. KWin announces a window to a plain script such as the session's
+before a declarative one such as Krohnkite, which then finds the window unmaximized (KWin reports a
+maximize once the app has answered it), tiles it and holds it to the tile. So a placed window found
+off the phone's output, or there but not filling it once its maximize has landed, is placed again,
+three times at most; a window already maximized is maximized again by way of maximized vertically,
+which every script listening by then hears of.
 
 The phone's *Window* setting makes the app smaller than the phone's screen, and *Fit* says which
 sides: *Stretch* both, *Width* only the height (the app keeps the screen's full width), *Height*

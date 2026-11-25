@@ -9,6 +9,11 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Fixed
 
+- In the phone app preview, an app whose window names no desktop file of its own, such as a
+  program Wine runs, opens on the phone. It opened on the computer's own screen and stayed there,
+  in front of whoever was working at it: `remora-host-agent` knew the app's windows only by the
+  desktop file they name. It now also knows a window by its process, which runs in the unit the
+  launch started the app in.
 - In the phone app preview, an app that plays its sound through PipeWire itself, such as VLC 4,
   plays it on the phone. Its sound stayed on the computer's speakers: such an app ignores the
   setting that points a launched app at the session's own output, and `remora-host-agent` found
