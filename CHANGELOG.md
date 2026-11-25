@@ -7,6 +7,8 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ## [Unreleased]
 
+## [2026.11.10] - 2026-11-25
+
 ### Added
 
 - Each release carries the phone app preview, `Remora-<version>-android-phone.apk`, for Android 10
@@ -868,7 +870,8 @@ First public release.
   then mirror with Remora's own Qt/FFmpeg client and an agent baked into the image — video, audio,
   input, clipboard, desktop-mode displays and app listing.
 
-[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.9...HEAD
+[Unreleased]: https://github.com/EtherAura/Remora/compare/v2026.11.10...HEAD
+[2026.11.10]: https://github.com/EtherAura/Remora/compare/v2026.11.9...v2026.11.10
 [2026.11.9]: https://github.com/EtherAura/Remora/compare/v2026.11.8...v2026.11.9
 [2026.11.8]: https://github.com/EtherAura/Remora/compare/v2026.11.6...v2026.11.8
 [2026.11.6]: https://github.com/EtherAura/Remora/compare/v2026.11.5...v2026.11.6
