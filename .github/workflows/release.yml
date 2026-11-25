@@ -1,8 +1,8 @@
 name: Release
 
 # Runs on a version tag (v*). Checks the tag against every place the version is written, builds the
-# source tarball with `git archive`, the .deb with CPack, the Windows installer with NSIS and a
-# native FreeBSD package. It stamps the tarball checksum into a copy of the PKGBUILD, renders the
+# source tarball with `git archive`, the .deb with CPack, the Windows installer with NSIS, a
+# native FreeBSD package and the phone app's APK, signed with the release key. It stamps the tarball checksum into a copy of the PKGBUILD, renders the
 # Gentoo ebuild, generates an SBOM,
 # attests provenance for what this run built, and publishes the GitHub release with CHANGELOG.md's
 # section for the version as its notes.
@@ -153,9 +153,85 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # The phone app, built from the SDK this runner carries and signed with the release key, the one
+  # place that key is used. Its certificate is checked against phone/release-cert.sha256, so a
+  # wrong or rotated secret fails the release instead of shipping an APK no installed copy accepts
+  # as an update. The key reaches only this job, and only on a tag.
+  phone:
+    name: Phone app APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the version from the tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]+$ ]]; then
+            echo "::error::tag '$TAG' is not v<YYYY.MM.PATCH>"
+            exit 1
+          fi
+          echo "apk=Remora-$VERSION-android-phone.apk" >> "$GITHUB_OUTPUT"
+
+      # The two packages phone/build.sh needs, by name: a no-op when the image has them already, and
+      # a newer image cannot change what the app is built with.
+      - name: Android SDK packages
+        run: |
+          set -euo pipefail
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-36" "build-tools;36.0.0" > /dev/null
+
+      - name: Build and sign
+        env:
+          KEYSTORE_BASE64: ${{ secrets.REMORA_PHONE_KEYSTORE }}
+          REMORA_PHONE_KEYSTORE_PASSWORD: ${{ secrets.REMORA_PHONE_KEYSTORE_PASSWORD }}
+          APK: ${{ steps.version.outputs.apk }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$REMORA_PHONE_KEYSTORE_PASSWORD" ]; then
+            echo "::error::the REMORA_PHONE_KEYSTORE and REMORA_PHONE_KEYSTORE_PASSWORD secrets are not set"
+            exit 1
+          fi
+          export REMORA_PHONE_KEYSTORE="$RUNNER_TEMP/phone-release.p12"
+          base64 -d <<<"$KEYSTORE_BASE64" > "$REMORA_PHONE_KEYSTORE"
+          trap 'rm -f "$REMORA_PHONE_KEYSTORE"' EXIT
+          PATH="$JAVA_HOME_17_X64/bin:$PATH" phone/build.sh "$ANDROID_HOME"
+          mv phone/out/remora-phone.apk "$APK"
+
+      - name: Check the signing certificate
+        env:
+          APK: ${{ steps.version.outputs.apk }}
+        run: |
+          set -euo pipefail
+          certs=$("$JAVA_HOME_17_X64/bin/java" -jar "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" \
+            verify --print-certs "$APK")
+          echo "$certs"
+          got=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' <<<"$certs")
+          want=$(tr -d '[:space:]' < phone/release-cert.sha256)
+          if [ "$got" != "$want" ] || grep -q '^Signer #2' <<<"$certs"; then
+            echo "::error file=phone/release-cert.sha256::the APK is signed by '$got', the release key is '$want'"
+            exit 1
+          fi
+          sha256sum "$APK" | tee "$APK.sha256"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: phone-apk
+          path: |
+            ${{ steps.version.outputs.apk }}
+            ${{ steps.version.outputs.apk }}.sha256
+          retention-days: 1
+          if-no-files-found: error
+
   release:
-    name: Publish Linux, Windows and FreeBSD release assets
-    needs: [windows, freebsd]
+    name: Publish Linux, Windows, FreeBSD and phone release assets
+    needs: [windows, freebsd, phone]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     # contents: write creates the release and uploads its assets. id-token: write mints the
@@ -191,6 +267,7 @@ jobs:
             echo "ebuild=remora-$VERSION.ebuild"
             echo "installer=Remora-$VERSION-windows-x64-setup.exe"
             echo "freebsd=Remora-$VERSION-freebsd15-amd64.pkg"
+            echo "apk=Remora-$VERSION-android-phone.apk"
           } >> "$GITHUB_OUTPUT"
 
       - name: Verify the tag matches every version in the tree
@@ -430,6 +507,15 @@ jobs:
           FREEBSD_PACKAGE: ${{ steps.version.outputs.freebsd }}
         run: sha256sum -c "$FREEBSD_PACKAGE.sha256"
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: phone-apk
+
+      - name: Check the phone app's checksum
+        env:
+          APK: ${{ steps.version.outputs.apk }}
+        run: sha256sum -c "$APK.sha256"
+
       # A Sigstore-backed record that these exact bytes came from this workflow at this commit:
       #
       #     gh attestation verify remora_<version>_amd64.deb --repo EtherAura/Remora
@@ -447,6 +533,7 @@ jobs:
             ${{ steps.version.outputs.sbom }}
             ${{ steps.version.outputs.installer }}
             ${{ steps.version.outputs.freebsd }}
+            ${{ steps.version.outputs.apk }}
 
       - name: Publish the release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
@@ -465,4 +552,6 @@ jobs:
             ${{ steps.version.outputs.installer }}.sha256
             ${{ steps.version.outputs.freebsd }}
             ${{ steps.version.outputs.freebsd }}.sha256
+            ${{ steps.version.outputs.apk }}
+            ${{ steps.version.outputs.apk }}.sha256
           fail_on_unmatched_files: true

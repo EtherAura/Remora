@@ -1,6 +1,7 @@
 # Installation
 
-Remora releases include packages for Linux, FreeBSD and Windows, plus a source tarball.
+Remora releases include packages for Linux, FreeBSD and Windows, the phone app, and a source
+tarball.
 
 ## What a release contains
 
@@ -13,6 +14,8 @@ Every [release](https://github.com/EtherAura/Remora/releases/latest) carries:
 - a native package for FreeBSD 15 amd64, `Remora-<version>-freebsd15-amd64.pkg`,
 - an installer for 64-bit Windows 10 and 11, `Remora-<version>-windows-x64-setup.exe`, a preview
   ([Windows](Windows.md#installing)),
+- the phone app for Android 10 and later, `Remora-<version>-android-phone.apk`, a preview
+  ([The phone app](#the-phone-app)),
 - SHA-256 checksums, an SBOM, and a Sigstore build-provenance attestation.
 
 Remora uses calendar versions, `YYYY.MM.PATCH`. `remora --version` prints the version you have.
@@ -105,6 +108,27 @@ Image builds and local Android deployment run on Linux. The FreeBSD package carr
 static Linux helpers deployed with the Android container. See [Deploy Targets](Deploy-Targets.md)
 for host prerequisites and ADB networking.
 
+## The phone app
+
+The phone app opens this computer's apps, and the Android apps of your devices, on an Android phone
+(Android 10 or later), each on a screen of the phone's own size. It is a preview. Download
+`Remora-<version>-android-phone.apk` from the release and open it on the phone, or install it from
+a computer with `adb install`. Then pair it: `remora link pair`, or *New code* on the workspace's
+Phone page, shows the code the app scans ([CLI Reference](CLI-Reference.md)).
+
+Every release's APK is signed with the same key, so a newer release installs over an older one. The
+key's certificate has this SHA-256 fingerprint, which `phone/release-cert.sha256` in the source
+also holds:
+
+```
+d97e8019ebe8d9c1789b7682113e28d2e67f1dde1ce64ceaa17268aebcc6f9e2
+```
+
+`apksigner verify --print-certs Remora-<version>-android-phone.apk`, from the Android SDK's
+build-tools, prints it as the signer's SHA-256 digest. A copy you built yourself with
+`phone/build.sh` is signed with your own debug key instead, and Android does not update one with
+the other: uninstall it first, then pair the phone again.
+
 ## From source
 
 On FreeBSD, install the build dependencies below and configure with
@@ -154,7 +178,7 @@ ctest --test-dir build
 
 ## Verifying a download
 
-The source tarball, `.deb`, FreeBSD package, SBOM and Windows installer each carry a
+The source tarball, `.deb`, FreeBSD package, SBOM, Windows installer and phone app each carry a
 Sigstore-backed build-provenance attestation that records which workflow, at which commit, produced those exact
 bytes. Check it with the GitHub CLI:
 

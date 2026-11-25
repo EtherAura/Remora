@@ -88,22 +88,24 @@ ctest --test-dir build --output-on-failure -R prereqs
   and 749. They come from Qt's `[[nodiscard]]` on `QFile::open` in the test's fixture setup and
   do not involve FFmpeg.
 
-## The CI job (`.github/workflows/ffmpeg8.yml`)
+## The CI jobs (`.github/workflows/ffmpeg.yml`)
 
-`ci.yml` runs on Ubuntu 24.04, whose FFmpeg 6.1 skips the encoder. A separate read-only job builds
-all three FFmpeg consumers against FFmpeg 8:
+`ci.yml` runs on Ubuntu 24.04, whose FFmpeg 6.1 skips the encoder. A separate read-only workflow
+builds all three FFmpeg consumers twice, one job against FFmpeg 8 and one against FFmpeg 9:
 
 - **Environment.** An Arch Linux image pinned by digest, on the same `ubuntu-24.04` hosted
   runner. Every enabled pacman repository is frozen to one dated
   `archive.archlinux.org` snapshot, and the job fails if any repository resolves elsewhere or does
   not require package signatures. `pacman -Syyuuw` downloads the packages with up to three
   attempts. `pacman -Suu` then installs from the same snapshot, including upgrades or downgrades
-  for packages already in the image. The snapshot carries FFmpeg 8.1.2.
+  for packages already in the image. The FFmpeg 8 job's snapshot carries FFmpeg
+  8.1.2, the FFmpeg 9 job's FFmpeg 9.1.
 - **Version guard (after configure).** For libavcodec, libavformat, libavutil, libswscale,
   libswresample and libavfilter, the job reads the pkg-config version that configure recorded in
   `CMakeCache.txt` and the `LIB*_VERSION_MAJOR` macro from the headers in the same include
-  directory. Both must match the FFmpeg 8 majors 62, 62, 60, 9, 6 and 11. `FFMPEG_VERSION` in
-  `libavutil/ffversion.h` must be 8.x, with or without a tag's leading `n`. The job also prints
+  directory. Both must match the job's FFmpeg: majors 62, 62, 60, 9, 6 and 11 for FFmpeg 8, and
+  63, 63, 61, 10, 7 and 12 for FFmpeg 9. `FFMPEG_VERSION` in `libavutil/ffversion.h` must be 8.x
+  or 9.x to match, with or without a tag's leading `n`. The job also prints
   the libva version and whether `vulkan/vulkan.h` was found.
 - **Target guard (after configure).** Configure only prints `NOT built` when a helper's
   dependencies are missing, so the job looks in `build.ninja` for the encoder's and the decoder's
@@ -113,20 +115,36 @@ all three FFmpeg consumers against FFmpeg 8:
 - **Build.** A fresh configure, then `cmake --build build --clean-first`. Warnings and errors go
   to the log unfiltered. The job continues past no failure.
 - **Link guard (after the build).** The job reads `DT_NEEDED` from `remora`, `remora-frame-encoder`
-  and `remora-frame-decoder`. They must load `libavcodec.so.62`, `libavutil.so.60` and their own
-  libraries: libavformat, libswscale and libswresample for `remora`, `libavfilter.so.11` for the
-  encoder and `libva.so.2` for the decoder.
+  and `remora-frame-decoder`. They must load the job's libavcodec and libavutil (`.so.62` and
+  `.so.60` for FFmpeg 8, `.so.63` and `.so.61` for FFmpeg 9) and their own libraries:
+  libavformat, libswscale and libswresample for `remora`, libavfilter for the encoder and
+  `libva.so.2` for the decoder, each at the job's major.
 - **Tests.** `ctest --output-on-failure --no-tests=error` runs every registered test with
   `QT_QPA_PLATFORM=offscreen` and a fresh `HOME`.
 
-The guard expects FFmpeg 8 exactly. When the job moves to another snapshot, change the snapshot
-URL, the image (if it is older than the new snapshot) and the expected majors together. The job
-does not set or change the supported minimum, which is still the one in `CMakeLists.txt`.
+Each job expects its FFmpeg exactly. When one moves to another snapshot, change its matrix entry's
+snapshot URL, image (if it is older than the new snapshot) and expected majors together. Neither
+sets or changes the supported minimum, which is still the one in `CMakeLists.txt`.
+
+## FFmpeg 9.1
+
+FFmpeg 9 is a new major of every library, and the one Arch has shipped. One build,
+in a throwaway Arch container (ffmpeg 2:9.1-1, Qt 6.12.0, GCC 16.2.1, CMake 4.5.1, libva 2.24.1),
+from a clean copy of the tree: configure found both helpers' dependencies, the build finished,
+and all 19 registered tests passed, `phone_qr` by skipping (the container had no JDK). The only
+warnings were three `-Wunused-result` in `tests/test_engine.cpp`, Qt 6.12's `[[nodiscard]]` on
+`QFile::open`, since fixed. Nothing FFmpeg marks deprecated was reported.
+
+`decoderDecodesH264AndHevcInSoftware` in `tests/test_mirrorproto.cpp` decodes one H.264 and one
+HEVC frame through the mirror's decoder in software and checks the pixels, so these runs, and
+every CI job's, decode with the FFmpeg they built against. The Windows package's FFmpeg, BtbN's
+build of the 9.0 branch, passed the same suites in a Windows 11 VM.
 
 ## Not verified
 
-- Distribution packages (the Gentoo ebuild included) and containers. The CI job above is defined,
-  but this page records no hosted run of it.
-- Any FFmpeg 8.x release other than 8.1.3, and any other set of FFmpeg configure options.
-- Live decoding, encoding, audio playback or mirroring, the optional GPU paths (VA-API, Vulkan,
-  CUDA interop) and runtime performance. A clean offline build does not exercise any of them.
+- Distribution packages (the Gentoo ebuild included) and containers. The CI jobs above are
+  defined, but this page records no hosted run of them.
+- Any FFmpeg 8.x release other than 8.1.3, any 9.x other than 9.1, and any other set of FFmpeg
+  configure options.
+- Live decoding past those two frames, encoding, audio playback or mirroring, the optional GPU
+  paths (VA-API, Vulkan, CUDA interop) and runtime performance.

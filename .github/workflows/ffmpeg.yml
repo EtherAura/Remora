@@ -1,11 +1,12 @@
-name: FFmpeg 8
+name: FFmpeg
 
-# The host side against FFmpeg 8.x: remora_mirror (linked into remora) and both native frame
-# helpers, built from a clean tree and tested offline. ci.yml's Ubuntu runner has FFmpeg 6.1, which
-# skips the encoder entirely, so this is the only job that compiles all three FFmpeg consumers. It
-# runs in an Arch Linux image pinned by digest, with every pacman repository frozen to one archive
-# snapshot, so each run resolves the same FFmpeg 8 release. docs/FFMPEG8_COMPATIBILITY.md has what
-# the job proves and what it does not.
+# The host side against FFmpeg 8.x and 9.x: remora_mirror (linked into remora) and both native
+# frame helpers, built from a clean tree and tested offline. ci.yml's Ubuntu runner has FFmpeg 6.1,
+# which skips the encoder entirely, so these are the only jobs that compile all three FFmpeg
+# consumers. Each runs in an Arch Linux image pinned by digest, with every pacman repository frozen
+# to one archive snapshot, so each run resolves the same FFmpeg release. FFmpeg 9 is a new major of
+# every library, and what Arch has shipped. docs/FFMPEG8_COMPATIBILITY.md has what
+# the jobs prove and what they do not.
 on:
   push:
     branches: [main]
@@ -21,20 +22,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ffmpeg8:
-    name: build + test (FFmpeg 8, Arch snapshot)
+  ffmpeg:
+    # FFmpeg 8's name is the one the job had alone, so a check required by that name still is.
+    name: build + test (FFmpeg ${{ matrix.ffmpeg }}, Arch snapshot)
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      # Per FFmpeg: the image, the snapshot whose extra repository carries that release, and the
+      # library majors the guards below expect. Moving an entry to another FFmpeg is a change to
+      # all three: the image too if it is older than the new snapshot.
+      matrix:
+        include:
+          # archlinux base-20260726.0.562117, linux/amd64; FFmpeg 8.1.2.
+          - ffmpeg: 8
+            image: docker.io/library/archlinux@sha256:5c0a4c06b4aca92db11a9db181461d9e412fbee3aa3561d318aec2df2f318769
+            snapshot: https://archive.archlinux.org/repos/2026/07/29
+            majors: '{"libavcodec": 62, "libavformat": 62, "libavutil": 60, "libswscale": 9, "libswresample": 6, "libavfilter": 11}'
+          # archlinux base-20261122.0.629543, linux/amd64; FFmpeg 9.1.
+          - ffmpeg: 9
+            image: docker.io/library/archlinux@sha256:bddb91b7a73f31ed6be307fc8ec75e5dd59ff8ccf6c5a1bbb8205f14702c6b4a
+            snapshot: https://archive.archlinux.org/repos/2026/11/23
+            majors: '{"libavcodec": 63, "libavformat": 63, "libavutil": 61, "libswscale": 10, "libswresample": 7, "libavfilter": 12}'
     container:
-      # archlinux base-20260726.0.562117, linux/amd64.
-      image: docker.io/library/archlinux@sha256:5c0a4c06b4aca92db11a9db181461d9e412fbee3aa3561d318aec2df2f318769
+      image: ${{ matrix.image }}
     defaults:
       run:
         shell: bash
     env:
-      # The snapshot whose extra repository carries FFmpeg 8.1.2. Moving the job to another FFmpeg
-      # is a change to this line, the image above if it is older than the new snapshot, and the
-      # majors the guard below expects.
-      ARCH_SNAPSHOT: https://archive.archlinux.org/repos/2026/07/29
+      ARCH_SNAPSHOT: ${{ matrix.snapshot }}
+      FFMPEG_RELEASE_MAJOR: ${{ matrix.ffmpeg }}
+      FFMPEG_MAJORS: ${{ matrix.majors }}
     steps:
       # Every enabled repository takes its servers from the one mirrorlist, so writing the
       # snapshot there freezes all of them; the check fails the job if any repository resolves
@@ -80,7 +97,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /var/cache/pacman/pkg
-          key: ffmpeg8-pacman-${{ steps.packages.outputs.key }}
+          key: ffmpeg${{ matrix.ffmpeg }}-pacman-${{ steps.packages.outputs.key }}
 
       # Ordinary distro provisioning, signatures checked against the image's keyring. -uu takes
       # every installed package to the snapshot's version too, so nothing from the image's own
@@ -116,21 +133,20 @@ jobs:
       # What configure actually found, read back from what it wrote. The pkg-config versions in
       # CMakeCache.txt are the ones the targets were configured with; the headers in their include
       # directory are the ones they will compile against, and the two must agree on every
-      # library's FFmpeg 8 major. The CLI's version string would prove neither. Both helpers are
+      # library's major for this FFmpeg. The CLI's version string would prove neither. Both helpers are
       # optional in CMakeLists (a missing dependency is a configure message, not an error), so
       # their build statements are required here by name, along with remora's link of
       # libremora_mirror.a.
-      - name: FFmpeg 8 versions and targets
+      - name: FFmpeg ${{ matrix.ffmpeg }} versions and targets
         shell: python3 -I {0}
         run: |
-          import os, re, sys
+          import json, os, re, sys
 
           # libavutil keeps its major in version.h; the others moved theirs to version_major.h.
-          EXPECTED = {
-              'libavcodec': ('FFMPEG', 62), 'libavformat': ('FFMPEG', 62),
-              'libavutil': ('FFMPEG', 60), 'libswscale': ('FFMPEG', 9),
-              'libswresample': ('FFMPEG', 6), 'libavfilter': ('REMORA_ENCODER_DEPS', 11),
-          }
+          # libavfilter is the encoder's, so configure records it under its own prefix.
+          RELEASE = int(os.environ['FFMPEG_RELEASE_MAJOR'])
+          EXPECTED = {lib: ('REMORA_ENCODER_DEPS' if lib == 'libavfilter' else 'FFMPEG', major)
+                      for lib, major in json.loads(os.environ['FFMPEG_MAJORS']).items()}
           build = os.environ.get('REMORA_BUILD_DIR', 'build')
           errors = []
 
@@ -167,17 +183,17 @@ jobs:
               print(f'{lib}: pkg-config {version or "(not found)"}, '
                     f'{macro} {header or "(not found)"} in {incdir or "(no include dir)"}')
               if not re.fullmatch(r'\d+(\.\d+)*', version) or int(version.split('.')[0]) != major:
-                  fail(f'{lib} {version or "is missing"}: FFmpeg 8 has major {major}')
+                  fail(f'{lib} {version or "is missing"}: FFmpeg {RELEASE} has major {major}')
               if header != str(major):
-                  fail(f'{lib} headers say major {header}: FFmpeg 8 has major {major}')
+                  fail(f'{lib} headers say major {header}: FFmpeg {RELEASE} has major {major}')
 
           incdir = cache.get('FFMPEG_libavutil_INCLUDEDIR', '')
           release = header_define(os.path.join(incdir, 'libavutil', 'ffversion.h'), 'FFMPEG_VERSION')
           release = (release or '').strip('"')
           print(f'FFmpeg release (libavutil/ffversion.h): {release or "(not found)"}')
           # A build from a release tag carries the tag's n prefix.
-          if not re.match(r'n?8\.\d', release):
-              fail(f'FFmpeg release {release or "is missing"}: not 8.x')
+          if not re.match(rf'n?{RELEASE}\.\d', release):
+              fail(f'FFmpeg release {release or "is missing"}: not {RELEASE}.x')
           print(f'libva: {cache.get("REMORA_DECODER_DEPS_libva_VERSION") or "(not found)"}')
           print(f'vulkan/vulkan.h: {"found" if cache.get("REMORA_HAVE_VULKAN_H") == "1" else "not found"}')
 
@@ -230,17 +246,21 @@ jobs:
       - name: Build
         run: cmake --build build --clean-first
 
-      # The sonames each binary records are what it will load: FFmpeg 8's majors, and libva's.
-      - name: Built binaries link FFmpeg 8
+      # The sonames each binary records are what it will load: this FFmpeg's majors, and libva's.
+      - name: Built binaries link FFmpeg ${{ matrix.ffmpeg }}
         shell: python3 -I {0}
         run: |
-          import os, re, struct, sys
+          import json, os, re, struct, sys
+
+          MAJORS = json.loads(os.environ['FFMPEG_MAJORS'])
+          def so(lib):
+              return f'{lib}.so.{MAJORS[lib]}'
 
           NEEDED = {
-              'remora': ('libavformat.so.62', 'libavcodec.so.62', 'libavutil.so.60',
-                         'libswscale.so.9', 'libswresample.so.6'),
-              'remora-frame-encoder': ('libavfilter.so.11', 'libavcodec.so.62', 'libavutil.so.60'),
-              'remora-frame-decoder': ('libavcodec.so.62', 'libavutil.so.60', 'libva.so.2'),
+              'remora': tuple(so(lib) for lib in ('libavformat', 'libavcodec', 'libavutil',
+                                                  'libswscale', 'libswresample')),
+              'remora-frame-encoder': (so('libavfilter'), so('libavcodec'), so('libavutil')),
+              'remora-frame-decoder': (so('libavcodec'), so('libavutil'), 'libva.so.2'),
           }
           build = os.environ.get('REMORA_BUILD_DIR', 'build')
           errors = []

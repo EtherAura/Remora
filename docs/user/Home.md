@@ -34,7 +34,8 @@ command line.
   on your own machine, or come with an image you build yourself. Building one takes about 450 GB of
   free disk, 32 GB of RAM (64 GB recommended) and an afternoon for the first build. See
   [Requirements](Requirements.md).
-- **There is no phone companion app.** That is future work.
+- **The phone app is a preview.** It opens one app at a time, from this computer or from a
+  device, on an Android 10 or later phone ([Installation](Installation.md#the-phone-app)).
 
 Remora runs on Linux x86_64, FreeBSD 15 amd64 and the 64-bit Windows 10 and 11 preview.
 FreeBSD uses a Linux Docker host over SSH. Remora is licensed under GPL v3. An image you build is not

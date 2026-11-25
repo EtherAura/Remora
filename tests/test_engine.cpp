@@ -967,6 +967,12 @@ static void writeExec(const QString &path, const QByteArray &body) {
     f.close();
     QVERIFY(f.setPermissions(f.permissions() | QFileDevice::ExeOwner));
 }
+// An empty file at `path`; failing to make one fails the running test, naming the file.
+static void writeEmpty(const QString &path) {
+    QFile f(path);
+    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
+}
+
 static MesaTailRun runMesaTail(const QString &dir, const MesaTailSetup &s) {
     MesaTailRun r;
     const QString tree = dir + QStringLiteral("/tree"), sb = dir + QStringLiteral("/sb"),
@@ -979,13 +985,13 @@ static MesaTailRun runMesaTail(const QString &dir, const MesaTailSetup &s) {
     if (s.emptyPayloadDir) QDir().mkpath(mesa);
     if (s.payload) {
         QDir().mkpath(mesa + QStringLiteral("/dri"));
-        QFile(mesa + QStringLiteral("/dri/libgallium_dri.so")).open(QIODevice::WriteOnly);
+        writeEmpty(mesa + QStringLiteral("/dri/libgallium_dri.so"));
     }
     if (s.prereqsBuilt) {
         QDir().mkpath(drm);
         QDir().mkpath(vag);
-        QFile(drm + QStringLiteral("/libdrm.so")).open(QIODevice::WriteOnly);
-        QFile(vag + QStringLiteral("/va_version.h")).open(QIODevice::WriteOnly);
+        writeEmpty(drm + QStringLiteral("/libdrm.so"));
+        writeEmpty(vag + QStringLiteral("/va_version.h"));
     }
     if (s.doBuildScript) writeExec(sb + QStringLiteral("/do-build.sh"), "#!/bin/sh\n");
     auto rcFile = [&](const char *name, int rc) {

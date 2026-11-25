@@ -36,7 +36,14 @@ FreeBSD client uses native ADB and OpenSSH. The Android container runs on the Li
 | `bare` | your user in the `docker` group, a reachable docker daemon, and for Android 16 images the IBT-fixed `ashmem_linux.ko` loaded |
 | `remote` | key-based ssh to `ssh_host`, and docker usable by the remote user |
 
-The docker host's kernel must also provide binder (binderfs).
+The docker host's kernel must also provide binder (binderfs), and should carry October 2026's
+binder fixes: 6.1.191, 6.6.160, 6.12.113, 6.18.56 or 7.2.10 or later in those series, or 7.3 and
+later. A series no longer maintained (6.19, 7.0 and 7.1 among them) has no fix. Android freezes
+apps it has cached, and on an older kernel the binder calls made around a frozen app leak open
+files on the host, which pile up until it runs out of them, or close an app's unrelated files
+(CVE-2026-98777, CVE-2026-98778). Kernels from 6.19 to 7.2.9 can also free a binder device while
+it is being created, which Remora does at every boot (CVE-2026-98776). `uname -r` on the docker
+host prints its kernel.
 
 ## Checking readiness
 

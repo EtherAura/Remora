@@ -62,11 +62,16 @@ at the phone's own size and density ([docs/PHONE_APP.md](../docs/PHONE_APP.md)).
 ## Building
 
 Java and the framework only — no Gradle, no AndroidX — against an Android source tree's prebuilt
-SDK, the way `agent/build.sh` builds the agent:
+SDK, the way `agent/build.sh` builds the agent, or against an Android SDK that has
+`platforms;android-36` and `build-tools;36.0.0`:
 
 ```
 phone/build.sh /path/to/android/tree      # → phone/out/remora-phone.apk
+phone/build.sh "$ANDROID_HOME"            # the same, from an SDK
 adb install -r phone/out/remora-phone.apk
 ```
 
-It needs Android 10 or later.
+It needs Android 10 or later. A build is signed with your debug key. Each release carries the app
+signed with the release key instead (`.github/workflows/release.yml`, the key's certificate pinned
+by `release-cert.sha256`), and Android updates neither with the other: uninstall one before
+installing the other.

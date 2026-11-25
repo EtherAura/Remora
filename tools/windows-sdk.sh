@@ -17,7 +17,9 @@
 #                   (Ubuntu 24.04 ships 6.4). Always this one, so every machine builds alike.
 #   llvm-mingw/     the Linux-hosted llvm-mingw release Qt 6.11.3 itself was built with, so the
 #                   program and Qt share one libc++.
-#   ffmpeg/         BtbN's LGPL shared build of FFmpeg 8.1, the libavcodec the Linux build uses,
+#   ffmpeg/         BtbN's LGPL shared build of FFmpeg's 9.0 branch, which carries the fixes for
+#                   the D3D11VA HEVC overflow, the NVDEC use-after-free and the VA-API leak that
+#                   8.1 has none of (CVE-2026-125239/125265/125252, bd remora-z8xp),
 #                   plus nv-codec-headers for the CUDA interop's dynamic loader.
 #   platform-tools/ adb for Windows, which the mirror drives exactly as it drives adb on Linux.
 #   qemu/           QEMU for Windows (Stefan Weil's build, the one qemu.org links), trimmed to
@@ -27,7 +29,7 @@
 #                   tagged QEMU release this build names.
 #
 # Every archive is checked against a SHA-256 recorded here before anything is unpacked. BtbN
-# prunes old autobuilds, so its URL will eventually 404: pick a current n8.1 build from
+# prunes old autobuilds, so its URL will eventually 404: pick a current n9.0 build from
 # github.com/BtbN/FFmpeg-Builds/releases and update the URL and its checksum together.
 set -euo pipefail
 
@@ -47,7 +49,7 @@ ARCHIVES=(
     "host-icu.7z https://download.qt.io/online/qtsdkrepository/linux_x64/desktop/qt6_6113/qt6_6113/qt.qt6.6113.linux_gcc_64/${QT_VER}icu-linux-Rhel8.6-x86_64.7z 16f1e8f409bd9f0b248e36d10deab498d0c1b33d25e0a515a076b1f6b5a1ab28"
     "opengl32sw.7z $QT_REPO/qt.qt6.6113.win64_llvm_mingw/${QT_VER}opengl32sw-64-mesa_11_2_2-signed_sha256.7z dc4bbd49a23aab35df9aa2e706e6cc97fbb6b4e018db66bd72e6f5400c5297c8"
     "llvm-mingw.tar.xz https://github.com/mstorsjo/llvm-mingw/releases/download/20231128/llvm-mingw-20231128-ucrt-ubuntu-20.04-x86_64.tar.xz 0f21ff3be90311092fe32e0e30878ef3ae9d9437b8d9ac25ef279e0d84e9bb8e"
-    "ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-15-12-40/ffmpeg-n8.1.3-35-gf1acb0a266-win64-lgpl-shared-8.1.zip c11b3c0e91eda3b85dc6c4d5fda8e8c53d18e1cbe2b3ad82d785049f2f58b6a5"
+    "ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-24-12-41/ffmpeg-n9.0.2-963-g4d831360c9-win64-lgpl-shared-9.0.zip 471961ba38074215ffb4e94e3d90ead94886d59e67b24b7bf057d6b80adf9fe0"
     "nv-codec-headers.tar.gz https://github.com/FFmpeg/nv-codec-headers/releases/download/n13.0.19.0/nv-codec-headers-13.0.19.0.tar.gz 13da39edb3a40ed9713ae390ca89faa2f1202c9dda869ef306a8d4383e242bee"
     "qemu-setup.exe https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe f98a8aeb5f7faea9765b6dee28316c266cd179d80354a2fed8e50176f9a2e59f"
     "platform-tools.zip https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip 45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99"

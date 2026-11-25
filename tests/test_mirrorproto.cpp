@@ -1079,6 +1079,59 @@ private slots:
         }
     }
 
+    // Decoder, for real and in software, on one frame of H.264 and one of HEVC: the left half
+    // black, the right half white (made with libx264 and hevc_nvenc, their SEI removed). The
+    // checks are on the pixels, so a libavcodec that opens the stream and hands back a wrong or
+    // blank frame fails as well. This is what tells an FFmpeg the code was not written against —
+    // a distribution's newer one, or the one the Windows package bundles — from one it was.
+    void decoderDecodesH264AndHevcInSoftware() {
+        struct Stream {
+            quint8 codec;
+            const char *hex;
+            int width, height;
+        };
+        const Stream streams[] = {
+            {kCodecH264,
+             "000000016742c00aa611116c0440000003004000000c83c48984600000000168c842044b2000000165"
+             "88821f9314000437efbc500011d2bebaebaf",
+             64, 32},
+            {kCodecH265,
+             "0000000140010c01ffff01600000030090000003000003005a9702400000000142010101600000030090"
+             "000003000003005aa018204165974a4211917f430101000003000100000300196005de510003d0900003"
+             "d09010000000014401c0adf033240000012601afe0e50abffda1879698b63ffc20966ad6af35f98a20",
+             192, 64},
+        };
+        for (const Stream &s : streams) {
+            const QByteArray name = s.codec == kCodecH264 ? "h264" : "hevc";
+            Decoder dec;
+            QString error;
+            QVERIFY2(dec.init(s.codec, QStringLiteral("off"), &error), qPrintable(error));
+            const QList<VideoFrame> frames = dec.decode(QByteArray::fromHex(s.hex), &error);
+            QVERIFY2(error.isEmpty(), qPrintable(error));
+            QVERIFY2(frames.size() == 1, name.constData());
+            const AVFrame *f = frames.front().av.get();
+            QVERIFY2(f, name.constData());
+            QCOMPARE(frames.front().size, QSize(s.width, s.height));
+            QCOMPARE(f->width, s.width);
+            QCOMPARE(f->height, s.height);
+            QCOMPARE(f->format, int(AV_PIX_FMT_YUV420P));
+            // Limited-range luma: black is 16 and white 235, and an exact decode leaves no
+            // ringing at the edge between them.
+            int leftMax = 0, rightMin = 255;
+            for (int y = 0; y < f->height; ++y) {
+                const uint8_t *row = f->data[0] + qsizetype(y) * f->linesize[0];
+                for (int x = 0; x < f->width; ++x) {
+                    if (x < f->width / 2) leftMax = std::max(leftMax, int(row[x]));
+                    else rightMin = std::min(rightMin, int(row[x]));
+                }
+            }
+            QVERIFY2(leftMax <= 20, qPrintable(QStringLiteral("%1: left half up to %2")
+                                                   .arg(QLatin1String(name)).arg(leftMax)));
+            QVERIFY2(rightMin >= 230, qPrintable(QStringLiteral("%1: right half down to %2")
+                                                     .arg(QLatin1String(name)).arg(rightMin)));
+        }
+    }
+
     // VideoFrame::toImage through its scaler seam, on frames that carry metadata only (no planes):
     // the stub records each call and creates nothing, so no real scaler runs. A width or height of
     // zero or below is refused before a scaling context is asked for; a valid size does reach the

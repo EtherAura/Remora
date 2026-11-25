@@ -142,6 +142,21 @@ jobs:
           done
           exit $rc
 
+  # The phone app builds from the SDK this runner carries, as release.yml builds it, here with the
+  # debug key: a tag is no place to find out that it stopped building.
+  phone:
+    name: phone app (APK)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Android SDK packages
+        run: |
+          set -euo pipefail
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-36" "build-tools;36.0.0" > /dev/null
+      - name: Build
+        run: PATH="$JAVA_HOME_17_X64/bin:$PATH" phone/build.sh "$ANDROID_HOME"
+
   # What software centres and launchers read: the AppStream metainfo (releases, screenshot,
   # keywords) and the desktop entry. --no-net because the screenshot URL points at main, which a
   # pull request may be the one adding it to.

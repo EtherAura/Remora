@@ -9,6 +9,12 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
 
 ### Added
 
+- Each release carries the phone app preview, `Remora-<version>-android-phone.apk`, for Android 10
+  and later. Every release's APK is signed with the same key, so a newer one installs over an older
+  one; the key's certificate is pinned in `phone/release-cert.sha256` and printed in the
+  Installation guide. A copy built with `phone/build.sh`, signed with your own debug key, has to be
+  uninstalled first. `phone/build.sh` also builds from an Android SDK now, not only from an Android
+  source tree.
 - In the phone app preview, this computer's apps are used with a pointer, as desktop apps expect:
   it goes where the finger is, a tap clicks, a long press is the secondary click, one finger
   dragged holds the button (selecting text, moving a slider), and two fingers scroll. Android's
@@ -110,6 +116,18 @@ calendar versions, `YYYY.MM.PATCH`: the year and month of the release, then a pa
   reach the monitor, and the status the monitor writes when its state changes never reached the
   module's description in Magisk. Remora also no longer starts a second monitor beside a running
   one.
+
+### Security
+
+- The Windows package bundles FFmpeg's 9.0 branch instead of 8.1. FFmpeg 8.1 has no fix for a
+  heap overflow in D3D11VA HEVC decoding (CVE-2026-125239), which the Windows mirror uses, nor
+  for the NVDEC use-after-free (CVE-2026-125265) on its CUDA path; 9.0 has both. On Linux, Remora
+  uses the distribution's FFmpeg, where 9.1 carries these fixes and the VA-API memory leak's
+  (CVE-2026-125252); `remora-frame-decoder` (`host_decode`), which decodes the guest's apps' video
+  through VA-API, is the part that leak reaches.
+- The user guide names the kernels with October 2026's binder fixes (CVE-2026-98776,
+  CVE-2026-98777, CVE-2026-98778) under *Deploy Targets*: the docker host's kernel runs every
+  device's binder.
 
 ## [2026.11.9] - 2026-11-22
 
