@@ -385,6 +385,8 @@ private slots:
         };
         // a test device on this host runs a real one, so only then is the first half not asked
         if (!tracerRuns()) QCOMPARE(run(), QStringLiteral("went-on"));
+        // A tracer is found by its /proc/<pid>/comm, the guest's Linux procfs; FreeBSD has none.
+        if (!QFile::exists(QStringLiteral("/proc/self/comm"))) QSKIP("no /proc/<pid>/comm");
         QProcess fake;
         fake.start(tracer, {QStringLiteral("30")});
         QVERIFY(fake.waitForStarted(5000));
